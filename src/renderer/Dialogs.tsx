@@ -113,6 +113,7 @@ export function NewProjectDialog({
     { id: 'shell', name: '仅 Shell', installed: true }
   ]
   const [agent, setAgent] = useState(() => preferredAgent(settings.defAgent, agents))
+  const [agentOpen, setAgentOpen] = useState(false)
   const [adding, setAdding] = useState(false)
   const [hostName, setHostName] = useState('')
   const [hostAddr, setHostAddr] = useState('')
@@ -141,6 +142,12 @@ export function NewProjectDialog({
 
   const ok = !!name.trim() && (check.kind === 'git' || check.kind === 'plain')
   const noneInstalled = agents.every((item) => item.id === 'shell' || !item.installed)
+  const agentLabel = agents.find((item) => item.id === agent)?.name || '仅 Shell'
+  useEffect(() => {
+    const node = document.querySelector('#modal .dlg')
+    node?.classList.toggle('menuopen', agentOpen)
+    return () => node?.classList.remove('menuopen')
+  }, [agentOpen])
 
   return (
     <Frame
@@ -353,18 +360,41 @@ export function NewProjectDialog({
           </div>
         ) : null}
       </div>
-      <label className="fld" style={{ margin: 0 }}>
+      <div className="fld" style={{ margin: 0 }}>
         <span>默认 Agent</span>
-        <select className="sel" data-np="agent" value={agent} onChange={(e) => setAgent(e.target.value)}>
-          {agents.map((item) => (
-            <option key={item.id} value={item.id} disabled={item.installed === false}>
-              {item.name}
-              {item.installed === false ? '（未找到命令）' : ''}
-            </option>
-          ))}
-        </select>
+        <div className="agentpick">
+          <button type="button" className="sel" data-np="agent" aria-haspopup="listbox" aria-expanded={agentOpen} onClick={() => setAgentOpen((open) => !open)}>
+            {agentLabel}
+          </button>
+          {agentOpen ? (
+            <div className="selmenu" role="listbox" aria-label="默认 Agent">
+              {agents.map((item) => {
+                const off = !item.installed
+                return (
+                  <button
+                    type="button"
+                    key={item.id}
+                    role="option"
+                    className={!off && agent === item.id ? 'on' : ''}
+                    aria-selected={!off && agent === item.id}
+                    aria-disabled={off || undefined}
+                    data-np-opt={item.id}
+                    onClick={() => {
+                      if (off) return
+                      setAgent(item.id)
+                      setAgentOpen(false)
+                    }}
+                  >
+                    {item.name}
+                    {off ? '（未找到命令）' : ''}
+                  </button>
+                )
+              })}
+            </div>
+          ) : null}
+        </div>
         {noneInstalled ? <small>未检测到已安装的 Agent CLI，可在 设置 › 执行器 中添加</small> : <small>新建终端时预选，可随时更换。</small>}
-      </label>
+      </div>
     </Frame>
   )
 }
@@ -458,16 +488,26 @@ export function NewTermDialog({
       }
     >
       <div className="picks" role="radiogroup" aria-label="Agent">
-        {agents.map((item) => (
+        {agents.map((item) => {
+          const off = item.installed === false
+          const on = !off && kind === item.id
+          return (
           <button
             key={item.id}
-            className={`pick ${kind === item.id ? 'on' : ''} ${item.installed === false ? 'na' : ''}`}
+            className={`pick ${on ? 'on' : ''}`}
             role="radio"
-            aria-checked={kind === item.id}
+            aria-checked={on}
+            aria-disabled={off || undefined}
             data-a="ntk"
             data-id={item.id}
-            data-autofocus={kind === item.id ? true : undefined}
-            onClick={() => pickKind(item.id)}
+            data-autofocus={on ? true : undefined}
+            onMouseDown={(event) => {
+              if (off) event.preventDefault()
+            }}
+            onClick={() => {
+              if (off) return
+              pickKind(item.id)
+            }}
           >
             <Mark letter={item.id === 'shell' ? '>_ ' .trim() : item.letter} color={item.color} size="md" />
             <span style={{ minWidth: 0 }}>
@@ -475,7 +515,8 @@ export function NewTermDialog({
               <span className="cm">{item.installed === false ? '未找到命令' : item.cmd || '无 Agent'}</span>
             </span>
           </button>
-        ))}
+          )
+        })}
       </div>
       {options.length < 2 ? (
         <div className="shellone">Shell：{options[0]?.label || 'bash'}</div>

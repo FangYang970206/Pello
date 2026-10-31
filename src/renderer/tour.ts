@@ -14,8 +14,32 @@ async function waitFor(selector: string, timeout = 8000): Promise<HTMLElement> {
   throw new Error(`找不到 ${selector}`)
 }
 
+function assertReview(name: string): void {
+  const scroller = document.querySelector('.tabs') as HTMLElement | null
+  const tab = document.querySelector('.tab.on') as HTMLElement | null
+  if (scroller && tab && scroller.clientWidth > 0) {
+    const view = scroller.getBoundingClientRect()
+    const box = tab.getBoundingClientRect()
+    const close = tab.querySelector('.x')?.getBoundingClientRect()
+    if (box.left < view.left - 1 || box.right > view.right + 1) {
+      throw new Error(`${name} 激活标签超出 .tabs ${box.left.toFixed(1)}-${box.right.toFixed(1)} / ${view.left.toFixed(1)}-${view.right.toFixed(1)}`)
+    }
+    if (!close || close.width < 8 || close.left < view.left - 1 || close.right > view.right + 1) {
+      throw new Error(`${name} 激活标签的关闭按钮不可见`)
+    }
+  }
+  if (document.documentElement.dataset.theme !== 'light') return
+  const pane = [...document.querySelectorAll('.pane')].find((node) => !node.hasAttribute('hidden') && node.querySelector('.xterm') && (node as HTMLElement).offsetWidth > 0)
+  if (!pane) return
+  const id = pane.getAttribute('data-id') || ''
+  const text = window.__awbBuffer?.(id) || ''
+  if (!text.trim()) throw new Error(`${name} 浅色主题 xterm buffer 为空`)
+}
+
 async function shot(name: string): Promise<void> {
-  await sleep(280)
+  await until(() => !document.querySelector('#toasts .toast'), 5000)
+  await sleep(180)
+  assertReview(name)
   console.log('shot', name)
   await window.awb.shot(name)
 }
@@ -56,6 +80,11 @@ export async function runTour(): Promise<void> {
     click('[data-a=newproj]')
     await waitFor('[data-np=name]')
     await shot('v4_02_newproj_blank')
+    click('[data-np=agent]')
+    await waitFor('[data-np-opt][aria-disabled="true"]')
+    await shot('v4_02_newproj_agent_dropdown')
+    click('[data-np=agent]')
+    await until(() => !document.querySelector('.selmenu'))
     fill('[data-np=name]', 'virtualgraph')
     fill('[data-np=path]', '/tmp/awb-demo')
     await until(() => !!document.querySelector('#pchk small.ok, #pchk small.bad, #pchk small'))
@@ -89,19 +118,11 @@ export async function runTour(): Promise<void> {
 
     click('.addtab[data-a=newterm]')
     await waitFor('[data-a=ntk][data-id=opencode]')
-    click('[data-a=ntk][data-id=opencode]')
+    await until(() => document.querySelector('[data-a=ntk][data-id=opencode]')?.getAttribute('aria-disabled') === 'true')
+    await until(() => document.querySelector('[data-a=ntk][data-id=shell]')?.classList.contains('on') === true)
     await shot('v4_11_newterm_opencode')
-    click('[data-a=nt-ok]')
-    await sleep(700)
-
-    for (const id of ['aider', 'cursor', 'opencode']) {
-      click('.addtab[data-a=newterm]')
-      await waitFor(`[data-a=ntk][data-id=${id}]`)
-      click(`[data-a=ntk][data-id=${id}]`)
-      click('[data-a=nt-ok]')
-      await sleep(500)
-      await shot(`v4_12_term_${id}`)
-    }
+    click('[data-a=mclose]')
+    await sleep(150)
 
     click('.addtab[data-a=newterm]')
     await waitFor('[data-a=ntk][data-id=shell]')
@@ -110,11 +131,11 @@ export async function runTour(): Promise<void> {
     click('[data-a=nt-ok]')
     await waitFor('.pstate.idle, .pstate.running')
     await shot('v4_12_term_shell')
-    await sleep(400)
+    for (let i = 0; i < 6; i++) await openShell()
     const shellId = (await waitFor('.tab.on [data-a=tab]')).dataset.id || ''
     window.awb.ptyWrite(shellId, "python3 -c 'import signal,time; signal.signal(signal.SIGINT, signal.SIG_IGN); print(\"running\", flush=True); time.sleep(180)'\r")
     await waitFor('.pstate.running', 6000)
-    await sleep(300)
+    await sleep(250)
     await shot('v4_10_workspace')
     await shot('v4_09_remote_term')
 

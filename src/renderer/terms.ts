@@ -28,6 +28,19 @@ export function dropTerm(id: string): void {
   buffers.delete(id)
 }
 
+export function termPlain(id: string): string {
+  const term = terms.get(id)
+  if (!term) return ''
+  const buffer = term.buffer.active
+  const lines: string[] = []
+  for (let i = 0; i < buffer.length; i++) lines.push(buffer.getLine(i)?.translateToString(true) ?? '')
+  return lines.join('\n')
+}
+
+if (typeof window !== 'undefined') {
+  window.__awbBuffer = termPlain
+}
+
 const INK = {
   dark: { faint: '128;133;143', amber: '227;182;96', red: '240;122;122' },
   light: { faint: '102;107;117', amber: '154;106;0', red: '201;60;60' }

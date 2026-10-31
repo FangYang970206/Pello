@@ -47,12 +47,17 @@ export function App() {
   const booted = useRef(false)
   const touring = useRef(false)
   const modalRef = useRef<Modal | null>(null)
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   modalRef.current = modal
 
   const toast = useCallback((text: string, bad = false) => {
     const id = uid('z')
-    setToasts((list) => [...list, { id, text, bad }])
-    setTimeout(() => setToasts((list) => list.filter((item) => item.id !== id)), 2600)
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+    setToasts([{ id, text, bad }])
+    toastTimer.current = setTimeout(() => {
+      setToasts((list) => list.filter((item) => item.id !== id))
+      toastTimer.current = null
+    }, 2400)
   }, [])
 
   useEffect(() => {
@@ -255,13 +260,15 @@ export function App() {
       return
     }
     const agent = resolveAgent(tab.kind, db.custom, installed)
+    const procName = tab.kind === 'shell' ? shellLabel(tab.shell) : agent.name
+    const procCmd = cmdline(agent) || shellLabel(tab.shell)
     setModal({
       type: 'confirm',
-      title: '结束进程？',
-      ok: '结束进程',
+      title: '关闭标签？',
+      ok: '结束并关闭',
       body: (
         <>
-          将强制结束 <b>{agent.name}</b>（<span className="mono">{cmdline(agent) || shellLabel(tab.shell)}</span>）。CLI 未保存的会话会丢失，已写入磁盘的文件不受影响。
+          关闭标签会结束正在运行的 <b>{procName}</b>（<span className="mono">{procCmd}</span>）。未保存的会话会丢失，已写入磁盘的文件不受影响。
         </>
       ),
       run: () => {
@@ -349,7 +356,7 @@ export function App() {
       ok: untracked ? '删除文件' : '放弃更改',
       body: untracked ? (
         <>
-          <span className="mono">{rel}</span> 尚未被 Git 跟踪，将从磁盘删除（git clean -f），无法撤销。
+          <span className="mono">{rel}</span> 尚未被 Git 跟踪，将从磁盘删除（<code className="mono">git clean -f</code>），无法撤销。
         </>
       ) : (
         <>
@@ -421,7 +428,7 @@ export function App() {
       ok: '移除',
       body: (
         <>
-          将从列表中移除 {item.name}，并关闭它的所有终端。{itemHost?.name || '本机'} 上的目录 <span className="mono">{item.path}</span> 及其中的文件不会被删除。
+          将从列表中移除 {item.name}，并关闭它的所有终端。{itemHost?.name || '本机'}上的目录 <span className="mono">{item.path}</span> 及其中的文件不会被删除。
           {running ? <> 有 {running} 个正在运行的进程会被结束。</> : null}
         </>
       ),
@@ -523,36 +530,7 @@ export function App() {
           </div>
         </header>
         <div className="body">
-          {route === 'settings' && db ? (
-            <SettingsView
-              section={section}
-              settings={db.settings}
-              custom={db.custom}
-              hosts={db.hosts}
-              plugins={db.plugins}
-              installed={installed}
-              onSection={(id) => {
-                setSection(id)
-                document.querySelector('.scontent')?.scrollTo(0, 0)
-              }}
-              onBack={() => setRoute('work')}
-              onSettings={(settings) => {
-                setDb({ ...db, settings })
-                void window.awb.saveSettings(settings)
-              }}
-              onPlugins={(plugins) => {
-                setDb({ ...db, plugins })
-                void window.awb.savePlugins(plugins)
-              }}
-              onEditExec={(id) => setModal({ type: 'exec', id })}
-              onNewExec={() => setModal({ type: 'exec' })}
-              onEditHost={(id) => setModal({ type: 'host', id })}
-              onNewHost={() => setModal({ type: 'host' })}
-              onInstall={(name, cmd) => toast(cmd ? `请先安装 ${name}，并确保命令 ${cmd} 在 PATH 中` : name)}
-              onLocalHost={() => toast('本机无需配置')}
-            />
-          ) : (
-            <>
+          <div style={{ display: route === 'settings' ? 'none' : 'contents' }}>
               <aside className="side" aria-label="项目">
                 <button className="newp" data-a="newproj" onClick={() => setModal({ type: 'project' })}>
                   <Icon name="plus" />
@@ -694,8 +672,36 @@ export function App() {
                   />
                 ) : null}
               </div>
-            </>
-          )}
+          </div>
+          {route === 'settings' && db ? (
+            <SettingsView
+              section={section}
+              settings={db.settings}
+              custom={db.custom}
+              hosts={db.hosts}
+              plugins={db.plugins}
+              installed={installed}
+              onSection={(id) => {
+                setSection(id)
+                document.querySelector('.scontent')?.scrollTo(0, 0)
+              }}
+              onBack={() => setRoute('work')}
+              onSettings={(settings) => {
+                setDb({ ...db, settings })
+                void window.awb.saveSettings(settings)
+              }}
+              onPlugins={(plugins) => {
+                setDb({ ...db, plugins })
+                void window.awb.savePlugins(plugins)
+              }}
+              onEditExec={(id) => setModal({ type: 'exec', id })}
+              onNewExec={() => setModal({ type: 'exec' })}
+              onEditHost={(id) => setModal({ type: 'host', id })}
+              onNewHost={() => setModal({ type: 'host' })}
+              onInstall={(name, cmd) => toast(cmd ? `请先安装 ${name}，并确保命令 ${cmd} 在 PATH 中` : name)}
+              onLocalHost={() => toast('本机无需配置')}
+            />
+          ) : null}
         </div>
       </div>
       <div id="modal">

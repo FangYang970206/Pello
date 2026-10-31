@@ -55,4 +55,6 @@ npm start
 AWB_CAPTURE=1 AWB_SHOTS=./shots AWB_USER_DATA=/tmp/awb-userdata npm start
 ```
 
+`npm run check` 用 Playwright 打开应用，断言激活标签的矩形落在标签栏可视范围内，并断言切到浅色主题后 xterm 缓冲区不是空的。
+
 窗口最小宽度是 1024。

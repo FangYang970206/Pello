@@ -21,7 +21,7 @@ function xtermTheme(theme: ThemeName) {
       blue: '#2c64c4',
       magenta: '#8a45b8',
       cyan: '#137d84',
-      white: '#f8f8fa',
+      white: '#5c6370',
       brightBlack: '#666b75',
       brightRed: '#c93c3c',
       brightGreen: '#1f8a4c',
@@ -129,14 +129,21 @@ export function TerminalPane({
     termRef.current = term
     fitRef.current = fit
     bindTerm(id, term)
-    const ro = new ResizeObserver(() => {
+    const redraw = () => {
       if (!host.offsetWidth) return
       fit.fit()
+      if (term.rows > 0) term.refresh(0, term.rows - 1)
       window.awb.ptyResize(id, term.cols, term.rows)
-    })
+    }
+    const ro = new ResizeObserver(() => redraw())
     ro.observe(host)
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) redraw()
+    })
+    io.observe(host)
     return () => {
       ro.disconnect()
+      io.disconnect()
       unbindTerm(id, term)
       term.dispose()
       termRef.current = null
@@ -147,15 +154,30 @@ export function TerminalPane({
 
   useEffect(() => {
     const term = termRef.current
+    const host = hostRef.current
     if (!term) return
-    term.options.fontSize = fontSize
-    term.options.theme = xtermTheme(theme)
-    if (visible) {
-      requestAnimationFrame(() => {
-        fitRef.current?.fit()
-        window.awb.ptyResize(id, term.cols, term.rows)
-      })
+    const next = xtermTheme(theme)
+    if (next.foreground.toLowerCase() === next.background.toLowerCase()) {
+      next.foreground = theme === 'light' ? '#1a1b1e' : '#e8e9ec'
     }
+    term.options.fontSize = fontSize
+    term.options.theme = next
+    const redraw = () => {
+      if (term.rows > 0) term.refresh(0, term.rows - 1)
+    }
+    redraw()
+    if (!visible || !host || host.offsetWidth < 2) return
+    const frame = requestAnimationFrame(() => {
+      if (!host.offsetWidth) return
+      try {
+        fitRef.current?.fit()
+      } catch {
+        /* host has no layout yet */
+      }
+      redraw()
+      window.awb.ptyResize(id, term.cols, term.rows)
+    })
+    return () => cancelAnimationFrame(frame)
   }, [fontSize, theme, visible, id])
 
   return <div className="termhost" ref={hostRef} data-term={id} />

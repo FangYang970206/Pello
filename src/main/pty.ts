@@ -7,6 +7,7 @@ import * as pty from 'node-pty'
 import type { EnvVar, ProcState, PtyStateEvent, ShellKind } from '../shared/types'
 import { cmdline, PRESETS } from '../shared/types'
 import { db } from './store'
+import { OscStrip } from './osc'
 import {
   bashRc,
   pwshProfile,
@@ -17,7 +18,6 @@ import {
 } from './platform'
 
 const execFileP = promisify(execFile)
-const MARK = '\x1b]777;awb;prompt;'
 
 export interface SessionInfo {
   id: string
@@ -29,51 +29,6 @@ export interface SessionInfo {
 }
 
 type Send = (event: { type: 'data'; id: string; data: string } | PtyStateEvent) => void
-
-class OscStrip {
-  private pending = ''
-
-  push(chunk: string): { text: string; codes: number[] } {
-    this.pending += chunk
-    let text = ''
-    const codes: number[] = []
-    while (this.pending.length) {
-      const at = this.pending.indexOf(MARK)
-      if (at === -1) {
-        const esc = this.pending.lastIndexOf('\x1b')
-        if (esc >= 0 && this.pending.length - esc < MARK.length + 12) {
-          text += this.pending.slice(0, esc)
-          this.pending = this.pending.slice(esc)
-        } else {
-          text += this.pending
-          this.pending = ''
-        }
-        break
-      }
-      text += this.pending.slice(0, at)
-      const rest = this.pending.slice(at + MARK.length)
-      const bel = rest.indexOf('\x07')
-      const st = rest.indexOf('\x1b\\')
-      let end = -1
-      let skip = 0
-      if (bel !== -1 && (st === -1 || bel < st)) {
-        end = bel
-        skip = 1
-      } else if (st !== -1) {
-        end = st
-        skip = 2
-      }
-      if (end === -1) {
-        this.pending = this.pending.slice(at)
-        break
-      }
-      const num = Number(rest.slice(0, end).trim())
-      if (!Number.isNaN(num)) codes.push(num)
-      this.pending = rest.slice(end + skip)
-    }
-    return { text, codes }
-  }
-}
 
 function stripMarker(text: string): { text: string; code: number | null } {
   const match = text.match(/AWB_EC:(-?\d+)/)

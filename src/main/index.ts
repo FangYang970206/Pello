@@ -230,6 +230,8 @@ function registerIpc(): void {
     const safe = path.basename(String(name)).replace(/[^\w.\-]+/g, '_')
     const dir = process.env.AWB_SHOTS
     fs.mkdirSync(dir, { recursive: true })
+    win.webContents.sendInputEvent({ type: 'mouseMove', x: 4, y: 4 })
+    await new Promise((resolve) => setTimeout(resolve, 40))
     const image = await win.capturePage()
     fs.writeFileSync(path.join(dir, safe.endsWith('.png') ? safe : safe + '.png'), image.toPNG())
     return true

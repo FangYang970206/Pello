@@ -88,6 +88,7 @@ export function Workspace({
 }) {
   const scroller = useRef<HTMLDivElement>(null)
   const [overflow, setOverflow] = useState(false)
+  const [fade, setFade] = useState<'none' | 'left' | 'right' | 'both'>('none')
   const [menu, setMenu] = useState(false)
   const mine = project ? tabs.filter((tab) => tab.projectId === project.id) : []
   const terms = mine.filter((tab): tab is TermTab => tab.type === 'term')
@@ -97,34 +98,52 @@ export function Workspace({
   useEffect(() => {
     const el = scroller.current
     if (!el) return
-    const measure = () => {
-      const kids = [...el.children] as HTMLElement[]
-      const width = kids.reduce((sum, kid) => sum + kid.offsetWidth, 0) + Math.max(0, kids.length - 1) * 2
-      setOverflow(width > el.clientWidth + 2)
-    }
-    measure()
-    const ro = new ResizeObserver(measure)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [mine.length, project?.id])
-
-  useEffect(() => {
-    const el = scroller.current
-    if (!el) return
     const reveal = () => {
       const node = el.querySelector('.tab.on') as HTMLElement | null
       if (!node) return
       node.scrollIntoView({ inline: 'nearest', block: 'nearest' })
-      const fade = overflow ? 16 : 0
-      const right = node.offsetLeft + node.offsetWidth
-      const viewRight = el.scrollLeft + el.clientWidth - fade
-      if (right > viewRight) el.scrollLeft += right - viewRight
-      else if (node.offsetLeft < el.scrollLeft) el.scrollLeft = node.offsetLeft
+      const pad = 24
+      const view = el.getBoundingClientRect()
+      const box = node.getBoundingClientRect()
+      if (box.width <= 0 || view.width <= 0 || el.scrollWidth <= el.clientWidth + 1) return
+      if (box.right > view.right - pad) el.scrollLeft += box.right - (view.right - pad)
+      else if (box.left < view.left + pad) el.scrollLeft -= view.left + pad - box.left
+    }
+    const sync = () => {
+      const kids = [...el.children] as HTMLElement[]
+      const width = kids.reduce((sum, kid) => sum + kid.offsetWidth, 0) + Math.max(0, kids.length - 1) * 2
+      const over = width > el.clientWidth + 1
+      setOverflow((prev) => (prev === over ? prev : over))
+      if (!over) {
+        setFade((prev) => (prev === 'none' ? prev : 'none'))
+        return
+      }
+      const max = el.scrollWidth - el.clientWidth
+      const left = el.scrollLeft > 1
+      const right = max - el.scrollLeft > 1
+      const next = left && right ? 'both' : left ? 'left' : right ? 'right' : 'none'
+      setFade((prev) => (prev === next ? prev : next))
     }
     reveal()
-    const frame = requestAnimationFrame(reveal)
-    return () => cancelAnimationFrame(frame)
-  }, [active?.id, mine.length, project?.id, overflow])
+    sync()
+    const frame = requestAnimationFrame(() => {
+      reveal()
+      sync()
+    })
+    const ro = new ResizeObserver(() => {
+      reveal()
+      sync()
+    })
+    ro.observe(el)
+    if (el.parentElement) ro.observe(el.parentElement)
+    const onScroll = () => sync()
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      cancelAnimationFrame(frame)
+      ro.disconnect()
+      el.removeEventListener('scroll', onScroll)
+    }
+  }, [active?.id, mine.length, project?.id])
 
   const agentOf = (id: string) => agents.find((item) => item.id === id) || resolveAgent(id, [], installed)
 
@@ -203,7 +222,7 @@ export function Workspace({
       ) : (
         <>
           <div className="tabbar" role="tablist">
-            <div className={`tabs ${overflow ? 'over' : ''}`} ref={scroller}>
+            <div className={`tabs ${overflow ? 'over' : ''} ${fade === 'both' ? 'fade-l fade-r' : fade === 'left' ? 'fade-l' : fade === 'right' ? 'fade-r' : ''}`} ref={scroller}>
               {mine.map((tab) => {
                 const on = tab.id === active?.id
                 if (tab.type !== 'term') {
@@ -248,14 +267,16 @@ export function Workspace({
                 )
               })}
             </div>
-            {overflow ? (
-              <button className="addtab" data-a="tabs-menu" aria-label="全部标签" title="全部标签" onClick={() => setMenu((value) => !value)}>
-                <Icon name="chev" className="s chev open" />
+            <div className="tabtools">
+              {overflow ? (
+                <button className="addtab" data-a="tabs-menu" aria-label="全部标签" title="全部标签" onClick={() => setMenu((value) => !value)}>
+                  <Icon name="chev" className="s chev open" />
+                </button>
+              ) : null}
+              <button className="addtab" data-a="newterm" title="新建终端 (Ctrl T)" aria-label="新建终端" onClick={onNewTerm}>
+                <Icon name="plus" />
               </button>
-            ) : null}
-            <button className="addtab" data-a="newterm" title="新建终端 (Ctrl T)" aria-label="新建终端" onClick={onNewTerm}>
-              <Icon name="plus" />
-            </button>
+            </div>
             <span className="grow" />
             {proc}
             {menu ? (
