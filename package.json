@@ -1,0 +1,35 @@
+{
+  "name": "agent-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local desktop workbench for code agent CLIs. No account, no cloud.",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "postinstall": "electron-rebuild -f -w node-pty"
+  },
+  "dependencies": {
+    "@fontsource/jetbrains-mono": "^5.2.6",
+    "@xterm/addon-fit": "0.10.0",
+    "@xterm/xterm": "5.5.0",
+    "node-pty": "1.1.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.2",
+    "@tailwindcss/vite": "^4.1.16",
+    "@types/node": "^22.19.0",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^4.7.0",
+    "electron": "33.4.11",
+    "electron-vite": "6.0.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "tailwindcss": "^4.1.16",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.1"
+  }
+}

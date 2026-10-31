@@ -1,0 +1,18 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: Geist, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", "Cascadia Code", "JetBrains Mono", Consolas, "DejaVu Sans Mono", ui-monospace, monospace;
+  --color-bg: var(--bg);
+  --color-side: var(--side);
+  --color-panel: var(--panel);
+  --color-elev: var(--elev);
+  --color-elev2: var(--elev2);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-line: var(--line);
+  --radius-r1: 6px;
+  --radius-r2: 8px;
+}
