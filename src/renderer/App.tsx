@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import type { AgentInfo, Database, FileDiff, GitPanel, Host, SettingsSection, ShellKind, ThemeName, TreeNode } from '../shared/types'
 import { PRESETS, SHELL_AGENT, cmdline, resolveAgent, shellLabel, uid } from '../shared/types'
 import { Icon } from './icons'
-import { paint, writeTerm } from './terms'
+import { paint, writeNotice, writeTerm } from './terms'
 import { SettingsView } from './SettingsView'
-import { ConfirmDialog, ExecDialog, HostDialog, NewProjectDialog, NewTermDialog } from './Dialogs'
+import { ConfirmDialog, ExecDialog, HostDialog, NewProjectDialog, NewTermDialog, dialogOpener, focusableIn } from './Dialogs'
 import { RightPanel } from './RightPanel'
 import { Workspace, type SplitPair, type Tab, type TermTab } from './Workspace'
 
@@ -18,9 +18,9 @@ type Modal =
 type GitState = GitPanel & { untracked: Record<string, boolean> }
 
 function shellFor(host: Host | undefined, pref: ShellKind): ShellKind {
-  if (host?.platform === 'linux') return 'bash'
-  if (pref === 'bash') return 'pwsh'
-  return pref
+  if (host?.platform === 'linux') return pref === 'zsh' ? 'zsh' : 'bash'
+  if (pref === 'cmd') return 'cmd'
+  return 'pwsh'
 }
 
 export function App() {
@@ -48,6 +48,8 @@ export function App() {
   const touring = useRef(false)
   const modalRef = useRef<Modal | null>(null)
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const settingsOpener = useRef<HTMLElement | null>(null)
+  const settingsReturn = useRef<HTMLElement | null>(null)
   modalRef.current = modal
 
   const toast = useCallback((text: string, bad = false) => {
@@ -171,8 +173,8 @@ export function App() {
       )
       if (!event.announce) return
       const mode = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark'
-      if (event.reason === 'kill') writeTerm(event.id, paint(mode, 'red', '[进程已被强制结束]'))
-      writeTerm(event.id, paint(mode, 'faint', `[进程已退出，退出码 ${event.exitCode ?? 0}]`))
+      if (event.reason === 'kill') writeNotice(event.id, mode, 'red', '[进程已被强制结束]')
+      writeNotice(event.id, mode, 'faint', `[进程已退出，退出码 ${event.exitCode ?? 0}]`)
     })
   }, [])
 
@@ -450,13 +452,27 @@ export function App() {
     })
   }
 
+  function openSettings(next?: SettingsSection) {
+    if (route !== 'settings') {
+      settingsOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    }
+    if (next) setSection(next)
+    setRoute('settings')
+  }
+
+  function closeSettings() {
+    settingsReturn.current = settingsOpener.current
+    settingsOpener.current = null
+    setRoute('work')
+  }
+
   function onAppKey(key: string) {
     if (modalRef.current) return
     if (key === 'n') setModal({ type: 'project' })
     else if (key === 't') {
       if (!project) setModal({ type: 'project' })
       else setModal({ type: 'term' })
-    } else if (key === ',') setRoute('settings')
+    } else if (key === ',') openSettings()
     else if (key === 'b') setRight((value) => !value)
     else if (key === 'w' && active) requestClose(active.id)
     else if (key === 'alt-left') focusSplit('left')
@@ -478,7 +494,7 @@ export function App() {
           return
         }
         if (!field && route === 'settings') {
-          setRoute('work')
+          closeSettings()
           return
         }
       }
@@ -499,6 +515,45 @@ export function App() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   })
+
+  const workspaceLocked = route === 'settings' || modal !== null
+  useLayoutEffect(() => {
+    document.querySelectorAll<HTMLElement>('aside.side, #center, aside.right').forEach((el) => {
+      if (workspaceLocked) {
+        el.setAttribute('inert', '')
+        el.setAttribute('aria-hidden', 'true')
+      } else {
+        el.removeAttribute('inert')
+        el.removeAttribute('aria-hidden')
+      }
+    })
+    const restore = (node: HTMLElement | null) => {
+      if (!node?.isConnected || node.closest('[inert]')) return false
+      node.focus()
+      return true
+    }
+    if (restore(dialogOpener.current)) dialogOpener.current = null
+    if (route === 'work' && restore(settingsReturn.current)) settingsReturn.current = null
+  }, [workspaceLocked, route])
+
+  useEffect(() => {
+    if (route !== 'settings' || modal) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') return
+      const root = document.querySelector('.settings')
+      if (!root) return
+      const items = focusableIn(root)
+      if (!items.length) return
+      const current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+      const index = current ? items.indexOf(current) : -1
+      const next = event.shiftKey ? (index <= 0 ? items.length - 1 : index - 1) : index === -1 || index >= items.length - 1 ? 0 : index + 1
+      event.preventDefault()
+      event.stopPropagation()
+      items[next].focus()
+    }
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
+  }, [route, modal])
 
   const withRight = route === 'work' && !!project && right
   const editing = modal?.type === 'exec' ? db?.custom.find((item) => item.id === modal.id) || null : null
@@ -530,7 +585,7 @@ export function App() {
           </div>
         </header>
         <div className="body">
-          <div style={{ display: route === 'settings' ? 'none' : 'contents' }}>
+          <div id="workspace" style={{ display: route === 'settings' ? 'none' : 'contents' }} inert={workspaceLocked ? true : undefined} aria-hidden={workspaceLocked ? true : undefined}>
               <aside className="side" aria-label="项目">
                 <button className="newp" data-a="newproj" onClick={() => setModal({ type: 'project' })}>
                   <Icon name="plus" />
@@ -603,7 +658,7 @@ export function App() {
                   )}
                 </nav>
                 <div className="sfoot">
-                  <button className="navb" data-a="settings" onClick={() => setRoute('settings')}>
+                  <button className="navb" data-a="settings" onClick={() => openSettings()}>
                     <Icon name="settings" />
                     设置
                     <kbd style={{ marginLeft: 'auto' }}>Ctrl ,</kbd>
@@ -685,7 +740,7 @@ export function App() {
                 setSection(id)
                 document.querySelector('.scontent')?.scrollTo(0, 0)
               }}
-              onBack={() => setRoute('work')}
+              onBack={() => closeSettings()}
               onSettings={(settings) => {
                 setDb({ ...db, settings })
                 void window.awb.saveSettings(settings)
@@ -740,8 +795,7 @@ export function App() {
             onClose={() => setModal(null)}
             onManage={() => {
               setModal(null)
-              setRoute('settings')
-              setSection('agents')
+              openSettings('agents')
             }}
             onOpen={(kind, shell) => {
               setModal(null)

@@ -1,5 +1,5 @@
 export type ThemeName = 'dark' | 'light'
-export type ShellKind = 'pwsh' | 'cmd' | 'bash'
+export type ShellKind = 'pwsh' | 'cmd' | 'bash' | 'zsh'
 export type OsKind = 'windows' | 'linux'
 export type ProcState = 'running' | 'idle' | 'exited' | 'failed'
 export type SettingsSection = 'general' | 'look' | 'agents' | 'hosts' | 'plugins' | 'keys'
@@ -14,7 +14,7 @@ export interface EnvVar {
 export interface Settings {
   theme: ThemeName
   fontSize: number
-  defShell: 'pwsh' | 'cmd'
+  defShell: ShellKind
   defAgent: string
   restore: boolean
   confirmKill: boolean
@@ -233,7 +233,21 @@ export function resolveAgent(id: string, custom: Executor[], installed: Record<s
 export function shellLabel(shell: ShellKind): string {
   if (shell === 'cmd') return 'CMD'
   if (shell === 'bash') return 'bash'
+  if (shell === 'zsh') return 'zsh'
   return 'PowerShell'
+}
+
+export function shellChoices(platform: OsKind): { id: ShellKind; label: string }[] {
+  if (platform === 'linux') {
+    return [
+      { id: 'bash', label: 'bash' },
+      { id: 'zsh', label: 'zsh' }
+    ]
+  }
+  return [
+    { id: 'pwsh', label: 'PowerShell' },
+    { id: 'cmd', label: 'CMD' }
+  ]
 }
 
 export function hostShellName(platform: OsKind): string {

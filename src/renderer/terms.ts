@@ -49,3 +49,11 @@ const INK = {
 export function paint(theme: ThemeName, tone: 'faint' | 'amber' | 'red', text: string): string {
   return `\r\n\x1b[38;2;${INK[theme][tone]}m${text}\x1b[0m\r\n`
 }
+
+/** Exit notice. Skip a leading break when the cursor is already at column 0, so the prompt can follow on the next line. */
+export function writeNotice(id: string, theme: ThemeName, tone: 'faint' | 'amber' | 'red', text: string): void {
+  const term = terms.get(id)
+  const atStart = term ? term.buffer.active.cursorX === 0 : true
+  const body = `\x1b[38;2;${INK[theme][tone]}m${text}\x1b[0m\r\n`
+  writeTerm(id, (atStart ? '' : '\r\n') + body)
+}

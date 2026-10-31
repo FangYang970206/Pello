@@ -173,6 +173,9 @@ kbd{font:11px var(--mono);color:var(--faint);padding:0 4px;border-radius:4px;bor
 .group{margin-bottom:32px}
 .group h3{font-size:12px;font-weight:560;color:var(--muted);margin:0 0 8px 2px;display:flex;align-items:center}
 .card{background:var(--elev);border:1px solid var(--line2);border-radius:var(--r2);overflow:hidden}
+.card.menuopen{overflow:visible;position:relative;z-index:2}
+.srow .agentpick{position:relative;min-width:220px}
+.srow .agentpick button.sel{width:100%}
 [data-theme=dark] .card{background:var(--panel)}
 .srow{display:flex;align-items:center;gap:16px;padding:12px 16px;min-height:56px}
 .srow+.srow{border-top:1px solid var(--line)}

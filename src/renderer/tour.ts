@@ -14,6 +14,16 @@ async function waitFor(selector: string, timeout = 8000): Promise<HTMLElement> {
   throw new Error(`找不到 ${selector}`)
 }
 
+function assertExitOrder(name: string): void {
+  const pane = [...document.querySelectorAll('.pane')].find((node) => !node.hasAttribute('hidden') && node.querySelector('.xterm') && (node as HTMLElement).offsetWidth > 0)
+  const id = pane?.getAttribute('data-id') || ''
+  const text = window.__awbBuffer?.(id) || ''
+  const mark = '[进程已退出，退出码'
+  const at = text.lastIndexOf(mark)
+  if (at < 0) throw new Error(`${name} 没有退出提示`)
+  if (!text.slice(at).includes('$')) throw new Error(`${name} 提示符不在退出码之后`)
+}
+
 function assertReview(name: string): void {
   const scroller = document.querySelector('.tabs') as HTMLElement | null
   const tab = document.querySelector('.tab.on') as HTMLElement | null
@@ -252,7 +262,18 @@ export async function runTour(): Promise<void> {
     await sleep(2800)
     click('[data-a=settings]')
     await waitFor('[data-a=sec][data-id=general]')
+    const shellPick = document.querySelector('[data-set=defShell]') as HTMLSelectElement | null
+    const shellLabels = [...(shellPick?.options || [])].map((option) => option.text)
+    if (!shellLabels.includes('bash') || !shellLabels.includes('zsh')) throw new Error(`默认 Shell 选项应为 bash / zsh，实际 ${shellLabels.join(',')}`)
+    if (shellPick?.value !== 'bash') throw new Error(`默认 Shell 显示为 ${shellPick?.value}`)
+    const agentBtn = document.querySelector('[data-set=defAgent]')
+    if (!agentBtn?.textContent?.includes('仅 Shell')) throw new Error(`默认 Agent 应回退到仅 Shell，实际 ${agentBtn?.textContent}`)
     await shot('v4_30_set_general')
+    click('[data-set=defAgent]')
+    await waitFor('[data-set-opt][aria-disabled="true"]')
+    await shot('v4_30_set_general_agent_dropdown')
+    click('[data-set=defAgent]')
+    await sleep(120)
     click('[data-a=sec][data-id=look]')
     await shot('v4_30_set_look')
     click('[data-a=sec][data-id=agents]')
@@ -287,6 +308,7 @@ export async function runTour(): Promise<void> {
     click('[data-a=nt-ok]')
     await sleep(600)
     await shot('v4_12_term_corp')
+    assertExitOrder('v4_exit_banner')
     await shot('v4_exit_banner')
     click('[data-a=settings]')
     await waitFor('[data-a=sec][data-id=agents]')
@@ -315,6 +337,7 @@ export async function runTour(): Promise<void> {
     click('[data-a=back]')
     await waitFor('.center')
     await sleep(300)
+    assertExitOrder('v4_37_light_workspace')
     await shot('v4_37_light_workspace')
     const again = $('[data-a=diff]')
     if (again) {

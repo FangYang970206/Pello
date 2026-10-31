@@ -87,6 +87,89 @@ try {
   })
   if (light.theme !== 'light' || light.empty) fail(`浅色主题 buffer 异常 ${JSON.stringify(light)}`)
   else console.log('light buffer ok', light.sample)
+
+  const cycle = async (label, root) => {
+    const count = await page.evaluate((selector) => {
+      const node = document.querySelector(selector)
+      if (!node) return 0
+      return node.querySelectorAll('button, input, select, textarea, a[href]').length
+    }, root)
+    const steps = Math.max(count + 2, 8)
+    for (const key of ['Tab', 'Shift+Tab']) {
+      for (let i = 0; i < steps; i++) {
+        await page.keyboard.press(key)
+        const where = await page.evaluate((selector) => {
+          const box = document.querySelector(selector)
+          const el = document.activeElement
+          const inside = !!(box && el && box.contains(el))
+          return {
+            inside,
+            xterm: !!el?.closest?.('.xterm'),
+            work: !!el?.closest?.('#center, aside.side, aside.right'),
+            name: el?.getAttribute?.('aria-label') || el?.textContent?.trim()?.slice(0, 32) || el?.tagName || ''
+          }
+        }, root)
+        if (!where.inside || where.xterm || where.work) {
+          fail(`${label} ${key} 第 ${i + 1} 次焦点跑出弹窗 ${JSON.stringify(where)}`)
+          return false
+        }
+      }
+    }
+    console.log(`focus cycle ok ${label} (${steps} Tab + ${steps} Shift+Tab)`)
+    return true
+  }
+
+  const openClose = async (label, opener, open) => {
+    await open()
+    await page.waitForSelector('#modal .dlg')
+    const cycled = await cycle(label, '#modal .dlg')
+    await page.keyboard.press('Escape')
+    await page.waitForFunction(() => !document.querySelector('#modal .dlg'))
+    const back = await page.evaluate((selector) => {
+      const node = document.querySelector(selector)
+      const el = document.activeElement
+      return {
+        ok: !!node && el === node,
+        active: el?.getAttribute?.('aria-label') || el?.textContent?.trim()?.slice(0, 40) || el?.tagName || ''
+      }
+    }, opener)
+    if (!back.ok) fail(`${label} Esc 后焦点没有回到打开它的元素 ${JSON.stringify(back)}`)
+    else console.log(`focus return ok ${label}`)
+    return cycled && back.ok
+  }
+
+  await openClose('新建项目', '.side [data-a=newproj]', () => page.click('.side [data-a=newproj]'))
+  await openClose('新建终端', '.addtab[data-a=newterm]', () => page.click('.addtab[data-a=newterm]'))
+
+  await page.click('.pane:not([hidden]) .xterm')
+  await page.keyboard.type('sleep 30')
+  await page.keyboard.press('Enter')
+  await page.waitForFunction(() => {
+    const button = document.querySelector('[data-a=kill]')
+    return !!button && !button.hasAttribute('disabled')
+  })
+  await openClose('结束进程确认', '[data-a=kill]', () => page.click('[data-a=kill]'))
+
+  await page.click('[data-a=settings]')
+  await page.waitForSelector('.settings')
+  await cycle('设置页', '.settings')
+  await openClose('添加执行器', 'button[data-a=custom]', async () => {
+    await page.click('[data-a=sec][data-id=agents]')
+    await page.click('button[data-a=custom]')
+  })
+  await openClose('添加机器', 'button[data-a=host]', async () => {
+    await page.click('[data-a=sec][data-id=hosts]')
+    await page.click('button[data-a=host]')
+  })
+  await page.locator('.settings .back').focus()
+  await page.keyboard.press('Escape')
+  await page.waitForSelector('.settings', { state: 'detached' })
+  const settingsBack = await page.evaluate(() => {
+    const opener = document.querySelector('[data-a=settings]')
+    return { ok: document.activeElement === opener, active: document.activeElement?.textContent?.trim()?.slice(0, 24) || '' }
+  })
+  if (!settingsBack.ok) fail(`设置页 Esc 后焦点没有回到设置按钮 ${JSON.stringify(settingsBack)}`)
+  else console.log('focus return ok 设置页')
 } finally {
   await app.close()
 }

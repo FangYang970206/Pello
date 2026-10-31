@@ -4,10 +4,16 @@ const MARK = '\x1b]777;awb;prompt;'
 export class OscStrip {
   private pending = ''
 
-  push(chunk: string): { text: string; codes: number[] } {
+  push(chunk: string): { text: string; tail: string; codes: number[] } {
     this.pending += chunk
     let text = ''
+    let tail = ''
     const codes: number[] = []
+    const take = (value: string) => {
+      if (!value) return
+      if (codes.length) tail += value
+      else text += value
+    }
     while (this.pending.length) {
       const at = this.pending.indexOf(MARK)
       if (at === -1) {
@@ -16,15 +22,15 @@ export class OscStrip {
         // ESC[?2004h (bracketed paste) must pass through, or the prompt after
         // "Killed" stays buffered forever.
         if (esc >= 0 && MARK.startsWith(this.pending.slice(esc))) {
-          text += this.pending.slice(0, esc)
+          take(this.pending.slice(0, esc))
           this.pending = this.pending.slice(esc)
         } else {
-          text += this.pending
+          take(this.pending)
           this.pending = ''
         }
         break
       }
-      text += this.pending.slice(0, at)
+      take(this.pending.slice(0, at))
       const rest = this.pending.slice(at + MARK.length)
       const bel = rest.indexOf('\x07')
       const st = rest.indexOf('\x1b\\')
@@ -43,8 +49,13 @@ export class OscStrip {
       }
       const num = Number(rest.slice(0, end).trim())
       if (!Number.isNaN(num)) codes.push(num)
+      // A later marker means the previous "tail" was still command output.
+      if (codes.length > 1) {
+        text += tail
+        tail = ''
+      }
       this.pending = rest.slice(end + skip)
     }
-    return { text, codes }
+    return { text, tail, codes }
   }
 }

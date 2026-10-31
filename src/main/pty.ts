@@ -14,7 +14,8 @@ import {
   remoteBootstrap,
   resolveLocalShell,
   shellForHost,
-  sshArgs
+  sshArgs,
+  zshRc
 } from './platform'
 
 const execFileP = promisify(execFile)
@@ -76,14 +77,16 @@ async function killChildren(pid: number): Promise<boolean> {
   return true
 }
 
-function shellFiles(): { bash: string; pwsh: string } {
+function shellFiles(): { bash: string; pwsh: string; zsh: string } {
   const dir = path.join(app.getPath('userData'), 'shell')
   fs.mkdirSync(dir, { recursive: true })
   const bash = path.join(dir, 'bashrc.sh')
   const pwsh = path.join(dir, 'profile.ps1')
+  const zsh = path.join(dir, '.zshrc')
   fs.writeFileSync(bash, bashRc())
   fs.writeFileSync(pwsh, pwshProfile())
-  return { bash, pwsh }
+  fs.writeFileSync(zsh, zshRc())
+  return { bash, pwsh, zsh }
 }
 
 function agentCommand(kind: string): { command: string; env: EnvVar[] } {
@@ -147,8 +150,10 @@ class Session {
     this.osc = new OscStrip()
     let proc: pty.IPty
     if (!host || host.id === 'local') {
-      const spec = resolveLocalShell(this.shell, this.shell === 'pwsh' ? files.pwsh : files.bash)
+      const rc = this.shell === 'pwsh' ? files.pwsh : this.shell === 'zsh' ? files.zsh : files.bash
+      const spec = resolveLocalShell(this.shell, rc)
       this.shell = spec.shell
+      if (spec.env) Object.assign(this.env, spec.env)
       proc = pty.spawn(spec.file, spec.args, {
         name: 'xterm-256color',
         cols: 80,
@@ -324,23 +329,44 @@ class Session {
     this.apply(pending.state, pending.code, true, pending.reason)
   }
 
+  private emitData(data: string): void {
+    if (data) this.send({ type: 'data', id: this.id, data })
+  }
+
   private onData(chunk: string): void {
     const parsed = this.osc.push(chunk)
-    const marked = stripMarker(parsed.text)
-    if (marked.text) this.send({ type: 'data', id: this.id, data: marked.text })
-    const code = marked.code ?? (parsed.codes.length ? parsed.codes[parsed.codes.length - 1] : null)
+    const head = stripMarker(parsed.text).text
+    const tail = stripMarker(parsed.tail).text
+    const code = parsed.codes.length ? parsed.codes[parsed.codes.length - 1] : null
+    // Design exit() prints the exit line and only then the next prompt.
+    // The shell writes that prompt in the same chunk, after the marker.
+    const announceThenPrompt = (state: ProcState, exitCode: number, reason: PtyStateEvent['reason']) => {
+      this.phase = 'prompt'
+      this.emitData(head)
+      this.apply(state, exitCode, true, reason)
+      this.emitData(tail)
+    }
     if (this.phase === 'starting' && parsed.codes.length) {
+      this.emitData(head + tail)
       this.phase = 'armed'
       setTimeout(() => this.armLaunch(), 80)
       return
     }
-    if (this.phase === 'armed') return
-    if (code === null) return
+    if (this.phase === 'armed') {
+      this.emitData(head + tail)
+      return
+    }
+    if (code === null) {
+      this.emitData(head + tail)
+      return
+    }
     if (this.skipPrompt) {
+      this.emitData(head + tail)
       this.skipPrompt = false
       return
     }
     if (this.restartPending) {
+      this.emitData(head + tail)
       this.restartPending = false
       this.beginCommand()
       return
@@ -348,21 +374,23 @@ class Session {
     if (this.override) {
       const pending = this.override
       this.override = null
-      this.phase = 'prompt'
-      this.apply(pending.state, pending.code, true, pending.reason)
+      announceThenPrompt(pending.state, pending.code, pending.reason)
       return
     }
-    if (this.phase !== 'command') return
+    if (this.phase !== 'command') {
+      this.emitData(head + tail)
+      return
+    }
     if (this.kind === 'shell') {
       this.phase = 'prompt'
       this.state = 'idle'
       this.exitCode = null
       this.startedAt = null
       this.emit(false)
+      this.emitData(head + tail)
       return
     }
-    this.phase = 'prompt'
-    this.apply(code === 0 ? 'exited' : 'failed', code, true, 'exit')
+    announceThenPrompt(code === 0 ? 'exited' : 'failed', code, 'exit')
   }
 
   private apply(state: ProcState, code: number | null, announce: boolean, reason?: PtyStateEvent['reason']): void {

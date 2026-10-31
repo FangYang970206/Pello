@@ -1,6 +1,6 @@
-import type { ReactNode } from 'react'
-import type { Executor, Host, Plugin, Settings, SettingsSection } from '../shared/types'
-import { PRESETS, cmdline, hostLine, shellLabel } from '../shared/types'
+import { useEffect, useState, type ReactNode } from 'react'
+import type { Executor, Host, Plugin, Settings, SettingsSection, ShellKind } from '../shared/types'
+import { PRESETS, cmdline, hostLine, preferredAgent, shellChoices, shellLabel } from '../shared/types'
 import { Icon, type IconName, Mark } from './icons'
 
 const SECTIONS: { id: SettingsSection; label: string; icon: IconName }[] = [
@@ -70,11 +70,22 @@ export function SettingsView({
   onLocalHost: () => void
 }) {
   const title = SECTIONS.find((item) => item.id === section)?.label || ''
-  const installedAgents = [
-    ...PRESETS.filter((item) => installed[item.cmd]),
-    ...custom
+  const localPlatform = hosts.find((item) => item.id === 'local')?.platform || 'linux'
+  const shells = shellChoices(localPlatform)
+  const shellValue: ShellKind = shells.some((item) => item.id === settings.defShell) ? settings.defShell : shells[0].id
+  const agentChoices = [
+    ...PRESETS.map((item) => ({ id: item.id, name: item.name, installed: !!installed[item.cmd] })),
+    ...custom.map((item) => ({ id: item.id, name: item.name, installed: true })),
+    { id: 'shell', name: '仅 Shell', installed: true }
   ]
-  const agents = installedAgents.length ? installedAgents : PRESETS
+  const agentValue = preferredAgent(settings.defAgent, agentChoices)
+  const agentLabel = agentChoices.find((item) => item.id === agentValue)?.name || '仅 Shell'
+  const [agentOpen, setAgentOpen] = useState(false)
+  useEffect(() => {
+    const card = document.querySelector('[data-set=defAgent]')?.closest('.card')
+    card?.classList.toggle('menuopen', agentOpen)
+    return () => card?.classList.remove('menuopen')
+  }, [agentOpen])
   let body: ReactNode = null
   if (section === 'general') {
     body = (
@@ -86,9 +97,21 @@ export function SettingsView({
               title="默认 Shell"
               desc="新建终端时预选"
               control={
-                <select className="sel" aria-label="默认 Shell" value={settings.defShell} data-set="defShell" onChange={(e) => onSettings({ ...settings, defShell: e.target.value === 'cmd' ? 'cmd' : 'pwsh' })}>
-                  <option value="pwsh">PowerShell</option>
-                  <option value="cmd">CMD</option>
+                <select
+                  className="sel"
+                  aria-label="默认 Shell"
+                  value={shellValue}
+                  data-set="defShell"
+                  onChange={(e) => {
+                    const next = shells.find((item) => item.id === e.target.value)?.id || shells[0].id
+                    onSettings({ ...settings, defShell: next })
+                  }}
+                >
+                  {shells.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.label}
+                    </option>
+                  ))}
                 </select>
               }
             />
@@ -111,13 +134,38 @@ export function SettingsView({
               title="新项目的默认 Agent"
               desc="可在每个项目中单独修改"
               control={
-                <select className="sel" aria-label="默认 Agent" value={settings.defAgent} onChange={(e) => onSettings({ ...settings, defAgent: e.target.value })}>
-                  {(agents.length ? agents : PRESETS).map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.name}
-                    </option>
-                  ))}
-                </select>
+                <div className="agentpick">
+                  <button type="button" className="sel" aria-label="默认 Agent" aria-haspopup="listbox" aria-expanded={agentOpen} data-set="defAgent" onClick={() => setAgentOpen((open) => !open)}>
+                    {agentLabel}
+                  </button>
+                  {agentOpen ? (
+                    <div className="selmenu" role="listbox" aria-label="默认 Agent">
+                      {agentChoices.map((item) => {
+                        const off = !item.installed
+                        return (
+                          <button
+                            type="button"
+                            key={item.id}
+                            role="option"
+                            className={item.id === agentValue ? 'on' : ''}
+                            aria-selected={item.id === agentValue}
+                            aria-disabled={off || undefined}
+                            disabled={off}
+                            data-set-opt={item.id}
+                            onClick={() => {
+                              if (off) return
+                              onSettings({ ...settings, defAgent: item.id })
+                              setAgentOpen(false)
+                            }}
+                          >
+                            {item.name}
+                            {off ? '（未找到命令）' : ''}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  ) : null}
+                </div>
               }
             />
           </div>

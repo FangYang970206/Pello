@@ -1,6 +1,21 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
-import type { AgentInfo, Executor, Host, OsKind, PathCheck, Settings } from '../shared/types'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import type { AgentInfo, Executor, Host, OsKind, PathCheck, Settings, ShellKind } from '../shared/types'
 import { EXEC_COLORS, PRESETS, SHELL_AGENT, cmdline, hostLine, preferredAgent, shellLabel, uid } from '../shared/types'
+
+export const dialogOpener: { current: HTMLElement | null } = { current: null }
+
+export function focusableIn(root: ParentNode): HTMLElement[] {
+  const nodes = root.querySelectorAll<HTMLElement>('a[href], button, input, select, textarea, [tabindex]')
+  return [...nodes].filter((el) => {
+    if (el.hasAttribute('disabled')) return false
+    if (el.getAttribute('aria-disabled') === 'true') return false
+    if (el.tabIndex < 0) return false
+    if (el.closest('[aria-hidden="true"]') && el.closest('[aria-hidden="true"]') !== root) return false
+    const style = window.getComputedStyle(el)
+    if (style.display === 'none' || style.visibility === 'hidden') return false
+    return el.getClientRects().length > 0
+  })
+}
 import { Icon, Mark } from './icons'
 
 function invalidPath(platform: OsKind): string {
@@ -35,9 +50,38 @@ function Frame({
   footer: ReactNode
   onClose: () => void
 }) {
-  useEffect(() => {
-    const node = document.querySelector('#modal [data-autofocus], #modal input, #modal .btn.pri') as HTMLElement | null
-    node?.focus()
+  useLayoutEffect(() => {
+    const root = document.querySelector('#modal .dlg') as HTMLElement | null
+    if (!root) return
+    const opener = document.activeElement instanceof HTMLElement && !root.contains(document.activeElement) ? document.activeElement : null
+    const first = root.querySelector<HTMLElement>('[data-autofocus], input:not([disabled]), .btn.pri')
+    first?.focus()
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') return
+      const items = focusableIn(root)
+      if (!items.length) {
+        event.preventDefault()
+        event.stopPropagation()
+        root.focus()
+        return
+      }
+      const current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+      const index = current ? items.indexOf(current) : -1
+      const next = event.shiftKey ? (index <= 0 ? items.length - 1 : index - 1) : index === -1 || index >= items.length - 1 ? 0 : index + 1
+      event.preventDefault()
+      event.stopPropagation()
+      items[next].focus()
+    }
+    document.addEventListener('keydown', onKey, true)
+    return () => {
+      document.removeEventListener('keydown', onKey, true)
+      if (!opener?.isConnected) return
+      if (opener.closest('[inert]')) {
+        dialogOpener.current = opener
+        return
+      }
+      opener.focus()
+    }
   }, [])
   return (
     <div
@@ -399,7 +443,7 @@ export function NewProjectDialog({
   )
 }
 
-function shellOptions(platform: OsKind): { id: 'pwsh' | 'cmd' | 'bash'; label: string }[] {
+function shellOptions(platform: OsKind): { id: ShellKind; label: string }[] {
   if (platform === 'linux') return [{ id: 'bash', label: 'bash' }]
   return [
     { id: 'pwsh', label: 'PowerShell' },
@@ -426,10 +470,10 @@ export function NewTermDialog({
   host: Host
   cwd: string
   initialKind: string
-  initialShell: 'pwsh' | 'cmd' | 'bash'
+  initialShell: ShellKind
   agents: AgentInfo[]
   onClose: () => void
-  onOpen: (kind: string, shell: 'pwsh' | 'cmd' | 'bash') => void
+  onOpen: (kind: string, shell: ShellKind) => void
   onManage: () => void
 }) {
   const options = shellOptions(host.platform)
@@ -441,7 +485,7 @@ export function NewTermDialog({
     kindRef.current = id
     setKind(id)
   }
-  const pickShell = (id: 'pwsh' | 'cmd' | 'bash') => {
+  const pickShell = (id: ShellKind) => {
     shellRef.current = id
     setShell(id)
   }

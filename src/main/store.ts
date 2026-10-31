@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { app } from 'electron'
-import type { Database, Executor, Host, Plugin, Project, SavedTerm, Settings } from '../shared/types'
+import type { Database, Executor, Host, Plugin, Project, SavedTerm, Settings, ShellKind } from '../shared/types'
 import { DEFAULT_PLUGINS } from '../shared/types'
 import { hostPlatform, osLabel } from './platform'
 
@@ -25,7 +25,7 @@ export function defaultDatabase(): Database {
     settings: {
       theme: 'dark',
       fontSize: 13,
-      defShell: 'pwsh',
+      defShell: hostPlatform() === 'linux' ? 'bash' : 'pwsh',
       defAgent: 'claude',
       restore: true,
       confirmKill: true
@@ -42,6 +42,11 @@ function asBool(v: unknown, fallback: boolean): boolean {
   return typeof v === 'boolean' ? v : fallback
 }
 
+function asShell(value: unknown): ShellKind {
+  if (value === 'cmd' || value === 'pwsh' || value === 'bash' || value === 'zsh') return value
+  return hostPlatform() === 'linux' ? 'bash' : 'pwsh'
+}
+
 function sanitize(raw: Partial<Database> | null): Database {
   const base = defaultDatabase()
   if (!raw || typeof raw !== 'object') return base
@@ -49,7 +54,7 @@ function sanitize(raw: Partial<Database> | null): Database {
   base.settings = {
     theme: settings.theme === 'light' ? 'light' : 'dark',
     fontSize: [12, 13, 14, 15].includes(Number(settings.fontSize)) ? Number(settings.fontSize) : 13,
-    defShell: settings.defShell === 'cmd' ? 'cmd' : 'pwsh',
+    defShell: asShell(settings.defShell),
     defAgent: typeof settings.defAgent === 'string' && settings.defAgent ? settings.defAgent : 'claude',
     restore: asBool(settings.restore, true),
     confirmKill: asBool(settings.confirmKill, true)
@@ -102,7 +107,7 @@ function isProject(v: unknown): v is Project {
 
 function isSaved(v: unknown): v is SavedTerm {
   const s = v as SavedTerm
-  return !!s && typeof s.kind === 'string' && (s.shell === 'pwsh' || s.shell === 'cmd' || s.shell === 'bash')
+  return !!s && typeof s.kind === 'string' && (s.shell === 'pwsh' || s.shell === 'cmd' || s.shell === 'bash' || s.shell === 'zsh')
 }
 
 export function loadDb(): Database {

@@ -64,6 +64,7 @@ export interface ShellLaunch {
   args: string[]
   shell: ShellKind
   label: string
+  env?: Record<string, string>
 }
 
 function commandExistsSync(file: string): boolean {
@@ -100,7 +101,7 @@ export async function commandExists(cmd: string): Promise<boolean> {
   }
 }
 
-/** Resolve the real shell binary. On non-Windows the UI's PowerShell/CMD choice degrades to bash. */
+/** Resolve the real shell binary for this machine. Linux uses bash or zsh; Windows uses PowerShell or CMD. */
 export function resolveLocalShell(pref: ShellKind, rcFile: string): ShellLaunch {
   if (process.platform === 'win32') {
     if (pref === 'cmd') {
@@ -119,6 +120,15 @@ export function resolveLocalShell(pref: ShellKind, rcFile: string): ShellLaunch 
       label: 'PowerShell'
     }
   }
+  if (pref === 'zsh' && commandExistsSync('zsh')) {
+    return {
+      file: 'zsh',
+      args: ['-i'],
+      shell: 'zsh',
+      label: 'zsh',
+      env: { ZDOTDIR: path.dirname(rcFile) }
+    }
+  }
   return {
     file: fs.existsSync('/bin/bash') ? '/bin/bash' : 'bash',
     args: ['--noprofile', '--rcfile', rcFile, '-i'],
@@ -128,7 +138,7 @@ export function resolveLocalShell(pref: ShellKind, rcFile: string): ShellLaunch 
 }
 
 export function shellForHost(platform: OsKind, pref: ShellKind): ShellKind {
-  if (platform === 'linux') return 'bash'
+  if (platform === 'linux') return pref === 'zsh' ? 'zsh' : 'bash'
   return pref === 'cmd' ? 'cmd' : 'pwsh'
 }
 
@@ -142,6 +152,19 @@ __awb_prompt() {
 PROMPT_COMMAND=__awb_prompt
 if [ -n "$AWB_CWD" ] && [ -d "$AWB_CWD" ]; then
   cd "$AWB_CWD" || true
+fi
+`
+}
+
+export function zshRc(): string {
+  return `unset HISTFILE
+PS1='%d$ '
+precmd() {
+  local c=$?
+  printf '\\033]777;awb;prompt;%s\\007' "$c"
+}
+if [[ -n $AWB_CWD && -d $AWB_CWD ]]; then
+  cd -- $AWB_CWD || true
 fi
 `
 }
