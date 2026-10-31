@@ -236,6 +236,24 @@ export function shellLabel(shell: ShellKind): string {
   return 'PowerShell'
 }
 
+export function hostShellName(platform: OsKind): string {
+  return platform === 'linux' ? 'bash' : 'PowerShell'
+}
+
+export function hostLine(host: Host): string {
+  const shell = hostShellName(host.platform)
+  if (host.id === 'local') return `${host.os} · ${shell}`
+  const who = host.user ? `${host.user}@${host.name}` : host.name
+  return `${who} · SSH · ${shell}`
+}
+
+export function preferredAgent(preferred: string, list: { id: string; installed?: boolean }[]): string {
+  const hit = list.find((item) => item.id === preferred)
+  if (hit && hit.installed !== false) return hit.id
+  const first = list.find((item) => item.id !== 'shell' && item.installed !== false)
+  return first?.id || 'shell'
+}
+
 export function shellLetter(shell: ShellKind): string {
   return shell === 'cmd' ? 'C:' : '>_'
 }

@@ -49,7 +49,8 @@ export function DiffPane({
   rightOpen,
   onMode,
   onDiscard,
-  onToggleRight
+  onToggleRight,
+  untracked
 }: {
   diff: FileDiff | null
   mode: 'unified' | 'split'
@@ -57,6 +58,7 @@ export function DiffPane({
   onMode: (mode: 'unified' | 'split') => void
   onDiscard: () => void
   onToggleRight: () => void
+  untracked?: boolean
 }) {
   if (!diff) {
     return (
@@ -139,7 +141,7 @@ export function DiffPane({
         </div>
         <span className="vsep" />
         <button className="btn sm dangero" data-a="discard" onClick={onDiscard}>
-          放弃更改
+          {untracked ? '删除文件' : '放弃更改'}
         </button>
         {rightOpen ? null : (
           <button className="ib" data-a="right" aria-label="显示文件面板" onClick={onToggleRight}>
@@ -156,13 +158,17 @@ export function FilePane({
   path,
   text,
   binary,
-  missing
+  missing,
+  rightOpen,
+  onToggleRight
 }: {
   path: string
   text: string
   binary: boolean
   missing: boolean
   theme: ThemeName
+  rightOpen: boolean
+  onToggleRight: () => void
 }) {
   const lines = binary || missing ? [] : splitLines(text)
   return (
@@ -170,6 +176,11 @@ export function FilePane({
       <div className="diffbar">
         <Icon name="file" className="s" />
         <span className="path">{path}</span>
+        <span className="grow" />
+        <span className="tag">只读</span>
+        <button className="ib" data-a="right" aria-label={rightOpen ? '收起文件面板' : '显示文件面板'} title={rightOpen ? '收起文件面板' : '显示文件面板'} onClick={onToggleRight}>
+          <Icon name="panel" />
+        </button>
       </div>
       {binary || missing ? (
         <div className="empty">

@@ -44,6 +44,8 @@ async function until(check: () => boolean, timeout = 8000): Promise<void> {
   throw new Error('等待超时')
 }
 
+let step = 'start'
+
 export async function runTour(): Promise<void> {
   const errors: string[] = []
   try {
@@ -78,6 +80,12 @@ export async function runTour(): Promise<void> {
     await waitFor('.tab')
     await sleep(900)
     await shot('v4_05_first_term')
+
+    await addProject('query-service', '/tmp/awb-svc')
+    await addProject('framework', '/tmp/awb-fw')
+    clickText('[data-a=proj]', 'virtualgraph')
+    await waitFor('.tab')
+    await sleep(200)
 
     click('.addtab[data-a=newterm]')
     await waitFor('[data-a=ntk][data-id=opencode]')
@@ -138,6 +146,24 @@ export async function runTour(): Promise<void> {
     click('[data-a=split]')
     await sleep(700)
     await shot('v4_18_split')
+    const orderedPanes = () =>
+      [...document.querySelectorAll('.pane[data-a=pane]')]
+        .filter((node) => !node.hasAttribute('hidden'))
+        .sort((a, b) => Number((a as HTMLElement).style.order) - Number((b as HTMLElement).style.order))
+    const focusOnRight = () => orderedPanes()[1]?.classList.contains('focus') === true
+    const area = document.querySelector('.pane.focus .xterm-helper-textarea') as HTMLTextAreaElement | null
+    area?.focus()
+    area?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', altKey: true, bubbles: true, cancelable: true }))
+    await sleep(200)
+    if (!focusOnRight()) {
+      ;(orderedPanes()[1] as HTMLElement | undefined)?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    }
+    await until(focusOnRight, 4000)
+    await sleep(150)
+    await shot('v4_18_split_right')
+    const back = document.querySelector('.pane.focus .xterm-helper-textarea') as HTMLTextAreaElement | null
+    back?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', altKey: true, bubbles: true, cancelable: true }))
+    await sleep(200)
 
     click('[data-a=rmode][data-id=files]')
     await sleep(400)
@@ -147,10 +173,11 @@ export async function runTour(): Promise<void> {
       await sleep(80)
     }
     await shot('v4_19_files')
-    const readme = $('[data-a=preview]')
+    const readme = $('[data-a=preview][data-id="src/query/Executor.java"]') || $('[data-a=preview]')
     if (readme) {
       readme.click()
-      await sleep(400)
+      await until(() => !!document.querySelector('.tab.preview'))
+      await sleep(200)
       await shot('v4_19_preview')
     }
 
@@ -173,6 +200,21 @@ export async function runTour(): Promise<void> {
     click('[data-a=discard]')
     await waitFor('[data-a=confirm]')
     await shot('v4_23_discard_confirm')
+    click('[data-a=mclose]')
+    await sleep(200)
+
+    window.awb.ptyWrite(shellId, 'echo hello > notes-new.txt\r')
+    await until(() => !!document.querySelector('[data-a=diff][data-id="notes-new.txt"]'), 12000)
+    click('[data-a=diff][data-id="notes-new.txt"]')
+    await until(() => {
+      const path = document.querySelector('.diffbar .path')?.textContent || ''
+      const label = document.querySelector('[data-a=discard]')?.textContent || ''
+      return path.includes('notes-new.txt') && label.includes('删除文件')
+    }, 12000)
+    await sleep(120)
+    click('[data-a=discard]')
+    await waitFor('[data-a=confirm]')
+    await shot('v4_23_delete_untracked')
     click('[data-a=mclose]')
     await sleep(200)
 
@@ -224,6 +266,7 @@ export async function runTour(): Promise<void> {
     click('[data-a=nt-ok]')
     await sleep(600)
     await shot('v4_12_term_corp')
+    await shot('v4_exit_banner')
     click('[data-a=settings]')
     await waitFor('[data-a=sec][data-id=agents]')
 
@@ -271,14 +314,103 @@ export async function runTour(): Promise<void> {
     await shot('v4_41_light_focus')
     click('[data-a=mclose]')
 
+    step = 'min-width'
     await window.awb.winResize(1024, 700)
     await sleep(300)
     await shot('v4_min_width')
     await window.awb.winResize(1440, 900)
+    await sleep(200)
+    step = 'back-to-dark'
+    click('[data-a=settings]')
+    await waitFor('[data-a=sec][data-id=look]')
+    click('[data-a=sec][data-id=look]')
+    await waitFor('[data-a=theme][data-id=dark]')
+    click('[data-a=theme][data-id=dark]')
+    await sleep(200)
+    click('[data-a=back]')
+    await waitFor('.center')
+    await sleep(200)
+
+    step = 'focus-project'
+    clickText('[data-a=proj]', 'virtualgraph')
+    await sleep(200)
+    const corpTab = [...document.querySelectorAll('.tab')].find((node) => node.textContent?.includes('内部'))
+    const corpBtn = corpTab?.querySelector('[data-a=tab]') as HTMLElement | undefined
+    if (!corpBtn) throw new Error('没有内部 Agent 标签')
+    corpBtn.click()
+    await sleep(200)
+    if (document.querySelector('[data-a=split][aria-pressed="true"]')) {
+      click('[data-a=split]')
+      await sleep(200)
+      corpBtn.click()
+      await sleep(150)
+    }
+    await waitFor('.pstate.failed', 4000)
+    await sleep(250)
+    step = 'close-settled'
+    await closeExcept((tab) => !!tab.textContent?.includes('内部'))
+    step = 'states'
+    const exitedId = await openShell()
+    window.awb.ptyWrite(exitedId, 'exit 0\r')
+    await until(() => document.querySelector(`.tab [data-a=tab][data-id="${exitedId}"]`)?.getAttribute('data-state') === 'exited', 8000)
+    await openShell()
+    const runId = await openShell()
+    window.awb.ptyWrite(runId, "python3 -c 'import time; print(\"running\", flush=True); time.sleep(180)'\r")
+    await waitFor('.pstate.running', 8000)
+    await sleep(400)
+    await shot('v4_10_states')
+    for (let i = 0; i < 6; i++) {
+      click('.addtab[data-a=newterm]')
+      await waitFor('[data-a=nt-ok]')
+      click('[data-a=ntk][data-id=shell]')
+      await sleep(60)
+      click('[data-a=nt-ok]')
+      await sleep(250)
+    }
+    const first = document.querySelector('.tab [data-a=tab]') as HTMLElement | null
+    first?.click()
+    await sleep(250)
+    await shot('v4_10_overflow')
+    const menu = $('[data-a=tabs-menu]')
+    if (menu) {
+      menu.click()
+      await sleep(200)
+      await shot('v4_10_tabmenu')
+      menu.click()
+    }
+    const runningTab = [...document.querySelectorAll('.tab')].find((node) => node.querySelector('[data-state="running"]'))
+    const runningButton = runningTab?.querySelector('[data-a=tab]') as HTMLElement | undefined
+    runningButton?.click()
+    await waitFor('.pstate.running', 4000)
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'w', ctrlKey: true, bubbles: true }))
+    await waitFor('[data-a=confirm]')
+    await shot('v4_ctrlw_confirm')
+    click('[data-a=mclose]')
+    await sleep(150)
+
+    const hovered = [...document.querySelectorAll('[data-a=proj]')].find((node) => node.querySelector('.live')) || document.querySelector('[data-a=proj]')
+    const hoverStyle = document.createElement('style')
+    hoverStyle.textContent = `[data-a=proj][data-id="${hovered?.getAttribute('data-id') || ''}"] .more{display:grid}[data-a=proj][data-id="${hovered?.getAttribute('data-id') || ''}"] .live{visibility:hidden}`
+    document.head.appendChild(hoverStyle)
+    await shot('v4_proj_hover')
+    hoverStyle.remove()
+    const runningProj = [...document.querySelectorAll('[data-a=proj]')].find((node) => node.querySelector('.live')) || document.querySelector('[data-a=proj]')
+    const runningMore = runningProj?.querySelector('[data-a=proj-more]') as HTMLElement | undefined
+    runningMore?.click()
+    await waitFor('[data-a=proj-remove]')
+    click('[data-a=proj-remove]')
+    await waitFor('[data-a=confirm]')
+    await shot('v4_proj_remove')
+    click('[data-a=mclose]')
   } catch (err) {
-    console.error('tour failed', err)
-    errors.push(err instanceof Error ? err.stack || err.message : String(err))
+    console.error('tour failed', step, err)
+    const message = err instanceof Error ? err.stack || err.message : String(err)
+    errors.push(`${step}: ${message}`)
     try {
+      const banner = document.createElement('pre')
+      banner.textContent = `${step}\n${message}`
+      banner.style.cssText = 'position:fixed;z-index:100;left:16px;top:48px;max-width:980px;background:#3a1010;color:#fff;padding:12px 14px;font:12px/1.45 ui-monospace,monospace;white-space:pre-wrap'
+      document.body.appendChild(banner)
       await shot('v4_tour_error')
     } catch {
       /* ignore */
@@ -287,6 +419,52 @@ export async function runTour(): Promise<void> {
   console.log('TOUR_DONE', JSON.stringify(errors))
   await sleep(200)
   await window.awb.winClose()
+}
+
+function clickText(selector: string, text: string): void {
+  const node = [...document.querySelectorAll(selector)].find((item) => item.textContent?.includes(text)) as HTMLElement | undefined
+  if (!node) throw new Error(`找不到 ${text}`)
+  node.click()
+}
+
+async function addProject(name: string, dir: string): Promise<void> {
+  click('.side [data-a=newproj]')
+  await waitFor('[data-np=name]')
+  fill('[data-np=name]', name)
+  fill('[data-np=path]', dir)
+  await until(() => !!document.querySelector('#pchk small.ok, #pchk small'))
+  await sleep(200)
+  const create = await waitFor('[data-a=np-ok]')
+  if ((create as HTMLButtonElement).disabled) throw new Error(`无法创建 ${name}`)
+  create.click()
+  await until(() => !!document.querySelector(`[data-a=proj]`) && document.body.textContent?.includes(name))
+  await sleep(250)
+}
+
+async function closeExcept(keep: (tab: Element) => boolean): Promise<void> {
+  for (let i = 0; i < 24; i++) {
+    const button = [...document.querySelectorAll('.tab [data-a=close]')].find((node) => {
+      const tab = node.closest('.tab')
+      if (!tab || keep(tab)) return false
+      const state = tab.querySelector('[data-state]')?.getAttribute('data-state')
+      return state !== 'running'
+    }) as HTMLElement | undefined
+    if (!button) return
+    button.click()
+    await sleep(80)
+  }
+}
+
+async function openShell(): Promise<string> {
+  click('.addtab[data-a=newterm]')
+  await waitFor('[data-a=ntk][data-id=shell]')
+  click('[data-a=ntk][data-id=shell]')
+  await sleep(60)
+  click('[data-a=nt-ok]')
+  await waitFor('.tab.on [data-a=tab]')
+  await waitFor('.pstate.idle, .pstate.running', 8000)
+  await sleep(150)
+  return (document.querySelector('.tab.on [data-a=tab]') as HTMLElement | null)?.dataset.id || ''
 }
 
 function fillInput(node: HTMLInputElement, value: string): void {

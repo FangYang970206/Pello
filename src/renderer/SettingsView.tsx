@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import type { Executor, Host, Plugin, Settings, SettingsSection } from '../shared/types'
-import { PRESETS, cmdline, shellLabel } from '../shared/types'
+import { PRESETS, cmdline, hostLine, shellLabel } from '../shared/types'
 import { Icon, type IconName, Mark } from './icons'
 
 const SECTIONS: { id: SettingsSection; label: string; icon: IconName }[] = [
@@ -16,7 +16,7 @@ const LEADS: Record<SettingsSection, string> = {
   general: '终端与项目的默认行为',
   look: '主题与终端字体',
   agents: '在终端里启动的 Code Agent CLI',
-  hosts: '项目可以运行在本机或远程 Windows 机器上',
+  hosts: '项目可以运行在本机或通过 SSH 连接的远程机器上',
   plugins: '为 Agent 提供的外部工具',
   keys: '键盘快捷键'
 }
@@ -263,18 +263,7 @@ export function SettingsView({
                 </span>
                 <div className="lt">
                   <b>{host.name}</b>
-                  <small>
-                    {host.id === 'local' ? (
-                      host.os
-                    ) : (
-                      <>
-                        <span className="mono">
-                          {host.user}@{host.addr}
-                        </span>{' '}
-                        · SSH
-                      </>
-                    )}
-                  </small>
+                  <small>{hostLine(host)}</small>
                 </div>
                 <span className="tag">
                   <span className={`dot ${host.on ? 'running' : 'exited'}`} />
@@ -285,7 +274,7 @@ export function SettingsView({
             ))}
           </div>
         </div>
-        <p style={{ fontSize: 12, color: 'var(--faint)' }}>远程终端通过 SSH 启动 PowerShell；项目创建时选择机器。</p>
+        <p style={{ fontSize: 12, color: 'var(--faint)' }}>远程终端通过 SSH 连接，使用目标机器的默认 Shell（Windows：PowerShell，Linux / macOS：bash 或 zsh）。</p>
       </>
     )
   }
@@ -320,9 +309,11 @@ export function SettingsView({
     const rows: [string, string][] = [
       ['新建项目', 'Ctrl N'],
       ['新建终端', 'Ctrl T'],
-      ['关闭标签', 'Ctrl W'],
+      ['关闭标签（运行中的进程会先确认）', 'Ctrl W'],
       ['切换文件面板', 'Ctrl B'],
-      ['打开设置', 'Ctrl ,']
+      ['打开设置', 'Ctrl ,'],
+      ['分屏焦点移到左侧', 'Alt ←'],
+      ['分屏焦点移到右侧', 'Alt →']
     ]
     body = (
       <>

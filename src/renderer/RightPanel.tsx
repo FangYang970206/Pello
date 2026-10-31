@@ -55,7 +55,7 @@ export function RightPanel({
       return (
         <button
           key={node.path}
-          className="row"
+          className={`row ${activePath === node.path ? 'on' : ''}`}
           style={{ paddingLeft: 26 + depth * 14 }}
           data-a={change ? 'diff' : 'preview'}
           data-id={node.path}

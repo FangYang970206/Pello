@@ -260,9 +260,18 @@ class Session {
     const now = Date.now()
     if (this.state === 'running' && this.lastC && now - this.lastC < 4000) {
       this.lastC = 0
-      this.override = { state: 'exited', code: 0, reason: 'ctrlc' }
       const killed = await killChildren(this.proc.pid)
       if (!killed) this.proc.write('\x03')
+      if (this.kind === 'shell') {
+        this.phase = 'prompt'
+        this.state = 'idle'
+        this.exitCode = null
+        this.startedAt = null
+        this.exitAnnounced = false
+        this.emit(false)
+        return 'exit'
+      }
+      this.override = { state: 'exited', code: 0, reason: 'ctrlc' }
       setTimeout(() => this.flushOverride(), 350)
       return 'exit'
     }

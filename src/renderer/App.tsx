@@ -6,7 +6,7 @@ import { paint, writeTerm } from './terms'
 import { SettingsView } from './SettingsView'
 import { ConfirmDialog, ExecDialog, HostDialog, NewProjectDialog, NewTermDialog } from './Dialogs'
 import { RightPanel } from './RightPanel'
-import { Workspace, type Tab, type TermTab } from './Workspace'
+import { Workspace, type SplitPair, type Tab, type TermTab } from './Workspace'
 
 type Modal =
   | { type: 'project' }
@@ -31,7 +31,8 @@ export function App() {
   const [projectId, setProjectId] = useState<string | null>(null)
   const [tabs, setTabs] = useState<Tab[]>([])
   const [activeMap, setActiveMap] = useState<Record<string, string | undefined>>({})
-  const [split, setSplit] = useState<Record<string, boolean>>({})
+  const [split, setSplit] = useState<Record<string, SplitPair | undefined>>({})
+  const [menuId, setMenuId] = useState<string | null>(null)
   const [right, setRight] = useState(true)
   const [rmode, setRmode] = useState<'files' | 'changes'>('changes')
   const [dmode, setDmode] = useState<'unified' | 'split'>('unified')
@@ -67,6 +68,17 @@ export function App() {
     document.documentElement.style.setProperty('--fs', `${db.settings.fontSize}px`)
   }, [db])
 
+  useEffect(() => {
+    if (!menuId) return
+    const close = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null
+      if (target?.closest('.pmenu, .more')) return
+      setMenuId(null)
+    }
+    window.addEventListener('mousedown', close)
+    return () => window.removeEventListener('mousedown', close)
+  }, [menuId])
+
   const project = db?.projects.find((item) => item.id === projectId) || null
   const host = db?.hosts.find((item) => item.id === project?.host) || db?.hosts[0]
   const theme: ThemeName = db?.settings.theme || 'dark'
@@ -95,10 +107,7 @@ export function App() {
       startedAt: kind === 'shell' ? null : Date.now(),
       exitCode: null
     }
-    setTabs((list) => {
-      const next = [...list, tab]
-      return next
-    })
+    setTabs((list) => [...list, tab])
     if (activate) setActiveMap((map) => ({ ...map, [target.id]: id }))
     try {
       const info = await window.awb.ptyCreate({ id, projectId: target.id, kind, shell })
@@ -111,9 +120,11 @@ export function App() {
         persist(next)
         return next
       })
+      return id
     } catch (err) {
       setTabs((list) => list.filter((item) => item.id !== id))
       toast(err instanceof Error ? err.message : '无法启动终端', true)
+      return null
     }
   }, [persist, toast])
 
@@ -218,30 +229,90 @@ export function App() {
 
   function closeTab(id: string) {
     const tab = tabs.find((item) => item.id === id)
-    if (!tab || !project) return
+    if (!tab) return
     if (tab.type === 'term') window.awb.ptyClose(id)
     const next = tabs.filter((item) => item.id !== id)
     setTabs(next)
     persist(next)
+    const pair = split[tab.projectId]
+    if (pair && (pair.left === id || pair.right === id)) {
+      const keep = pair.left === id ? pair.right : pair.left
+      setSplit((map) => ({ ...map, [tab.projectId]: undefined }))
+      setActiveMap((map) => ({ ...map, [tab.projectId]: keep }))
+      return
+    }
     if (activeMap[tab.projectId] === id) {
       const rest = next.filter((item) => item.projectId === tab.projectId)
       setActiveMap((map) => ({ ...map, [tab.projectId]: rest[rest.length - 1]?.id }))
     }
   }
 
+  function requestClose(id: string) {
+    const tab = tabs.find((item) => item.id === id)
+    if (!tab || !db) return
+    if (tab.type !== 'term' || tab.state !== 'running') {
+      closeTab(id)
+      return
+    }
+    const agent = resolveAgent(tab.kind, db.custom, installed)
+    setModal({
+      type: 'confirm',
+      title: '结束进程？',
+      ok: '结束进程',
+      body: (
+        <>
+          将强制结束 <b>{agent.name}</b>（<span className="mono">{cmdline(agent) || shellLabel(tab.shell)}</span>）。CLI 未保存的会话会丢失，已写入磁盘的文件不受影响。
+        </>
+      ),
+      run: () => {
+        setModal(null)
+        closeTab(id)
+      }
+    })
+  }
+
   function selectProject(id: string) {
     setProjectId(id)
     setRoute('work')
     setModal(null)
+    setMenuId(null)
   }
 
   async function toggleSplit() {
     if (!project || !db || !host) return
-    const on = !split[project.id]
-    setSplit((map) => ({ ...map, [project.id]: on }))
-    if (on && tabs.filter((tab) => tab.type === 'term' && tab.projectId === project.id).length < 2) {
-      await openTerm(project, 'shell', shellFor(host, db.settings.defShell), false)
+    if (split[project.id]) {
+      setSplit((map) => ({ ...map, [project.id]: undefined }))
+      return
     }
+    const terms = tabs.filter((tab): tab is TermTab => tab.type === 'term' && tab.projectId === project.id)
+    let left: string | undefined = active?.type === 'term' ? active.id : terms[0]?.id
+    if (!left) left = (await openTerm(project, 'shell', shellFor(host, db.settings.defShell), true)) || undefined
+    if (!left) return
+    let right: string | undefined = terms.find((tab) => tab.id !== left)?.id
+    if (!right) right = (await openTerm(project, 'shell', shellFor(host, db.settings.defShell), false)) || undefined
+    if (!right) return
+    const pair = { left, right }
+    setSplit((map) => ({ ...map, [project.id]: pair }))
+    setActiveMap((map) => ({ ...map, [project.id]: pair.left }))
+  }
+
+  function selectTab(id: string) {
+    if (!project) return
+    setActiveMap((map) => ({ ...map, [project.id]: id }))
+    const pair = split[project.id]
+    if (!pair) return
+    if (id === pair.left || id === pair.right) return
+    const tab = tabs.find((item) => item.id === id)
+    if (!tab || tab.type !== 'term') return
+    const side = active?.id === pair.right ? 'right' : 'left'
+    setSplit((map) => ({ ...map, [project.id]: { ...pair, [side]: id } }))
+  }
+
+  function focusSplit(dir: 'left' | 'right') {
+    if (!project) return
+    const pair = split[project.id]
+    if (!pair) return
+    setActiveMap((map) => ({ ...map, [project.id]: pair[dir] }))
   }
 
   function askKill() {
@@ -271,11 +342,16 @@ export function App() {
   function askDiscard() {
     if (!project || active?.type !== 'diff') return
     const rel = active.path
+    const untracked = !!git?.untracked[rel]
     setModal({
       type: 'confirm',
-      title: '放弃更改？',
-      ok: '放弃更改',
-      body: (
+      title: untracked ? '删除新文件？' : '放弃更改？',
+      ok: untracked ? '删除文件' : '放弃更改',
+      body: untracked ? (
+        <>
+          <span className="mono">{rel}</span> 尚未被 Git 跟踪，将从磁盘删除（git clean -f），无法撤销。
+        </>
+      ) : (
         <>
           <span className="mono">{rel}</span> 的工作区修改将被还原（git restore），无法撤销。
         </>
@@ -294,7 +370,7 @@ export function App() {
               return next
             })
             setGitTick((n) => n + 1)
-            toast('已放弃更改')
+            toast(untracked ? '已删除文件' : '已放弃更改')
           })
           .catch((err) => toast(err instanceof Error ? err.message : '放弃失败', true))
       }
@@ -316,7 +392,7 @@ export function App() {
 
   function openFile(rel: string) {
     if (!project) return
-    const existing = tabs.find((tab) => tab.type === 'file' && tab.projectId === project.id)
+    const existing = tabs.find((tab) => tab.type === 'file' && tab.projectId === project.id && !tab.pinned)
     if (existing && existing.type === 'file') {
       setTabs((list) => list.map((tab) => (tab.id === existing.id && tab.type === 'file' ? { ...tab, path: rel } : tab)))
       setActiveMap((map) => ({ ...map, [project.id]: existing.id }))
@@ -324,8 +400,47 @@ export function App() {
       return
     }
     const id = uid('f')
-    setTabs((list) => [...list, { id, type: 'file', projectId: project.id, path: rel }])
+    setTabs((list) => [...list, { id, type: 'file', projectId: project.id, path: rel, pinned: false }])
     setActiveMap((map) => ({ ...map, [project.id]: id }))
+  }
+
+  function pinFile(id: string) {
+    setTabs((list) => list.map((tab) => (tab.id === id && tab.type === 'file' ? { ...tab, pinned: true } : tab)))
+  }
+
+  function askRemove(id: string) {
+    if (!db) return
+    const item = db.projects.find((projectItem) => projectItem.id === id)
+    if (!item) return
+    const itemHost = db.hosts.find((hostItem) => hostItem.id === item.host) || db.hosts[0]
+    const running = tabs.filter((tab) => tab.projectId === id && tab.type === 'term' && tab.state === 'running').length
+    setMenuId(null)
+    setModal({
+      type: 'confirm',
+      title: '移除项目？',
+      ok: '移除',
+      body: (
+        <>
+          将从列表中移除 {item.name}，并关闭它的所有终端。{itemHost?.name || '本机'} 上的目录 <span className="mono">{item.path}</span> 及其中的文件不会被删除。
+          {running ? <> 有 {running} 个正在运行的进程会被结束。</> : null}
+        </>
+      ),
+      run: () => {
+        for (const tab of tabs) {
+          if (tab.projectId === id && tab.type === 'term') window.awb.ptyClose(tab.id)
+        }
+        const projects = db.projects.filter((projectItem) => projectItem.id !== id)
+        const nextTabs = tabs.filter((tab) => tab.projectId !== id)
+        setTabs(nextTabs)
+        setDb({ ...db, projects })
+        setSplit((map) => ({ ...map, [id]: undefined }))
+        if (projectId === id) setProjectId(projects[0]?.id ?? null)
+        setModal(null)
+        void window.awb.saveProjects(projects)
+        void window.awb.saveSessions(id, [])
+        toast(`已移除 ${item.name}`)
+      }
+    })
   }
 
   function onAppKey(key: string) {
@@ -336,12 +451,14 @@ export function App() {
       else setModal({ type: 'term' })
     } else if (key === ',') setRoute('settings')
     else if (key === 'b') setRight((value) => !value)
-    else if (key === 'w' && active) closeTab(active.id)
+    else if (key === 'w' && active) requestClose(active.id)
+    else if (key === 'alt-left') focusSplit('left')
+    else if (key === 'alt-right') focusSplit('right')
   }
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null
+      const target = event.target instanceof Element ? event.target : null
       const field = !!target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT')
       const inTerm = !!target?.closest('.xterm')
       if (event.key === 'Escape') {
@@ -349,10 +466,20 @@ export function App() {
           setModal(null)
           return
         }
+        if (menuId) {
+          setMenuId(null)
+          return
+        }
         if (!field && route === 'settings') {
           setRoute('work')
           return
         }
+      }
+      if (event.altKey && !event.ctrlKey && !event.metaKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+        if (field || inTerm || modalRef.current) return
+        event.preventDefault()
+        onAppKey(event.key === 'ArrowLeft' ? 'alt-left' : 'alt-right')
+        return
       }
       if (field || inTerm || modalRef.current) return
       if (!event.ctrlKey || event.altKey || event.metaKey) return
@@ -439,8 +566,20 @@ export function App() {
                       const itemHost = db.hosts.find((hostItem) => hostItem.id === item.host) || db.hosts[0]
                       const live = tabs.some((tab) => tab.projectId === item.id && tab.type === 'term' && tab.state === 'running')
                       const on = projectId === item.id && route === 'work'
+                      const open = menuId === item.id
                       return (
-                        <button key={item.id} className={`proj ${on ? 'on' : ''}`} data-a="proj" data-id={item.id} aria-current={on ? 'true' : undefined} onClick={() => selectProject(item.id)}>
+                        <div
+                          key={item.id}
+                          className={`proj ${on ? 'on' : ''} ${open ? 'menu' : ''}`}
+                          data-a="proj"
+                          data-id={item.id}
+                          aria-current={on ? 'true' : undefined}
+                          onClick={() => selectProject(item.id)}
+                          onContextMenu={(event) => {
+                            event.preventDefault()
+                            setMenuId(item.id)
+                          }}
+                        >
                           <span className="pi">{item.name[0]?.toUpperCase()}</span>
                           <span className="grow">
                             <span className="n" style={{ display: 'block' }}>
@@ -452,7 +591,33 @@ export function App() {
                             </span>
                           </span>
                           {live ? <span className="live" title="有终端在运行" aria-label="有终端在运行" /> : null}
-                        </button>
+                          <button
+                            className="more"
+                            data-a="proj-more"
+                            data-id={item.id}
+                            aria-label={`项目菜单 ${item.name}`}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              setMenuId(open ? null : item.id)
+                            }}
+                          >
+                            ⋯
+                          </button>
+                          {open ? (
+                            <div className="pmenu" role="menu">
+                              <button
+                                data-a="proj-remove"
+                                role="menuitem"
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  askRemove(item.id)
+                                }}
+                              >
+                                移除项目
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
                       )
                     })
                   ) : (
@@ -472,7 +637,7 @@ export function App() {
                   project={project}
                   tabs={tabs}
                   active={active}
-                  split={!!(project && split[project.id])}
+                  split={project ? split[project.id] || null : null}
                   rightOpen={right}
                   dmode={dmode}
                   theme={theme}
@@ -481,8 +646,8 @@ export function App() {
                   installed={installed}
                   diff={diff}
                   preview={preview}
-                  onSelect={(id) => project && setActiveMap((map) => ({ ...map, [project.id]: id }))}
-                  onClose={closeTab}
+                  onSelect={selectTab}
+                  onClose={requestClose}
                   onNewTerm={() => (project ? setModal({ type: 'term' }) : setModal({ type: 'project' }))}
                   onNewProject={() => setModal({ type: 'project' })}
                   onQuick={() => {
@@ -506,6 +671,8 @@ export function App() {
                   onDmode={setDmode}
                   onDiscard={askDiscard}
                   onAppKey={onAppKey}
+                  onPinFile={pinFile}
+                  untracked={!!(active && active.type === 'diff' && git?.untracked[active.path])}
                 />
                 {withRight && project && host ? (
                   <RightPanel

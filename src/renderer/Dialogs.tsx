@@ -1,6 +1,6 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { AgentInfo, Executor, Host, OsKind, PathCheck, Settings } from '../shared/types'
-import { EXEC_COLORS, PRESETS, SHELL_AGENT, cmdline, shellLabel, uid } from '../shared/types'
+import { EXEC_COLORS, PRESETS, SHELL_AGENT, cmdline, hostLine, preferredAgent, shellLabel, uid } from '../shared/types'
 import { Icon, Mark } from './icons'
 
 function invalidPath(platform: OsKind): string {
@@ -19,6 +19,7 @@ function baseName(value: string): string {
 function Frame({
   title,
   sub,
+  subClass,
   wide,
   small,
   children,
@@ -27,6 +28,7 @@ function Frame({
 }: {
   title: string
   sub?: ReactNode
+  subClass?: string
   wide?: boolean
   small?: boolean
   children: ReactNode
@@ -52,7 +54,7 @@ function Frame({
             <Icon name="x" />
           </button>
         </header>
-        {sub ? <p className="sub">{sub}</p> : null}
+        {sub ? <p className={`sub ${subClass || ''}`}>{sub}</p> : null}
         <div className="bdy">{children}</div>
         <footer>{footer}</footer>
       </div>
@@ -105,7 +107,12 @@ export function NewProjectDialog({
   const [name, setName] = useState('')
   const [hostId, setHostId] = useState('local')
   const [dir, setDir] = useState('')
-  const [agent, setAgent] = useState(settings.defAgent)
+  const agents = [
+    ...PRESETS.map((item) => ({ id: item.id, name: item.name, installed: !!installed[item.cmd] })),
+    ...custom.map((item) => ({ id: item.id, name: item.name, installed: true })),
+    { id: 'shell', name: '仅 Shell', installed: true }
+  ]
+  const [agent, setAgent] = useState(() => preferredAgent(settings.defAgent, agents))
   const [adding, setAdding] = useState(false)
   const [hostName, setHostName] = useState('')
   const [hostAddr, setHostAddr] = useState('')
@@ -133,11 +140,7 @@ export function NewProjectDialog({
   }, [dir, host.id])
 
   const ok = !!name.trim() && (check.kind === 'git' || check.kind === 'plain')
-  const agents = [
-    ...PRESETS.map((item) => ({ id: item.id, name: item.name, installed: !!installed[item.cmd] })),
-    ...custom.map((item) => ({ id: item.id, name: item.name, installed: true })),
-    { id: 'shell', name: '仅 Shell', installed: true }
-  ]
+  const noneInstalled = agents.every((item) => item.id === 'shell' || !item.installed)
 
   return (
     <Frame
@@ -188,15 +191,7 @@ export function NewProjectDialog({
               </span>
               <span className="grow">
                 <b>{item.name}</b>
-                <small>
-                  {item.id === 'local' ? (
-                    item.os
-                  ) : (
-                    <>
-                      <span className="mono">{item.addr}</span> · SSH
-                    </>
-                  )}
-                </small>
+                <small>{hostLine(item)}</small>
               </span>
               {item.on ? null : (
                 <>
@@ -368,7 +363,7 @@ export function NewProjectDialog({
             </option>
           ))}
         </select>
-        <small>新建终端时预选，可随时更换。</small>
+        {noneInstalled ? <small>未检测到已安装的 Agent CLI，可在 设置 › 执行器 中添加</small> : <small>新建终端时预选，可随时更换。</small>}
       </label>
     </Frame>
   )
@@ -408,27 +403,42 @@ export function NewTermDialog({
   onManage: () => void
 }) {
   const options = shellOptions(host.platform)
-  const [kind, setKind] = useState(initialKind)
+  const [kind, setKind] = useState(() => preferredAgent(initialKind, agents))
   const [shell, setShell] = useState(options.some((item) => item.id === initialShell) ? initialShell : options[0].id)
+  const kindRef = useRef(kind)
+  const shellRef = useRef(shell)
+  const pickKind = (id: string) => {
+    kindRef.current = id
+    setKind(id)
+  }
+  const pickShell = (id: 'pwsh' | 'cmd' | 'bash') => {
+    shellRef.current = id
+    setShell(id)
+  }
   const agent = agents.find((item) => item.id === kind) || SHELL_AGENT
+  const open = () => onOpen(kindRef.current, shellRef.current)
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Enter' && (event.target as HTMLElement).tagName !== 'BUTTON') {
         event.preventDefault()
-        onOpen(kind, shell)
+        open()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [kind, shell, onOpen])
+  })
   return (
     <Frame
       title="新建终端"
       wide
       onClose={onClose}
+      subClass="subline"
       sub={
         <>
-          <Icon name={host.id === 'local' ? 'laptop' : 'server'} className="s" /> {host.name} · <span className="mono">{cwd}</span>
+          <Icon name={host.id === 'local' ? 'laptop' : 'server'} className="s" />
+          <span className="grow">
+            {host.name} · <span className="mono">{cwd}</span>
+          </span>
         </>
       }
       footer={
@@ -440,9 +450,9 @@ export function NewTermDialog({
           <button className="btn ghost" data-a="mclose" onClick={onClose}>
             取消
           </button>
-          <button className="btn pri" data-a="nt-ok" onClick={() => onOpen(kind, shell)}>
+          <button className="btn pri" data-a="nt-ok" onClick={open}>
             打开
-            <kbd style={{ borderColor: 'rgba(0,0,0,.2)', color: 'inherit', opacity: 0.7 }}>Enter</kbd>
+            <kbd className="enter">Enter</kbd>
           </button>
         </>
       }
@@ -457,7 +467,7 @@ export function NewTermDialog({
             data-a="ntk"
             data-id={item.id}
             data-autofocus={kind === item.id ? true : undefined}
-            onClick={() => setKind(item.id)}
+            onClick={() => pickKind(item.id)}
           >
             <Mark letter={item.id === 'shell' ? '>_ ' .trim() : item.letter} color={item.color} size="md" />
             <span style={{ minWidth: 0 }}>
@@ -467,19 +477,23 @@ export function NewTermDialog({
           </button>
         ))}
       </div>
-      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 16, marginTop: 16 }}>
-        <div className="fld" style={{ margin: 0 }}>
-          <span>Shell</span>
-          <div className="seg" role="radiogroup" aria-label="Shell">
-            {options.map((item) => (
-              <button key={item.id} className={shell === item.id ? 'on' : ''} role="radio" aria-checked={shell === item.id} data-a="nts" data-id={item.id} onClick={() => setShell(item.id)}>
-                {item.label}
-              </button>
-            ))}
+      {options.length < 2 ? (
+        <div className="shellone">Shell：{options[0]?.label || 'bash'}</div>
+      ) : (
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 16, marginTop: 16 }}>
+          <div className="fld" style={{ margin: 0 }}>
+            <span>Shell</span>
+            <div className="seg" role="radiogroup" aria-label="Shell">
+              {options.map((item) => (
+                <button key={item.id} className={shell === item.id ? 'on' : ''} role="radio" aria-checked={shell === item.id} data-a="nts" data-id={item.id} onClick={() => pickShell(item.id)}>
+                  {item.label}
+                </button>
+              ))}
+            </div>
           </div>
+          <span className="grow" />
         </div>
-        <span className="grow" />
-      </div>
+      )}
       <div className="fld" style={{ margin: '16px 0 0' }}>
         <span>将执行</span>
         <div className="cmdpv">

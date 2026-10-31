@@ -16,8 +16,9 @@ export type TermTab = {
   exitCode: number | null
 }
 export type DiffTab = { id: string; type: 'diff'; projectId: string; path: string }
-export type FileTab = { id: string; type: 'file'; projectId: string; path: string }
+export type FileTab = { id: string; type: 'file'; projectId: string; path: string; pinned?: boolean }
 export type Tab = TermTab | DiffTab | FileTab
+export type SplitPair = { left: string; right: string }
 
 function Elapsed({ start }: { start: number }) {
   const [now, setNow] = useState(() => Date.now())
@@ -53,12 +54,14 @@ export function Workspace({
   onToggleRight,
   onDmode,
   onDiscard,
-  onAppKey
+  onAppKey,
+  onPinFile,
+  untracked
 }: {
   project: Project | null
   tabs: Tab[]
   active?: Tab
-  split: boolean
+  split: SplitPair | null
   rightOpen: boolean
   dmode: 'unified' | 'split'
   theme: ThemeName
@@ -80,23 +83,48 @@ export function Workspace({
   onDmode: (mode: 'unified' | 'split') => void
   onDiscard: () => void
   onAppKey: (key: string) => void
+  onPinFile: (id: string) => void
+  untracked?: boolean
 }) {
   const scroller = useRef<HTMLDivElement>(null)
   const [overflow, setOverflow] = useState(false)
   const [menu, setMenu] = useState(false)
   const mine = project ? tabs.filter((tab) => tab.projectId === project.id) : []
   const terms = mine.filter((tab): tab is TermTab => tab.type === 'term')
-  const other = split && active?.type === 'term' ? terms.find((tab) => tab.id !== active.id) : undefined
+  const pair = split && terms.some((tab) => tab.id === split.left) && terms.some((tab) => tab.id === split.right) ? split : null
+  const splitOn = !!(pair && active?.type === 'term' && (active.id === pair.left || active.id === pair.right))
 
   useEffect(() => {
     const el = scroller.current
     if (!el) return
-    const measure = () => setOverflow(el.scrollWidth > el.clientWidth + 2)
+    const measure = () => {
+      const kids = [...el.children] as HTMLElement[]
+      const width = kids.reduce((sum, kid) => sum + kid.offsetWidth, 0) + Math.max(0, kids.length - 1) * 2
+      setOverflow(width > el.clientWidth + 2)
+    }
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(el)
     return () => ro.disconnect()
   }, [mine.length, project?.id])
+
+  useEffect(() => {
+    const el = scroller.current
+    if (!el) return
+    const reveal = () => {
+      const node = el.querySelector('.tab.on') as HTMLElement | null
+      if (!node) return
+      node.scrollIntoView({ inline: 'nearest', block: 'nearest' })
+      const fade = overflow ? 16 : 0
+      const right = node.offsetLeft + node.offsetWidth
+      const viewRight = el.scrollLeft + el.clientWidth - fade
+      if (right > viewRight) el.scrollLeft += right - viewRight
+      else if (node.offsetLeft < el.scrollLeft) el.scrollLeft = node.offsetLeft
+    }
+    reveal()
+    const frame = requestAnimationFrame(reveal)
+    return () => cancelAnimationFrame(frame)
+  }, [active?.id, mine.length, project?.id, overflow])
 
   const agentOf = (id: string) => agents.find((item) => item.id === id) || resolveAgent(id, [], installed)
 
@@ -104,6 +132,7 @@ export function Workspace({
   if (!project) proc = null
   else if (active?.type === 'term') {
     const running = active.state === 'running'
+    const hot = active.kind !== 'shell' && (active.state === 'exited' || active.state === 'failed')
     proc = (
       <div className="proc">
         <div className={`pstate ${active.state}`}>
@@ -120,7 +149,7 @@ export function Workspace({
           <Icon name="stop" />
         </button>
         <button
-          className="ib"
+          className={`ib ${hot ? 'on w' : ''}`}
           data-a="restart"
           disabled={active.kind === 'shell' && active.state !== 'failed' && active.state !== 'exited'}
           title="重新启动同一命令"
@@ -128,9 +157,10 @@ export function Workspace({
           onClick={onRestart}
         >
           <Icon name="refresh" />
+          {hot ? '重新启动' : null}
         </button>
         <span className="vsep" />
-        <button className={`ib ${split ? 'on' : ''}`} data-a="split" aria-pressed={split} title="分屏" aria-label="分屏" onClick={onSplit}>
+        <button className={`ib ${split ? 'on' : ''}`} data-a="split" aria-pressed={!!split} title="分屏" aria-label="分屏" onClick={onSplit}>
           <Icon name="split" />
         </button>
         {rightOpen ? null : (
@@ -173,14 +203,24 @@ export function Workspace({
       ) : (
         <>
           <div className="tabbar" role="tablist">
-            <div className="tabs" ref={scroller}>
+            <div className={`tabs ${overflow ? 'over' : ''}`} ref={scroller}>
               {mine.map((tab) => {
                 const on = tab.id === active?.id
                 if (tab.type !== 'term') {
                   const label = tab.path.split('/').pop() || tab.path
+                  const preview = tab.type === 'file' && !tab.pinned
                   return (
-                    <div key={tab.id} className={`tab ${on ? 'on' : ''}`} role="tab" aria-selected={on}>
-                      <button className="grow" style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }} data-a="tab" data-id={tab.id} onClick={() => onSelect(tab.id)}>
+                    <div key={tab.id} className={`tab ${on ? 'on' : ''} ${preview ? 'preview' : ''}`} role="tab" aria-selected={on}>
+                      <button
+                        className="grow"
+                        style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}
+                        data-a="tab"
+                        data-id={tab.id}
+                        onClick={() => onSelect(tab.id)}
+                        onDoubleClick={() => {
+                          if (tab.type === 'file') onPinFile(tab.id)
+                        }}
+                      >
                         <Icon name="file" className="s" />
                         <span className="lbl">{label}</span>
                       </button>
@@ -196,7 +236,7 @@ export function Workspace({
                 const color = tab.kind === 'shell' ? '#8fa3cc' : agent.color
                 return (
                   <div key={tab.id} className={`tab ${on ? 'on' : ''}`} role="tab" aria-selected={on}>
-                    <button style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }} data-a="tab" data-id={tab.id} title={`${name} · ${STATE_LABEL[tab.state]}`} onClick={() => onSelect(tab.id)}>
+                    <button style={{ display: 'flex', alignItems: 'center', gap: 8 }} data-a="tab" data-id={tab.id} data-state={tab.state} title={`${name} · ${STATE_LABEL[tab.state]}`} onClick={() => onSelect(tab.id)}>
                       <Mark letter={letter} color={color} />
                       <span className="lbl">{name}</span>
                       <span className={`dot ${tab.state}`} role="img" aria-label={STATE_LABEL[tab.state]} />
@@ -231,6 +271,7 @@ export function Workspace({
                         setMenu(false)
                       }}
                     >
+                      <span style={{ width: 14, flex: 'none', color: 'var(--muted)' }}>{tab.id === active?.id ? '✓' : ''}</span>
                       <span className="nm grow">{label}</span>
                       {tab.type === 'term' ? <span className={`dot ${tab.state}`} /> : null}
                     </button>
@@ -261,26 +302,39 @@ export function Workspace({
               </div>
             </div>
           ) : active.type === 'diff' ? (
-            <DiffPane diff={diff && diff.path === active.path ? diff : null} mode={dmode} rightOpen={rightOpen} onMode={onDmode} onDiscard={onDiscard} onToggleRight={onToggleRight} />
+            <DiffPane diff={diff && diff.path === active.path ? diff : null} mode={dmode} rightOpen={rightOpen} onMode={onDmode} onDiscard={onDiscard} onToggleRight={onToggleRight} untracked={untracked} />
           ) : active.type === 'file' ? (
-            <FilePane path={active.path} text={preview?.path === active.path ? preview.text : ''} binary={!!preview && preview.path === active.path && preview.binary} missing={!preview || preview.path !== active.path ? false : preview.missing} theme={theme} />
+            <FilePane
+              path={active.path}
+              text={preview?.path === active.path ? preview.text : ''}
+              binary={!!preview && preview.path === active.path && preview.binary}
+              missing={!preview || preview.path !== active.path ? false : preview.missing}
+              theme={theme}
+              rightOpen={rightOpen}
+              onToggleRight={onToggleRight}
+            />
           ) : (
             <div className="panes">
               {terms.map((tab) => {
-                const visible = tab.id === active.id || tab.id === other?.id
+                const inSplit = !!(pair && (tab.id === pair.left || tab.id === pair.right))
+                const visible = splitOn ? inSplit : tab.id === active.id
                 const focus = tab.id === active.id
                 const agent = agentOf(tab.kind)
+                const order = pair ? (tab.id === pair.left ? 0 : tab.id === pair.right ? 1 : 2) : 0
                 return (
                   <div
                     key={tab.id}
                     className={`pane ${focus ? 'focus' : ''}`}
+                    data-a="pane"
+                    data-id={tab.id}
+                    data-state={tab.state}
                     hidden={!visible}
-                    style={{ order: focus ? 0 : 1 }}
+                    style={{ order }}
                     onMouseDown={() => {
                       if (!focus) onSelect(tab.id)
                     }}
                   >
-                    {other ? (
+                    {splitOn ? (
                       <div className="ph">
                         <Mark letter={tab.kind === 'shell' ? shellLetter(tab.shell) : agent.letter} color={tab.kind === 'shell' ? '#8fa3cc' : agent.color} />
                         {tab.kind === 'shell' ? shellLabel(tab.shell) : agent.name}
