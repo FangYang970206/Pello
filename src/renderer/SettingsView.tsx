@@ -357,11 +357,9 @@ export function SettingsView({
     const rows: [string, string][] = [
       ['新建项目', 'Ctrl N'],
       ['新建终端', 'Ctrl T'],
-      ['关闭标签（运行中的进程会先确认）', 'Ctrl W'],
+      ['关闭标签', 'Ctrl W'],
       ['切换文件面板', 'Ctrl B'],
-      ['打开设置', 'Ctrl ,'],
-      ['分屏焦点移到左侧', 'Alt ←'],
-      ['分屏焦点移到右侧', 'Alt →']
+      ['打开设置', 'Ctrl ,']
     ]
     body = (
       <>

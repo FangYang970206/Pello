@@ -1,24 +1,30 @@
 import { _electron as electron } from 'playwright'
 import fs from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const userData = `/tmp/awb-pw-${Date.now()}`
+const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'awb-review-'))
+const demo = path.join(userData, 'demo')
+const shell = process.platform === 'win32' ? 'pwsh' : 'bash'
+const prompt = process.platform === 'win32' ? '> ' : '$'
+const env = { ...process.env }
+delete env.ELECTRON_RUN_AS_NODE
 fs.mkdirSync(userData, { recursive: true })
-fs.mkdirSync('/tmp/awb-pw-demo/src', { recursive: true })
-fs.writeFileSync('/tmp/awb-pw-demo/README.md', 'demo\n')
-if (!fs.existsSync('/tmp/awb-pw-demo/.git')) {
+fs.mkdirSync(path.join(demo, 'src'), { recursive: true })
+fs.writeFileSync(path.join(demo, 'README.md'), 'demo\n')
+if (!fs.existsSync(path.join(demo, '.git'))) {
   const { execFileSync } = await import('node:child_process')
-  execFileSync('git', ['init', '-b', 'master'], { cwd: '/tmp/awb-pw-demo' })
-  execFileSync('git', ['add', 'README.md'], { cwd: '/tmp/awb-pw-demo' })
-  execFileSync('git', ['-c', 'user.email=a@b.c', '-c', 'user.name=awb', 'commit', '-m', 'init'], { cwd: '/tmp/awb-pw-demo' })
+  execFileSync('git', ['init', '-b', 'master'], { cwd: demo })
+  execFileSync('git', ['add', 'README.md'], { cwd: demo })
+  execFileSync('git', ['-c', 'user.email=a@b.c', '-c', 'user.name=awb', 'commit', '-m', 'init'], { cwd: demo })
 }
 
 const app = await electron.launch({
   args: [root, '--no-sandbox'],
   cwd: root,
-  env: { ...process.env, AWB_USER_DATA: userData }
+  env: { ...env, AWB_USER_DATA: userData }
 })
 
 const page = await app.firstWindow()
@@ -33,7 +39,7 @@ try {
   await page.waitForSelector('[data-a=newproj]')
   await page.click('[data-a=newproj]')
   await page.fill('[data-np=name]', 'pw-check')
-  await page.fill('[data-np=path]', '/tmp/awb-pw-demo')
+  await page.fill('[data-np=path]', demo)
   await page.waitForSelector('#pchk small.ok, #pchk small')
   const create = page.locator('[data-a=np-ok]')
   await page.waitForFunction(() => {
@@ -44,16 +50,16 @@ try {
   await page.waitForSelector('[data-a=quick]')
   await page.click('[data-a=quick]')
   await page.waitForSelector('.xterm')
-  await page.waitForFunction(() => {
+  await page.waitForFunction((prompt) => {
     const id = document.querySelector('.tab.on [data-a=tab]')?.getAttribute('data-id') || ''
-    return (window.__awbBuffer?.(id) || '').includes('$')
-  })
+    return (window.__awbBuffer?.(id) || '').includes(prompt)
+  }, prompt)
 
   for (let i = 0; i < 8; i++) {
     await page.click('.addtab[data-a=newterm]')
     await page.click('[data-a=ntk][data-id=shell]')
     await page.click('[data-a=nt-ok]')
-    await page.waitForFunction(() => (window.__awbBuffer?.(document.querySelector('.tab.on [data-a=tab]')?.getAttribute('data-id') || '') || '').includes('$'))
+    await page.waitForFunction((prompt) => (window.__awbBuffer?.(document.querySelector('.tab.on [data-a=tab]')?.getAttribute('data-id') || '') || '').includes(prompt), prompt)
   }
 
   const tab = await page.evaluate(() => {
@@ -142,13 +148,12 @@ try {
   await openClose('新建终端', '.addtab[data-a=newterm]', () => page.click('.addtab[data-a=newterm]'))
 
   await page.click('.pane:not([hidden]) .xterm')
-  await page.keyboard.type('sleep 30')
+  await page.keyboard.type(process.platform === 'win32' ? 'Start-Sleep -Seconds 30' : 'sleep 30')
   await page.keyboard.press('Enter')
   await page.waitForFunction(() => {
-    const button = document.querySelector('[data-a=kill]')
-    return !!button && !button.hasAttribute('disabled')
+    return document.querySelector('.tab.on [data-a=tab]')?.getAttribute('data-state') === 'running'
   })
-  await openClose('结束进程确认', '[data-a=kill]', () => page.click('[data-a=kill]'))
+  await openClose('关闭终端确认', '.tab.on [data-a=close]', () => page.click('.tab.on [data-a=close]'))
 
   await page.click('[data-a=settings]')
   await page.waitForSelector('.settings')
@@ -175,15 +180,15 @@ try {
 }
 
 async function assertRestored(label, activeTab, expectId) {
-  const data = `/tmp/awb-pw-restore-${label}-${Date.now()}`
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), `awb-restore-${label}-`))
   fs.mkdirSync(data, { recursive: true })
   const db = {
-    settings: { theme: 'dark', fontSize: 13, defShell: 'bash', defAgent: 'shell', restore: true, confirmKill: true },
-    projects: [{ id: 'p1', name: 'pw-restore', host: 'local', path: '/tmp/awb-pw-demo', branch: 'master', agent: 'shell' }],
+    settings: { theme: 'dark', fontSize: 13, defShell: shell, defAgent: 'shell', restore: true, confirmKill: true },
+    projects: [{ id: 'p1', name: 'pw-restore', host: 'local', path: demo, branch: 'master', agent: 'shell' }],
     sessions: {
       p1: [
-        { id: 'term-bash', kind: 'shell', shell: 'bash' },
-        { id: 'term-bash-2', kind: 'shell', shell: 'bash' }
+        { id: 'term-bash', kind: 'shell', shell },
+        { id: 'term-bash-2', kind: 'shell', shell }
       ]
     }
   }
@@ -192,24 +197,25 @@ async function assertRestored(label, activeTab, expectId) {
   const restoreApp = await electron.launch({
     args: [root, '--no-sandbox'],
     cwd: root,
-    env: { ...process.env, AWB_USER_DATA: data }
+    env: { ...env, AWB_USER_DATA: data }
   })
   try {
     const page = await restoreApp.firstWindow()
     page.setDefaultTimeout(20000)
-    await page.waitForFunction((id) => {
+    await page.waitForFunction(({ id, prompt }) => {
       const empty = [...document.querySelectorAll('h2')].some((node) => node.textContent === '还没有终端')
       const tabs = [...document.querySelectorAll('.tabs .tab')]
       const on = document.querySelector('.tabs .tab.on [data-a=tab]')
       const pane = document.querySelector('.pane:not([hidden])')
-      const state = document.querySelector('.pstate b')?.textContent || ''
+      const state = on?.getAttribute('data-state') || ''
       const onId = on?.getAttribute('data-id') || ''
       const paneId = pane?.getAttribute('data-id') || ''
       const buffer = window.__awbBuffer?.(onId) || ''
-      return !empty && tabs.length === 2 && onId === id && paneId === id && (state === '运行中' || state === '空闲') && buffer.includes('$')
-    }, expectId)
-    fs.mkdirSync('/opt/cursor/artifacts/review', { recursive: true })
-    const shot = `/opt/cursor/artifacts/review/v4_restore_${label}.png`
+      return !empty && tabs.length === 2 && onId === id && paneId === id && (state === 'running' || state === 'idle') && buffer.includes(prompt)
+    }, { id: expectId, prompt })
+    const shots = path.join(root, 'output/playwright')
+    fs.mkdirSync(shots, { recursive: true })
+    const shot = path.join(shots, `restore_${label}.png`)
     await page.screenshot({ path: shot })
     console.log(`restore ok ${label} -> ${expectId} ${shot}`)
   } catch (err) {

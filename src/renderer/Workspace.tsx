@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { AgentInfo, FileDiff, ProcState, Project, ShellKind, ThemeName } from '../shared/types'
-import { STATE_LABEL, fmtElapsed, resolveAgent, shellLabel, shellLetter } from '../shared/types'
+import { resolveAgent, shellLabel, shellLetter } from '../shared/types'
 import { Icon, Mark } from './icons'
 import { TerminalPane } from './TerminalPane'
 import { DiffPane, FilePane } from './DiffPane'
@@ -14,26 +14,22 @@ export type TermTab = {
   state: ProcState
   startedAt: number | null
   exitCode: number | null
+  inputReady: boolean
 }
 export type DiffTab = { id: string; type: 'diff'; projectId: string; path: string }
 export type FileTab = { id: string; type: 'file'; projectId: string; path: string; pinned?: boolean }
 export type Tab = TermTab | DiffTab | FileTab
-export type SplitPair = { left: string; right: string }
 
-function Elapsed({ start }: { start: number }) {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(timer)
-  }, [])
-  return <span className="t">{fmtElapsed(now - start)}</span>
+function terminalStatus(tab: TermTab) {
+  if (tab.state === 'running') return { color: 'busy', label: '正在运行任务' }
+  if (tab.inputReady && tab.state !== 'idle') return { color: 'ready', label: '任务已完成，可以继续输入' }
+  return { color: 'inactive', label: tab.inputReady ? '尚未运行 CodeAgent' : '终端未运行' }
 }
 
 export function Workspace({
   project,
   tabs,
   active,
-  split,
   rightOpen,
   dmode,
   theme,
@@ -48,9 +44,6 @@ export function Workspace({
   onNewProject,
   onQuick,
   onInterrupt,
-  onKill,
-  onRestart,
-  onSplit,
   onToggleRight,
   onDmode,
   onDiscard,
@@ -61,7 +54,6 @@ export function Workspace({
   project: Project | null
   tabs: Tab[]
   active?: Tab
-  split: SplitPair | null
   rightOpen: boolean
   dmode: 'unified' | 'split'
   theme: ThemeName
@@ -76,9 +68,6 @@ export function Workspace({
   onNewProject: () => void
   onQuick: () => void
   onInterrupt: (id: string) => void
-  onKill: () => void
-  onRestart: () => void
-  onSplit: () => void
   onToggleRight: () => void
   onDmode: (mode: 'unified' | 'split') => void
   onDiscard: () => void
@@ -93,8 +82,6 @@ export function Workspace({
   const mine = project ? tabs.filter((tab) => tab.projectId === project.id) : []
   const shown = mine.find((tab) => tab.id === active?.id) ?? mine[0]
   const terms = mine.filter((tab): tab is TermTab => tab.type === 'term')
-  const pair = split && terms.some((tab) => tab.id === split.left) && terms.some((tab) => tab.id === split.right) ? split : null
-  const splitOn = !!(pair && shown?.type === 'term' && (shown.id === pair.left || shown.id === pair.right))
 
   useEffect(() => {
     const el = scroller.current
@@ -148,52 +135,6 @@ export function Workspace({
 
   const agentOf = (id: string) => agents.find((item) => item.id === id) || resolveAgent(id, [], installed)
 
-  let proc: ReactNode = null
-  if (!project) proc = null
-  else if (shown?.type === 'term') {
-    const running = shown.state === 'running'
-    const hot = shown.kind !== 'shell' && (shown.state === 'exited' || shown.state === 'failed')
-    proc = (
-      <div className="proc">
-        <div className={`pstate ${shown.state}`}>
-          <span className={`dot ${shown.state}`} />
-          <b>{STATE_LABEL[shown.state]}</b>
-          {running && shown.startedAt ? <Elapsed start={shown.startedAt} /> : shown.exitCode != null ? <span className="t">退出码 {shown.exitCode}</span> : null}
-        </div>
-        <button className="ib w" data-a="ctrlc" title="发送 Ctrl+C" aria-label="发送 Ctrl+C" onClick={() => onInterrupt(shown.id)}>
-          <span className="mono" style={{ fontSize: 11 }}>
-            ^C
-          </span>
-        </button>
-        <button className="ib danger" data-a="kill" disabled={!running} title="结束进程" aria-label="结束进程" onClick={onKill}>
-          <Icon name="stop" />
-        </button>
-        <button
-          className={`ib ${hot ? 'on w' : ''}`}
-          data-a="restart"
-          disabled={shown.kind === 'shell' && shown.state !== 'failed' && shown.state !== 'exited'}
-          title="重新启动同一命令"
-          aria-label="重新启动"
-          onClick={onRestart}
-        >
-          <Icon name="refresh" />
-          {hot ? '重新启动' : null}
-        </button>
-        <span className="vsep" />
-        <button className={`ib ${split ? 'on' : ''}`} data-a="split" aria-pressed={!!split} title="分屏" aria-label="分屏" onClick={onSplit}>
-          <Icon name="split" />
-        </button>
-        {rightOpen ? null : (
-          <button className="ib" data-a="right" title="显示文件面板" aria-label="显示文件面板" onClick={onToggleRight}>
-            <Icon name="panel" />
-          </button>
-        )}
-      </div>
-    )
-  } else {
-    proc = <div className="proc">{rightOpen ? null : <button className="ib" data-a="right" title="显示文件面板" aria-label="显示文件面板" onClick={onToggleRight}><Icon name="panel" /></button>}</div>
-  }
-
   return (
     <main className="center" id="center">
       {!project ? (
@@ -209,14 +150,6 @@ export function Workspace({
                 <Icon name="plus" className="s" />
                 新建项目
               </button>
-            </div>
-            <div className="hint">
-              <span>
-                <kbd>Ctrl N</kbd>新建项目
-              </span>
-              <span>
-                <kbd>Ctrl T</kbd>新建终端
-              </span>
             </div>
           </div>
         </div>
@@ -254,12 +187,13 @@ export function Workspace({
                 const name = tab.kind === 'shell' ? shellLabel(tab.shell) : agent.name
                 const letter = tab.kind === 'shell' ? shellLetter(tab.shell) : agent.letter
                 const color = tab.kind === 'shell' ? '#8fa3cc' : agent.color
+                const status = terminalStatus(tab)
                 return (
                   <div key={tab.id} className={`tab ${on ? 'on' : ''}`} role="tab" aria-selected={on}>
-                    <button style={{ display: 'flex', alignItems: 'center', gap: 8 }} data-a="tab" data-id={tab.id} data-state={tab.state} title={`${name} · ${STATE_LABEL[tab.state]}`} onClick={() => onSelect(tab.id)}>
+                    <button style={{ display: 'flex', alignItems: 'center', gap: 8 }} data-a="tab" data-id={tab.id} data-state={tab.state} title={`${name} · ${status.label}`} onClick={() => onSelect(tab.id)}>
                       <Mark letter={letter} color={color} />
                       <span className="lbl">{name}</span>
-                      <span className={`dot ${tab.state}`} role="img" aria-label={STATE_LABEL[tab.state]} />
+                      <span className={`dot terminal-status ${status.color}`} role="img" aria-label={status.label} />
                     </button>
                     <button className="x" data-a="close" data-id={tab.id} aria-label={`关闭 ${name}`} onClick={() => onClose(tab.id)}>
                       <Icon name="x" className="s" />
@@ -274,12 +208,12 @@ export function Workspace({
                   <Icon name="chev" className="s chev open" />
                 </button>
               ) : null}
-              <button className="addtab" data-a="newterm" title="新建终端 (Ctrl T)" aria-label="新建终端" onClick={onNewTerm}>
+              <button className="addtab" data-a="newterm" title="新建终端" aria-label="新建终端" onClick={onNewTerm}>
                 <Icon name="plus" />
               </button>
             </div>
             <span className="grow" />
-            {proc}
+            {!rightOpen ? <button className="ib" data-a="right" title="显示文件面板" aria-label="显示文件面板" onClick={onToggleRight}><Icon name="panel" /></button> : null}
             {menu ? (
               <div className="pop" style={{ left: 8, right: 'auto' }}>
                 {mine.map((tab) => {
@@ -295,7 +229,7 @@ export function Workspace({
                     >
                       <span style={{ width: 14, flex: 'none', color: 'var(--muted)' }}>{tab.id === shown?.id ? '✓' : ''}</span>
                       <span className="nm grow">{label}</span>
-                      {tab.type === 'term' ? <span className={`dot ${tab.state}`} /> : null}
+                      {tab.type === 'term' ? <span className={`dot terminal-status ${terminalStatus(tab).color}`} role="img" aria-label={terminalStatus(tab).label} /> : null}
                     </button>
                   )
                 })}
@@ -338,11 +272,8 @@ export function Workspace({
           ) : (
             <div className="panes">
               {terms.map((tab) => {
-                const inSplit = !!(pair && (tab.id === pair.left || tab.id === pair.right))
-                const visible = splitOn ? inSplit : tab.id === shown.id
+                const visible = tab.id === shown.id
                 const focus = tab.id === shown.id
-                const agent = agentOf(tab.kind)
-                const order = pair ? (tab.id === pair.left ? 0 : tab.id === pair.right ? 1 : 2) : 0
                 return (
                   <div
                     key={tab.id}
@@ -351,18 +282,10 @@ export function Workspace({
                     data-id={tab.id}
                     data-state={tab.state}
                     hidden={!visible}
-                    style={{ order }}
                     onMouseDown={() => {
                       if (!focus) onSelect(tab.id)
                     }}
                   >
-                    {splitOn ? (
-                      <div className="ph">
-                        <Mark letter={tab.kind === 'shell' ? shellLetter(tab.shell) : agent.letter} color={tab.kind === 'shell' ? '#8fa3cc' : agent.color} />
-                        {tab.kind === 'shell' ? shellLabel(tab.shell) : agent.name}
-                        <span className={`dot ${tab.state}`} />
-                      </div>
-                    ) : null}
                     <TerminalPane id={tab.id} fontSize={fontSize} theme={theme} shell={tab.shell} visible={visible} onInterrupt={onInterrupt} onAppKey={onAppKey} />
                   </div>
                 )

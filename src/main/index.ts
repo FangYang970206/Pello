@@ -185,7 +185,7 @@ function registerIpc(): void {
   ipcMain.handle('pty:interrupt', (_e, id: string) => interruptSession(id))
   ipcMain.handle('pty:kill', (_e, id: string) => killSession(id))
   ipcMain.handle('pty:restart', (_e, id: string) => restartSession(id))
-  ipcMain.on('pty:close', (_e, id: string) => closeSession(id))
+  ipcMain.handle('pty:close', (_e, id: string) => closeSession(id))
 
   ipcMain.handle('exec:test', async (_e, req: { cmd: string; args: string; shell: ShellKind; env: { k: string; v: string; secret: boolean }[]; cwd?: string }) => {
     return testExecutor({
@@ -250,8 +250,18 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
-  closeAllSessions()
   app.quit()
 })
 
-app.on('before-quit', () => closeAllSessions())
+let sessionsClosed = false
+let quitting = false
+app.on('before-quit', (event) => {
+  if (sessionsClosed) return
+  event.preventDefault()
+  if (quitting) return
+  quitting = true
+  void closeAllSessions().catch((error) => console.error('Failed to close terminal sessions', error)).finally(() => {
+    sessionsClosed = true
+    app.quit()
+  })
+})

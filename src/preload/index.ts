@@ -25,7 +25,7 @@ const api: WorkbenchApi = {
   ptyInterrupt: (id) => ipcRenderer.invoke('pty:interrupt', id),
   ptyKill: (id) => ipcRenderer.invoke('pty:kill', id),
   ptyRestart: (id) => ipcRenderer.invoke('pty:restart', id),
-  ptyClose: (id) => ipcRenderer.send('pty:close', id),
+  ptyClose: (id) => ipcRenderer.invoke('pty:close', id),
   onPty: (cb) => {
     const listener = (_event: unknown, payload: PtyEvent) => cb(payload)
     ipcRenderer.on('pty:event', listener)

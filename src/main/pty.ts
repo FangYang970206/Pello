@@ -25,6 +25,7 @@ export interface SessionInfo {
   state: ProcState
   exitCode: number | null
   startedAt: number | null
+  inputReady: boolean
   shell: ShellKind
   kind: string
 }
@@ -117,6 +118,9 @@ class Session {
   private override: { state: ProcState; code: number; reason: 'kill' | 'ctrlc' } | null = null
   private commandSentAt = 0
   private skipPrompt = false
+  private disposed = false
+  private procExited = false
+  private disposal: Promise<void> | null = null
   private env: NodeJS.ProcessEnv
 
   constructor(
@@ -139,10 +143,12 @@ class Session {
   hostId: string
 
   info(): SessionInfo {
-    return { id: this.id, state: this.state, exitCode: this.exitCode, startedAt: this.startedAt, shell: this.shell, kind: this.kind }
+    return { id: this.id, state: this.state, exitCode: this.exitCode, startedAt: this.startedAt, inputReady: this.phase === 'prompt', shell: this.shell, kind: this.kind }
   }
 
   spawn(): void {
+    if (this.disposed) return
+    this.procExited = false
     const draft = db()
     const host = draft.hosts.find((h) => h.id === this.hostId) || draft.hosts[0]
     const files = shellFiles()
@@ -174,6 +180,7 @@ class Session {
     }
     this.proc = proc
     proc.onData((data) => {
+      if (this.disposed) return
       if (process.env.AWB_DEBUG) console.log(`[pty ${this.id}]`, JSON.stringify(data).slice(0, 300))
       this.onData(data)
     })
@@ -185,6 +192,8 @@ class Session {
       }
     }, 1200)
     proc.onExit((result) => {
+      this.procExited = true
+      if (this.disposed) return
       const code = typeof result === 'number' ? result : (result?.exitCode ?? 1)
       this.phase = 'dead'
       const state: ProcState = code === 0 ? 'exited' : 'failed'
@@ -259,6 +268,7 @@ class Session {
   }
 
   async restart(): Promise<void> {
+    if (this.disposed) return
     if (!this.command) {
       if (this.phase === 'dead') this.spawn()
       return
@@ -283,13 +293,37 @@ class Session {
     }, 450)
   }
 
-  dispose(): void {
-    try {
-      this.proc?.kill()
-    } catch {
-      /* ignore */
-    }
+  dispose(): Promise<void> {
+    if (this.disposal) return this.disposal
+    const alreadyExited = this.procExited
+    this.disposed = true
     this.phase = 'dead'
+    this.restartPending = false
+    this.override = null
+    const proc = this.proc
+    this.disposal = (async () => {
+      if (!proc) return
+      try {
+        if (alreadyExited) return
+        // ConPTY only knows processes attached to its console. Kill the tree
+        // before closing that console, while parent IDs still identify children.
+        if (process.platform === 'win32') {
+          await execFileP('taskkill', ['/F', '/T', '/PID', String(proc.pid)], { timeout: 10000, windowsHide: true }).catch((error) => {
+            try { process.kill(proc.pid, 0) } catch { return }
+            throw error
+          })
+        } else {
+          await killChildren(proc.pid)
+        }
+      } finally {
+        try { proc.kill() } catch { /* already exited */ }
+      }
+      this.proc = null
+    })().catch((error) => {
+      this.disposal = null
+      throw error
+    })
+    return this.disposal
   }
 
   private launchLine(): string {
@@ -401,12 +435,14 @@ class Session {
   }
 
   private emit(announce: boolean, reason?: PtyStateEvent['reason']): void {
+    if (this.disposed) return
     this.send({
       type: 'state',
       id: this.id,
       state: this.state,
       exitCode: this.exitCode,
       startedAt: this.startedAt,
+      inputReady: this.phase === 'prompt',
       announce,
       reason
     })
@@ -415,10 +451,10 @@ class Session {
 
 const sessions = new Map<string, Session>()
 
-export function createSession(
+export async function createSession(
   send: Send,
   opts: { id: string; projectId: string; kind: string; shell: ShellKind }
-): SessionInfo {
+): Promise<SessionInfo> {
   const draft = db()
   const project = draft.projects.find((p) => p.id === opts.projectId)
   if (!project) throw new Error('项目不存在')
@@ -427,7 +463,7 @@ export function createSession(
   const agent = agentCommand(opts.kind)
   const shell = shellForHost(host?.platform || (process.platform === 'win32' ? 'windows' : 'linux'), opts.shell)
   const existing = sessions.get(opts.id)
-  existing?.dispose()
+  await existing?.dispose()
   const session = new Session(send, {
     id: opts.id,
     projectId: opts.projectId,
@@ -439,7 +475,13 @@ export function createSession(
     hostId: project.host
   })
   sessions.set(opts.id, session)
-  session.spawn()
+  try {
+    session.spawn()
+  } catch (error) {
+    sessions.delete(opts.id)
+    await session.dispose()
+    throw error
+  }
   return session.info()
 }
 
@@ -469,16 +511,17 @@ export function restartSession(id: string): Promise<void> {
   return session.restart()
 }
 
-export function closeSession(id: string): void {
+export async function closeSession(id: string): Promise<void> {
   const session = sessions.get(id)
   if (!session) return
-  session.dispose()
-  sessions.delete(id)
+  await session.dispose()
+  if (sessions.get(id) === session) sessions.delete(id)
 }
 
-export function closeAllSessions(): void {
-  for (const session of sessions.values()) session.dispose()
-  sessions.clear()
+export async function closeAllSessions(): Promise<void> {
+  const results = await Promise.allSettled([...sessions.keys()].map(closeSession))
+  const errors = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+  if (errors.length) throw new AggregateError(errors.map((result) => result.reason), 'Failed to close terminal sessions')
 }
 
 export async function testExecutor(opts: {

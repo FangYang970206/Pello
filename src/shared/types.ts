@@ -180,6 +180,7 @@ export interface PtyStateEvent {
   state: ProcState
   exitCode: number | null
   startedAt: number | null
+  inputReady: boolean
   announce: boolean
   reason?: 'exit' | 'kill' | 'ctrlc'
 }

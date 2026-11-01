@@ -2,11 +2,11 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNo
 import type { AgentInfo, Database, FileDiff, GitPanel, Host, SettingsSection, ShellKind, ThemeName, TreeNode } from '../shared/types'
 import { PRESETS, SHELL_AGENT, cmdline, resolveAgent, shellLabel, uid } from '../shared/types'
 import { Icon } from './icons'
-import { paint, writeNotice, writeTerm } from './terms'
+import { dropTerm, paint, writeNotice, writeTerm } from './terms'
 import { SettingsView } from './SettingsView'
 import { ConfirmDialog, ExecDialog, HostDialog, NewProjectDialog, NewTermDialog, dialogOpener, focusableIn } from './Dialogs'
 import { RightPanel } from './RightPanel'
-import { Workspace, type SplitPair, type Tab, type TermTab } from './Workspace'
+import { Workspace, type Tab, type TermTab } from './Workspace'
 
 type Modal =
   | { type: 'project' }
@@ -33,7 +33,6 @@ export function App() {
   const [activeMap, setActiveMap] = useState<Record<string, string | undefined>>({})
   const activeMapRef = useRef(activeMap)
   activeMapRef.current = activeMap
-  const [split, setSplit] = useState<Record<string, SplitPair | undefined>>({})
   const [menuId, setMenuId] = useState<string | null>(null)
   const [right, setRight] = useState(true)
   const [rmode, setRmode] = useState<'files' | 'changes'>('changes')
@@ -47,6 +46,7 @@ export function App() {
   const [preview, setPreview] = useState<{ path: string; text: string; binary: boolean; missing: boolean } | null>(null)
   const [gitTick, setGitTick] = useState(0)
   const booted = useRef(false)
+  const closingTerms = useRef(new Set<string>())
   const touring = useRef(false)
   const modalRef = useRef<Modal | null>(null)
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -112,6 +112,7 @@ export function App() {
 
   const openTerm = useCallback(async (target: NonNullable<typeof project>, kind: string, shell: ShellKind, activate = true, existingId?: string) => {
     const id = existingId || uid('t')
+    closingTerms.current.delete(id)
     const tab: TermTab = {
       id,
       type: 'term',
@@ -120,7 +121,8 @@ export function App() {
       shell,
       state: kind === 'shell' ? 'idle' : 'running',
       startedAt: kind === 'shell' ? null : Date.now(),
-      exitCode: null
+      exitCode: null,
+      inputReady: false
     }
     setTabs((list) => (list.some((item) => item.id === id) ? list : [...list, tab]))
     if (activate) setActiveMap((map) => ({ ...map, [target.id]: id }))
@@ -129,7 +131,7 @@ export function App() {
       setTabs((list) => {
         const next = list.map((item) =>
           item.id === id && item.type === 'term'
-            ? { ...item, shell: info.shell, state: info.state as TermTab['state'], startedAt: info.startedAt, exitCode: info.exitCode }
+            ? { ...item, shell: info.shell, state: info.state as TermTab['state'], startedAt: info.startedAt, exitCode: info.exitCode, inputReady: info.inputReady }
             : item
         )
         const ids = activate ? { ...activeMapRef.current, [target.id]: id } : activeMapRef.current
@@ -204,6 +206,7 @@ export function App() {
 
   useEffect(() => {
     return window.awb.onPty((event) => {
+      if (closingTerms.current.has(event.id)) return
       if (event.type === 'data') {
         writeTerm(event.id, event.data)
         return
@@ -211,7 +214,7 @@ export function App() {
       setTabs((list) =>
         list.map((tab) =>
           tab.id === event.id && tab.type === 'term'
-            ? { ...tab, state: event.state, exitCode: event.exitCode, startedAt: event.startedAt }
+            ? { ...tab, state: event.state, exitCode: event.exitCode, startedAt: event.startedAt, inputReady: event.inputReady }
             : tab
         )
       )
@@ -278,30 +281,39 @@ export function App() {
     }
   }, [project?.id, active?.type === 'file' ? active.id + active.path : ''])
 
-  function closeTab(id: string) {
+  async function closeTab(id: string) {
     const tab = tabs.find((item) => item.id === id)
-    if (!tab) return
-    if (tab.type === 'term') window.awb.ptyClose(id)
-    const next = tabs.filter((item) => item.id !== id)
-    setTabs(next)
-    const pair = split[tab.projectId]
-    const mine = next.filter((item) => item.projectId === tab.projectId)
-    let preferred = activeMap[tab.projectId]
-    if (pair && (pair.left === id || pair.right === id)) {
-      preferred = pair.left === id ? pair.right : pair.left
-      setSplit((map) => ({ ...map, [tab.projectId]: undefined }))
-    } else if (preferred === id) preferred = undefined
-    const keep = mine.some((item) => item.id === preferred) ? preferred : mine[0]?.id
-    const activeIds = { ...activeMap, [tab.projectId]: keep }
-    setActiveMap(activeIds)
-    persist(next, activeIds)
+    if (!tab || closingTerms.current.has(id)) return
+    if (tab.type === 'term') {
+      closingTerms.current.add(id)
+      try {
+        await window.awb.ptyClose(id)
+      } catch (error) {
+        closingTerms.current.delete(id)
+        toast(error instanceof Error ? error.message : '无法关闭终端', true)
+        return
+      }
+      dropTerm(id)
+    }
+    setTabs((list) => {
+      const next = list.filter((item) => item.id !== id)
+      const mine = next.filter((item) => item.projectId === tab.projectId)
+      let preferred = activeMapRef.current[tab.projectId]
+      if (preferred === id) preferred = undefined
+      const keep = mine.some((item) => item.id === preferred) ? preferred : mine[0]?.id
+      const activeIds = { ...activeMapRef.current, [tab.projectId]: keep }
+      activeMapRef.current = activeIds
+      setActiveMap(activeIds)
+      persist(next, activeIds)
+      return next
+    })
   }
 
   function requestClose(id: string) {
     const tab = tabs.find((item) => item.id === id)
     if (!tab || !db) return
-    if (tab.type !== 'term' || tab.state !== 'running') {
-      closeTab(id)
+    if (tab.type !== 'term' || tab.state !== 'running' || !db.settings.confirmKill) {
+      void closeTab(id)
       return
     }
     const agent = resolveAgent(tab.kind, db.custom, installed)
@@ -318,7 +330,7 @@ export function App() {
       ),
       run: () => {
         setModal(null)
-        closeTab(id)
+        void closeTab(id)
       }
     })
   }
@@ -336,69 +348,11 @@ export function App() {
     setMenuId(null)
   }
 
-  async function toggleSplit() {
-    if (!project || !db || !host) return
-    if (split[project.id]) {
-      setSplit((map) => ({ ...map, [project.id]: undefined }))
-      return
-    }
-    const terms = tabs.filter((tab): tab is TermTab => tab.type === 'term' && tab.projectId === project.id)
-    let left: string | undefined = active?.type === 'term' ? active.id : terms[0]?.id
-    if (!left) left = (await openTerm(project, 'shell', shellFor(host, db.settings.defShell), true)) || undefined
-    if (!left) return
-    let right: string | undefined = terms.find((tab) => tab.id !== left)?.id
-    if (!right) right = (await openTerm(project, 'shell', shellFor(host, db.settings.defShell), false)) || undefined
-    if (!right) return
-    const pair = { left, right }
-    setSplit((map) => ({ ...map, [project.id]: pair }))
-    setActiveMap({ ...activeMapRef.current, [project.id]: pair.left })
-  }
-
   function selectTab(id: string) {
     if (!project) return
     const activeIds = { ...activeMap, [project.id]: id }
     setActiveMap(activeIds)
     if (tabs.some((tab) => tab.id === id && tab.type === 'term')) persist(tabs, activeIds)
-    const pair = split[project.id]
-    if (!pair) return
-    if (id === pair.left || id === pair.right) return
-    const tab = tabs.find((item) => item.id === id)
-    if (!tab || tab.type !== 'term') return
-    const side = active?.id === pair.right ? 'right' : 'left'
-    setSplit((map) => ({ ...map, [project.id]: { ...pair, [side]: id } }))
-  }
-
-  function focusSplit(dir: 'left' | 'right') {
-    if (!project) return
-    const pair = split[project.id]
-    if (!pair) return
-    const activeIds = { ...activeMap, [project.id]: pair[dir] }
-    setActiveMap(activeIds)
-    persist(tabs, activeIds)
-  }
-
-  function askKill() {
-    if (!db || active?.type !== 'term' || active.state !== 'running') return
-    const go = () => void window.awb.ptyKill(active.id)
-    if (!db.settings.confirmKill) {
-      go()
-      return
-    }
-    const agent = resolveAgent(active.kind, db.custom, installed)
-    setModal({
-      type: 'confirm',
-      title: '结束进程？',
-      ok: '结束进程',
-      body: (
-        <>
-          将强制结束 <b>{agent.name}</b>（<span className="mono">{cmdline(agent) || shellLabel(active.shell)}</span>）。CLI 未保存的会话会丢失，已写入磁盘的文件不受影响。
-        </>
-      ),
-      run: () => {
-        setModal(null)
-        go()
-      }
-    })
   }
 
   function askDiscard() {
@@ -490,15 +444,20 @@ export function App() {
           {running ? <> 有 {running} 个正在运行的进程会被结束。</> : null}
         </>
       ),
-      run: () => {
-        for (const tab of tabs) {
-          if (tab.projectId === id && tab.type === 'term') window.awb.ptyClose(tab.id)
+      run: async () => {
+        const terms = tabs.filter((tab) => tab.projectId === id && tab.type === 'term')
+        for (const tab of terms) closingTerms.current.add(tab.id)
+        try {
+          await Promise.all(terms.map((tab) => window.awb.ptyClose(tab.id)))
+        } catch (error) {
+          for (const tab of terms) closingTerms.current.delete(tab.id)
+          toast(error instanceof Error ? error.message : '无法关闭项目终端', true)
+          return
         }
+        for (const tab of terms) dropTerm(tab.id)
         const projects = db.projects.filter((projectItem) => projectItem.id !== id)
-        const nextTabs = tabs.filter((tab) => tab.projectId !== id)
-        setTabs(nextTabs)
+        setTabs((list) => list.filter((tab) => tab.projectId !== id))
         setDb({ ...db, projects })
-        setSplit((map) => ({ ...map, [id]: undefined }))
         if (projectId === id) setProjectId(projects[0]?.id ?? null)
         setModal(null)
         void window.awb.saveProjects(projects)
@@ -531,8 +490,6 @@ export function App() {
     } else if (key === ',') openSettings()
     else if (key === 'b') setRight((value) => !value)
     else if (key === 'w' && active) requestClose(active.id)
-    else if (key === 'alt-left') focusSplit('left')
-    else if (key === 'alt-right') focusSplit('right')
   }
 
   useEffect(() => {
@@ -553,12 +510,6 @@ export function App() {
           closeSettings()
           return
         }
-      }
-      if (event.altKey && !event.ctrlKey && !event.metaKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
-        if (field || inTerm || modalRef.current) return
-        event.preventDefault()
-        onAppKey(event.key === 'ArrowLeft' ? 'alt-left' : 'alt-right')
-        return
       }
       if (field || inTerm || modalRef.current) return
       if (!event.ctrlKey || event.altKey || event.metaKey) return
@@ -646,7 +597,6 @@ export function App() {
                 <button className="newp" data-a="newproj" onClick={() => setModal({ type: 'project' })}>
                   <Icon name="plus" />
                   新建项目
-                  <kbd>Ctrl N</kbd>
                 </button>
                 <div className="sec">项目</div>
                 <nav className="plist" aria-label="项目">
@@ -717,7 +667,6 @@ export function App() {
                   <button className="navb" data-a="settings" onClick={() => openSettings()}>
                     <Icon name="settings" />
                     设置
-                    <kbd style={{ marginLeft: 'auto' }}>Ctrl ,</kbd>
                   </button>
                 </div>
               </aside>
@@ -726,7 +675,6 @@ export function App() {
                   project={project}
                   tabs={tabs}
                   active={active}
-                  split={project ? split[project.id] || null : null}
                   rightOpen={right}
                   dmode={dmode}
                   theme={theme}
@@ -748,14 +696,6 @@ export function App() {
                       if (action === 'hint') writeTerm(id, paint(theme, 'amber', '再次按 Ctrl+C 退出'))
                     })
                   }}
-                  onKill={askKill}
-                  onRestart={() => {
-                    if (active?.type !== 'term') return
-                    const time = new Date().toLocaleTimeString('zh-CN', { hour12: false })
-                    writeTerm(active.id, paint(theme, 'faint', `── 重新启动 · ${time} ──`))
-                    void window.awb.ptyRestart(active.id)
-                  }}
-                  onSplit={() => void toggleSplit()}
                   onToggleRight={() => setRight((value) => !value)}
                   onDmode={setDmode}
                   onDiscard={askDiscard}

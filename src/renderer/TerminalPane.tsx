@@ -96,10 +96,6 @@ export function TerminalPane({
     term.loadAddon(fit)
     term.open(host)
     term.attachCustomKeyEventHandler((ev) => {
-      if (ev.type === 'keydown' && ev.altKey && !ev.ctrlKey && !ev.metaKey && (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight')) {
-        keyRef.current(ev.key === 'ArrowLeft' ? 'alt-left' : 'alt-right')
-        return false
-      }
       if (ev.type !== 'keydown' || !ev.ctrlKey || ev.altKey || ev.metaKey) return true
       const key = ev.key.toLowerCase()
       if (key === 'c' && !ev.shiftKey) {

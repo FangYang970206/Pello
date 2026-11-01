@@ -139,62 +139,42 @@ export async function runTour(): Promise<void> {
     click('[data-a=ntk][data-id=shell]')
     await shot('v4_08_newterm_remote')
     click('[data-a=nt-ok]')
-    await waitFor('.pstate.idle, .pstate.running')
+    await waitFor('.tab.on [data-state="idle"], .tab.on [data-state="running"]')
     await shot('v4_12_term_shell')
     for (let i = 0; i < 6; i++) await openShell()
     const shellId = (await waitFor('.tab.on [data-a=tab]')).dataset.id || ''
     window.awb.ptyWrite(shellId, "python3 -c 'import signal,time; signal.signal(signal.SIGINT, signal.SIG_IGN); print(\"running\", flush=True); time.sleep(180)'\r")
-    await waitFor('.pstate.running', 6000)
+    await waitFor('.tab.on [data-state="running"]', 6000)
     await sleep(250)
     await shot('v4_10_workspace')
     await shot('v4_09_remote_term')
 
-    click('[data-a=ctrlc]')
+    await window.awb.ptyInterrupt(shellId)
     await sleep(400)
     await shot('v4_13_ctrlc_once')
-    click('[data-a=ctrlc]')
-    await waitFor('.pstate.exited, .pstate.failed, .pstate.idle', 6000)
+    await window.awb.ptyInterrupt(shellId)
+    await waitFor('.tab.on [data-state="exited"], .tab.on [data-state="failed"], .tab.on [data-state="idle"]', 6000)
     await sleep(400)
     await shot('v4_14_ctrlc_exit')
 
     window.awb.ptyWrite(shellId, "python3 -c 'import signal,time; signal.signal(signal.SIGINT, signal.SIG_IGN); time.sleep(180)'\r")
-    await waitFor('.pstate.running', 6000)
-    click('[data-a=kill]')
+    await waitFor('.tab.on [data-state="running"]', 6000)
+    click('.tab.on [data-a=close]')
     await waitFor('[data-a=confirm]')
-    await shot('v4_15_kill_confirm')
+    await shot('v4_15_close_confirm')
     click('[data-a=confirm]')
-    await waitFor('.pstate.failed, .pstate.exited', 6000)
+    await until(() => !document.querySelector(`[data-a=tab][data-id="${shellId}"]`), 6000)
     await sleep(300)
-    await shot('v4_16_killed')
+    await shot('v4_16_closed')
 
-    window.awb.ptyWrite(shellId, 'exit 2\r')
-    await waitFor('.pstate.failed', 6000)
+    const endedShellId = await openShell()
+    window.awb.ptyWrite(endedShellId, 'exit 2\r')
+    await waitFor('.tab.on [data-state="failed"]', 6000)
     await sleep(300)
     await shot('v4_17_exit2_failed')
 
-    click('[data-a=restart]')
-    await sleep(500)
-    click('[data-a=split]')
-    await sleep(700)
-    await shot('v4_18_split')
-    const orderedPanes = () =>
-      [...document.querySelectorAll('.pane[data-a=pane]')]
-        .filter((node) => !node.hasAttribute('hidden'))
-        .sort((a, b) => Number((a as HTMLElement).style.order) - Number((b as HTMLElement).style.order))
-    const focusOnRight = () => orderedPanes()[1]?.classList.contains('focus') === true
-    const area = document.querySelector('.pane.focus .xterm-helper-textarea') as HTMLTextAreaElement | null
-    area?.focus()
-    area?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', altKey: true, bubbles: true, cancelable: true }))
-    await sleep(200)
-    if (!focusOnRight()) {
-      ;(orderedPanes()[1] as HTMLElement | undefined)?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
-    }
-    await until(focusOnRight, 4000)
-    await sleep(150)
-    await shot('v4_18_split_right')
-    const back = document.querySelector('.pane.focus .xterm-helper-textarea') as HTMLTextAreaElement | null
-    back?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', altKey: true, bubbles: true, cancelable: true }))
-    await sleep(200)
+    await openShell()
+    await shot('v4_18_new_terminal')
 
     click('[data-a=rmode][data-id=files]')
     await sleep(400)
@@ -383,13 +363,7 @@ export async function runTour(): Promise<void> {
     if (!corpBtn) throw new Error('没有内部 Agent 标签')
     corpBtn.click()
     await sleep(200)
-    if (document.querySelector('[data-a=split][aria-pressed="true"]')) {
-      click('[data-a=split]')
-      await sleep(200)
-      corpBtn.click()
-      await sleep(150)
-    }
-    await waitFor('.pstate.failed', 4000)
+    await waitFor('.tab.on [data-state="failed"]', 4000)
     await sleep(250)
     step = 'close-settled'
     await closeExcept((tab) => !!tab.textContent?.includes('内部'))
@@ -400,7 +374,7 @@ export async function runTour(): Promise<void> {
     await openShell()
     const runId = await openShell()
     window.awb.ptyWrite(runId, "python3 -c 'import time; print(\"running\", flush=True); time.sleep(180)'\r")
-    await waitFor('.pstate.running', 8000)
+    await waitFor('.tab.on [data-state="running"]', 8000)
     await sleep(400)
     await shot('v4_10_states')
     for (let i = 0; i < 6; i++) {
@@ -425,7 +399,7 @@ export async function runTour(): Promise<void> {
     const runningTab = [...document.querySelectorAll('.tab')].find((node) => node.querySelector('[data-state="running"]'))
     const runningButton = runningTab?.querySelector('[data-a=tab]') as HTMLElement | undefined
     runningButton?.click()
-    await waitFor('.pstate.running', 4000)
+    await waitFor('.tab.on [data-state="running"]', 4000)
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'w', ctrlKey: true, bubbles: true }))
     await waitFor('[data-a=confirm]')
     await shot('v4_ctrlw_confirm')
@@ -506,7 +480,7 @@ async function openShell(): Promise<string> {
   await sleep(60)
   click('[data-a=nt-ok]')
   await waitFor('.tab.on [data-a=tab]')
-  await waitFor('.pstate.idle, .pstate.running', 8000)
+  await waitFor('.tab.on [data-state="idle"], .tab.on [data-state="running"]', 8000)
   await sleep(150)
   return (document.querySelector('.tab.on [data-a=tab]') as HTMLElement | null)?.dataset.id || ''
 }

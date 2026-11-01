@@ -36,13 +36,13 @@ export interface WorkbenchApi {
   gitDiscard(projectId: string, rel: string, untracked: boolean): Promise<boolean>
   gitTree(projectId: string): Promise<TreeNode[]>
   gitRead(projectId: string, rel: string): Promise<{ text: string; binary: boolean; missing: boolean }>
-  ptyCreate(req: PtyCreateRequest): Promise<{ id: string; state: string; exitCode: number | null; startedAt: number | null; shell: ShellKind; kind: string }>
+  ptyCreate(req: PtyCreateRequest): Promise<{ id: string; state: string; exitCode: number | null; startedAt: number | null; inputReady: boolean; shell: ShellKind; kind: string }>
   ptyWrite(id: string, data: string): void
   ptyResize(id: string, cols: number, rows: number): void
   ptyInterrupt(id: string): Promise<'hint' | 'exit' | 'signal'>
   ptyKill(id: string): Promise<void>
   ptyRestart(id: string): Promise<void>
-  ptyClose(id: string): void
+  ptyClose(id: string): Promise<void>
   onPty(cb: (event: PtyEvent) => void): () => void
   testExec(req: TestExecRequest): Promise<{ text: string; code: number | null }>
   testHost(host: Host): Promise<HostTest>
