@@ -4,6 +4,7 @@ import { resolveAgent, shellLabel, shellLetter } from '../shared/types'
 import { Icon, Mark } from './icons'
 import { TerminalPane } from './TerminalPane'
 import { DiffPane, FilePane } from './DiffPane'
+import type { DocumentDraft } from './documents'
 
 export type TermTab = {
   id: string
@@ -17,7 +18,7 @@ export type TermTab = {
   inputReady: boolean
 }
 export type DiffTab = { id: string; type: 'diff'; projectId: string; path: string }
-export type FileTab = { id: string; type: 'file'; projectId: string; path: string; pinned?: boolean }
+export type FileTab = { id: string; type: 'file'; projectId: string; path: string; pinned?: boolean; dirty?: boolean }
 export type Tab = TermTab | DiffTab | FileTab
 
 function terminalStatus(tab: TermTab) {
@@ -49,6 +50,9 @@ export function Workspace({
   onDiscard,
   onAppKey,
   onPinFile,
+  onEditFile,
+  onSaveFile,
+  onReloadFile,
   untracked
 }: {
   project: Project | null
@@ -61,7 +65,7 @@ export function Workspace({
   agents: AgentInfo[]
   installed: Record<string, boolean>
   diff: FileDiff | null
-  preview: { path: string; text: string; binary: boolean; missing: boolean } | null
+  preview: DocumentDraft | null
   onSelect: (id: string) => void
   onClose: (id: string) => void
   onNewTerm: () => void
@@ -73,6 +77,9 @@ export function Workspace({
   onDiscard: () => void
   onAppKey: (key: string) => void
   onPinFile: (id: string) => void
+  onEditFile: (id: string, text: string) => void
+  onSaveFile: (id: string) => void
+  onReloadFile: (id: string) => void
   untracked?: boolean
 }) {
   const scroller = useRef<HTMLDivElement>(null)
@@ -81,7 +88,7 @@ export function Workspace({
   const [menu, setMenu] = useState(false)
   const mine = project ? tabs.filter((tab) => tab.projectId === project.id) : []
   const shown = mine.find((tab) => tab.id === active?.id) ?? mine[0]
-  const terms = mine.filter((tab): tab is TermTab => tab.type === 'term')
+  const terms = tabs.filter((tab): tab is TermTab => tab.type === 'term')
 
   useEffect(() => {
     const el = scroller.current
@@ -131,7 +138,7 @@ export function Workspace({
       ro.disconnect()
       el.removeEventListener('scroll', onScroll)
     }
-  }, [shown?.id, mine.length, project?.id])
+  }, [shown?.id, mine.length, project?.id, overflow])
 
   const agentOf = (id: string) => agents.find((item) => item.id === id) || resolveAgent(id, [], installed)
 
@@ -176,6 +183,7 @@ export function Workspace({
                       >
                         <Icon name="file" className="s" />
                         <span className="lbl">{label}</span>
+                        {tab.type === 'file' && tab.dirty ? <span className="dot unsaved" role="img" aria-label="有未保存的更改" /> : null}
                       </button>
                       <button className="x" data-a="close" data-id={tab.id} aria-label="关闭" onClick={() => onClose(tab.id)}>
                         <Icon name="x" className="s" />
@@ -262,18 +270,20 @@ export function Workspace({
           ) : shown.type === 'file' ? (
             <FilePane
               path={shown.path}
-              text={preview?.path === shown.path ? preview.text : ''}
-              binary={!!preview && preview.path === shown.path && preview.binary}
-              missing={!preview || preview.path !== shown.path ? false : preview.missing}
-              theme={theme}
+              document={preview?.path === shown.path ? preview : null}
+              onEdit={(text) => onEditFile(shown.id, text)}
+              onSave={() => onSaveFile(shown.id)}
+              onReload={() => onReloadFile(shown.id)}
               rightOpen={rightOpen}
               onToggleRight={onToggleRight}
             />
-          ) : (
-            <div className="panes">
+          ) : null}
+        </>
+      )}
+            <div className="panes" hidden={!project || shown?.type !== 'term'}>
               {terms.map((tab) => {
-                const visible = tab.id === shown.id
-                const focus = tab.id === shown.id
+                const visible = tab.projectId === project?.id && tab.id === shown?.id && shown?.type === 'term'
+                const focus = visible
                 return (
                   <div
                     key={tab.id}
@@ -291,9 +301,6 @@ export function Workspace({
                 )
               })}
             </div>
-          )}
-        </>
-      )}
     </main>
   )
 }

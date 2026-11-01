@@ -359,7 +359,8 @@ export function SettingsView({
       ['新建终端', 'Ctrl T'],
       ['关闭标签', 'Ctrl W'],
       ['切换文件面板', 'Ctrl B'],
-      ['打开设置', 'Ctrl ,']
+      ['打开设置', 'Ctrl ,'],
+      ['保存当前文件', 'Ctrl S']
     ]
     body = (
       <>

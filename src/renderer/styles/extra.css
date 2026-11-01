@@ -35,7 +35,14 @@ kbd {
 .termhost {
   flex: 1;
   min-height: 0;
-  padding: 12px 16px 16px;
+  min-width: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.termframe {
+  position: absolute;
+  inset: 12px 16px 16px;
 }
 
 .termhost .xterm {

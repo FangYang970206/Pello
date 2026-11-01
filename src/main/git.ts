@@ -3,14 +3,15 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import type { DirListing, FileDiff, GitFile, GitPanel, Host, OsKind, PathCheck, TreeNode } from '../shared/types'
+import { createHash, randomUUID } from 'node:crypto'
+import { isUtf8 } from 'node:buffer'
+import type { DirListing, FileContent, FileDiff, GitFile, GitPanel, Host, OsKind, PathCheck, TreeNode } from '../shared/types'
 import { bashQuote, hostPlatform, isAbsPath, joinPath, parentPath, psQuote, sshBatchArgs } from './platform'
 import { remoteCommand, runPasswordCommand } from './ssh'
 
 const exec = promisify(execFile)
 const IGNORE = new Set(['.git', 'node_modules', 'dist', 'out', '.next', '__pycache__', '.cache'])
 const MAX_DIFF = 250_000
-const MAX_TREE = 2000
 
 interface Target {
   platform: OsKind
@@ -22,7 +23,7 @@ function localTarget(cwd: string): Target {
   return { platform: hostPlatform(), cwd, host: null }
 }
 
-async function run(target: Target, command: string): Promise<string> {
+async function run(target: Target, command: string, input?: string): Promise<string> {
   if (!target.host || target.host.id === 'local') {
     const file = target.platform === 'windows' ? 'powershell.exe' : 'bash'
     const args = target.platform === 'windows' ? ['-NoProfile', '-Command', command] : ['-lc', command]
@@ -38,12 +39,11 @@ async function run(target: Target, command: string): Promise<string> {
     target.platform === 'windows'
       ? ['powershell.exe', '-NoProfile', '-Command', command]
       : ['bash', '-lc', command]
-  if (target.host.auth === 'password') return runPasswordCommand(target.host, remoteCommand(target.host, remote))
-  const args = sshBatchArgs(
-    { user: target.host.user, addr: target.host.addr, port: target.host.port, auth: target.host.auth },
-    remote
-  )
-  const { stdout } = await exec('ssh', args, { timeout: 20000, maxBuffer: 12_000_000, windowsHide: true })
+  if (target.host.auth === 'password') return runPasswordCommand(target.host, remoteCommand(target.host, remote), input)
+  const args = sshBatchArgs(target.host, [remoteCommand(target.host, remote)])
+  const operation = exec('ssh', args, { timeout: 20000, maxBuffer: 12_000_000, windowsHide: true })
+  if (input !== undefined) operation.child.stdin?.end(input)
+  const { stdout } = await operation
   return stdout
 }
 
@@ -170,7 +170,7 @@ async function isRepo(target: Target): Promise<boolean> {
 
 function inside(root: string, abs: string): boolean {
   const rel = path.relative(root, abs)
-  return rel === '' || (!!rel && !rel.startsWith('..') && !path.isAbsolute(rel))
+  return rel === '' || (!!rel && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel))
 }
 
 function looksBinary(buf: Buffer): boolean {
@@ -179,19 +179,23 @@ function looksBinary(buf: Buffer): boolean {
   return false
 }
 
-async function readLocal(cwd: string, rel: string): Promise<{ text: string; binary: boolean; missing: boolean }> {
-  const abs = path.resolve(cwd, rel)
-  if (!inside(cwd, abs)) return { text: '', binary: false, missing: true }
+const versionOf = (buffer: Buffer) => createHash('sha256').update(buffer).digest('hex')
+const missingFile = (): FileContent => ({ text: '', binary: false, missing: true, version: null })
+function decodeFile(buf: Buffer): FileContent {
+  const binary = looksBinary(buf) || !isUtf8(buf)
+  return { text: binary ? '' : buf.toString('utf8'), binary, missing: false, version: versionOf(buf), tooBig: buf.length > 2_000_000 }
+}
+
+async function readLocal(cwd: string, rel: string): Promise<FileContent> {
   try {
-    const buf = fs.readFileSync(abs)
-    if (looksBinary(buf)) return { text: '', binary: true, missing: false }
-    return { text: buf.toString('utf8'), binary: false, missing: false }
+    return decodeFile(fs.readFileSync(localPath(cwd, rel)))
   } catch {
-    return { text: '', binary: false, missing: true }
+    return missingFile()
   }
 }
 
-async function readRemote(target: Target, rel: string): Promise<{ text: string; binary: boolean; missing: boolean }> {
+async function readRemote(target: Target, rel: string): Promise<FileContent> {
+  rel = cleanRelative(rel)
   const abs = joinPath(target.platform, target.cwd, rel)
   const q = target.platform === 'windows' ? psQuote(abs) : bashQuote(abs)
   try {
@@ -200,12 +204,10 @@ async function readRemote(target: Target, rel: string): Promise<{ text: string; 
         ? `[Convert]::ToBase64String([IO.File]::ReadAllBytes(${q}))`
         : `base64 -w 0 ${q} 2>/dev/null || base64 ${q}`
     const out = (await run(target, b64)).trim()
-    if (!out) return { text: '', binary: false, missing: false }
     const buf = Buffer.from(out, 'base64')
-    if (looksBinary(buf)) return { text: '', binary: true, missing: false }
-    return { text: buf.toString('utf8'), binary: false, missing: false }
+    return decodeFile(buf)
   } catch {
-    return { text: '', binary: false, missing: true }
+    return missingFile()
   }
 }
 
@@ -250,76 +252,120 @@ function sortNodes(nodes: TreeNode[]): TreeNode[] {
   return nodes
 }
 
-function walkLocal(dir: string, root: string, depth: number, budget: { n: number }): TreeNode[] {
-  if (depth > 5 || budget.n > MAX_TREE) return []
-  let entries: fs.Dirent[] = []
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true })
-  } catch {
-    return []
-  }
-  const nodes: TreeNode[] = []
-  for (const ent of entries) {
-    if (IGNORE.has(ent.name)) continue
-    if (budget.n++ > MAX_TREE) break
-    const abs = path.join(dir, ent.name)
-    const rel = path.relative(root, abs).split(path.sep).join('/')
-    if (ent.isDirectory()) {
-      nodes.push({ name: ent.name, path: rel, dir: true, children: walkLocal(abs, root, depth + 1, budget) })
-    } else if (ent.isFile()) {
-      nodes.push({ name: ent.name, path: rel, dir: false })
-    }
-  }
-  return sortNodes(nodes)
+function cleanRelative(rel: string): string {
+  if (rel.includes('\0') || /^[a-z]:|^[\\/]/i.test(rel) || rel.split(/[\\/]/).includes('..')) throw new Error('非法文件路径')
+  return rel.replace(/\\/g, '/').split('/').filter((part) => part && part !== '.').join('/')
 }
 
-export async function fileTree(target: Target): Promise<TreeNode[]> {
-  if (!target.host || target.host.id === 'local') return walkLocal(target.cwd, target.cwd, 0, { n: 0 })
-  const cmd =
-    target.platform === 'windows'
-      ? `Get-ChildItem -LiteralPath ${psQuote(target.cwd)} -Recurse -Depth 4 -Name | Select-Object -First ${MAX_TREE}`
-      : `cd ${bashQuote(target.cwd)} && find . -mindepth 1 -maxdepth 5 \\( -name .git -o -name node_modules -o -name dist -o -name out -o -name .next -o -name __pycache__ \\) -prune -o -print | head -n ${MAX_TREE}`
-  let text = ''
-  try {
-    text = await run(target, cmd)
-  } catch {
-    return []
-  }
-  const root: TreeNode[] = []
-  const dirs = new Map<string, TreeNode>()
-  const ensureDir = (rel: string, name: string, parent: TreeNode[] | undefined): TreeNode => {
-    let node = dirs.get(rel)
-    if (!node) {
-      node = { name, path: rel, dir: true, children: [] }
-      dirs.set(rel, node)
-      ;(parent || root).push(node)
-    }
-    return node
-  }
-  for (const raw of text.split(/\r?\n/)) {
-    let rel = raw.trim().replace(/^\.\//, '').replace(/\\/g, '/')
-    if (!rel || rel === '.') continue
-    const parts = rel.split('/').filter(Boolean)
-    if (parts.some((p) => IGNORE.has(p))) continue
-    let parentList: TreeNode[] | undefined
-    let acc = ''
-    for (let i = 0; i < parts.length; i++) {
-      acc = acc ? acc + '/' + parts[i] : parts[i]
-      const last = i === parts.length - 1
-      const knownDir = dirs.get(acc)
-      if (!last) {
-        const node = knownDir || ensureDir(acc, parts[i], parentList)
-        parentList = node.children
-      } else if (!knownDir) {
-        ;(parentList || root).push({ name: parts[i], path: acc, dir: false })
-      }
-    }
-  }
-  return sortNodes(root)
+function localPath(cwd: string, rel: string): string {
+  const root = fs.realpathSync(cwd)
+  const abs = fs.realpathSync(path.resolve(root, cleanRelative(rel)))
+  if (!inside(root, abs)) throw new Error('路径超出项目目录')
+  return abs
 }
 
-export async function readFile(target: Target, rel: string): Promise<{ text: string; binary: boolean; missing: boolean }> {
+/** List one level on demand. Directory depth no longer truncates the tree. */
+export async function fileTree(target: Target, rel = ''): Promise<TreeNode[]> {
+  rel = cleanRelative(rel)
+  let entries: { name: string; dir: boolean }[]
+  if (!target.host || target.host.id === 'local') {
+    entries = fs.readdirSync(localPath(target.cwd, rel), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() || entry.isFile())
+      .map((entry) => ({ name: entry.name, dir: entry.isDirectory() }))
+  } else {
+    const abs = rel ? joinPath(target.platform, target.cwd, rel) : target.cwd
+    const q = target.platform === 'windows' ? psQuote(abs) : bashQuote(abs)
+    if (target.platform === 'windows') {
+      const text = await run(target, `@(Get-ChildItem -LiteralPath ${q} -Force -ErrorAction Stop | Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } | ForEach-Object { @{ name=$_.Name; dir=$_.PSIsContainer } }) | ConvertTo-Json -Compress`)
+      const parsed = JSON.parse(text.trim() || '[]')
+      entries = Array.isArray(parsed) ? parsed : [parsed]
+    } else {
+      const text = await run(target, `for f in ${q}/* ${q}/.[!.]* ${q}/..?*; do [ -L "$f" ] && continue; [ -e "$f" ] || continue; if [ -d "$f" ]; then printf 'd%s\\0' "\${f##*/}"; elif [ -f "$f" ]; then printf 'f%s\\0' "\${f##*/}"; fi; done`)
+      entries = text.split('\0').filter(Boolean).map((entry) => ({ name: entry.slice(1), dir: entry[0] === 'd' }))
+    }
+  }
+  return sortNodes(entries.filter((entry) => !IGNORE.has(entry.name)).map((entry) => ({
+    name: entry.name, dir: entry.dir, path: rel ? `${rel}/${entry.name}` : entry.name
+  })))
+}
+
+export async function readFile(target: Target, rel: string): Promise<FileContent> {
   if (!target.host || target.host.id === 'local') return readLocal(target.cwd, rel)
+  return readRemote(target, rel)
+}
+
+export async function writeFile(target: Target, rel: string, text: string, version: string): Promise<FileContent> {
+  rel = cleanRelative(rel)
+  if (!rel || !/^[a-f0-9]{64}$/.test(version)) throw new Error('请先读取文件再保存')
+  const bytes = Buffer.from(text, 'utf8')
+  if (bytes.length > 2_000_000) throw new Error('文件超过 2 MB，无法在内置编辑器中保存')
+  const conflict = () => new Error('文件已被其他程序修改，请重新读取后合并更改')
+  if (!target.host || target.host.id === 'local') {
+    const abs = localPath(target.cwd, rel)
+    const current = fs.readFileSync(abs)
+    if (versionOf(current) !== version) throw conflict()
+    if (looksBinary(current) || !isUtf8(current)) throw new Error('只能编辑 UTF-8 文本文件')
+    const temp = `${abs}.awb-${randomUUID()}.tmp`
+    try {
+      fs.writeFileSync(temp, bytes, { flag: 'wx', mode: fs.statSync(abs).mode })
+      if (versionOf(fs.readFileSync(abs)) !== version) throw conflict()
+      fs.renameSync(temp, abs)
+    } finally {
+      if (fs.existsSync(temp)) fs.unlinkSync(temp)
+    }
+    return readLocal(target.cwd, rel)
+  }
+  const before = await readRemote(target, rel)
+  if (before.missing) throw new Error('文件不存在')
+  if (before.version !== version) throw conflict()
+  if (before.binary) throw new Error('只能编辑 UTF-8 文本文件')
+  const abs = joinPath(target.platform, target.cwd, rel)
+  let command: string
+  if (target.platform === 'windows') {
+    command = `$ErrorActionPreference='Stop'
+$root=[IO.Path]::GetFullPath(${psQuote(target.cwd)}).TrimEnd('\\')+'\\'
+$file=[IO.Path]::GetFullPath(${psQuote(abs)})
+if (-not $file.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)) { throw 'AWB_UNSAFE_PATH' }
+$walk=$root
+foreach ($part in $file.Substring($root.Length).Split('\\')) {
+  $walk=Join-Path $walk $part
+  if ((Get-Item -LiteralPath $walk -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'AWB_UNSAFE_PATH' }
+}
+function FileHash { ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([IO.File]::ReadAllBytes($file)))).Replace('-','').ToLowerInvariant() }
+if ((FileHash) -ne '${version}') { throw 'AWB_CONFLICT' }
+$payload=[Convert]::FromBase64String([Console]::In.ReadToEnd())
+$temp=$file+'.awb-'+[Guid]::NewGuid().ToString('N')+'.tmp'
+try {
+  [IO.File]::WriteAllBytes($temp,$payload)
+  if ((FileHash) -ne '${version}') { throw 'AWB_CONFLICT' }
+  [IO.File]::Replace($temp,$file,[NullString]::Value)
+} finally { if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force } }
+'saved'`
+  } else {
+    command = `set -e
+root=$(cd -P -- ${bashQuote(target.cwd)} && pwd)
+file=${bashQuote(abs)}
+[ ! -L "$file" ] || { echo AWB_UNSAFE_PATH >&2; exit 1; }
+parent=$(cd -P -- "$(dirname -- "$file")" && pwd)
+root=\${root%/}
+case "$parent/" in "$root/"*) ;; *) echo AWB_UNSAFE_PATH >&2; exit 1;; esac
+file="$parent/$(basename -- "$file")"
+file_hash() { (sha256sum < "$file" 2>/dev/null || shasum -a 256 < "$file") | cut -d ' ' -f 1; }
+[ "$(file_hash)" = '${version}' ] || { echo AWB_CONFLICT >&2; exit 1; }
+temp=$(mktemp "$parent/.awb-XXXXXX")
+trap 'rm -f -- "$temp"' EXIT
+cp -p -- "$file" "$temp"
+base64 -d > "$temp"
+[ "$(file_hash)" = '${version}' ] || { echo AWB_CONFLICT >&2; exit 1; }
+mv -f -- "$temp" "$file"
+printf saved`
+  }
+  try { await run(target, command, bytes.toString('base64')) } catch (error) {
+    const detail = String((error as { stderr?: string }).stderr || error)
+    if (detail.includes('AWB_CONFLICT')) throw conflict()
+    if (detail.includes('AWB_UNSAFE_PATH')) throw new Error('无法保存项目目录外的文件或符号链接')
+    throw error
+  }
   return readRemote(target, rel)
 }
 

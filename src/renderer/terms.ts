@@ -17,6 +17,11 @@ export function unbindTerm(id: string, term: Terminal): void {
   if (terms.get(id) === term) terms.delete(id)
 }
 
+export function syncTermSize(id: string): void {
+  const term = terms.get(id)
+  if (term) window.awb.ptyResize(id, term.cols, term.rows)
+}
+
 export function writeTerm(id: string, data: string): void {
   const term = terms.get(id)
   if (term) term.write(data)
@@ -39,6 +44,10 @@ export function termPlain(id: string): string {
 
 if (typeof window !== 'undefined') {
   window.__awbBuffer = termPlain
+  window.__awbGeometry = (id) => {
+    const term = terms.get(id)
+    return term ? { cols: term.cols, rows: term.rows, viewportY: term.buffer.active.viewportY, buffer: term.buffer.active.type, mouse: term.modes.mouseTrackingMode } : null
+  }
 }
 
 const INK = {

@@ -76,12 +76,15 @@ try {
     await page.evaluate((width) => window.awb.winResize(width, 800), width)
     await page.waitForFunction((width) => window.innerWidth === width, width)
     await check(`plus follows tabs at ${width}px`, async () => {
-      const gap = await page.evaluate(() => {
+      const layout = await page.evaluate(() => {
         const last = document.querySelector('.tabs .tab:last-child').getBoundingClientRect()
         const plus = document.querySelector('.addtab[data-a=newterm]').getBoundingClientRect()
-        return plus.left - last.right
+        const tabs = document.querySelector('.tabs')
+        const view = tabs.getBoundingClientRect()
+        return { gap: plus.left - last.right, overflow: tabs.scrollWidth > tabs.clientWidth + 1, accessible: plus.left >= view.right - 1 }
       })
-      assert.ok(gap >= 0 && gap <= 8, `gap is ${gap}px`)
+      if (layout.overflow) assert.ok(layout.accessible, JSON.stringify(layout))
+      else assert.ok(layout.gap >= 0 && layout.gap <= 8, `gap is ${layout.gap}px`)
     })
   }
   await check('toolbar and shortcut badges are absent', async () => {

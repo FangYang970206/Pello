@@ -8,7 +8,7 @@ import type { EnvVar, ProcState, PtyStateEvent, ShellKind } from '../shared/type
 import { cmdline, PRESETS } from '../shared/types'
 import { db } from './store'
 import { OscStrip } from './osc'
-import { passwordTerminal, type TerminalProcess } from './ssh'
+import { passwordTerminal, remoteCommand, type TerminalProcess } from './ssh'
 import {
   bashRc,
   pwshProfile,
@@ -176,7 +176,7 @@ class Session {
       this.shell = shellForHost(host.platform, this.shell)
       const boot = remoteBootstrap(host.platform, this.cwd)
       this.remoteAbort = new AbortController()
-      proc = host.auth === 'password' ? await passwordTerminal(host, boot, this.remoteAbort.signal) : pty.spawn('ssh', sshArgs(host, boot), {
+      proc = host.auth === 'password' ? await passwordTerminal(host, boot, this.remoteAbort.signal) : pty.spawn('ssh', sshArgs(host, [remoteCommand(host, boot)]), {
         name: 'xterm-256color',
         cols: 80,
         rows: 24,
@@ -209,9 +209,9 @@ class Session {
     })
   }
 
-  write(data: string): void {
+  write(data: string, binary = false): void {
     if (!this.proc || this.phase === 'dead') return
-    if ((data.includes('\r') || data.includes('\n')) && this.phase === 'prompt' && this.state !== 'running') {
+    if (!binary && (data.includes('\r') || data.includes('\n')) && this.phase === 'prompt' && this.state !== 'running') {
       this.phase = 'command'
       this.state = 'running'
       this.startedAt = Date.now()
@@ -220,7 +220,7 @@ class Session {
       this.commandSentAt = Date.now()
       this.emit(false)
     }
-    this.proc.write(data)
+    this.proc.write(binary ? Buffer.from(data, 'latin1') : data)
   }
 
   resize(cols: number, rows: number): void {
@@ -498,8 +498,8 @@ export async function createSession(
   return session.info()
 }
 
-export function writeSession(id: string, data: string): void {
-  sessions.get(id)?.write(data)
+export function writeSession(id: string, data: string, binary = false): void {
+  sessions.get(id)?.write(data, binary)
 }
 
 export function resizeSession(id: string, cols: number, rows: number): void {

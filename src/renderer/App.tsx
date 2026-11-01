@@ -1,19 +1,20 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import type { AgentInfo, Database, FileDiff, GitPanel, Host, SettingsSection, ShellKind, ThemeName, TreeNode } from '../shared/types'
 import { PRESETS, SHELL_AGENT, cmdline, resolveAgent, shellLabel, uid } from '../shared/types'
 import { Icon } from './icons'
-import { dropTerm, paint, writeNotice, writeTerm } from './terms'
+import { dropTerm, paint, syncTermSize, writeNotice, writeTerm } from './terms'
 import { SettingsView } from './SettingsView'
 import { ConfirmDialog, ExecDialog, HostDialog, NewProjectDialog, NewTermDialog, dialogOpener, focusableIn } from './Dialogs'
 import { RightPanel } from './RightPanel'
-import { Workspace, type Tab, type TermTab } from './Workspace'
+import { Workspace, type FileTab, type Tab, type TermTab } from './Workspace'
+import { documentKey, editableText, fileText, isDirty, type DocumentDraft } from './documents'
 
 type Modal =
   | { type: 'project' }
   | { type: 'term' }
   | { type: 'exec'; id?: string }
   | { type: 'host'; id?: string }
-  | { type: 'confirm'; title: string; body: ReactNode; ok: string; run: () => void }
+  | { type: 'confirm'; title: string; body: ReactNode; ok: string; run: () => void; save?: () => void }
 
 type GitState = GitPanel & { untracked: Record<string, boolean> }
 
@@ -35,15 +36,23 @@ export function App() {
   activeMapRef.current = activeMap
   const [menuId, setMenuId] = useState<string | null>(null)
   const [right, setRight] = useState(true)
+  const [rightWidth, setRightWidth] = useState(() => Number(localStorage.getItem('awb:rightWidth')) || 296)
   const [rmode, setRmode] = useState<'files' | 'changes'>('changes')
   const [dmode, setDmode] = useState<'unified' | 'split'>('unified')
   const [openDirs, setOpenDirs] = useState<Record<string, boolean>>({})
+  const openDirsRef = useRef(openDirs)
+  openDirsRef.current = openDirs
   const [modal, setModal] = useState<Modal | null>(null)
   const [toasts, setToasts] = useState<{ id: string; text: string; bad?: boolean }[]>([])
   const [git, setGit] = useState<GitState | null>(null)
   const [tree, setTree] = useState<TreeNode[]>([])
+  const [treeChildren, setTreeChildren] = useState<Record<string, TreeNode[]>>({})
+  const directoryRequests = useRef(new Set<string>())
   const [diff, setDiff] = useState<FileDiff | null>(null)
-  const [preview, setPreview] = useState<{ path: string; text: string; binary: boolean; missing: boolean } | null>(null)
+  const [documents, setDocuments] = useState<Record<string, DocumentDraft>>({})
+  const documentsRef = useRef(documents)
+  documentsRef.current = documents
+  const savingDocuments = useRef(new Set<string>())
   const [gitTick, setGitTick] = useState(0)
   const booted = useRef(false)
   const closingTerms = useRef(new Set<string>())
@@ -53,6 +62,35 @@ export function App() {
   const settingsOpener = useRef<HTMLElement | null>(null)
   const settingsReturn = useRef<HTMLElement | null>(null)
   modalRef.current = modal
+
+  useEffect(() => { localStorage.setItem('awb:rightWidth', String(rightWidth)) }, [rightWidth])
+
+  function resizeRight(width: number) {
+    const sideWidth = window.innerWidth <= 1180 ? 216 : 240
+    setRightWidth(Math.max(220, Math.min(width, window.innerWidth - sideWidth - 320, 800)))
+  }
+
+  useEffect(() => {
+    const onResize = () => setRightWidth((width) => Math.max(220, Math.min(width, window.innerWidth - (window.innerWidth <= 1180 ? 216 : 240) - 320, 800)))
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
+  async function toggleDirectory(rel: string) {
+    if (!project) return
+    const key = `${project.id}:${rel}`
+    const open = !openDirs[key]
+    setOpenDirs((map) => ({ ...map, [key]: open }))
+    if (!open || directoryRequests.current.has(key)) return
+    directoryRequests.current.add(key)
+    try {
+      const nodes = await window.awb.gitTree(project.id, rel)
+      setTreeChildren((map) => ({ ...map, [key]: nodes }))
+    } catch (error) {
+      setOpenDirs((map) => ({ ...map, [key]: false }))
+      toast(error instanceof Error ? error.message : '无法读取目录', true)
+    } finally { directoryRequests.current.delete(key) }
+  }
 
   const toast = useCallback((text: string, bad = false) => {
     const id = uid('z')
@@ -93,6 +131,7 @@ export function App() {
   const theme: ThemeName = db?.settings.theme || 'dark'
   const projectTabs = project ? tabs.filter((tab) => tab.projectId === project.id) : []
   const active = projectTabs.find((tab) => tab.id === activeMap[project?.id || '']) ?? projectTabs[0]
+  const preview = active?.type === 'file' ? documents[documentKey(active.projectId, active.path)] || null : null
   const agents: AgentInfo[] = db
     ? [...PRESETS.map((item) => resolveAgent(item.id, db.custom, installed)), ...db.custom.map((item) => resolveAgent(item.id, db.custom, installed)), SHELL_AGENT]
     : []
@@ -128,6 +167,7 @@ export function App() {
     if (activate) setActiveMap((map) => ({ ...map, [target.id]: id }))
     try {
       const info = await window.awb.ptyCreate({ id, projectId: target.id, kind, shell })
+      syncTermSize(id)
       setTabs((list) => {
         const next = list.map((item) =>
           item.id === id && item.type === 'term'
@@ -242,6 +282,13 @@ export function App() {
             if (!stop) setTree(nodes)
           })
           .catch(() => undefined)
+        for (const [key, open] of Object.entries(openDirsRef.current)) {
+          if (!open || !key.startsWith(`${project.id}:`) || directoryRequests.current.has(key)) continue
+          directoryRequests.current.add(key)
+          void window.awb.gitTree(project.id, key.slice(project.id.length + 1)).then((nodes) => {
+            if (!stop) setTreeChildren((map) => ({ ...map, [key]: nodes }))
+          }).catch(() => undefined).finally(() => directoryRequests.current.delete(key))
+        }
       }
     }
     load()
@@ -256,7 +303,6 @@ export function App() {
     setGit(null)
     setTree([])
     setDiff(null)
-    setPreview(null)
   }, [projectId])
 
   useEffect(() => {
@@ -272,14 +318,80 @@ export function App() {
 
   useEffect(() => {
     if (!project || active?.type !== 'file') return
+    const key = documentKey(project.id, active.path)
+    if (documentsRef.current[key]) return
     let stop = false
     void window.awb.gitRead(project.id, active.path).then((file) => {
-      if (!stop) setPreview({ path: active.path, ...file })
-    })
+      if (!stop) setDocuments((map) => ({ ...map, [key]: { ...file, projectId: project.id, path: active.path, draft: editableText(file.text) } }))
+    }).catch((error) => toast(error instanceof Error ? error.message : '无法读取文件', true))
     return () => {
       stop = true
     }
   }, [project?.id, active?.type === 'file' ? active.id + active.path : ''])
+
+  useEffect(() => {
+    window.awb.setUnsavedChanges(Object.values(documents).some(isDirty))
+  }, [documents])
+
+  useEffect(() => {
+    const onUnload = (event: BeforeUnloadEvent) => {
+      if (!Object.values(documentsRef.current).some(isDirty)) return
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', onUnload)
+    return () => window.removeEventListener('beforeunload', onUnload)
+  }, [])
+
+  function editFile(id: string, draft: string) {
+    const tab = tabs.find((item): item is FileTab => item.id === id && item.type === 'file')
+    if (!tab) return
+    const key = documentKey(tab.projectId, tab.path)
+    const doc = documentsRef.current[key]
+    if (!doc) return
+    setDocuments((map) => ({ ...map, [key]: { ...map[key], draft, error: undefined } }))
+    setTabs((list) => list.map((item) => item.id === id ? { ...item, pinned: true, dirty: draft !== editableText(doc.text) } : item))
+  }
+
+  async function saveFile(tab: FileTab): Promise<boolean> {
+    const key = documentKey(tab.projectId, tab.path)
+    const doc = documentsRef.current[key]
+    if (!doc?.version || doc.binary || doc.missing || doc.tooBig || savingDocuments.current.has(key)) return false
+    if (!isDirty(doc)) return true
+    savingDocuments.current.add(key)
+    setDocuments((map) => ({ ...map, [key]: { ...map[key], saving: true, error: undefined } }))
+    try {
+      const saved = await window.awb.gitWrite(tab.projectId, tab.path, fileText(doc), doc.version)
+      const latest = documentsRef.current[key] || doc
+      const draft = latest.draft === doc.draft ? editableText(saved.text) : latest.draft
+      setDocuments((map) => ({ ...map, [key]: { ...saved, projectId: tab.projectId, path: tab.path, draft } }))
+      setTabs((list) => list.map((item) => item.id === tab.id ? { ...item, dirty: draft !== editableText(saved.text) } : item))
+      setGitTick((tick) => tick + 1)
+      toast('文件已保存')
+      return true
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '保存失败'
+      setDocuments((map) => ({ ...map, [key]: { ...map[key], saving: false, error: message } }))
+      toast(message, true)
+      return false
+    } finally { savingDocuments.current.delete(key) }
+  }
+
+  function reloadFile(id: string) {
+    const tab = tabs.find((item): item is FileTab => item.id === id && item.type === 'file')
+    if (!tab) return
+    const key = documentKey(tab.projectId, tab.path)
+    const reload = () => {
+      setModal(null)
+      void window.awb.gitRead(tab.projectId, tab.path).then((file) => {
+        setDocuments((map) => ({ ...map, [key]: { ...file, projectId: tab.projectId, path: tab.path, draft: editableText(file.text) } }))
+        setTabs((list) => list.map((item) => item.id === tab.id ? { ...item, dirty: false } : item))
+      }).catch((error) => toast(String(error), true))
+    }
+    if (documentsRef.current[key] && isDirty(documentsRef.current[key])) {
+      setModal({ type: 'confirm', title: '重新读取文件？', body: '这会放弃此文件尚未保存的更改。', ok: '放弃并重新读取', run: reload })
+    } else reload()
+  }
 
   async function closeTab(id: string) {
     const tab = tabs.find((item) => item.id === id)
@@ -295,6 +407,11 @@ export function App() {
       }
       dropTerm(id)
     }
+    if (tab.type === 'file') setDocuments((map) => {
+      const next = { ...map }
+      delete next[documentKey(tab.projectId, tab.path)]
+      return next
+    })
     setTabs((list) => {
       const next = list.filter((item) => item.id !== id)
       const mine = next.filter((item) => item.projectId === tab.projectId)
@@ -312,6 +429,17 @@ export function App() {
   function requestClose(id: string) {
     const tab = tabs.find((item) => item.id === id)
     if (!tab || !db) return
+    if (tab.type === 'file') {
+      const doc = documentsRef.current[documentKey(tab.projectId, tab.path)]
+      if (doc?.saving) { toast('文件正在保存，请稍候'); return }
+      if (doc && isDirty(doc)) {
+        setModal({ type: 'confirm', title: '文件尚未保存', body: `${tab.path} 有未保存的更改。`, ok: '放弃并关闭',
+          run: () => { setModal(null); void closeTab(id) },
+          save: () => { void saveFile(tab).then((saved) => { if (saved) { setModal(null); void closeTab(id) } }) }
+        })
+        return
+      }
+    }
     if (tab.type !== 'term' || tab.state !== 'running' || !db.settings.confirmKill) {
       void closeTab(id)
       return
@@ -411,11 +539,17 @@ export function App() {
 
   function openFile(rel: string) {
     if (!project) return
+    const opened = tabs.find((tab) => tab.type === 'file' && tab.projectId === project.id && tab.path === rel)
+    if (opened) { selectTab(opened.id); return }
     const existing = tabs.find((tab) => tab.type === 'file' && tab.projectId === project.id && !tab.pinned)
     if (existing && existing.type === 'file') {
+      setDocuments((map) => {
+        const next = { ...map }
+        delete next[documentKey(existing.projectId, existing.path)]
+        return next
+      })
       setTabs((list) => list.map((tab) => (tab.id === existing.id && tab.type === 'file' ? { ...tab, path: rel } : tab)))
       setActiveMap((map) => ({ ...map, [project.id]: existing.id }))
-      setPreview(null)
       return
     }
     const id = uid('f')
@@ -431,6 +565,8 @@ export function App() {
     if (!db) return
     const item = db.projects.find((projectItem) => projectItem.id === id)
     if (!item) return
+    const unsaved = Object.values(documentsRef.current).filter((doc) => doc.projectId === id && isDirty(doc)).length
+    if (Object.values(documentsRef.current).some((doc) => doc.projectId === id && doc.saving)) { toast('文件正在保存，请稍候'); return }
     const itemHost = db.hosts.find((hostItem) => hostItem.id === item.host) || db.hosts[0]
     const running = tabs.filter((tab) => tab.projectId === id && tab.type === 'term' && tab.state === 'running').length
     setMenuId(null)
@@ -442,6 +578,7 @@ export function App() {
         <>
           将从列表中移除 {item.name}，并关闭它的所有终端。{itemHost?.name || '本机'}上的目录 <span className="mono">{item.path}</span> 及其中的文件不会被删除。
           {running ? <> 有 {running} 个正在运行的进程会被结束。</> : null}
+          {unsaved ? <> 此项目有 {unsaved} 个文件尚未保存，更改会被放弃。</> : null}
         </>
       ),
       run: async () => {
@@ -457,6 +594,7 @@ export function App() {
         for (const tab of terms) dropTerm(tab.id)
         const projects = db.projects.filter((projectItem) => projectItem.id !== id)
         setTabs((list) => list.filter((tab) => tab.projectId !== id))
+        setDocuments((map) => Object.fromEntries(Object.entries(map).filter(([, doc]) => doc.projectId !== id)))
         setDb({ ...db, projects })
         if (projectId === id) setProjectId(projects[0]?.id ?? null)
         setModal(null)
@@ -490,6 +628,7 @@ export function App() {
     } else if (key === ',') openSettings()
     else if (key === 'b') setRight((value) => !value)
     else if (key === 'w' && active) requestClose(active.id)
+    else if (key === 's' && active?.type === 'file') void saveFile(active)
   }
 
   useEffect(() => {
@@ -514,7 +653,7 @@ export function App() {
       if (field || inTerm || modalRef.current) return
       if (!event.ctrlKey || event.altKey || event.metaKey) return
       const key = event.key.toLowerCase()
-      if (key === 'n' || key === 't' || key === ',' || key === 'b' || key === 'w') {
+      if (key === 'n' || key === 't' || key === ',' || key === 'b' || key === 'w' || (key === 's' && active?.type === 'file')) {
         event.preventDefault()
         onAppKey(key)
       }
@@ -568,7 +707,7 @@ export function App() {
 
   return (
     <>
-      <div id="app" className={withRight ? 'with-right' : ''}>
+      <div id="app" className={withRight ? 'with-right' : ''} style={{ '--right-width': `${rightWidth}px` } as CSSProperties}>
         <header className="title">
           <div className="brand">
             <span className="logo">
@@ -701,6 +840,9 @@ export function App() {
                   onDiscard={askDiscard}
                   onAppKey={onAppKey}
                   onPinFile={pinFile}
+                  onEditFile={editFile}
+                  onSaveFile={(id) => { const tab = tabs.find((item): item is FileTab => item.id === id && item.type === 'file'); if (tab) void saveFile(tab) }}
+                  onReloadFile={reloadFile}
                   untracked={!!(active && active.type === 'diff' && git?.untracked[active.path])}
                 />
                 {withRight && project && host ? (
@@ -713,10 +855,13 @@ export function App() {
                     isRepo={!!git?.isRepo}
                     branch={git?.branch || project.branch}
                     tree={tree}
+                    treeChildren={treeChildren}
                     openDirs={openDirs}
+                    width={rightWidth}
+                    onResize={resizeRight}
                     activePath={active && active.type !== 'term' ? active.path : undefined}
                     onMode={setRmode}
-                    onToggleDir={(dir) => setOpenDirs((map) => ({ ...map, [dir]: !map[dir] }))}
+                    onToggleDir={(dir) => void toggleDirectory(dir)}
                     onOpenDiff={openDiff}
                     onOpenFile={openFile}
                     onCollapse={() => setRight(false)}
@@ -756,7 +901,7 @@ export function App() {
         </div>
       </div>
       <div id="modal">
-        {modal?.type === 'confirm' ? <ConfirmDialog title={modal.title} body={modal.body} ok={modal.ok} onOk={modal.run} onClose={() => setModal(null)} /> : null}
+        {modal?.type === 'confirm' ? <ConfirmDialog title={modal.title} body={modal.body} ok={modal.ok} onOk={modal.run} onSave={modal.save} onClose={() => setModal(null)} /> : null}
         {modal?.type === 'project' && db ? (
           <NewProjectDialog
             hosts={db.hosts}

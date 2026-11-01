@@ -155,6 +155,14 @@ export interface TreeNode {
   children?: TreeNode[]
 }
 
+export interface FileContent {
+  text: string
+  binary: boolean
+  missing: boolean
+  version: string | null
+  tooBig?: boolean
+}
+
 export interface PathCheck {
   kind: 'empty' | 'invalid' | 'missing' | 'git' | 'plain' | 'error'
   branch?: string

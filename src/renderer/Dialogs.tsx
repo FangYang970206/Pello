@@ -106,7 +106,7 @@ function Frame({
   )
 }
 
-export function ConfirmDialog({ title, body, ok, onOk, onClose }: { title: string; body: ReactNode; ok: string; onOk: () => void; onClose: () => void }) {
+export function ConfirmDialog({ title, body, ok, onOk, onClose, onSave }: { title: string; body: ReactNode; ok: string; onOk: () => void; onClose: () => void; onSave?: () => void }) {
   return (
     <Frame
       title={title}
@@ -121,6 +121,7 @@ export function ConfirmDialog({ title, body, ok, onOk, onClose }: { title: strin
           <button className="btn dangerf" data-a="confirm" onClick={onOk}>
             {ok}
           </button>
+          {onSave ? <button className="btn pri" data-a="save-close" onClick={onSave}>保存并关闭</button> : null}
         </>
       }
     >

@@ -3,6 +3,7 @@ import type {
   DirListing,
   Executor,
   FileDiff,
+  FileContent,
   GitFile,
   GitPanel,
   Host,
@@ -28,16 +29,18 @@ export interface WorkbenchApi {
   savePlugins(plugins: Plugin[]): Promise<Database>
   saveSessions(projectId: string, terms: SavedTerm[], activeId?: string | null): Promise<Database>
   saveBranch(projectId: string, branch: string): Promise<Database>
+  setUnsavedChanges(dirty: boolean): void
   pickDirectory(): Promise<string | null>
   checkPath(hostId: string, input: string): Promise<PathCheck>
   listDir(hostId: string, input: string): Promise<DirListing>
   gitStatus(projectId: string): Promise<GitPanel & { untracked: Record<string, boolean> }>
   gitDiff(projectId: string, rel: string, untracked: boolean): Promise<FileDiff>
   gitDiscard(projectId: string, rel: string, untracked: boolean): Promise<boolean>
-  gitTree(projectId: string): Promise<TreeNode[]>
-  gitRead(projectId: string, rel: string): Promise<{ text: string; binary: boolean; missing: boolean }>
+  gitTree(projectId: string, rel?: string): Promise<TreeNode[]>
+  gitRead(projectId: string, rel: string): Promise<FileContent>
+  gitWrite(projectId: string, rel: string, text: string, version: string): Promise<FileContent>
   ptyCreate(req: PtyCreateRequest): Promise<{ id: string; state: string; exitCode: number | null; startedAt: number | null; inputReady: boolean; shell: ShellKind; kind: string }>
-  ptyWrite(id: string, data: string): void
+  ptyWrite(id: string, data: string, binary?: boolean): void
   ptyResize(id: string, cols: number, rows: number): void
   ptyInterrupt(id: string): Promise<'hint' | 'exit' | 'signal'>
   ptyKill(id: string): Promise<void>

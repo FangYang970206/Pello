@@ -68,7 +68,7 @@ export function remoteCommand(host: Host, args: string[]): string {
   return args.map((arg) => /[\s"]/u.test(arg) ? `"${arg.replaceAll('"', '\\"')}"` : arg).join(' ')
 }
 
-export async function runPasswordCommand(host: Host, command: string): Promise<string> {
+export async function runPasswordCommand(host: Host, command: string, input?: string): Promise<string> {
   const client = await connectPasswordHost(host)
   return await new Promise((resolve, reject) => {
     let stdout = ''
@@ -90,13 +90,14 @@ export async function runPasswordCommand(host: Host, command: string): Promise<s
         if (code === 0) resolve(stdout)
         else reject(Object.assign(new Error(stderr.trim() || (code == null ? 'SSH 连接在命令结束前关闭' : `远程命令退出码 ${code}`)), { stdout, stderr }))
       })
+      if (input !== undefined) stream.end(input)
     })
   })
 }
 
 export interface TerminalProcess {
   pid: number | null
-  write(data: string): void
+  write(data: string | Buffer): void
   resize(cols: number, rows: number): void
   kill(): void
   onData(cb: (data: string) => void): unknown

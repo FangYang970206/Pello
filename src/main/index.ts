@@ -4,7 +4,7 @@ import path from 'node:path'
 import { PRESETS, type Executor, type Host, type Plugin, type Project, type SavedTerm, type Settings, type ShellKind } from '../shared/types'
 import { db, mutate, writeSessions } from './store'
 import { commandExists, osLabel } from './platform'
-import { checkPath, fileTree, gitDiff, gitDiscard, gitStatus, listDir, readFile, targetFor } from './git'
+import { checkPath, fileTree, gitDiff, gitDiscard, gitStatus, listDir, readFile, targetFor, writeFile } from './git'
 import {
   closeAllSessions,
   closeSession,
@@ -31,6 +31,18 @@ if (process.env.AWB_CAPTURE) {
 }
 
 let win: BrowserWindow | null = null
+let hasUnsavedChanges = false
+let allowWindowClose = false
+let closingWindow = false
+
+function confirmUnsavedClose(): boolean {
+  if (!win) return true
+  const choice = dialog.showMessageBoxSync(win, {
+    type: 'question', title: '文件尚未保存', message: '有尚未保存的文件更改。',
+    buttons: ['继续编辑', '放弃更改并关闭'], defaultId: 0, cancelId: 0
+  })
+  return choice === 1
+}
 
 function send(event: unknown): void {
   if (win && !win.isDestroyed()) win.webContents.send('pty:event', event)
@@ -91,12 +103,35 @@ function createWindow(): void {
       query: process.env.AWB_CAPTURE ? { capture: '1' } : undefined
     })
   }
+  win.on('close', (event) => {
+    if (sessionsClosed) return
+    event.preventDefault()
+    if (closingWindow) return
+    if (hasUnsavedChanges && !allowWindowClose && !confirmUnsavedClose()) return
+    allowWindowClose = true
+    closingWindow = true
+    const closing = win
+    // Preserve the PTY parent processes until their complete trees are killed.
+    void closeAllSessions().catch((error) => console.error('Failed to close terminal sessions', error)).finally(() => {
+      sessionsClosed = true
+      if (closing && !closing.isDestroyed()) closing.destroy()
+      app.quit()
+    })
+  })
   win.on('closed', () => {
     win = null
+  })
+  win.webContents.on('will-prevent-unload', (event) => {
+    if (!win) return
+    if (allowWindowClose || confirmUnsavedClose()) {
+      allowWindowClose = true
+      event.preventDefault()
+    }
   })
 }
 
 function registerIpc(): void {
+  ipcMain.on('files:dirty', (_event, dirty: boolean) => { hasUnsavedChanges = !!dirty })
   ipcMain.handle('db:get', async () => ({ db: db(), installed: await installedMap() }))
   ipcMain.handle('db:settings', (_e, settings: Settings) => {
     const next = mutate((draft) => {
@@ -173,19 +208,23 @@ function registerIpc(): void {
     await gitDiscard(target, rel, !!untracked)
     return true
   })
-  ipcMain.handle('git:tree', async (_e, projectId: string) => {
+  ipcMain.handle('git:tree', async (_e, projectId: string, rel = '') => {
     const { target } = projectTarget(projectId)
-    return fileTree(target)
+    return fileTree(target, rel)
   })
   ipcMain.handle('git:read', async (_e, projectId: string, rel: string) => {
     const { target } = projectTarget(projectId)
     return readFile(target, rel)
   })
+  ipcMain.handle('git:write', async (_e, projectId: string, rel: string, text: string, version: string) => {
+    const { target } = projectTarget(projectId)
+    return writeFile(target, rel, text, version)
+  })
 
   ipcMain.handle('pty:create', (_e, req: { id: string; projectId: string; kind: string; shell: ShellKind }) => {
     return createSession(send, req)
   })
-  ipcMain.on('pty:write', (_e, id: string, data: string) => writeSession(id, String(data)))
+  ipcMain.on('pty:write', (_e, id: string, data: string, binary = false) => writeSession(id, String(data), !!binary))
   ipcMain.on('pty:resize', (_e, id: string, cols: number, rows: number) => resizeSession(id, cols, rows))
   ipcMain.handle('pty:interrupt', (_e, id: string) => interruptSession(id))
   ipcMain.handle('pty:kill', (_e, id: string) => killSession(id))
@@ -266,6 +305,10 @@ app.on('before-quit', (event) => {
   if (sessionsClosed) return
   event.preventDefault()
   if (quitting) return
+  if (hasUnsavedChanges && win && !allowWindowClose) {
+    if (!confirmUnsavedClose()) return
+    allowWindowClose = true
+  }
   quitting = true
   void closeAllSessions().catch((error) => console.error('Failed to close terminal sessions', error)).finally(() => {
     sessionsClosed = true

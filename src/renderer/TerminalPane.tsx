@@ -75,7 +75,7 @@ export function TerminalPane({
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
-  const fitRef = useRef<FitAddon | null>(null)
+  const scheduleFit = useRef<() => void>(() => {})
   const interruptRef = useRef(onInterrupt)
   const keyRef = useRef(onAppKey)
   interruptRef.current = onInterrupt
@@ -141,15 +141,20 @@ export function TerminalPane({
       return true
     })
     term.onData((data) => window.awb.ptyWrite(id, data))
+    term.onBinary((data) => window.awb.ptyWrite(id, data, true))
+    term.onResize(({ cols, rows }) => window.awb.ptyResize(id, cols, rows))
     termRef.current = term
-    fitRef.current = fit
     bindTerm(id, term)
+    let frame = 0
     const redraw = () => {
-      if (!host.offsetWidth) return
-      fit.fit()
-      if (term.rows > 0) term.refresh(0, term.rows - 1)
-      window.awb.ptyResize(id, term.cols, term.rows)
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => {
+        if (!host.clientWidth || !host.clientHeight || termRef.current !== term) return
+        fit.fit()
+        if (term.rows > 0) term.refresh(0, term.rows - 1)
+      })
     }
+    scheduleFit.current = redraw
     const ro = new ResizeObserver(() => redraw())
     void document.fonts.ready.then(() => {
       if (termRef.current === term) redraw()
@@ -162,6 +167,8 @@ export function TerminalPane({
     return () => {
       ro.disconnect()
       io.disconnect()
+      cancelAnimationFrame(frame)
+      scheduleFit.current = () => {}
       unbindTerm(id, term)
       term.dispose()
       termRef.current = null
@@ -185,18 +192,9 @@ export function TerminalPane({
     }
     redraw()
     if (!visible || !host || host.offsetWidth < 2) return
-    const frame = requestAnimationFrame(() => {
-      if (!host.offsetWidth) return
-      try {
-        fitRef.current?.fit()
-      } catch {
-        /* host has no layout yet */
-      }
-      redraw()
-      window.awb.ptyResize(id, term.cols, term.rows)
-    })
-    return () => cancelAnimationFrame(frame)
+    scheduleFit.current()
+    term.focus()
   }, [fontSize, theme, visible, id])
 
-  return <div className="termhost" ref={hostRef} data-term={id} />
+  return <div className="termhost" data-term={id}><div className="termframe" ref={hostRef} /></div>
 }

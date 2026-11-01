@@ -1,4 +1,6 @@
-import type { FileDiff, ThemeName } from '../shared/types'
+import { useRef } from 'react'
+import type { FileDiff } from '../shared/types'
+import { isDirty, type DocumentDraft } from './documents'
 import { lcs, lineStats, segments, splitColumns, splitLines, type Seg, type SideRow } from '../shared/diff'
 import { Icon } from './icons'
 
@@ -154,53 +156,45 @@ export function DiffPane({
   )
 }
 
-export function FilePane({
-  path,
-  text,
-  binary,
-  missing,
-  rightOpen,
-  onToggleRight
-}: {
+export function FilePane({ path, document, rightOpen, onEdit, onSave, onReload, onToggleRight }: {
   path: string
-  text: string
-  binary: boolean
-  missing: boolean
-  theme: ThemeName
+  document: DocumentDraft | null
   rightOpen: boolean
+  onEdit: (text: string) => void
+  onSave: () => void
+  onReload: () => void
   onToggleRight: () => void
 }) {
-  const lines = binary || missing ? [] : splitLines(text)
-  return (
-    <>
-      <div className="diffbar">
-        <Icon name="file" className="s" />
-        <span className="path">{path}</span>
-        <span className="grow" />
-        <span className="tag">只读</span>
-        <button className="ib" data-a="right" aria-label={rightOpen ? '收起文件面板' : '显示文件面板'} title={rightOpen ? '收起文件面板' : '显示文件面板'} onClick={onToggleRight}>
-          <Icon name="panel" />
-        </button>
-      </div>
-      {binary || missing ? (
-        <div className="empty">
-          <div className="in">
-            <h2>{missing ? '文件不存在' : '无法预览二进制文件'}</h2>
-          </div>
-        </div>
-      ) : (
-        <div className="diff">
-          {lines.map((line, i) => (
-            <div className="cl" key={i}>
-              <span className="ln">{i + 1}</span>
-              <span className="sg" />
-              <span>
-                <Rich text={line} />
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-    </>
-  )
+  const gutter = useRef<HTMLDivElement>(null)
+  const dirty = !!document && isDirty(document)
+  const readonly = !document || document.binary || document.missing || document.tooBig
+  return <>
+    <div className="diffbar">
+      <Icon name="file" className="s" />
+      <span className="path">{path}</span>
+      <span className="grow" />
+      <span className="tag">{document?.saving ? '正在保存…' : dirty ? '未保存' : readonly ? '只读' : '已保存'}</span>
+      <button className="btn sm" data-a="reload-file" disabled={document?.saving} onClick={onReload}>重新读取</button>
+      <button className="btn sm pri" data-a="save-file" disabled={readonly || !dirty || document?.saving} onClick={onSave}>保存</button>
+      <button className="ib" data-a="right" aria-label={rightOpen ? '收起文件面板' : '显示文件面板'} onClick={onToggleRight}><Icon name="panel" /></button>
+    </div>
+    {document?.error ? <div className="file-error" role="alert">{document.error}</div> : null}
+    {readonly ? <div className="empty"><div className="in"><h2>{!document ? '正在读取文件…' : document.missing ? '文件不存在' : document.binary ? '无法编辑二进制或非 UTF-8 文件' : '文件超过 2 MB，请使用外部编辑器'}</h2></div></div> : <div className="file-editor">
+      <div className="editor-gutter" ref={gutter} aria-hidden="true">{document.draft.split('\n').map((_, i) => <div key={i}>{i + 1}</div>)}</div>
+      <textarea aria-label="文件内容" value={document.draft} wrap="off" spellCheck={false} autoCorrect="off" autoCapitalize="off"
+        onChange={(event) => onEdit(event.target.value)}
+        onScroll={(event) => { if (gutter.current) gutter.current.scrollTop = event.currentTarget.scrollTop }}
+        onKeyDown={(event) => {
+          if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+            event.preventDefault(); event.stopPropagation(); onSave()
+          } else if (event.key === 'Tab' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+            event.preventDefault()
+            const field = event.currentTarget
+            const start = field.selectionStart, end = field.selectionEnd
+            onEdit(field.value.slice(0, start) + '  ' + field.value.slice(end))
+            requestAnimationFrame(() => field.setSelectionRange(start + 2, start + 2))
+          }
+        }} />
+    </div>}
+  </>
 }

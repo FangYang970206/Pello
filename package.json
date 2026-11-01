@@ -10,7 +10,7 @@
     "start": "electron-vite preview",
     "dist:win": "node scripts/dist-win.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "check": "node scripts/review-check.mjs && node scripts/terminal-check.mjs && node scripts/ssh-password-check.mjs && node scripts/render-check.mjs",
+    "check": "node scripts/review-check.mjs && node scripts/terminal-check.mjs && node scripts/ssh-password-check.mjs && node scripts/render-check.mjs && node scripts/workspace-check.mjs",
     "postinstall": "electron-rebuild -f -w node-pty"
   },
   "dependencies": {
