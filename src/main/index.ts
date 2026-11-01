@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { PRESETS, type Executor, type Host, type Plugin, type Project, type SavedTerm, type Settings, type ShellKind } from '../shared/types'
-import { db, mutate } from './store'
+import { db, mutate, writeSessions } from './store'
 import { commandExists, osLabel } from './platform'
 import { checkPath, fileTree, gitDiff, gitDiscard, gitStatus, listDir, readFile, targetFor } from './git'
 import {
@@ -120,8 +120,8 @@ function registerIpc(): void {
   ipcMain.handle('db:plugins', (_e, plugins: Plugin[]) => mutate((draft) => {
     draft.plugins = plugins
   }))
-  ipcMain.handle('db:sessions', (_e, projectId: string, terms: SavedTerm[]) => mutate((draft) => {
-    draft.sessions[projectId] = terms
+  ipcMain.handle('db:sessions', (_e, projectId: string, terms: SavedTerm[], activeId?: string | null) => mutate((draft) => {
+    writeSessions(draft, projectId, terms, activeId)
   }))
   ipcMain.handle('db:branch', (_e, projectId: string, branch: string) => mutate((draft) => {
     const project = draft.projects.find((p) => p.id === projectId)

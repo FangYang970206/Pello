@@ -174,5 +174,54 @@ try {
   await app.close()
 }
 
+async function assertRestored(label, activeTab, expectId) {
+  const data = `/tmp/awb-pw-restore-${label}-${Date.now()}`
+  fs.mkdirSync(data, { recursive: true })
+  const db = {
+    settings: { theme: 'dark', fontSize: 13, defShell: 'bash', defAgent: 'shell', restore: true, confirmKill: true },
+    projects: [{ id: 'p1', name: 'pw-restore', host: 'local', path: '/tmp/awb-pw-demo', branch: 'master', agent: 'shell' }],
+    sessions: {
+      p1: [
+        { id: 'term-bash', kind: 'shell', shell: 'bash' },
+        { id: 'term-bash-2', kind: 'shell', shell: 'bash' }
+      ]
+    }
+  }
+  if (activeTab !== undefined) db.activeTab = activeTab
+  fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify(db, null, 2))
+  const restoreApp = await electron.launch({
+    args: [root, '--no-sandbox'],
+    cwd: root,
+    env: { ...process.env, AWB_USER_DATA: data }
+  })
+  try {
+    const page = await restoreApp.firstWindow()
+    page.setDefaultTimeout(20000)
+    await page.waitForFunction((id) => {
+      const empty = [...document.querySelectorAll('h2')].some((node) => node.textContent === '还没有终端')
+      const tabs = [...document.querySelectorAll('.tabs .tab')]
+      const on = document.querySelector('.tabs .tab.on [data-a=tab]')
+      const pane = document.querySelector('.pane:not([hidden])')
+      const state = document.querySelector('.pstate b')?.textContent || ''
+      const onId = on?.getAttribute('data-id') || ''
+      const paneId = pane?.getAttribute('data-id') || ''
+      const buffer = window.__awbBuffer?.(onId) || ''
+      return !empty && tabs.length === 2 && onId === id && paneId === id && (state === '运行中' || state === '空闲') && buffer.includes('$')
+    }, expectId)
+    fs.mkdirSync('/opt/cursor/artifacts/review', { recursive: true })
+    const shot = `/opt/cursor/artifacts/review/v4_restore_${label}.png`
+    await page.screenshot({ path: shot })
+    console.log(`restore ok ${label} -> ${expectId} ${shot}`)
+  } catch (err) {
+    fail(`恢复激活失败 ${label}: ${err instanceof Error ? err.message : err}`)
+  } finally {
+    await restoreApp.close()
+  }
+}
+
+await assertRestored('missing', undefined, 'term-bash')
+await assertRestored('invalid', { p1: 'ghost-tab' }, 'term-bash')
+await assertRestored('valid', { p1: 'term-bash-2' }, 'term-bash-2')
+
 if (process.exitCode) process.exit(process.exitCode)
 console.log('review checks passed')

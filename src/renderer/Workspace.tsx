@@ -91,9 +91,10 @@ export function Workspace({
   const [fade, setFade] = useState<'none' | 'left' | 'right' | 'both'>('none')
   const [menu, setMenu] = useState(false)
   const mine = project ? tabs.filter((tab) => tab.projectId === project.id) : []
+  const shown = mine.find((tab) => tab.id === active?.id) ?? mine[0]
   const terms = mine.filter((tab): tab is TermTab => tab.type === 'term')
   const pair = split && terms.some((tab) => tab.id === split.left) && terms.some((tab) => tab.id === split.right) ? split : null
-  const splitOn = !!(pair && active?.type === 'term' && (active.id === pair.left || active.id === pair.right))
+  const splitOn = !!(pair && shown?.type === 'term' && (shown.id === pair.left || shown.id === pair.right))
 
   useEffect(() => {
     const el = scroller.current
@@ -143,23 +144,23 @@ export function Workspace({
       ro.disconnect()
       el.removeEventListener('scroll', onScroll)
     }
-  }, [active?.id, mine.length, project?.id])
+  }, [shown?.id, mine.length, project?.id])
 
   const agentOf = (id: string) => agents.find((item) => item.id === id) || resolveAgent(id, [], installed)
 
   let proc: ReactNode = null
   if (!project) proc = null
-  else if (active?.type === 'term') {
-    const running = active.state === 'running'
-    const hot = active.kind !== 'shell' && (active.state === 'exited' || active.state === 'failed')
+  else if (shown?.type === 'term') {
+    const running = shown.state === 'running'
+    const hot = shown.kind !== 'shell' && (shown.state === 'exited' || shown.state === 'failed')
     proc = (
       <div className="proc">
-        <div className={`pstate ${active.state}`}>
-          <span className={`dot ${active.state}`} />
-          <b>{STATE_LABEL[active.state]}</b>
-          {running && active.startedAt ? <Elapsed start={active.startedAt} /> : active.exitCode != null ? <span className="t">退出码 {active.exitCode}</span> : null}
+        <div className={`pstate ${shown.state}`}>
+          <span className={`dot ${shown.state}`} />
+          <b>{STATE_LABEL[shown.state]}</b>
+          {running && shown.startedAt ? <Elapsed start={shown.startedAt} /> : shown.exitCode != null ? <span className="t">退出码 {shown.exitCode}</span> : null}
         </div>
-        <button className="ib w" data-a="ctrlc" title="发送 Ctrl+C" aria-label="发送 Ctrl+C" onClick={() => onInterrupt(active.id)}>
+        <button className="ib w" data-a="ctrlc" title="发送 Ctrl+C" aria-label="发送 Ctrl+C" onClick={() => onInterrupt(shown.id)}>
           <span className="mono" style={{ fontSize: 11 }}>
             ^C
           </span>
@@ -170,7 +171,7 @@ export function Workspace({
         <button
           className={`ib ${hot ? 'on w' : ''}`}
           data-a="restart"
-          disabled={active.kind === 'shell' && active.state !== 'failed' && active.state !== 'exited'}
+          disabled={shown.kind === 'shell' && shown.state !== 'failed' && shown.state !== 'exited'}
           title="重新启动同一命令"
           aria-label="重新启动"
           onClick={onRestart}
@@ -224,7 +225,7 @@ export function Workspace({
           <div className="tabbar" role="tablist">
             <div className={`tabs ${overflow ? 'over' : ''} ${fade === 'both' ? 'fade-l fade-r' : fade === 'left' ? 'fade-l' : fade === 'right' ? 'fade-r' : ''}`} ref={scroller}>
               {mine.map((tab) => {
-                const on = tab.id === active?.id
+                const on = tab.id === shown?.id
                 if (tab.type !== 'term') {
                   const label = tab.path.split('/').pop() || tab.path
                   const preview = tab.type === 'file' && !tab.pinned
@@ -286,13 +287,13 @@ export function Workspace({
                   return (
                     <button
                       key={tab.id}
-                      className={`row ${tab.id === active?.id ? 'on' : ''}`}
+                      className={`row ${tab.id === shown?.id ? 'on' : ''}`}
                       onClick={() => {
                         onSelect(tab.id)
                         setMenu(false)
                       }}
                     >
-                      <span style={{ width: 14, flex: 'none', color: 'var(--muted)' }}>{tab.id === active?.id ? '✓' : ''}</span>
+                      <span style={{ width: 14, flex: 'none', color: 'var(--muted)' }}>{tab.id === shown?.id ? '✓' : ''}</span>
                       <span className="nm grow">{label}</span>
                       {tab.type === 'term' ? <span className={`dot ${tab.state}`} /> : null}
                     </button>
@@ -301,7 +302,7 @@ export function Workspace({
               </div>
             ) : null}
           </div>
-          {!active ? (
+          {!shown ? (
             <div className="empty">
               <div className="in">
                 <div className="glyph">
@@ -322,14 +323,14 @@ export function Workspace({
                 </div>
               </div>
             </div>
-          ) : active.type === 'diff' ? (
-            <DiffPane diff={diff && diff.path === active.path ? diff : null} mode={dmode} rightOpen={rightOpen} onMode={onDmode} onDiscard={onDiscard} onToggleRight={onToggleRight} untracked={untracked} />
-          ) : active.type === 'file' ? (
+          ) : shown.type === 'diff' ? (
+            <DiffPane diff={diff && diff.path === shown.path ? diff : null} mode={dmode} rightOpen={rightOpen} onMode={onDmode} onDiscard={onDiscard} onToggleRight={onToggleRight} untracked={untracked} />
+          ) : shown.type === 'file' ? (
             <FilePane
-              path={active.path}
-              text={preview?.path === active.path ? preview.text : ''}
-              binary={!!preview && preview.path === active.path && preview.binary}
-              missing={!preview || preview.path !== active.path ? false : preview.missing}
+              path={shown.path}
+              text={preview?.path === shown.path ? preview.text : ''}
+              binary={!!preview && preview.path === shown.path && preview.binary}
+              missing={!preview || preview.path !== shown.path ? false : preview.missing}
               theme={theme}
               rightOpen={rightOpen}
               onToggleRight={onToggleRight}
@@ -338,8 +339,8 @@ export function Workspace({
             <div className="panes">
               {terms.map((tab) => {
                 const inSplit = !!(pair && (tab.id === pair.left || tab.id === pair.right))
-                const visible = splitOn ? inSplit : tab.id === active.id
-                const focus = tab.id === active.id
+                const visible = splitOn ? inSplit : tab.id === shown.id
+                const focus = tab.id === shown.id
                 const agent = agentOf(tab.kind)
                 const order = pair ? (tab.id === pair.left ? 0 : tab.id === pair.right ? 1 : 2) : 0
                 return (

@@ -31,6 +31,8 @@ export function App() {
   const [projectId, setProjectId] = useState<string | null>(null)
   const [tabs, setTabs] = useState<Tab[]>([])
   const [activeMap, setActiveMap] = useState<Record<string, string | undefined>>({})
+  const activeMapRef = useRef(activeMap)
+  activeMapRef.current = activeMap
   const [split, setSplit] = useState<Record<string, SplitPair | undefined>>({})
   const [menuId, setMenuId] = useState<string | null>(null)
   const [right, setRight] = useState(true)
@@ -89,21 +91,27 @@ export function App() {
   const project = db?.projects.find((item) => item.id === projectId) || null
   const host = db?.hosts.find((item) => item.id === project?.host) || db?.hosts[0]
   const theme: ThemeName = db?.settings.theme || 'dark'
-  const active = project ? tabs.find((tab) => tab.id === activeMap[project.id] && tab.projectId === project.id) : undefined
+  const projectTabs = project ? tabs.filter((tab) => tab.projectId === project.id) : []
+  const active = projectTabs.find((tab) => tab.id === activeMap[project?.id || '']) ?? projectTabs[0]
   const agents: AgentInfo[] = db
     ? [...PRESETS.map((item) => resolveAgent(item.id, db.custom, installed)), ...db.custom.map((item) => resolveAgent(item.id, db.custom, installed)), SHELL_AGENT]
     : []
 
-  const persist = useCallback((next: Tab[], draft = db) => {
-    if (!draft) return
-    for (const item of draft.projects) {
-      const terms = next.filter((tab): tab is TermTab => tab.type === 'term' && tab.projectId === item.id).map((tab) => ({ kind: tab.kind, shell: tab.shell }))
-      void window.awb.saveSessions(item.id, terms)
+  const persist = useCallback((next: Tab[], activeIds?: Record<string, string | undefined>) => {
+    if (!db) return
+    const map = activeIds ?? activeMapRef.current
+    for (const item of db.projects) {
+      const terms = next
+        .filter((tab): tab is TermTab => tab.type === 'term' && tab.projectId === item.id)
+        .map((tab) => ({ id: tab.id, kind: tab.kind, shell: tab.shell }))
+      const wanted = map[item.id]
+      const activeId = terms.some((term) => term.id === wanted) ? wanted : terms[0]?.id ?? null
+      void window.awb.saveSessions(item.id, terms, activeId)
     }
   }, [db])
 
-  const openTerm = useCallback(async (target: NonNullable<typeof project>, kind: string, shell: ShellKind, activate = true) => {
-    const id = uid('t')
+  const openTerm = useCallback(async (target: NonNullable<typeof project>, kind: string, shell: ShellKind, activate = true, existingId?: string) => {
+    const id = existingId || uid('t')
     const tab: TermTab = {
       id,
       type: 'term',
@@ -114,7 +122,7 @@ export function App() {
       startedAt: kind === 'shell' ? null : Date.now(),
       exitCode: null
     }
-    setTabs((list) => [...list, tab])
+    setTabs((list) => (list.some((item) => item.id === id) ? list : [...list, tab]))
     if (activate) setActiveMap((map) => ({ ...map, [target.id]: id }))
     try {
       const info = await window.awb.ptyCreate({ id, projectId: target.id, kind, shell })
@@ -124,12 +132,22 @@ export function App() {
             ? { ...item, shell: info.shell, state: info.state as TermTab['state'], startedAt: info.startedAt, exitCode: info.exitCode }
             : item
         )
-        persist(next)
+        const ids = activate ? { ...activeMapRef.current, [target.id]: id } : activeMapRef.current
+        persist(next, ids)
         return next
       })
       return id
     } catch (err) {
-      setTabs((list) => list.filter((item) => item.id !== id))
+      setTabs((list) => {
+        const next = list.filter((item) => item.id !== id)
+        const mine = next.filter((item) => item.projectId === target.id)
+        const current = activeMapRef.current[target.id]
+        const keep = current !== id && mine.some((item) => item.id === current) ? current : mine[0]?.id
+        const activeIds = { ...activeMapRef.current, [target.id]: keep }
+        setActiveMap(activeIds)
+        persist(next, activeIds)
+        return next
+      })
       toast(err instanceof Error ? err.message : '无法启动终端', true)
       return null
     }
@@ -150,13 +168,39 @@ export function App() {
     const first = db.projects[0]?.id ?? null
     setProjectId(first)
     if (!db.settings.restore) return
+    const seeded: Record<string, string | undefined> = {}
     for (const item of db.projects) {
       const saved = db.sessions[item.id] || []
-      saved.forEach((term, index) => {
-        void openTerm(item, term.kind, term.shell, item.id === first && index === saved.length - 1)
-      })
+      if (!saved.length) continue
+      const wanted = db.activeTab?.[item.id]
+      seeded[item.id] = saved.some((term) => term.id === wanted) ? wanted : saved[0].id
+      for (const term of saved) void openTerm(item, term.kind, term.shell, false, term.id)
     }
+    setActiveMap(seeded)
   }, [db, openTerm])
+
+  useEffect(() => {
+    setActiveMap((map) => {
+      const ids = new Set([...Object.keys(map), ...tabs.map((tab) => tab.projectId)])
+      const next = { ...map }
+      let changed = false
+      for (const id of ids) {
+        const mine = tabs.filter((tab) => tab.projectId === id)
+        if (!mine.length) {
+          if (id in next) {
+            delete next[id]
+            changed = true
+          }
+          continue
+        }
+        if (!mine.some((tab) => tab.id === next[id])) {
+          next[id] = mine[0].id
+          changed = true
+        }
+      }
+      return changed ? next : map
+    })
+  }, [tabs])
 
   useEffect(() => {
     return window.awb.onPty((event) => {
@@ -240,18 +284,17 @@ export function App() {
     if (tab.type === 'term') window.awb.ptyClose(id)
     const next = tabs.filter((item) => item.id !== id)
     setTabs(next)
-    persist(next)
     const pair = split[tab.projectId]
+    const mine = next.filter((item) => item.projectId === tab.projectId)
+    let preferred = activeMap[tab.projectId]
     if (pair && (pair.left === id || pair.right === id)) {
-      const keep = pair.left === id ? pair.right : pair.left
+      preferred = pair.left === id ? pair.right : pair.left
       setSplit((map) => ({ ...map, [tab.projectId]: undefined }))
-      setActiveMap((map) => ({ ...map, [tab.projectId]: keep }))
-      return
-    }
-    if (activeMap[tab.projectId] === id) {
-      const rest = next.filter((item) => item.projectId === tab.projectId)
-      setActiveMap((map) => ({ ...map, [tab.projectId]: rest[rest.length - 1]?.id }))
-    }
+    } else if (preferred === id) preferred = undefined
+    const keep = mine.some((item) => item.id === preferred) ? preferred : mine[0]?.id
+    const activeIds = { ...activeMap, [tab.projectId]: keep }
+    setActiveMap(activeIds)
+    persist(next, activeIds)
   }
 
   function requestClose(id: string) {
@@ -282,6 +325,12 @@ export function App() {
 
   function selectProject(id: string) {
     setProjectId(id)
+    const mine = tabs.filter((tab) => tab.projectId === id)
+    if (mine.length && !mine.some((tab) => tab.id === activeMap[id])) {
+      const activeIds = { ...activeMap, [id]: mine[0].id }
+      setActiveMap(activeIds)
+      persist(tabs, activeIds)
+    }
     setRoute('work')
     setModal(null)
     setMenuId(null)
@@ -302,12 +351,14 @@ export function App() {
     if (!right) return
     const pair = { left, right }
     setSplit((map) => ({ ...map, [project.id]: pair }))
-    setActiveMap((map) => ({ ...map, [project.id]: pair.left }))
+    setActiveMap({ ...activeMapRef.current, [project.id]: pair.left })
   }
 
   function selectTab(id: string) {
     if (!project) return
-    setActiveMap((map) => ({ ...map, [project.id]: id }))
+    const activeIds = { ...activeMap, [project.id]: id }
+    setActiveMap(activeIds)
+    if (tabs.some((tab) => tab.id === id && tab.type === 'term')) persist(tabs, activeIds)
     const pair = split[project.id]
     if (!pair) return
     if (id === pair.left || id === pair.right) return
@@ -321,7 +372,9 @@ export function App() {
     if (!project) return
     const pair = split[project.id]
     if (!pair) return
-    setActiveMap((map) => ({ ...map, [project.id]: pair[dir] }))
+    const activeIds = { ...activeMap, [project.id]: pair[dir] }
+    setActiveMap(activeIds)
+    persist(tabs, activeIds)
   }
 
   function askKill() {
@@ -374,7 +427,10 @@ export function App() {
               const next = list.filter((tab) => !(tab.type === 'diff' && tab.projectId === project.id && tab.path === rel))
               if (activeMap[project.id] === active.id) {
                 const rest = next.filter((tab) => tab.projectId === project.id)
-                setActiveMap((map) => ({ ...map, [project.id]: rest[rest.length - 1]?.id }))
+                const keep = rest[0]?.id
+                const activeIds = { ...activeMap, [project.id]: keep }
+                setActiveMap(activeIds)
+                persist(next, activeIds)
               }
               return next
             })
@@ -446,7 +502,7 @@ export function App() {
         if (projectId === id) setProjectId(projects[0]?.id ?? null)
         setModal(null)
         void window.awb.saveProjects(projects)
-        void window.awb.saveSessions(id, [])
+        void window.awb.saveSessions(id, [], null)
         toast(`已移除 ${item.name}`)
       }
     })

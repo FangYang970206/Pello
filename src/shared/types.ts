@@ -61,6 +61,7 @@ export interface Project {
 }
 
 export interface SavedTerm {
+  id: string
   kind: string
   shell: ShellKind
 }
@@ -72,6 +73,7 @@ export interface Database {
   plugins: Plugin[]
   projects: Project[]
   sessions: Record<string, SavedTerm[]>
+  activeTab: Record<string, string>
 }
 
 export interface Preset {

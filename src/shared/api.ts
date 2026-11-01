@@ -26,7 +26,7 @@ export interface WorkbenchApi {
   saveCustom(custom: Executor[]): Promise<Database>
   saveHosts(hosts: Host[]): Promise<Database>
   savePlugins(plugins: Plugin[]): Promise<Database>
-  saveSessions(projectId: string, terms: SavedTerm[]): Promise<Database>
+  saveSessions(projectId: string, terms: SavedTerm[], activeId?: string | null): Promise<Database>
   saveBranch(projectId: string, branch: string): Promise<Database>
   pickDirectory(): Promise<string | null>
   checkPath(hostId: string, input: string): Promise<PathCheck>
