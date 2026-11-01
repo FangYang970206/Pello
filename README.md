@@ -27,7 +27,7 @@ npm run build
 npm start
 ```
 
-`npm start` 运行 `out/` 里的构建结果。
+`npm start` 运行 `out/` 里的构建结果。打出 NSIS 安装包见 [BUILD-WINDOWS.md](BUILD-WINDOWS.md)。
 
 ## 数据放在哪里
 
