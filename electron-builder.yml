@@ -1,0 +1,101 @@
+# Windows NSIS packaging for Agent Workbench.
+# The version is read from package.json and is not repeated here.
+#
+# productName is the name already shown in the window ("Agent Workbench").
+# It lives only in this file. package.json "name" stays "agent-workbench",
+# which is what Electron uses for userData (%APPDATA%\agent-workbench).
+
+appId: com.agentworkbench.app
+productName: Agent Workbench
+
+# No update feed and no upload target.
+publish: null
+
+directories:
+  output: dist
+
+# Production dependencies other than node-pty are bundled into out/ by
+# electron-vite. Only the native module has to ship as a real package.
+# electron-builder also copies production node_modules. Keep only what the
+# packaged app loads: the vite output, and node-pty's JS plus win32-x64 natives.
+# @fontsource and @xterm are already bundled into out/renderer.
+files:
+  - out/**/*
+  - package.json
+  - node_modules/node-pty/package.json
+  - node_modules/node-pty/lib/**/*
+  - node_modules/node-pty/prebuilds/win32-x64/**/*
+  - node_modules/node-pty/build/**/*
+  - "!node_modules/@fontsource/**"
+  - "!node_modules/@xterm/**"
+  - "!node_modules/node-addon-api/**"
+  - "!node_modules/node-pty/src/**"
+  - "!node_modules/node-pty/deps/**"
+  - "!node_modules/node-pty/third_party/**"
+  - "!node_modules/node-pty/scripts/**"
+  # @electron/rebuild also copies one addon to bin/<platform>-<arch>-<abi>/.
+  # node-pty does not load that path; on a non-Windows host it is a linux
+  # binary and must not be shipped.
+  - "!node_modules/node-pty/bin/**"
+  - "!node_modules/node-pty/node-addon-api/**"
+  - "!node_modules/node-pty/build/**/obj.target/**"
+  - "!node_modules/node-pty/prebuilds/darwin-*/**"
+  - "!node_modules/node-pty/prebuilds/win32-arm64/**"
+  - "!node_modules/node-pty/**/*.map"
+  - "!node_modules/node-pty/**/*.pdb"
+  - "!node_modules/node-pty/**/*.test.js"
+  - "!**/*.md"
+
+asar: true
+# .node addons are dlopen'd, and conpty.dll / OpenConsole.exe / winpty-agent.exe
+# are loaded or spawned from the directory next to those addons. None of that
+# works from inside app.asar.
+asarUnpack:
+  - "**/node_modules/node-pty/prebuilds/**"
+  - "**/node_modules/node-pty/build/**"
+  - "**/node_modules/node-pty/**/*.node"
+  - "**/node_modules/node-pty/**/*.dll"
+  - "**/node_modules/node-pty/**/*.exe"
+
+# Windows: `electron-builder install-app-deps` (scripts/dist-win.mjs) rebuilds
+# node-pty with @electron/rebuild against the Electron version in this repo,
+# then the pack step is run with npmRebuild=false so it is not compiled twice.
+# A direct `electron-builder --win` on Windows still rebuilds, because this
+# default stays on.
+npmRebuild: true
+
+beforePack: scripts/ensure-win32-node-pty.cjs
+afterPack: scripts/restore-node-pty-build.cjs
+
+win:
+  # This repository has no .ico / .png icon. electron-builder keeps the
+  # default Electron icon. Do not add a generated icon here.
+  target:
+    - target: nsis
+      arch:
+        - x64
+  executableName: agent-workbench
+  # Code signing is intentionally not configured.
+  # electron-builder signs the executable and the installer only when both
+  # of these environment variables are set. Never commit the certificate
+  # or the password.
+  #
+  #   CSC_LINK           path, file:// or https:// URL, or base64-encoded .pfx/.p12
+  #   CSC_KEY_PASSWORD   password for that certificate
+  #
+  # Equivalent keys, left commented so an empty variable does not fail the
+  # build. When a certificate is available, either export the variables
+  # above (preferred) or uncomment the two lines below.
+  # certificateFile: ${env.CSC_LINK}
+  # certificatePassword: ${env.CSC_KEY_PASSWORD}
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Agent Workbench
+  # Documented as one-click-only; the default is false. Set explicitly so
+  # uninstall removes the app, shortcuts, and registry keys, and leaves
+  # %APPDATA%\agent-workbench (userData / workbench.json) in place.
+  deleteAppDataOnUninstall: false
