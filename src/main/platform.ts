@@ -184,7 +184,7 @@ if ($env:AWB_CWD -and (Test-Path -LiteralPath $env:AWB_CWD)) {
 `
 }
 
-export function sshArgs(host: { user: string; addr: string; port: number; auth: 'key' | 'agent' }, extra: string[]): string[] {
+export function sshArgs(host: { user: string; addr: string; port: number; auth: 'key' | 'agent' | 'password' }, extra: string[]): string[] {
   const args = [
     '-tt',
     '-p',
@@ -207,7 +207,7 @@ export function sshArgs(host: { user: string; addr: string; port: number; auth: 
   return args
 }
 
-export function sshBatchArgs(host: { user: string; addr: string; port: number; auth: 'key' | 'agent' }, remote: string[]): string[] {
+export function sshBatchArgs(host: { user: string; addr: string; port: number; auth: 'key' | 'agent' | 'password' }, remote: string[]): string[] {
   return ['-T', '-o', 'BatchMode=yes', ...sshArgs(host, remote).filter((a) => a !== '-tt')]
 }
 

@@ -767,7 +767,7 @@ export function App() {
             onToast={toast}
             onHosts={(hosts) => {
               setDb({ ...db, hosts })
-              void window.awb.saveHosts(hosts)
+              void window.awb.saveHosts(hosts).then((saved) => setDb((current) => current ? { ...current, hosts: saved.hosts } : current)).catch((error) => toast(String(error), true))
             }}
             onCreate={(draft) => {
               const created = { id: uid('p'), name: draft.name, host: draft.host, path: draft.path, branch: draft.branch, agent: draft.agent }
@@ -843,7 +843,7 @@ export function App() {
               const hosts = item.id ? db.hosts.map((hostItem) => (hostItem.id === item.id ? item : hostItem)) : [...db.hosts, { ...item, id: uid('h') }]
               setDb({ ...db, hosts })
               setModal(null)
-              void window.awb.saveHosts(hosts)
+              void window.awb.saveHosts(hosts).then((saved) => setDb((current) => current ? { ...current, hosts: saved.hosts } : current)).catch((error) => toast(String(error), true))
               toast('已保存')
             }}
           />

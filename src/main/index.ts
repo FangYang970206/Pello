@@ -17,6 +17,8 @@ import {
   writeSession
 } from './pty'
 import { sshBatchArgs } from './platform'
+import { publicHost, rememberPassword } from './credentials'
+import { runPasswordCommand } from './ssh'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
@@ -115,7 +117,10 @@ function registerIpc(): void {
       local.on = true
       local.os = local.os || osLabel()
     }
-    draft.hosts = hosts
+    draft.hosts = hosts.map((host) => {
+      rememberPassword(host)
+      return publicHost(host)
+    })
   }))
   ipcMain.handle('db:plugins', (_e, plugins: Plugin[]) => mutate((draft) => {
     draft.plugins = plugins
@@ -201,7 +206,9 @@ function registerIpc(): void {
     if (!host.addr || !host.user) return { ok: false, error: '请填写用户和地址' }
     try {
       const probe = 'uname -s 2>/dev/null || ver'
-      const { stdout } = await execFileP('ssh', sshBatchArgs(host, [probe]), { timeout: 12000, windowsHide: true })
+      const stdout = host.auth === 'password'
+        ? await runPasswordCommand(host, probe)
+        : (await execFileP('ssh', sshBatchArgs(host, [probe]), { timeout: 12000, windowsHide: true })).stdout
       const text = stdout.trim()
       const linux = /linux/i.test(text)
       const platform = linux ? 'linux' : 'windows'

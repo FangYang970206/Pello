@@ -5,6 +5,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import type { DirListing, FileDiff, GitFile, GitPanel, Host, OsKind, PathCheck, TreeNode } from '../shared/types'
 import { bashQuote, hostPlatform, isAbsPath, joinPath, parentPath, psQuote, sshBatchArgs } from './platform'
+import { remoteCommand, runPasswordCommand } from './ssh'
 
 const exec = promisify(execFile)
 const IGNORE = new Set(['.git', 'node_modules', 'dist', 'out', '.next', '__pycache__', '.cache'])
@@ -37,6 +38,7 @@ async function run(target: Target, command: string): Promise<string> {
     target.platform === 'windows'
       ? ['powershell.exe', '-NoProfile', '-Command', command]
       : ['bash', '-lc', command]
+  if (target.host.auth === 'password') return runPasswordCommand(target.host, remoteCommand(target.host, remote))
   const args = sshBatchArgs(
     { user: target.host.user, addr: target.host.addr, port: target.host.port, auth: target.host.auth },
     remote

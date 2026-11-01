@@ -40,7 +40,10 @@ export interface Host {
   on: boolean
   port: number
   platform: OsKind
-  auth: 'key' | 'agent'
+  auth: 'key' | 'agent' | 'password'
+  /** Supplied only while editing; removed before saving workbench.json. */
+  password?: string
+  hasPassword?: boolean
 }
 
 export interface Plugin {
@@ -101,10 +104,8 @@ export interface AgentInfo {
 export const PRESETS: Preset[] = [
   { id: 'claude', name: 'Claude Code', cmd: 'claude', args: '', letter: 'C', color: '#e0a27c' },
   { id: 'codex', name: 'Codex CLI', cmd: 'codex', args: '', letter: 'X', color: '#a9c3df' },
-  { id: 'gemini', name: 'Gemini CLI', cmd: 'gemini', args: '', letter: 'G', color: '#93b8f2' },
-  { id: 'cursor', name: 'Cursor CLI', cmd: 'cursor-agent', args: '', letter: 'Cu', color: '#cdd0d6' },
-  { id: 'aider', name: 'Aider', cmd: 'aider', args: '', letter: 'A', color: '#95cfaa' },
-  { id: 'opencode', name: 'OpenCode', cmd: 'opencode', args: '', letter: 'O', color: '#dcc07f' }
+  { id: 'opencode', name: 'OpenCode', cmd: 'opencode', args: '', letter: 'O', color: '#dcc07f' },
+  { id: 'pi', name: 'Pi', cmd: 'pi', args: '', letter: 'π', color: '#c4aedb' }
 ]
 
 export const SHELL_AGENT: AgentInfo = {

@@ -1,11 +1,12 @@
 import { useEffect, useRef } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 import type { ShellKind, ThemeName } from '../shared/types'
 import { bindTerm, unbindTerm } from './terms'
 
-const FONT = 'Cascadia Mono, Cascadia Code, JetBrains Mono, Consolas, "DejaVu Sans Mono", monospace'
+const FONT = '"Cascadia Mono", "Cascadia Code", "JetBrains Mono", Consolas, "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans Mono CJK SC", monospace'
 
 function xtermTheme(theme: ThemeName) {
   if (theme === 'light') {
@@ -86,7 +87,9 @@ export function TerminalPane({
     const term = new Terminal({
       fontFamily: FONT,
       fontSize,
-      lineHeight: 1.45,
+      lineHeight: 1,
+      customGlyphs: true,
+      rescaleOverlappingGlyphs: true,
       cursorBlink: true,
       scrollback: 5000,
       theme: xtermTheme(theme),
@@ -95,6 +98,22 @@ export function TerminalPane({
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.open(host)
+    // Draw box/block glyphs against cell edges, including at fractional DPI.
+    // DOM text layout leaves font-ascent gaps between adjacent terminal rows.
+    let webgl: WebglAddon | null = null
+    try {
+      webgl = new WebglAddon()
+      webgl.onContextLoss(() => {
+        webgl?.dispose()
+        webgl = null
+      })
+      term.loadAddon(webgl)
+      host.dataset.renderer = 'webgl'
+    } catch {
+      webgl?.dispose()
+      webgl = null
+      host.dataset.renderer = 'dom'
+    }
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== 'keydown' || !ev.ctrlKey || ev.altKey || ev.metaKey) return true
       const key = ev.key.toLowerCase()
@@ -132,6 +151,9 @@ export function TerminalPane({
       window.awb.ptyResize(id, term.cols, term.rows)
     }
     const ro = new ResizeObserver(() => redraw())
+    void document.fonts.ready.then(() => {
+      if (termRef.current === term) redraw()
+    })
     ro.observe(host)
     const io = new IntersectionObserver((entries) => {
       if (entries.some((entry) => entry.isIntersecting)) redraw()

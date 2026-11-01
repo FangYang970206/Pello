@@ -161,6 +161,8 @@ export function NewProjectDialog({
   const [adding, setAdding] = useState(false)
   const [hostName, setHostName] = useState('')
   const [hostAddr, setHostAddr] = useState('')
+  const [hostAuth, setHostAuth] = useState<Host['auth']>('key')
+  const [hostPassword, setHostPassword] = useState('')
   const [check, setCheck] = useState<PathCheck>({ kind: 'empty' })
   const [browsing, setBrowsing] = useState(false)
   const [listing, setListing] = useState<{ path: string; parent: string | null; dirs: { name: string; path: string }[] } | null>(null)
@@ -283,6 +285,10 @@ export function NewProjectDialog({
                 <input className="tx mono" data-nh="addr" placeholder="user@host" value={hostAddr} onChange={(e) => setHostAddr(e.target.value)} />
               </label>
             </div>
+            <HostAuthentication host={{ auth: hostAuth, password: hostPassword }} onChange={(next) => {
+              if (next.auth) setHostAuth(next.auth)
+              if (next.password !== undefined) setHostPassword(next.password)
+            }} />
             <div style={{ display: 'flex', gap: 8, marginTop: 12, justifyContent: 'flex-end' }}>
               <button className="btn sm ghost" data-a="np-addhost" onClick={() => setAdding(false)}>
                 取消
@@ -303,7 +309,8 @@ export function NewProjectDialog({
                     on: false,
                     port: 22,
                     platform: 'linux',
-                    auth: 'key'
+                    auth: hostAuth,
+                    ...(hostAuth === 'password' ? { password: hostPassword } : {})
                   }
                   const result = await window.awb.testHost(next)
                   const saved = result.ok ? { ...next, on: true, os: result.os || next.os, platform: result.platform || next.platform } : next
@@ -765,6 +772,28 @@ export function ExecDialog({
   )
 }
 
+function HostAuthentication({ host, onChange }: {
+  host: Pick<Host, 'auth' | 'password' | 'hasPassword'>
+  onChange: (next: Partial<Host>) => void
+}) {
+  return <>
+    <label className="fld" style={{ marginTop: 12, marginBottom: 0 }}>
+      <span>认证</span>
+      <select className="sel" aria-label="认证方式" value={host.auth} onChange={(event) => onChange({ auth: event.target.value as Host['auth'], on: false })}>
+        <option value="key">SSH 密钥（~/.ssh/id_ed25519）</option>
+        <option value="agent">SSH Agent</option>
+        <option value="password">用户密码</option>
+      </select>
+    </label>
+    {host.auth === 'password' ? <label className="fld" style={{ marginTop: 12, marginBottom: 0 }}>
+      <span>登录密码</span>
+      <input className="tx" aria-label="登录密码" type="password" autoComplete="new-password"
+        value={host.password ?? ''} placeholder={host.hasPassword ? '留空沿用已保存的密码' : '远程用户的登录密码'}
+        onChange={(event) => onChange({ password: event.target.value || (host.hasPassword ? undefined : ''), on: false })} />
+    </label> : null}
+  </>
+}
+
 export function HostDialog({
   initial,
   onClose,
@@ -875,13 +904,7 @@ export function HostDialog({
           <input className="tx mono" aria-label="端口" value={String(draft.port)} onChange={(e) => patch({ port: Number(e.target.value) || 22 })} />
         </label>
       </div>
-      <label className="fld" style={{ margin: 0 }}>
-        <span>认证</span>
-        <select className="sel" value={draft.auth} onChange={(e) => patch({ auth: e.target.value === 'agent' ? 'agent' : 'key' })}>
-          <option value="key">SSH 密钥（~/.ssh/id_ed25519）</option>
-          <option value="agent">SSH Agent</option>
-        </select>
-      </label>
+      <HostAuthentication host={draft} onChange={patch} />
     </Frame>
   )
 }

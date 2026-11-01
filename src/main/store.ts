@@ -2,7 +2,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { app } from 'electron'
 import type { Database, Executor, Host, Plugin, Project, SavedTerm, Settings, ShellKind } from '../shared/types'
-import { DEFAULT_PLUGINS, uid } from '../shared/types'
+import { DEFAULT_PLUGINS, PRESETS, uid } from '../shared/types'
+import { publicHost } from './credentials'
 import { hostPlatform, osLabel } from './platform'
 
 function file(): string {
@@ -75,12 +76,16 @@ function sanitize(raw: Partial<Database> | null): Database {
   }
   if (Array.isArray(raw.plugins) && raw.plugins.length) base.plugins = raw.plugins.filter(isPlugin)
   if (Array.isArray(raw.projects)) base.projects = raw.projects.filter(isProject)
+  const supported = new Set(['shell', ...PRESETS.map((preset) => preset.id), ...base.custom.map((executor) => executor.id)])
+  if (!supported.has(base.settings.defAgent)) base.settings.defAgent = 'claude'
+  base.projects = base.projects.map((project) => supported.has(project.agent) ? project : { ...project, agent: 'shell' })
+  base.hosts = base.hosts.map(publicHost)
   const sessions: Database['sessions'] = {}
   const activeTab: Record<string, string> = {}
   if (raw.sessions && typeof raw.sessions === 'object') {
     for (const [id, list] of Object.entries(raw.sessions)) {
       if (!Array.isArray(list)) continue
-      const terms = normalizeTerms(list)
+      const terms = normalizeTerms(list).map((term) => supported.has(term.kind) ? term : { ...term, kind: 'shell' })
       if (terms.length) sessions[id] = terms
     }
   }

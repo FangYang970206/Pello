@@ -8,6 +8,7 @@ import type { EnvVar, ProcState, PtyStateEvent, ShellKind } from '../shared/type
 import { cmdline, PRESETS } from '../shared/types'
 import { db } from './store'
 import { OscStrip } from './osc'
+import { passwordTerminal, type TerminalProcess } from './ssh'
 import {
   bashRc,
   pwshProfile,
@@ -58,7 +59,8 @@ async function childPids(pid: number): Promise<number[]> {
   }
 }
 
-async function killChildren(pid: number): Promise<boolean> {
+async function killChildren(pid: number | null): Promise<boolean> {
+  if (pid === null) return false
   const kids = await childPids(pid)
   if (!kids.length) return false
   const killOne = async (child: number) => {
@@ -109,7 +111,10 @@ class Session {
   state: ProcState = 'idle'
   exitCode: number | null = null
   startedAt: number | null = null
-  private proc: pty.IPty | null = null
+  private proc: TerminalProcess | null = null
+  private cols = 80
+  private rows = 24
+  private remoteAbort: AbortController | null = null
   private osc = new OscStrip()
   private phase: 'starting' | 'armed' | 'command' | 'prompt' | 'dead' = 'starting'
   private lastC = 0
@@ -146,7 +151,7 @@ class Session {
     return { id: this.id, state: this.state, exitCode: this.exitCode, startedAt: this.startedAt, inputReady: this.phase === 'prompt', shell: this.shell, kind: this.kind }
   }
 
-  spawn(): void {
+  async spawn(): Promise<void> {
     if (this.disposed) return
     this.procExited = false
     const draft = db()
@@ -154,7 +159,7 @@ class Session {
     const files = shellFiles()
     this.phase = 'starting'
     this.osc = new OscStrip()
-    let proc: pty.IPty
+    let proc: TerminalProcess
     if (!host || host.id === 'local') {
       const rc = this.shell === 'pwsh' ? files.pwsh : this.shell === 'zsh' ? files.zsh : files.bash
       const spec = resolveLocalShell(this.shell, rc)
@@ -170,7 +175,8 @@ class Session {
     } else {
       this.shell = shellForHost(host.platform, this.shell)
       const boot = remoteBootstrap(host.platform, this.cwd)
-      proc = pty.spawn('ssh', sshArgs(host, boot), {
+      this.remoteAbort = new AbortController()
+      proc = host.auth === 'password' ? await passwordTerminal(host, boot, this.remoteAbort.signal) : pty.spawn('ssh', sshArgs(host, boot), {
         name: 'xterm-256color',
         cols: 80,
         rows: 24,
@@ -178,7 +184,9 @@ class Session {
         env: this.env
       })
     }
+    if (this.disposed) { proc.kill(); return }
     this.proc = proc
+    proc.resize(this.cols, this.rows)
     proc.onData((data) => {
       if (this.disposed) return
       if (process.env.AWB_DEBUG) console.log(`[pty ${this.id}]`, JSON.stringify(data).slice(0, 300))
@@ -216,7 +224,10 @@ class Session {
   }
 
   resize(cols: number, rows: number): void {
-    if (!this.proc || cols < 2 || rows < 2) return
+    if (cols < 2 || rows < 2) return
+    this.cols = cols
+    this.rows = rows
+    if (!this.proc) return
     try {
       this.proc.resize(cols, rows)
     } catch {
@@ -270,11 +281,11 @@ class Session {
   async restart(): Promise<void> {
     if (this.disposed) return
     if (!this.command) {
-      if (this.phase === 'dead') this.spawn()
+      if (this.phase === 'dead') await this.spawn()
       return
     }
     if (this.phase === 'dead' || !this.proc) {
-      this.spawn()
+      await this.spawn()
       return
     }
     this.restartPending = true
@@ -301,19 +312,21 @@ class Session {
     this.restartPending = false
     this.override = null
     const proc = this.proc
+    if (!proc) this.remoteAbort?.abort()
     this.disposal = (async () => {
       if (!proc) return
       try {
-        if (alreadyExited) return
+        if (alreadyExited || proc.pid === null) return
+        const pid = proc.pid
         // ConPTY only knows processes attached to its console. Kill the tree
         // before closing that console, while parent IDs still identify children.
         if (process.platform === 'win32') {
-          await execFileP('taskkill', ['/F', '/T', '/PID', String(proc.pid)], { timeout: 10000, windowsHide: true }).catch((error) => {
-            try { process.kill(proc.pid, 0) } catch { return }
+          await execFileP('taskkill', ['/F', '/T', '/PID', String(pid)], { timeout: 10000, windowsHide: true }).catch((error) => {
+            try { process.kill(pid, 0) } catch { return }
             throw error
           })
         } else {
-          await killChildren(proc.pid)
+          await killChildren(pid)
         }
       } finally {
         try { proc.kill() } catch { /* already exited */ }
@@ -476,9 +489,9 @@ export async function createSession(
   })
   sessions.set(opts.id, session)
   try {
-    session.spawn()
+    await session.spawn()
   } catch (error) {
-    sessions.delete(opts.id)
+    if (sessions.get(opts.id) === session) sessions.delete(opts.id)
     await session.dispose()
     throw error
   }
