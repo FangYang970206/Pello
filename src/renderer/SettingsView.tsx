@@ -360,7 +360,9 @@ export function SettingsView({
       ['关闭标签', 'Ctrl W'],
       ['切换文件面板', 'Ctrl B'],
       ['打开设置', 'Ctrl ,'],
-      ['保存当前文件', 'Ctrl S']
+      ['保存当前文件', 'Ctrl S'],
+      ['撤销文件编辑', 'Ctrl Z'],
+      ['重做文件编辑', 'Ctrl Shift Z']
     ]
     body = (
       <>

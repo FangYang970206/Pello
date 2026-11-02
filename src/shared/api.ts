@@ -39,6 +39,8 @@ export interface WorkbenchApi {
   gitTree(projectId: string, rel?: string): Promise<TreeNode[]>
   gitRead(projectId: string, rel: string): Promise<FileContent>
   gitWrite(projectId: string, rel: string, text: string, version: string): Promise<FileContent>
+  previewUrl(projectId: string, rel: string): Promise<string>
+  openHtmlPreview(projectId: string, rel: string): Promise<string>
   ptyCreate(req: PtyCreateRequest): Promise<{ id: string; state: string; exitCode: number | null; startedAt: number | null; inputReady: boolean; shell: ShellKind; kind: string }>
   ptyWrite(id: string, data: string, binary?: boolean): void
   ptyResize(id: string, cols: number, rows: number): void

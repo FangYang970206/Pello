@@ -18,7 +18,6 @@ fs.writeFileSync(path.join(projectDir, 'README.md'), 'remote fixture\n')
 const password = 'test pa ss"$中!'
 const isWin = process.platform === 'win32'
 const platform = isWin ? 'windows' : 'linux'
-const shell = isWin ? 'pwsh' : 'bash'
 const privateKey = () => generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs1', format: 'pem' })
 let authCount = 0
 let remoteTerminals = 0
@@ -44,7 +43,7 @@ function createServer(hostKey) {
         if (info.cols > 0 && info.rows > 0) windowChanges++
         accept?.()
       })
-      session.on('signal', (accept) => { try { proc?.kill() } catch {}; accept?.() })
+      session.on('signal', (accept) => { try { proc?.kill() } catch { /* process already exited */ }; accept?.() })
       session.on('exec', (accept, _reject, info) => {
         const stream = accept()
         const file = isWin ? (process.env.ComSpec || 'cmd.exe') : 'bash'
@@ -58,7 +57,7 @@ function createServer(hostKey) {
           proc.on('close', (exitCode) => { if (!stream.destroyed) { stream.exit(exitCode ?? 1); stream.end() } })
           stream.once('close', () => {
             remoteTerminals--
-            try { proc.kill() } catch {}
+            try { proc.kill() } catch { /* process already exited */ }
           })
         } else {
           const child = spawn(file, args, { cwd: projectDir, windowsHide: true })
@@ -134,6 +133,13 @@ try {
   fs.writeFileSync(path.join(deepDir, 'deep.txt'), 'deep')
   const nested = await page.evaluate(() => window.awb.gitTree('remote-project', 'a/b/c/d/e/f/g/h'))
   assert.ok(nested.some((node) => node.path === 'a/b/c/d/e/f/g/h/deep.txt' && !node.dir))
+  fs.mkdirSync(path.join(projectDir, 'preview/assets'), { recursive: true })
+  fs.writeFileSync(path.join(projectDir, 'preview/index.html'), '<!doctype html><link rel="stylesheet" href="assets/site.css"><h1>远程预览</h1>')
+  fs.writeFileSync(path.join(projectDir, 'preview/assets/site.css'), 'h1{color:blue}')
+  const remoteUrl = await page.evaluate(() => window.awb.previewUrl('remote-project', 'preview/index.html'))
+  assert.ok((await (await fetch(remoteUrl)).text()).includes('远程预览'))
+  assert.equal(await (await fetch(new URL('assets/site.css', remoteUrl))).text(), 'h1{color:blue}')
+  console.log('PASS remote HTML preview and relative resources use password authentication')
   console.log('PASS remote file saving with large stdin payloads, stale-write protection and deep directory listing')
   const git = await page.evaluate(() => window.awb.gitStatus('remote-project'))
   assert.equal(git.isRepo, false)
@@ -178,6 +184,21 @@ try {
   const again = await page.evaluate((host) => window.awb.testHost(host), savedHost)
   assert.equal(again.ok, true, again.error)
   console.log('PASS saved password works after application restart')
+
+  await page.click('[data-a=rmode][data-id=files]')
+  await page.click('[data-a=preview][data-id="README.md"]')
+  await page.getByRole('radio', { name: '源码', exact: true }).click()
+  const remoteEditor = page.getByRole('textbox', { name: '文件内容', exact: true })
+  await remoteEditor.fill('remote first version')
+  await page.waitForFunction(() => document.querySelector('.filebar [role=status]')?.textContent === '正在保存…')
+  await remoteEditor.fill('remote newest version')
+  await page.waitForFunction(() => document.querySelector('.filebar [role=status]')?.textContent === '已保存')
+  assert.equal(fs.readFileSync(path.join(projectDir, 'README.md'), 'utf8'), 'remote newest version')
+  await remoteEditor.press('Control+z')
+  await page.waitForFunction(() => document.querySelector('.filebar [role=status]')?.textContent === '已保存')
+  assert.equal(fs.readFileSync(path.join(projectDir, 'README.md'), 'utf8'), 'remote first version')
+  await page.locator('.tab.on [data-a=close]').click()
+  console.log('PASS remote autosave serializes writes while typing and preserves undo history')
 
   await page.click('[data-a=settings]')
   await page.click('[data-a=sec][data-id=agents]')

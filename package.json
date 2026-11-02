@@ -10,11 +10,15 @@
     "start": "electron-vite preview",
     "dist:win": "node scripts/dist-win.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "check": "node scripts/review-check.mjs && node scripts/terminal-check.mjs && node scripts/ssh-password-check.mjs && node scripts/render-check.mjs && node scripts/workspace-check.mjs",
+    "lint": "eslint src scripts electron.vite.config.ts --max-warnings 0 && node scripts/invariant-lint.mjs && node scripts/invariant-lint-check.mjs",
+    "check": "node scripts/review-check.mjs && node scripts/terminal-check.mjs && node scripts/ssh-password-check.mjs && node scripts/render-check.mjs && node scripts/workspace-check.mjs && node scripts/editor-check.mjs",
+    "verify": "npm run lint && npm run typecheck && npm run build && npm run check",
     "postinstall": "electron-rebuild -f -w node-pty"
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "^5.2.6",
+    "@milkdown/crepe": "^7.23.0",
+    "@milkdown/kit": "^7.23.0",
     "@xterm/addon-fit": "0.10.0",
     "@xterm/addon-webgl": "^0.18.0",
     "@xterm/xterm": "5.5.0",
@@ -23,6 +27,7 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^3.7.2",
+    "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.64.1",
     "@tailwindcss/vite": "^4.1.16",
     "@types/node": "^22.19.0",
@@ -33,10 +38,14 @@
     "electron": "33.4.11",
     "electron-builder": "26.18.1",
     "electron-vite": "6.0.0",
+    "eslint": "^10.14.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "postcss": "^8.5.32",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "tailwindcss": "^4.1.16",
     "typescript": "^5.9.3",
+    "typescript-eslint": "^8.72.1",
     "vite": "^6.4.1"
   }
 }

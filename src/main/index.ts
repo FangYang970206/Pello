@@ -19,6 +19,7 @@ import {
 import { sshBatchArgs } from './platform'
 import { publicHost, rememberPassword } from './credentials'
 import { runPasswordCommand } from './ssh'
+import { openHtmlPreview, previewUrl } from './preview'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
@@ -94,6 +95,8 @@ function createWindow(): void {
     }
   })
   win.once('ready-to-show', () => win?.show())
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  win.webContents.on('will-navigate', (event) => event.preventDefault())
   const devUrl = process.env.ELECTRON_RENDERER_URL
   if (devUrl) {
     const url = process.env.AWB_CAPTURE ? devUrl + (devUrl.includes('?') ? '&' : '?') + 'capture=1' : devUrl
@@ -220,6 +223,8 @@ function registerIpc(): void {
     const { target } = projectTarget(projectId)
     return writeFile(target, rel, text, version)
   })
+  ipcMain.handle('file:preview-url', async (_e, projectId: string, rel: string) => previewUrl(projectId, projectTarget(projectId).target, rel))
+  ipcMain.handle('file:open-html', async (_e, projectId: string, rel: string) => openHtmlPreview(projectId, projectTarget(projectId).target, rel))
 
   ipcMain.handle('pty:create', (_e, req: { id: string; projectId: string; kind: string; shell: ShellKind }) => {
     return createSession(send, req)
@@ -273,7 +278,7 @@ function registerIpc(): void {
   })
   ipcMain.handle('app:shot', async (_e, name: string) => {
     if (!process.env.AWB_SHOTS || !win) return false
-    const safe = path.basename(String(name)).replace(/[^\w.\-]+/g, '_')
+    const safe = path.basename(String(name)).replace(/[^\w.-]+/g, '_')
     const dir = process.env.AWB_SHOTS
     fs.mkdirSync(dir, { recursive: true })
     win.webContents.sendInputEvent({ type: 'mouseMove', x: 4, y: 4 })

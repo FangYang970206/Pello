@@ -14,6 +14,7 @@ process.stdin.on('data', (data) => {
   if (data.toString() === 's') {
     sgr = true
     process.stdout.write('\x1b[?1006h')
+  // eslint-disable-next-line no-control-regex -- This fixture parses terminal protocol bytes.
   } else if ((sgr && /\x1b\[<0;\d+;\d+M/.test(data.toString())) || (!sgr && data[0] === 27 && data[1] === 91 && data[2] === 77 && (data[3] & 3) === 0)) {
     clicks++
     draw()

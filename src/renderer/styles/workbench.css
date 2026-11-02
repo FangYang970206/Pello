@@ -163,6 +163,10 @@ kbd{font:11px var(--mono);color:var(--faint);padding:0 4px;border-radius:4px;bor
 .kw{color:var(--magenta)}
 .dot.unsaved{background:var(--amber)}
 .file-error{flex:none;padding:8px 16px;font-size:12px;color:var(--red);background:var(--del)}
+.file-content{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden}
+.filebar{height:auto;min-height:40px;flex-wrap:wrap;padding-block:4px}
+.filebar .path{max-width:40%}
+.redo svg{transform:rotate(180deg)}
 .file-editor{display:flex;flex:1;min-width:0;min-height:0;overflow:hidden;background:var(--panel);font:13px/1.7 var(--mono)}
 .editor-gutter{flex:none;width:52px;overflow:hidden;padding:8px 10px 24px 0;text-align:right;user-select:none;color:var(--faint);border-right:1px solid var(--line)}
 .file-editor textarea{flex:1;min-width:0;min-height:0;resize:none;overflow:auto;padding:8px 12px 24px;border:0;border-radius:0;outline:none;background:transparent;color:var(--text);font:inherit;tab-size:2;white-space:pre}

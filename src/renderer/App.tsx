@@ -7,7 +7,7 @@ import { SettingsView } from './SettingsView'
 import { ConfirmDialog, ExecDialog, HostDialog, NewProjectDialog, NewTermDialog, dialogOpener, focusableIn } from './Dialogs'
 import { RightPanel } from './RightPanel'
 import { Workspace, type FileTab, type Tab, type TermTab } from './Workspace'
-import { documentKey, editableText, fileText, isDirty, type DocumentDraft } from './documents'
+import { AUTO_SAVE_DELAY, documentKey, editableText, fileText, isDirty, recordChange, undoDocument, type DocumentDraft } from './documents'
 
 type Modal =
   | { type: 'project' }
@@ -53,6 +53,7 @@ export function App() {
   const documentsRef = useRef(documents)
   documentsRef.current = documents
   const savingDocuments = useRef(new Set<string>())
+  const autoSaveTimers = useRef(new Map<string, { draft: string; timer: ReturnType<typeof setTimeout> }>())
   const [gitTick, setGitTick] = useState(0)
   const booted = useRef(false)
   const closingTerms = useRef(new Set<string>())
@@ -343,38 +344,78 @@ export function App() {
     return () => window.removeEventListener('beforeunload', onUnload)
   }, [])
 
-  function editFile(id: string, draft: string) {
+  function putDocument(key: string, doc: DocumentDraft) {
+    documentsRef.current = { ...documentsRef.current, [key]: doc }
+    setDocuments((map) => ({ ...map, [key]: doc }))
+  }
+
+  function updateFileDraft(id: string, update: (doc: DocumentDraft) => DocumentDraft) {
     const tab = tabs.find((item): item is FileTab => item.id === id && item.type === 'file')
     if (!tab) return
     const key = documentKey(tab.projectId, tab.path)
     const doc = documentsRef.current[key]
     if (!doc) return
-    setDocuments((map) => ({ ...map, [key]: { ...map[key], draft, error: undefined } }))
-    setTabs((list) => list.map((item) => item.id === id ? { ...item, pinned: true, dirty: draft !== editableText(doc.text) } : item))
+    const next = update(doc)
+    putDocument(key, next)
+    setTabs((list) => list.map((item) => item.id === id ? { ...item, pinned: true, dirty: isDirty(next) } : item))
   }
 
-  async function saveFile(tab: FileTab): Promise<boolean> {
+  function editFile(id: string, draft: string) { updateFileDraft(id, (doc) => recordChange(doc, draft)) }
+  function historyFile(id: string, redo: boolean) { updateFileDraft(id, (doc) => undoDocument(doc, redo)) }
+  function composeFile(id: string, composing: boolean) { updateFileDraft(id, (doc) => ({ ...doc, composing })) }
+
+  async function saveFile(tab: FileTab, automatic = false): Promise<boolean> {
     const key = documentKey(tab.projectId, tab.path)
     const doc = documentsRef.current[key]
     if (!doc?.version || doc.binary || doc.missing || doc.tooBig || savingDocuments.current.has(key)) return false
     if (!isDirty(doc)) return true
     savingDocuments.current.add(key)
-    setDocuments((map) => ({ ...map, [key]: { ...map[key], saving: true, error: undefined } }))
+    putDocument(key, { ...doc, saving: true, error: undefined })
     try {
       const saved = await window.awb.gitWrite(tab.projectId, tab.path, fileText(doc), doc.version)
       const latest = documentsRef.current[key] || doc
       const draft = latest.draft === doc.draft ? editableText(saved.text) : latest.draft
-      setDocuments((map) => ({ ...map, [key]: { ...saved, projectId: tab.projectId, path: tab.path, draft } }))
+      putDocument(key, { ...latest, ...saved, draft, saving: false, error: undefined })
       setTabs((list) => list.map((item) => item.id === tab.id ? { ...item, dirty: draft !== editableText(saved.text) } : item))
       setGitTick((tick) => tick + 1)
-      toast('文件已保存')
+      if (!automatic) toast('文件已保存')
       return true
     } catch (error) {
       const message = error instanceof Error ? error.message : '保存失败'
-      setDocuments((map) => ({ ...map, [key]: { ...map[key], saving: false, error: message } }))
-      toast(message, true)
+      putDocument(key, { ...(documentsRef.current[key] || doc), saving: false, error: message })
+      if (!automatic) toast(message, true)
       return false
     } finally { savingDocuments.current.delete(key) }
+  }
+
+  useEffect(() => {
+    const timers = autoSaveTimers.current
+    const paused = modal?.type === 'confirm'
+    for (const [key, pending] of timers) {
+      const doc = documents[key]
+      if (paused || !doc || !isDirty(doc) || doc.saving || doc.composing || doc.error || doc.draft !== pending.draft) {
+        clearTimeout(pending.timer)
+        timers.delete(key)
+      }
+    }
+    if (paused) return
+    for (const [key, doc] of Object.entries(documents)) {
+      if (!isDirty(doc) || doc.saving || doc.composing || doc.error || doc.binary || doc.missing || doc.tooBig || timers.has(key)) continue
+      const tab = tabs.find((item): item is FileTab => item.type === 'file' && item.projectId === doc.projectId && item.path === doc.path)
+      if (!tab) continue
+      const timer = setTimeout(() => { timers.delete(key); void saveFile(tab, true) }, AUTO_SAVE_DELAY)
+      timers.set(key, { draft: doc.draft, timer })
+    }
+  }, [documents, tabs, modal])
+
+  useEffect(() => () => { for (const { timer } of autoSaveTimers.current.values()) clearTimeout(timer) }, [])
+
+  async function previewHtml(id: string) {
+    const tab = tabs.find((item): item is FileTab => item.id === id && item.type === 'file')
+    if (!tab) return
+    const doc = documentsRef.current[documentKey(tab.projectId, tab.path)]
+    if (doc && isDirty(doc) && !await saveFile(tab)) return
+    try { await window.awb.openHtmlPreview(tab.projectId, tab.path) } catch (error) { toast(String(error), true) }
   }
 
   function reloadFile(id: string) {
@@ -843,6 +884,9 @@ export function App() {
                   onEditFile={editFile}
                   onSaveFile={(id) => { const tab = tabs.find((item): item is FileTab => item.id === id && item.type === 'file'); if (tab) void saveFile(tab) }}
                   onReloadFile={reloadFile}
+                  onHistoryFile={historyFile}
+                  onComposeFile={composeFile}
+                  onPreviewHtml={(id) => void previewHtml(id)}
                   untracked={!!(active && active.type === 'diff' && git?.untracked[active.path])}
                 />
                 {withRight && project && host ? (

@@ -174,7 +174,6 @@ export function TerminalPane({
       termRef.current = null
     }
     // The terminal instance is created once per tab id.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
 
   useEffect(() => {

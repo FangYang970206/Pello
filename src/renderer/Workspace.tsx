@@ -3,7 +3,8 @@ import type { AgentInfo, FileDiff, ProcState, Project, ShellKind, ThemeName } fr
 import { resolveAgent, shellLabel, shellLetter } from '../shared/types'
 import { Icon, Mark } from './icons'
 import { TerminalPane } from './TerminalPane'
-import { DiffPane, FilePane } from './DiffPane'
+import { DiffPane } from './DiffPane'
+import { FilePane } from './FilePane'
 import type { DocumentDraft } from './documents'
 
 export type TermTab = {
@@ -53,6 +54,9 @@ export function Workspace({
   onEditFile,
   onSaveFile,
   onReloadFile,
+  onHistoryFile,
+  onComposeFile,
+  onPreviewHtml,
   untracked
 }: {
   project: Project | null
@@ -80,6 +84,9 @@ export function Workspace({
   onEditFile: (id: string, text: string) => void
   onSaveFile: (id: string) => void
   onReloadFile: (id: string) => void
+  onHistoryFile: (id: string, redo: boolean) => void
+  onComposeFile: (id: string, composing: boolean) => void
+  onPreviewHtml: (id: string) => void
   untracked?: boolean
 }) {
   const scroller = useRef<HTMLDivElement>(null)
@@ -269,11 +276,15 @@ export function Workspace({
             <DiffPane diff={diff && diff.path === shown.path ? diff : null} mode={dmode} rightOpen={rightOpen} onMode={onDmode} onDiscard={onDiscard} onToggleRight={onToggleRight} untracked={untracked} />
           ) : shown.type === 'file' ? (
             <FilePane
+              key={`${shown.projectId}:${shown.path}`}
               path={shown.path}
               document={preview?.path === shown.path ? preview : null}
               onEdit={(text) => onEditFile(shown.id, text)}
               onSave={() => onSaveFile(shown.id)}
               onReload={() => onReloadFile(shown.id)}
+              onHistory={(redo) => onHistoryFile(shown.id, redo)}
+              onCompose={(composing) => onComposeFile(shown.id, composing)}
+              onPreviewHtml={() => onPreviewHtml(shown.id)}
               rightOpen={rightOpen}
               onToggleRight={onToggleRight}
             />

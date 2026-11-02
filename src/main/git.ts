@@ -126,7 +126,7 @@ async function countLines(target: Target, rel: string): Promise<number> {
 }
 
 export async function gitStatus(target: Target): Promise<GitPanel & { flags: Record<string, boolean> }> {
-  let status = ''
+  let status: string
   try {
     status = await git(target, ['status', '--porcelain=v1', '-uall', '-b'])
   } catch {
@@ -134,7 +134,7 @@ export async function gitStatus(target: Target): Promise<GitPanel & { flags: Rec
   }
   if (!status.trim() && !(await isRepo(target))) return { isRepo: false, branch: '', files: [], flags: {} }
   const parsed = parseStatus(status)
-  let nums = new Map<string, [number, number]>()
+  let nums: Map<string, [number, number]>
   try {
     nums = parseNumstat(await git(target, ['diff', '--numstat', 'HEAD']))
   } catch {
@@ -294,6 +294,23 @@ export async function readFile(target: Target, rel: string): Promise<FileContent
   return readRemote(target, rel)
 }
 
+/** Read preview assets through the same project boundary as the editor. */
+export async function readAsset(target: Target, rel: string): Promise<Buffer> {
+  rel = cleanRelative(rel)
+  if (!rel) throw new Error('文件路径不能为空')
+  if (!target.host || target.host.id === 'local') {
+    const abs = localPath(target.cwd, rel)
+    if (fs.statSync(abs).size > 12_000_000) throw new Error('预览资源超过 12 MB')
+    return fs.readFileSync(abs)
+  }
+  const abs = joinPath(target.platform, target.cwd, rel)
+  const q = target.platform === 'windows' ? psQuote(abs) : bashQuote(abs)
+  const command = target.platform === 'windows'
+    ? `$root=(Resolve-Path -LiteralPath ${psQuote(target.cwd)} -ErrorAction Stop).Path.TrimEnd('\\')+'\\'; $file=[IO.Path]::GetFullPath(${q}); if (-not $file.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)) { throw '非法路径' }; $walk=$root; foreach ($part in $file.Substring($root.Length).Split('\\')) { $walk=Join-Path $walk $part; if ((Get-Item -LiteralPath $walk -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw '符号链接不可预览' } }; [Convert]::ToBase64String([IO.File]::ReadAllBytes($file))`
+    : `root=$(cd -P -- ${bashQuote(target.cwd)} && pwd); file=${q}; [ ! -L "$file" ] || exit 1; parent=$(cd -P -- "$(dirname -- "$file")" && pwd) || exit 1; root=\${root%/}; case "$parent/" in "$root/"*) base64 "$file" ;; *) exit 1;; esac`
+  return Buffer.from((await run(target, command)).trim(), 'base64')
+}
+
 export async function writeFile(target: Target, rel: string, text: string, version: string): Promise<FileContent> {
   rel = cleanRelative(rel)
   if (!rel || !/^[a-f0-9]{64}$/.test(version)) throw new Error('请先读取文件再保存')
@@ -363,7 +380,7 @@ printf saved`
   try { await run(target, command, bytes.toString('base64')) } catch (error) {
     const detail = String((error as { stderr?: string }).stderr || error)
     if (detail.includes('AWB_CONFLICT')) throw conflict()
-    if (detail.includes('AWB_UNSAFE_PATH')) throw new Error('无法保存项目目录外的文件或符号链接')
+    if (detail.includes('AWB_UNSAFE_PATH')) throw new Error('无法保存项目目录外的文件或符号链接', { cause: error })
     throw error
   }
   return readRemote(target, rel)
@@ -374,7 +391,7 @@ export async function checkPath(target: Target, input: string): Promise<PathChec
   if (!value) return { kind: 'empty' }
   if (!isAbsPath(value, target.platform)) return { kind: 'invalid' }
   target = { ...target, cwd: value }
-  let exists = false
+  let exists: boolean
   try {
     if (!target.host || target.host.id === 'local') {
       exists = fs.existsSync(value) && fs.statSync(value).isDirectory()
@@ -389,7 +406,7 @@ export async function checkPath(target: Target, input: string): Promise<PathChec
   if (!exists) return { kind: 'missing' }
   const repo = await isRepo(target)
   if (!repo) return { kind: 'plain' }
-  let branch = ''
+  let branch: string
   try {
     branch = (await git(target, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim()
   } catch {
