@@ -18,24 +18,24 @@ export function FilePane({ path, document, onEdit, onSave, onReload, onHistory, 
   const gutter = useRef<HTMLDivElement>(null)
   const format = useRef<((command: string) => void) | null>(null)
   const [visual, setVisual] = useState(true)
-  const [preview, setPreview] = useState<{ url?: string; error?: string }>({})
+  const [preview, setPreview] = useState<{ url?: string; error?: string; content?: string }>({})
   const markdown = /\.(md|markdown|mdown)$/i.test(path)
   const html = /\.html?$/i.test(path)
   const readonly = !document || document.binary || document.missing || document.tooBig
   const projectId = document?.projectId
-  useEffect(() => window.awb.onPreviewSource(() => { if (html) setVisual(false) }), [html])
+  useEffect(() => window.awb.onPreviewSource(() => { if (html) { setPreview({}); setVisual(false) } }), [html])
   useEffect(() => {
     if (!html || !visual || !projectId) return
     let stopped = false
     void window.awb.previewUrl(projectId, path, document?.draft).then((url) => {
-      if (!stopped) setPreview({ url })
+      if (!stopped) setPreview({ url, content: document?.draft })
     }).catch((error) => { if (!stopped) setPreview({ error: String(error) }) })
     return () => { stopped = true }
   }, [html, visual, projectId, path, document?.version, document?.draft])
   async function contextMenu() {
     const command = await window.awb.documentMenu({ markdown, visual: (markdown || html) && visual,
       undo: !!document?.past?.length, redo: !!document?.future?.length, editable: !readonly })
-    if (command === 'mode') setVisual((value) => !value)
+    if (command === 'mode') { setPreview({}); setVisual((value) => !value) }
     else if (command === 'save') onSave()
     else if (command === 'reload') onReload()
     else if (command === 'panel') onToggleRight()
@@ -58,8 +58,8 @@ export function FilePane({ path, document, onEdit, onSave, onReload, onHistory, 
         }
       }}>
       {readonly ? <div className="empty"><div className="in"><h2>{!document ? '正在读取文件…' : document.missing ? '文件不存在' : document.binary ? '无法编辑二进制或非 UTF-8 文件' : '文件超过 2 MB，请使用外部编辑器'}</h2></div></div>
-        : html && visual ? preview.error ? <p className="file-error" role="alert">{preview.error}</p> : preview.url ?
-          <iframe className="html-preview" title="HTML 预览" sandbox="allow-scripts" src={preview.url} /> : <p className="rmeta">正在加载预览…</p>
+        : html && visual ? preview.error ? <p className="file-error" role="alert">{preview.error}</p> : preview.url && preview.content === document.draft ?
+          <iframe key={preview.url} className="html-preview" title="HTML 预览" sandbox="allow-scripts" src={preview.url} /> : <p className="rmeta">正在加载预览…</p>
         : markdown && visual ? <Suspense fallback={<div className="rmeta">正在加载 Markdown 编辑器…</div>}>
           <MarkdownEditor value={document.draft} projectId={document.projectId} path={path} onChange={onEdit} formatRef={format} />
         </Suspense> : <div className="file-editor">

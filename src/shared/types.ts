@@ -14,6 +14,10 @@ export interface EnvVar {
 export interface Settings {
   theme: ThemeName
   fontSize: number
+  fontFamily?: string
+  uiFontFamily?: string
+  uiFontSize?: number
+  editorFontSize?: number
   defShell: ShellKind
   defAgent: string
   restore: boolean
@@ -29,6 +33,7 @@ export interface Executor {
   color: string
   shell: 'pwsh' | 'cmd'
   env: EnvVar[]
+  resources?: ResourcePaths
 }
 
 export interface Host {
@@ -47,8 +52,10 @@ export interface Host {
 }
 
 export type ResourceFormat = 'standard' | 'codex' | 'opencode'
-export interface ResourceTarget { id: string; name: string; mcpPath: string; skillPath: string; format: ResourceFormat }
+export interface ResourcePaths { mcpPath: string; skillPath: string; format: ResourceFormat; skillAdapter?: 'claude' | 'codex' | 'opencode' | 'pi' | 'portable'; skillConfigPath?: string }
+export interface ResourceTarget extends ResourcePaths { id: string; name: string }
 export interface ResourceItem { name: string; description: string; path: string; transport?: string; enabled?: boolean }
+export interface ResourceDetail extends ResourceItem { content: string; notice?: string }
 export interface ResourcePage { items: ResourceItem[]; total: number; page: number; pages: number; errors: string[] }
 export interface ResourceResult { agent: string; ok: boolean; error?: string }
 

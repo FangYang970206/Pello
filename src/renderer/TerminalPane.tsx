@@ -1,3 +1,4 @@
+import { codeFont } from '../shared/fonts'
 import { useEffect, useRef } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
@@ -6,7 +7,6 @@ import '@xterm/xterm/css/xterm.css'
 import type { ShellKind, ThemeName } from '../shared/types'
 import { bindTerm, unbindTerm } from './terms'
 
-const FONT = '"Cascadia Mono", "Cascadia Code", "JetBrains Mono", Consolas, "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans Mono CJK SC", monospace'
 
 function xtermTheme(theme: ThemeName) {
   if (theme === 'light') {
@@ -60,6 +60,7 @@ function xtermTheme(theme: ThemeName) {
 export function TerminalPane({
   id,
   fontSize,
+  fontFamily,
   theme,
   visible,
   onInterrupt,
@@ -67,6 +68,7 @@ export function TerminalPane({
 }: {
   id: string
   fontSize: number
+  fontFamily?: string
   theme: ThemeName
   shell: ShellKind
   visible: boolean
@@ -85,7 +87,7 @@ export function TerminalPane({
     const host = hostRef.current
     if (!host) return
     const term = new Terminal({
-      fontFamily: FONT,
+      fontFamily: codeFont(fontFamily),
       fontSize,
       lineHeight: 1,
       customGlyphs: true,
@@ -186,14 +188,20 @@ export function TerminalPane({
     }
     term.options.fontSize = fontSize
     term.options.theme = next
-    const redraw = () => {
+    let stopped = false
+    const applyFont = () => {
+      if (stopped || termRef.current !== term) return
+      term.options.fontFamily = codeFont(fontFamily)
       if (term.rows > 0) term.refresh(0, term.rows - 1)
+      if (!visible || !host || host.offsetWidth < 2) return
+      scheduleFit.current()
+      term.focus()
     }
-    redraw()
-    if (!visible || !host || host.offsetWidth < 2) return
-    scheduleFit.current()
-    term.focus()
-  }, [fontSize, theme, visible, id])
+    const font = `${fontSize}px "${fontFamily || 'Cascadia Mono'}"`
+    if (document.fonts.check(font)) applyFont()
+    else void document.fonts.load(font).then(applyFont, applyFont)
+    return () => { stopped = true }
+  }, [fontSize, fontFamily, theme, visible, id])
 
   return <div className="termhost" data-term={id}><div className="termframe" ref={hostRef} /></div>
 }

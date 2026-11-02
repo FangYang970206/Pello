@@ -118,6 +118,7 @@ try {
   console.log('PASS discard confirmation pauses autosave without writing the abandoned draft')
 
   await page.click('[data-a=preview][data-id="docs/page.html"]')
+  await page.evaluate(() => { window.__autosaveDelay = 120000 })
   const frame = page.frameLocator('iframe[title="HTML 预览"]')
   await frame.locator('h1').waitFor()
   const url = await page.locator('iframe').getAttribute('src')
@@ -136,10 +137,12 @@ try {
   await frame.locator('h1').click({ button: 'right' })
   await source.waitFor()
   assert.ok((await source.inputValue()).includes('浏览器预览'))
+  // Preview-only behavior uses the real autosave delay, not accelerated time.
   await source.fill('<!doctype html><h1>草稿预览</h1>')
   await documentCommand(app, page, 'mode')
   await frame.getByRole('heading', { name: '草稿预览' }).waitFor()
   assert.ok(fs.readFileSync(path.join(project, 'docs/page.html'), 'utf8').includes('浏览器预览'), 'Rendering a draft must not silently save it')
+  await page.evaluate(() => { window.__autosaveDelay = 800 })
   const forbidden = new URL(url)
   forbidden.pathname = '/not-a-project-token/secret.txt'
   assert.equal((await fetch(forbidden)).status, 404)

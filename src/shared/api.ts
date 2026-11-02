@@ -12,6 +12,8 @@ import type {
   ResourceTarget,
   ResourcePage,
   ResourceResult,
+  ResourceItem,
+  ResourceDetail,
   Project,
   PtyCreateRequest,
   PtyEvent,
@@ -31,6 +33,8 @@ export interface WorkbenchApi {
   resourceTargets(): Promise<ResourceTarget[]>
   saveResourceTarget(target: ResourceTarget): Promise<void>
   resourceList(kind: 'mcp' | 'skills', agent: string, page: number, query: string): Promise<ResourcePage>
+  resourceToggle(kind: 'mcp' | 'skills', agent: string, item: ResourceItem, enabled: boolean): Promise<void>
+  resourceDetail(kind: 'mcp' | 'skills', agent: string, item: ResourceItem): Promise<ResourceDetail>
   addMcp(name: string, config: Record<string, unknown>, agents: string[]): Promise<ResourceResult[]>
   importSkills(source: string, agents: string[]): Promise<ResourceResult[]>
   pickResource(kind: 'folder' | 'zip' | 'config'): Promise<string | null>

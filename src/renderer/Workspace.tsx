@@ -36,6 +36,7 @@ export function Workspace({
   dmode,
   theme,
   fontSize,
+  fontFamily,
   agents,
   installed,
   diff,
@@ -66,6 +67,7 @@ export function Workspace({
   dmode: 'unified' | 'split'
   theme: ThemeName
   fontSize: number
+  fontFamily?: string
   agents: AgentInfo[]
   installed: Record<string, boolean>
   diff: FileDiff | null
@@ -307,7 +309,7 @@ export function Workspace({
                       if (!focus) onSelect(tab.id)
                     }}
                   >
-                    <TerminalPane id={tab.id} fontSize={fontSize} theme={theme} shell={tab.shell} visible={visible} onInterrupt={onInterrupt} onAppKey={onAppKey} />
+                    <TerminalPane id={tab.id} fontSize={fontSize} fontFamily={fontFamily} theme={theme} shell={tab.shell} visible={visible} onInterrupt={onInterrupt} onAppKey={onAppKey} />
                   </div>
                 )
               })}

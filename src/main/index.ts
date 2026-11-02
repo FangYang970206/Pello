@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, type MenuItemCo
 import fs from 'node:fs'
 import path from 'node:path'
 import { PRESETS, type Executor, type Host, type Project, type SavedTerm, type Settings, type ShellKind, type ResourceTarget } from '../shared/types'
-import { ResourceManager } from './resources'
+import { ResourceManager, validateResourcePaths } from './resources'
 import { db, mutate, writeSessions } from './store'
 import { commandExists, osLabel } from './platform'
 import { checkPath, fileTree, gitDiff, gitDiscard, gitStatus, listDir, readFile, targetFor, writeFile } from './git'
@@ -175,6 +175,7 @@ function registerIpc(): void {
     draft.projects = projects
   }))
   ipcMain.handle('db:custom', (_e, custom: Executor[]) => mutate((draft) => {
+    for (const executor of custom) validateResourcePaths(executor.resources)
     draft.custom = custom
   }))
   ipcMain.handle('db:hosts', async (_e, hosts: Host[]) => {
@@ -205,6 +206,8 @@ function registerIpc(): void {
   ipcMain.handle('resources:targets', () => targets())
   ipcMain.handle('resources:target', (_e, target: ResourceTarget) => resources.saveTarget(target, db().custom))
   ipcMain.handle('resources:list', (_e, kind: 'mcp' | 'skills', agent: string, page: number, query: string) => resources.list(targets(), kind, agent, page, query))
+  ipcMain.handle('resources:toggle', (_e, kind, agent, item, enabled) => resources.toggle(targets(), kind, agent, item, enabled))
+  ipcMain.handle('resources:detail', (_e, kind, agent, item) => resources.detail(targets(), kind, agent, item))
   ipcMain.handle('resources:mcp', (_e, name: string, config: Record<string, unknown>, agents: string[]) => resources.addMcp(targets(), name, config, agents))
   ipcMain.handle('resources:skills', (_e, source: string, agents: string[]) => resources.importSkills(targets(), source, agents))
   ipcMain.handle('resources:pick', async (_e, kind: string) => {

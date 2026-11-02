@@ -118,6 +118,17 @@ export function checkInvariants(files) {
   const iframe = nodes(filePane, (node) => ts.isJsxSelfClosingElement(node) && node.tagName.getText() === 'iframe')[0]
   require(iframe && attrText(iframe, 'sandbox') === 'allow-scripts' && called(filePane, 'documentMenu').length,
     'AWB026', 'src/renderer/FilePane.tsx', '内嵌 HTML 保留 sandbox 隔离与右键源码入口')
+  const resourcesFile = 'src/renderer/ResourceSettings.tsx', resources = source(resourcesFile)
+  const resourceRow = nodes(resources, (node) => ts.isJsxOpeningElement(node) && attrText(node, 'className') === 'srow resource-item')[0]?.parent
+  require(resourceRow && ts.isJsxElement(resourceRow) && !resourceRow.children.some((child) => /item\.(path|description|transport)/.test(child.getText())) && called(resources, 'resourceToggle').length,
+    'AWB027', resourcesFile, '资源列表保持名称、详情与真实配置开关，路径和说明放入详情')
+  const resourceDialogFile = 'src/renderer/ResourceDialog.tsx', resourceDialog = source(resourceDialogFile)
+  require(called(resourceDialog, 'showModal').length && nodes(resourceDialog, (node) => ts.isJsxOpeningElement(node) && node.tagName.getText() === 'dialog' && attr(node, 'onCancel')).length,
+    'AWB028', resourceDialogFile, '资源配置弹窗必须约束焦点并处理 Esc')
+  require(called(terminal, 'load').some((call) => call.expression.getText() === 'document.fonts.load') && nodes(terminal, (node) => ts.isBinaryExpression(node) && node.left.getText() === 'term.options.fontFamily').length,
+    'AWB029', terminalFile, '字体加载后更新现有终端字体，不能重建会话')
+  require(iframe && attr(iframe, 'key')?.initializer?.getText() === '{preview.url}' && files.get('src/renderer/FilePane.tsx')?.includes('preview.content === document.draft'),
+    'AWB030', 'src/renderer/FilePane.tsx', 'HTML 框架必须匹配当前草稿，并按预览 URL 更新')
 
   const cssFiles = ['src/renderer/styles/workbench.css', 'src/renderer/styles/extra.css']
   const declarations = (selector) => {
@@ -135,7 +146,7 @@ export function checkInvariants(files) {
   require(declarations('.dot.terminal-status.busy').get('background') === 'var(--amber)' && declarations('.dot.terminal-status.ready').get('background') === 'var(--green)',
     'AWB017', cssFiles[0], '运行黄点、可输入绿点，不与连接状态混用')
   const scripts = JSON.parse(files.get('package.json') || '{}').scripts || {}
-  require(['review', 'terminal', 'ssh-password', 'render', 'workspace', 'editor', 'design', 'resources', 'host-management', 'autosave'].every((name) => scripts.check?.includes(`scripts/${name}-check.mjs`)),
+  require(['review', 'terminal', 'ssh-password', 'render', 'workspace', 'editor', 'design', 'resources', 'host-management', 'autosave', 'resources-ui', 'html-preview'].every((name) => scripts.check?.includes(`scripts/${name}-check.mjs`)),
     'AWB018', 'package.json', '保留已有行为回归入口，不能删检查来绕过失败')
   require(files.get('AGENTS.md')?.includes('npm run lint') && files.get('AGENTS.md')?.includes('npm run check'), 'AWB019', 'AGENTS.md', '项目规则必须注明静态与行为验证入口')
   return errors

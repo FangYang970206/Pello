@@ -2,9 +2,10 @@ export async function installDocumentHarness(app, page, accelerate = true) {
   if (accelerate) await page.evaluate(() => {
     const original = window.setTimeout.bind(window)
     window.__autosaveDelays = []
+    window.__autosaveDelay = 800
     window.setTimeout = (callback, delay, ...args) => {
       if (delay === 120000) window.__autosaveDelays.push(delay)
-      return original(callback, delay === 120000 ? 800 : delay, ...args)
+      return original(callback, delay === 120000 ? window.__autosaveDelay : delay, ...args)
     }
   })
   await app.evaluate(({ Menu }) => {

@@ -22,6 +22,11 @@ execFileSync('git', ['-c', 'user.name=Design check', '-c', 'user.email=design@ex
 fs.writeFileSync(path.join(project, 'src/app.ts'), 'export const ready = true\n')
 fs.writeFileSync(path.join(project, 'page.html'), '<!doctype html><h1>项目预览</h1>')
 const env = { ...process.env, AWB_USER_DATA: data, AWB_RESOURCE_HOME: path.join(data, 'agent-home') }
+fs.mkdirSync(env.AWB_RESOURCE_HOME, { recursive: true })
+fs.writeFileSync(path.join(env.AWB_RESOURCE_HOME, '.claude.json'), '{"mcpServers":{"project-tools":{"command":"node","args":["server.mjs"]}}}')
+const skillFolder = path.join(env.AWB_RESOURCE_HOME, '.claude', 'skills', 'project-conventions')
+fs.mkdirSync(skillFolder, { recursive: true })
+fs.writeFileSync(path.join(skillFolder, 'SKILL.md'), '---\nname: project-conventions\ndescription: 项目开发约定与检查流程\n---\n# 项目约定\n')
 delete env.ELECTRON_RUN_AS_NODE
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({
   settings: { theme: 'dark', fontSize: 13, defShell: process.platform === 'win32' ? 'pwsh' : 'bash', defAgent: 'shell', restore: false, confirmKill: false },
@@ -92,6 +97,12 @@ try {
           const label = section === 'mcp' ? '添加 MCP' : '添加 Skill'
           await page.getByRole('button', { name: label, exact: true }).click()
           await shot(`settings-${section}-add`, theme, size)
+          await page.locator('.resource-dialog header [data-a=mclose]').click()
+          const name = section === 'mcp' ? 'project-tools' : 'project-conventions'
+          await page.getByRole('button', { name: `查看 ${name} 详情`, exact: true }).click()
+          await shot(`settings-${section}-detail`, theme, size)
+          await page.keyboard.press('Escape')
+          await page.getByRole('dialog').waitFor({ state: 'detached' })
         }
       }
       await page.click('[data-a=sec][data-id=hosts]')

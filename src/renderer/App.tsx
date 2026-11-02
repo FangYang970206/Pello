@@ -7,6 +7,7 @@ import { SettingsView } from './SettingsView'
 import { ConfirmDialog, ExecDialog, HostDialog, NewProjectDialog, NewTermDialog, dialogOpener, focusableIn } from './Dialogs'
 import { RightPanel } from './RightPanel'
 import { Workspace, type FileTab, type Tab, type TermTab } from './Workspace'
+import { codeFont, uiFont } from '../shared/fonts'
 import { AUTO_SAVE_DELAY, documentKey, editableText, fileText, isDirty, recordChange, undoDocument, type DocumentDraft } from './documents'
 
 type Modal =
@@ -114,6 +115,10 @@ export function App() {
     if (!db) return
     document.documentElement.dataset.theme = db.settings.theme
     document.documentElement.style.setProperty('--fs', `${db.settings.fontSize}px`)
+    document.documentElement.style.setProperty('--mono', codeFont(db.settings.fontFamily))
+    document.documentElement.style.setProperty('--ui', uiFont(db.settings.uiFontFamily))
+    document.documentElement.style.setProperty('--ui-size', `${db.settings.uiFontSize || 13}px`)
+    document.documentElement.style.setProperty('--editor-size', `${db.settings.editorFontSize || 14}px`)
   }, [db])
 
   useEffect(() => {
@@ -661,7 +666,7 @@ export function App() {
   }
 
   function onAppKey(key: string) {
-    if (modalRef.current) return
+    if (modalRef.current || document.querySelector('dialog[open]')) return
     if (key === 'n') setModal({ type: 'project' })
     else if (key === 't') {
       if (!project) setModal({ type: 'project' })
@@ -674,6 +679,7 @@ export function App() {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if (document.querySelector('dialog[open]')) return
       const target = event.target instanceof Element ? event.target : null
       const field = !!target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT')
       const inTerm = !!target?.closest('.xterm')
@@ -726,7 +732,7 @@ export function App() {
   useEffect(() => {
     if (route !== 'settings' || modal) return
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== 'Tab') return
+      if (event.key !== 'Tab' || document.querySelector('dialog[open]')) return
       const root = document.querySelector('.settings')
       if (!root) return
       const items = focusableIn(root)
@@ -859,6 +865,7 @@ export function App() {
                   dmode={dmode}
                   theme={theme}
                   fontSize={db?.settings.fontSize || 13}
+                  fontFamily={db?.settings.fontFamily}
                   agents={agents}
                   installed={installed}
                   diff={diff}
@@ -995,11 +1002,12 @@ export function App() {
               setModal(null)
               void window.awb.saveCustom(custom)
             }}
-            onSave={(exec) => {
+            onSave={async (exec) => {
               const custom = exec.id ? db.custom.map((item) => (item.id === exec.id ? exec : item)) : [...db.custom, { ...exec, id: uid('c') }]
-              setDb({ ...db, custom })
+              const saved = await window.awb.saveCustom(custom)
+              setDb((current) => current ? { ...current, custom: saved.custom } : current)
               setModal(null)
-              void window.awb.saveCustom(custom).then(() => window.awb.getState()).then((state) => setInstalled(state.installed))
+              const state = await window.awb.getState(); setInstalled(state.installed)
               toast('已保存执行器')
             }}
           />

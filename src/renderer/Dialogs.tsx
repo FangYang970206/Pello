@@ -638,7 +638,7 @@ export function ExecDialog({
   initial: Executor | null
   cwd: string
   onClose: () => void
-  onSave: (exec: Executor) => void
+  onSave: (exec: Executor) => Promise<void>
   onDelete: (id: string) => void
   onToast: (text: string, bad?: boolean) => void
 }) {
@@ -651,6 +651,17 @@ export function ExecDialog({
   const [output, setOutput] = useState('')
   const [running, setRunning] = useState(false)
   const patch = (partial: Partial<Executor>) => setDraft((prev) => ({ ...prev, ...partial }))
+  const resourcePaths = draft.resources || { mcpPath: '', skillPath: '', format: 'standard' as const, skillAdapter: 'portable' as const, skillConfigPath: '' }
+  const resourcePatch = (partial: Partial<typeof resourcePaths>) => patch({ resources: { ...resourcePaths, ...partial } })
+  useEffect(() => {
+    if (!initial?.id || initial.resources) return
+    let stopped = false
+    void window.awb.resourceTargets().then((targets) => {
+      const target = targets.find((item) => item.id === initial.id)
+      if (!stopped && target) setDraft((value) => ({ ...value, resources: value.resources || target }))
+    }).catch(() => {})
+    return () => { stopped = true }
+  }, [initial])
   return (
     <Frame
       title={draft.id ? '编辑执行器' : '添加执行器'}
@@ -695,13 +706,17 @@ export function ExecDialog({
           <button
             className="btn pri"
             data-a="ce-save"
-            onClick={() => {
+            disabled={running}
+            onClick={async () => {
               if (!draft.name.trim() || !draft.cmd.trim()) {
                 onToast('请填写名称和命令')
                 return
               }
               const letter = draft.letter.trim() || draft.name.trim()[0].toUpperCase()
-              onSave({ ...draft, name: draft.name.trim(), cmd: draft.cmd.trim(), letter, env: draft.env.filter((item) => item.k) })
+              setRunning(true)
+              try { await onSave({ ...draft, name: draft.name.trim(), cmd: draft.cmd.trim(), letter, env: draft.env.filter((item) => item.k) }) }
+              catch (error) { setOutput(String(error)); onToast(String(error), true) }
+              finally { setRunning(false) }
             }}
           >
             {draft.id ? '保存' : '添加'}
@@ -737,11 +752,19 @@ export function ExecDialog({
       </div>
       <button className="disc" data-a="ce-more" aria-expanded={more} onClick={() => setMore((value) => !value)}>
         <Icon name="chev" className={`s chev${more ? ' open' : ''}`} />
-        环境变量与外观
+        高级属性
         {draft.env.length ? <span className="tag">{draft.env.length}</span> : null}
       </button>
       {more ? (
         <div style={{ margin: '-4px 0 16px 22px' }}>
+          <div className="executor-resources">
+            <label className="fld"><span>Skill 存放目录</span><input className="tx mono" aria-label="Skill 存放目录" value={resourcePaths.skillPath} placeholder="Skill 目录的绝对路径" onChange={(event) => resourcePatch({ skillPath: event.target.value })} /></label>
+            <label className="fld"><span>MCP 配置文件</span><input className="tx mono" aria-label="MCP 配置文件" value={resourcePaths.mcpPath} placeholder="JSON、JSONC 或 TOML 文件的绝对路径" onChange={(event) => resourcePatch({ mcpPath: event.target.value })} /></label>
+            <div className="two"><label className="fld"><span>MCP 格式</span><select className="sel" aria-label="MCP 格式" value={resourcePaths.format} onChange={(event) => resourcePatch({ format: event.target.value as typeof resourcePaths.format })}><option value="standard">JSON · mcpServers</option><option value="codex">TOML · mcp_servers</option><option value="opencode">JSONC · mcp</option></select></label>
+            <label className="fld"><span>Skill 管理方式</span><select className="sel" aria-label="Skill 管理方式" value={resourcePaths.skillAdapter || 'portable'} onChange={(event) => resourcePatch({ skillAdapter: event.target.value as typeof resourcePaths.skillAdapter })}>{['portable', 'claude', 'codex', 'opencode', 'pi'].map((adapter) => <option key={adapter} value={adapter}>{adapter === 'portable' ? '通用 · 文件开关' : adapter}</option>)}</select></label></div>
+            <label className="fld"><span>Skill 配置文件（可选）</span><input className="tx mono" aria-label="Skill 配置文件" value={resourcePaths.skillConfigPath || ''} onChange={(event) => resourcePatch({ skillConfigPath: event.target.value })} /></label>
+            <p className="resource-help">选择执行器支持的原生格式。通用开关会保留文件，并切换 SKILL.md 的文件名；独立目录可避免影响其他执行器。</p>
+          </div>
           {draft.env.map((item, index) => (
             <div className="env" key={index}>
               <input

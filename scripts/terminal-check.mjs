@@ -182,7 +182,12 @@ try {
 } finally {
   if (!appClosed) await app.close()
   await check('application shutdown stops all remaining agent processes', async () => {
-    await until(() => liveFixturePids().length === 0, 'Agent processes survived application shutdown')
+    await until(() => liveFixturePids().length === 0, 'Agent processes survived application shutdown').catch((error) => {
+      console.error('Shutdown fixture identity', JSON.stringify({ pidFile, expected: pids(), remaining: liveFixturePids() }))
+      const remaining = liveFixturePids()
+      if (isWin && remaining.length) console.error(execFileSync('powershell.exe', ['-NoProfile', '-Command', `Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -in @(${remaining.join(',')}) } | Select-Object ProcessId,ParentProcessId,CreationDate,CommandLine | ConvertTo-Json -Compress`], { encoding: 'utf8', windowsHide: true }))
+      throw error
+    })
   })
   for (const pid of liveFixturePids()) {
     try {

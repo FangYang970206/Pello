@@ -58,7 +58,7 @@ npm start
 
 ## MCP 与 Skill
 
-设置中的 MCP 和 Skill 为同级入口，按 Claude Code、Codex CLI、OpenCode、Pi 和自定义执行器分别展示，可搜索并按每页 12 项浏览。本版本管理本机用户配置与 Skill 兼容目录。
+设置中的 MCP 和 Skill 为同级入口，按 Claude Code、Codex CLI、OpenCode、Pi 和自定义执行器分别展示，可搜索并按每页 12 项浏览。本版本管理本机用户配置与 Skill 兼容目录。列表仅显示名称，右侧通过眼睛查看详情、通过开关启停；新增在独立模态窗口中填写，并可勾选多个分发目标。
 
 | Agent | MCP 配置 | Skill 分发目录 |
 | --- | --- | --- |
@@ -71,7 +71,11 @@ npm start
 
 Skill 可从文件夹或 ZIP 导入，也可打包多个 Skill。每个 Skill 目录须包含带 `name`、`description` 的 `SKILL.md`；附属文件一并分发，同名目录不覆盖。支持按需勾选 Agent，分别显示成功或失败；共享目录（如 `.agents/skills`）中的资源可能被多个 Agent 自动发现。导入限制为 32 MB、10000 个文件，拒绝路径穿越和文件夹内的符号链接，不执行导入脚本。
 
-自定义执行器在其 MCP / Skill 子菜单中设置资源路径与配置格式，之后可参与相同的分发流程。原有演示插件已移除。
+自定义执行器在「高级属性」中设置 Skill 目录、MCP 配置文件及格式、Skill 管理方式和可选配置文件，之后可参与相同的分发流程。兼容原有资源路径映射。原有演示插件已移除。
+
+开关修改实际发现配置并保留原文件。Codex、OpenCode、Pi 使用其原生 enabled、技能覆盖、权限或排除配置；Claude Code 的个人 MCP 开关将条目暂存于原配置的 `awbDisabledMcp` 区域，启用时恢复到 `mcpServers`，遇到同名新配置不覆盖。Claude Skill 使用 `skillOverrides`。自定义执行器可选择相应 Skill 适配方式；通用文件开关在独立 Skill 目录中可逆地切换 `SKILL.md` / `SKILL.md.awb-disabled`，不会执行或删除 Skill 内容。已有会话可能需重新加载配置。
+
+「外观」支持 Cascadia Mono、随包分发的 JetBrains Mono、Consolas 等终端字体，以及 10–24px 终端和源码字号；界面字体及 12–16px 字号独立设置。切换字体后保留终端实例，等待字体加载再计算尺寸。
 
 格式依据 [Claude Code MCP](https://code.claude.com/docs/en/mcp)、[Codex MCP](https://developers.openai.com/codex/mcp)、[OpenCode MCP](https://opencode.ai/docs/mcp-servers/)、[Pi MCP](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md) 及各 Agent 的 Skill 文档。
 

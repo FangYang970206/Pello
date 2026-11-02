@@ -28,7 +28,11 @@ const cases = [
   ['AWB023', 'src/renderer/MarkdownEditor.tsx', '!interacted.current', 'false'],
   ['AWB024', 'src/main/preview.ts', '!/\\.html?$/i.test(rel)', '!/./.test(rel)'],
   ['AWB025', 'src/renderer/documents.ts', '120_000', '800'],
-  ['AWB026', 'src/renderer/FilePane.tsx', 'sandbox="allow-scripts"', 'sandbox="allow-scripts allow-same-origin"']
+  ['AWB026', 'src/renderer/FilePane.tsx', 'sandbox="allow-scripts"', 'sandbox="allow-scripts allow-same-origin"'],
+  ['AWB027', 'src/renderer/ResourceSettings.tsx', '<b className="resource-name">{item.name}</b>', '<b className="resource-name">{item.name}</b><small>{item.path}</small>'],
+  ['AWB028', 'src/renderer/ResourceDialog.tsx', 'dialog.showModal()', 'dialog.show()'],
+  ['AWB029', 'src/renderer/TerminalPane.tsx', 'document.fonts.load(font)', 'Promise.resolve([])'],
+  ['AWB030', 'src/renderer/FilePane.tsx', 'key={preview.url}', 'key={path}']
 ]
 for (const [id, file, before, after] of cases) {
   const mutated = new Map(files)

@@ -1,3 +1,4 @@
+import { CODE_FONTS, UI_FONTS } from '../shared/fonts'
 import fs from 'node:fs'
 import path from 'node:path'
 import { app } from 'electron'
@@ -25,7 +26,7 @@ export function defaultDatabase(): Database {
   return {
     settings: {
       theme: 'dark',
-      fontSize: 13,
+      fontSize: 13, fontFamily: 'Cascadia Mono', uiFontFamily: 'Geist', uiFontSize: 13, editorFontSize: 14,
       defShell: hostPlatform() === 'linux' ? 'bash' : 'pwsh',
       defAgent: 'claude',
       restore: true,
@@ -54,7 +55,11 @@ function sanitize(raw: Partial<Database> | null): Database {
   const settings = (raw.settings || {}) as Partial<Settings>
   base.settings = {
     theme: settings.theme === 'light' ? 'light' : 'dark',
-    fontSize: [12, 13, 14, 15].includes(Number(settings.fontSize)) ? Number(settings.fontSize) : 13,
+    fontSize: Number.isInteger(settings.fontSize) && Number(settings.fontSize) >= 10 && Number(settings.fontSize) <= 24 ? Number(settings.fontSize) : 13,
+    fontFamily: CODE_FONTS.some((family) => family === settings.fontFamily) ? settings.fontFamily : 'Cascadia Mono',
+    uiFontFamily: UI_FONTS.some((family) => family === settings.uiFontFamily) ? settings.uiFontFamily : 'Geist',
+    uiFontSize: [12, 13, 14, 15, 16].includes(Number(settings.uiFontSize)) ? settings.uiFontSize : 13,
+    editorFontSize: Number.isInteger(settings.editorFontSize) && Number(settings.editorFontSize) >= 10 && Number(settings.editorFontSize) <= 24 ? settings.editorFontSize : 14,
     defShell: asShell(settings.defShell),
     defAgent: typeof settings.defAgent === 'string' && settings.defAgent ? settings.defAgent : 'claude',
     restore: asBool(settings.restore, true),

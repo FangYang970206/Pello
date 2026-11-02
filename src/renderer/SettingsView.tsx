@@ -3,6 +3,7 @@ import { useAnchoredMenu } from './useAnchoredMenu'
 import type { Executor, Host, Settings, SettingsSection, ShellKind } from '../shared/types'
 import { PRESETS, cmdline, hostLine, preferredAgent, shellChoices, shellLabel } from '../shared/types'
 import { ResourceSettings } from './ResourceSettings'
+import { CODE_FONTS, UI_FONTS } from '../shared/fonts'
 import { Icon, type IconName, Mark } from './icons'
 
 const SECTIONS: { id: SettingsSection; label: string; icon: IconName }[] = [
@@ -202,12 +203,12 @@ export function SettingsView({
         <div className="group">
           <h2>终端字体</h2>
           <div className="card">
+            <Row title="字体" control={<select className="sel" aria-label="终端字体" value={settings.fontFamily || 'Cascadia Mono'} onChange={(event) => onSettings({ ...settings, fontFamily: event.target.value })}>{CODE_FONTS.map((family) => <option key={family}>{family}</option>)}</select>} />
             <Row
               title="字号"
-              desc="等宽字体：Cascadia Mono，回退 Consolas"
               control={
                 <select className="sel" aria-label="字号" value={String(settings.fontSize)} onChange={(e) => onSettings({ ...settings, fontSize: Number(e.target.value) })}>
-                  {[12, 13, 14, 15].map((size) => (
+                  {Array.from({ length: 15 }, (_, index) => index + 10).map((size) => (
                     <option key={size} value={size}>
                       {size}
                     </option>
@@ -217,6 +218,11 @@ export function SettingsView({
             />
           </div>
         </div>
+        <div className="group"><h2>界面与编辑器</h2><div className="card">
+          <Row title="界面字体" control={<select className="sel" aria-label="界面字体" value={settings.uiFontFamily || 'Geist'} onChange={(event) => onSettings({ ...settings, uiFontFamily: event.target.value })}>{UI_FONTS.map((family) => <option key={family}>{family}</option>)}</select>} />
+          <Row title="界面字号" control={<select className="sel" aria-label="界面字号" value={settings.uiFontSize || 13} onChange={(event) => onSettings({ ...settings, uiFontSize: Number(event.target.value) })}>{[12, 13, 14, 15, 16].map((size) => <option key={size}>{size}</option>)}</select>} />
+          <Row title="源码字号" control={<select className="sel" aria-label="源码字号" value={settings.editorFontSize || 14} onChange={(event) => onSettings({ ...settings, editorFontSize: Number(event.target.value) })}>{Array.from({ length: 15 }, (_, index) => index + 10).map((size) => <option key={size}>{size}</option>)}</select>} />
+        </div></div>
       </>
     )
   }
