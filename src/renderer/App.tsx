@@ -793,23 +793,23 @@ export function App() {
                           data-a="proj"
                           data-id={item.id}
                           aria-current={on ? 'true' : undefined}
-                          onClick={() => selectProject(item.id)}
                           onContextMenu={(event) => {
                             event.preventDefault()
                             setMenuId(item.id)
                           }}
                         >
-                          <span className="pi">{item.name[0]?.toUpperCase()}</span>
-                          <span className="grow">
-                            <span className="n" style={{ display: 'block' }}>
-                              {item.name}
+                          <button className="project-open" aria-label={`打开项目 ${item.name}`} aria-current={on ? 'true' : undefined}
+                            title={`${item.name}\n${item.path}`} onClick={() => selectProject(item.id)}>
+                            <span className="pi">{item.name[0]?.toUpperCase()}</span>
+                            <span className="grow">
+                              <span className="n" style={{ display: 'block' }}>{item.name}</span>
+                              <span className="m">
+                                <Icon name={itemHost.id === 'local' ? 'laptop' : 'server'} className="s" />
+                                {itemHost.name}
+                              </span>
                             </span>
-                            <span className="m">
-                              <Icon name={itemHost.id === 'local' ? 'laptop' : 'server'} className="s" />
-                              {itemHost.name}
-                            </span>
-                          </span>
-                          {live ? <span className="live" title="有终端在运行" aria-label="有终端在运行" /> : null}
+                            {live ? <span className="live" title="有终端在运行" aria-label="有终端在运行" /> : null}
+                          </button>
                           <button
                             className="more"
                             data-a="proj-more"
@@ -820,7 +820,7 @@ export function App() {
                               setMenuId(open ? null : item.id)
                             }}
                           >
-                            ⋯
+                            <Icon name="more" className="s" />
                           </button>
                           {open ? (
                             <div className="pmenu" role="menu">

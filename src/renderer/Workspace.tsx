@@ -189,7 +189,7 @@ export function Workspace({
                         }}
                       >
                         <Icon name="file" className="s" />
-                        <span className="lbl">{label}</span>
+                        <span className="lbl" title={tab.path}>{label}</span>
                         {tab.type === 'file' && tab.dirty ? <span className="dot unsaved" role="img" aria-label="有未保存的更改" /> : null}
                       </button>
                       <button className="x" data-a="close" data-id={tab.id} aria-label="关闭" onClick={() => onClose(tab.id)}>

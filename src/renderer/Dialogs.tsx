@@ -1,6 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import type { AgentInfo, Executor, Host, OsKind, PathCheck, Settings, ShellKind } from '../shared/types'
 import { EXEC_COLORS, PRESETS, SHELL_AGENT, cmdline, hostLine, preferredAgent, shellLabel, uid } from '../shared/types'
+import { useAnchoredMenu } from './useAnchoredMenu'
 
 export const dialogOpener: { current: HTMLElement | null } = { current: null }
 
@@ -50,6 +51,8 @@ function Frame({
   footer: ReactNode
   onClose: () => void
 }) {
+  const headingId = useId()
+  const descriptionId = useId()
   useLayoutEffect(() => {
     const root = document.querySelector('#modal .dlg') as HTMLElement | null
     if (!root) return
@@ -91,14 +94,14 @@ function Frame({
         if (event.target === event.currentTarget) onClose()
       }}
     >
-      <div className={`dlg ${wide ? 'lg' : ''} ${small ? 'sm' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
+      <div className={`dlg ${wide ? 'lg' : ''} ${small ? 'sm' : ''}`} role="dialog" aria-modal="true" aria-labelledby={headingId} aria-describedby={sub ? descriptionId : undefined}>
         <header>
-          <h2>{title}</h2>
+          <h2 id={headingId}>{title}</h2>
           <button className="ib" data-a="mclose" aria-label="关闭" onClick={onClose}>
             <Icon name="x" />
           </button>
         </header>
-        {sub ? <p className={`sub ${subClass || ''}`}>{sub}</p> : null}
+        {sub ? <p id={descriptionId} className={`sub ${subClass || ''}`}>{sub}</p> : null}
         <div className="bdy">{children}</div>
         <footer>{footer}</footer>
       </div>
@@ -190,11 +193,7 @@ export function NewProjectDialog({
   const ok = !!name.trim() && (check.kind === 'git' || check.kind === 'plain')
   const noneInstalled = agents.every((item) => item.id === 'shell' || !item.installed)
   const agentLabel = agents.find((item) => item.id === agent)?.name || '仅 Shell'
-  useEffect(() => {
-    const node = document.querySelector('#modal .dlg')
-    node?.classList.toggle('menuopen', agentOpen)
-    return () => node?.classList.remove('menuopen')
-  }, [agentOpen])
+  const agentMenu = useAnchoredMenu(agentOpen, () => setAgentOpen(false))
 
   return (
     <Frame
@@ -415,11 +414,12 @@ export function NewProjectDialog({
       <div className="fld" style={{ margin: 0 }}>
         <span>默认 Agent</span>
         <div className="agentpick">
-          <button type="button" className="sel" data-np="agent" aria-haspopup="listbox" aria-expanded={agentOpen} onClick={() => setAgentOpen((open) => !open)}>
+          <button type="button" className="sel" data-np="agent" aria-label="默认 Agent" aria-haspopup="listbox" aria-expanded={agentOpen} onClick={() => setAgentOpen((open) => !open)}
+            onKeyDown={(event) => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setAgentOpen(true) } }}>
             {agentLabel}
           </button>
           {agentOpen ? (
-            <div className="selmenu" role="listbox" aria-label="默认 Agent">
+            <div ref={agentMenu} className="selmenu" role="listbox" aria-label="默认 Agent" popover="manual">
               {agents.map((item) => {
                 const off = !item.installed
                 return (

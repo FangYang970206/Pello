@@ -1,14 +1,15 @@
 .markdown-editor{flex:1;min-height:0;overflow:auto;background:var(--panel);color:var(--text)}
 .markdown-editor .milkdown{--crepe-color-background:var(--panel);--crepe-color-on-background:var(--text);--crepe-color-surface:var(--elev2);--crepe-color-surface-low:var(--elev);--crepe-color-on-surface:var(--text);--crepe-color-on-surface-variant:var(--muted);--crepe-color-outline:var(--faint);--crepe-color-primary:var(--accent);--crepe-color-secondary:var(--accent-soft);--crepe-color-on-secondary:var(--text);--crepe-color-inverse:var(--text);--crepe-color-on-inverse:var(--bg);--crepe-color-inline-code:var(--magenta);--crepe-color-error:var(--red);--crepe-color-hover:var(--hover);--crepe-color-selected:var(--sel);--crepe-color-inline-area:var(--elev2);--crepe-font-title:var(--ui);--crepe-font-default:var(--ui);--crepe-font-code:var(--mono);--crepe-base-font-size:15px}
-.markdown-editor .milkdown .ProseMirror{max-width:900px;margin:auto;padding:36px 64px 120px;line-height:1.8;min-height:100%}
+.markdown-editor .milkdown .ProseMirror{max-width:860px;margin:auto;padding:32px 56px 120px;line-height:1.85;min-height:100%;overflow-wrap:anywhere}
 .markdown-editor .milkdown .ProseMirror h1{font-size:2em;margin:24px 0 16px;font-weight:650}
 .markdown-editor .milkdown .ProseMirror h2{font-size:1.55em;margin:24px 0 12px;font-weight:620}
 .markdown-editor .milkdown .ProseMirror h3{font-size:1.25em;margin:20px 0 10px;font-weight:600}
 .markdown-editor .milkdown .ProseMirror p{margin:10px 0}
-.markdown-editor .milkdown .ProseMirror a{color:var(--blue)}
-.markdown-editor .milkdown .ProseMirror blockquote{border-left:3px solid var(--accent);padding-left:16px;color:var(--muted)}
+.markdown-editor .milkdown .ProseMirror a{color:var(--blue);text-underline-offset:3px}
+.markdown-editor .milkdown .ProseMirror blockquote{border-left:1px solid var(--ctl);padding-left:16px;color:var(--muted)}
 .markdown-editor .milkdown .ProseMirror img{max-width:100%;height:auto}
-.markdown-metadata{max-width:900px;margin:auto;padding:20px 64px 0;font-size:12px;color:var(--muted)}
+.markdown-metadata{max-width:860px;margin:auto;padding:20px 56px 0;font-size:12px;color:var(--muted)}
+.markdown-metadata summary{cursor:pointer;min-height:28px;line-height:28px}
 .markdown-metadata textarea{width:100%;min-height:100px;margin-top:10px;padding:10px;font:12px/1.7 var(--mono);background:var(--elev);border:1px solid var(--line2);border-radius:6px;resize:vertical}
 .markdown-editor .milkdown span[data-type=html]{font:12px var(--mono);white-space:pre-wrap;color:var(--faint)}
-@media(max-width:1180px){.markdown-editor .milkdown .ProseMirror{padding:24px 32px 100px}.markdown-metadata{padding:16px 32px 0}.filebar .path{max-width:30%}}
+@media(max-width:1180px){.markdown-editor .milkdown .ProseMirror{padding:24px 32px 100px}.markdown-metadata{padding:16px 32px 0}}

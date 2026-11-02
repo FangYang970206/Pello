@@ -67,6 +67,8 @@ AWB_CAPTURE=1 AWB_SHOTS=./shots AWB_USER_DATA=/tmp/awb-userdata npm start
 
 开发约定见 [AGENTS.md](AGENTS.md)。`npm run lint` 包含 ESLint、24 条项目约束及对应反例检查。提交前运行 `npm run verify`，依次完成 lint、类型检查、构建和 Electron 行为回归。
 
+界面约定见 [DESIGN.md](DESIGN.md)。`scripts/design-check.mjs` 覆盖深浅主题、1440×900 / 1024×680 两档窗口的 84 个界面状态，检查菜单边界、对话框布局、文字色对比度及键盘项目切换。菜单支持方向键、Home / End 与 Esc，截图位于 `output/playwright/design-after/`。
+
 行为回归覆盖标签布局、状态颜色、深浅主题、弹窗焦点、会话恢复、进程树清理、密码认证、远程保存、鼠标事件、终端尺寸、深层目录、面板拖宽、Markdown 所见即所得、自动保存与撤销、编辑冲突和浏览器预览，以及 100% / 125% / 150% / 200% 缩放下的边线像素连续性。SSH 检查启动绑定本机回环地址的临时测试服务器。截图写入 `output/playwright/`。
 
 窗口最小宽度是 1024。

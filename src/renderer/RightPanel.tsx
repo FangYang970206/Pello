@@ -51,7 +51,7 @@ export function RightPanel({
         const open = !!openDirs[key]
         return (
           <div key={node.path}>
-            <button className="row" style={{ paddingLeft: pad }} data-a="tog" data-id={node.path} aria-expanded={open} onClick={() => onToggleDir(node.path)}>
+            <button className="row" style={{ paddingLeft: pad }} data-a="tog" data-id={node.path} title={node.path} aria-expanded={open} onClick={() => onToggleDir(node.path)}>
               <Icon name="chev" className={`s chev${open ? ' open' : ''}`} />
               <Icon name="folder" className="s" />
               <span className="nm">{node.name}</span>
@@ -164,6 +164,7 @@ export function RightPanel({
           if (drag.current) onResize(drag.current.width + drag.current.x - event.clientX)
         }}
         onPointerUp={(event) => { drag.current = null; event.currentTarget.releasePointerCapture(event.pointerId) }}
+        onPointerCancel={() => { drag.current = null }}
         onLostPointerCapture={() => { drag.current = null }}
         onKeyDown={(event) => {
           if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {

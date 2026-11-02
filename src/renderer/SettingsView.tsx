@@ -1,4 +1,5 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
+import { useAnchoredMenu } from './useAnchoredMenu'
 import type { Executor, Host, Plugin, Settings, SettingsSection, ShellKind } from '../shared/types'
 import { PRESETS, cmdline, hostLine, preferredAgent, shellChoices, shellLabel } from '../shared/types'
 import { Icon, type IconName, Mark } from './icons'
@@ -81,17 +82,13 @@ export function SettingsView({
   const agentValue = preferredAgent(settings.defAgent, agentChoices)
   const agentLabel = agentChoices.find((item) => item.id === agentValue)?.name || '仅 Shell'
   const [agentOpen, setAgentOpen] = useState(false)
-  useEffect(() => {
-    const card = document.querySelector('[data-set=defAgent]')?.closest('.card')
-    card?.classList.toggle('menuopen', agentOpen)
-    return () => card?.classList.remove('menuopen')
-  }, [agentOpen])
+  const agentMenu = useAnchoredMenu(agentOpen, () => setAgentOpen(false))
   let body: ReactNode = null
   if (section === 'general') {
     body = (
       <>
         <div className="group">
-          <h3>终端</h3>
+          <h2>终端</h2>
           <div className="card">
             <Row
               title="默认 Shell"
@@ -128,18 +125,19 @@ export function SettingsView({
           </div>
         </div>
         <div className="group">
-          <h3>项目</h3>
+          <h2>项目</h2>
           <div className="card">
             <Row
               title="新项目的默认 Agent"
               desc="可在每个项目中单独修改"
               control={
                 <div className="agentpick">
-                  <button type="button" className="sel" aria-label="默认 Agent" aria-haspopup="listbox" aria-expanded={agentOpen} data-set="defAgent" onClick={() => setAgentOpen((open) => !open)}>
+                  <button type="button" className="sel" aria-label="默认 Agent" aria-haspopup="listbox" aria-expanded={agentOpen} data-set="defAgent" onClick={() => setAgentOpen((open) => !open)}
+                    onKeyDown={(event) => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setAgentOpen(true) } }}>
                     {agentLabel}
                   </button>
                   {agentOpen ? (
-                    <div className="selmenu" role="listbox" aria-label="默认 Agent">
+                    <div ref={agentMenu} className="selmenu" role="listbox" aria-label="默认 Agent" popover="manual">
                       {agentChoices.map((item) => {
                         const off = !item.installed
                         return (
@@ -177,7 +175,7 @@ export function SettingsView({
     body = (
       <>
         <div className="group">
-          <h3>主题</h3>
+          <h2>主题</h2>
           <div className="card">
             <div className="srow" style={{ padding: 16 }}>
               <div className="themes" role="radiogroup" aria-label="主题">
@@ -203,7 +201,7 @@ export function SettingsView({
           </div>
         </div>
         <div className="group">
-          <h3>终端字体</h3>
+          <h2>终端字体</h2>
           <div className="card">
             <Row
               title="字号"
@@ -227,7 +225,7 @@ export function SettingsView({
     body = (
       <>
         <div className="group">
-          <h3>内置预设</h3>
+          <h2>内置预设</h2>
           <div className="card">
             {PRESETS.map((preset) => {
               const ok = !!installed[preset.cmd]
@@ -258,13 +256,13 @@ export function SettingsView({
           </div>
         </div>
         <div className="group">
-          <h3>
+          <h2>
             <span className="grow">自定义</span>
             <button className="btn sm" data-a="custom" onClick={onNewExec}>
               <Icon name="plus" className="s" />
               添加
             </button>
-          </h3>
+          </h2>
           <div className="card">
             {custom.length ? (
               custom.map((item) => (
@@ -290,13 +288,13 @@ export function SettingsView({
     body = (
       <>
         <div className="group">
-          <h3>
+          <h2>
             <span className="grow">机器</span>
             <button className="btn sm" data-a="host" onClick={onNewHost}>
               <Icon name="plus" className="s" />
               添加机器
             </button>
-          </h3>
+          </h2>
           <div className="card">
             {hosts.map((host) => (
               <button
@@ -329,7 +327,7 @@ export function SettingsView({
   if (section === 'plugins') {
     body = (
       <div className="group">
-        <h3>已安装</h3>
+        <h2>已安装</h2>
         <div className="card">
           {plugins.map((plugin) => (
             <Row
@@ -367,7 +365,7 @@ export function SettingsView({
     body = (
       <>
         <div className="group">
-          <h3>常用</h3>
+          <h2>常用</h2>
           <div className="card">
             {rows.map(([label, keys]) => (
               <Row
@@ -385,7 +383,7 @@ export function SettingsView({
           </div>
         </div>
         <div className="group">
-          <h3>终端内</h3>
+          <h2>终端内</h2>
           <div className="card">
             <Row
               title="中断"

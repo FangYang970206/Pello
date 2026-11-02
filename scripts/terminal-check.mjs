@@ -171,7 +171,7 @@ try {
   await page.screenshot({ path: path.join(shots, 'terminal-light.png') })
   await check('light theme keeps completed task green', async () => {
     const color = await page.locator('[data-a=tab][data-id=ready] .dot').evaluate((dot) => getComputedStyle(dot).backgroundColor)
-    assert.equal(color, 'rgb(31, 138, 76)')
+    assert.equal(color, 'rgb(24, 122, 66)')
   })
   await page.evaluate((shell) => window.awb.ptyCreate({ id: 'shutdown', projectId: 'p1', kind: 'busy', shell }), shell)
   await until(() => pids().length === 6, 'Shutdown process tree did not start')

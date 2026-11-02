@@ -128,7 +128,7 @@ export function checkInvariants(files) {
   require(declarations('.dot.terminal-status.busy').get('background') === 'var(--amber)' && declarations('.dot.terminal-status.ready').get('background') === 'var(--green)',
     'AWB017', cssFiles[0], '运行黄点、可输入绿点，不与连接状态混用')
   const scripts = JSON.parse(files.get('package.json') || '{}').scripts || {}
-  require(['review', 'terminal', 'ssh-password', 'render', 'workspace', 'editor'].every((name) => scripts.check?.includes(`scripts/${name}-check.mjs`)),
+  require(['review', 'terminal', 'ssh-password', 'render', 'workspace', 'editor', 'design'].every((name) => scripts.check?.includes(`scripts/${name}-check.mjs`)),
     'AWB018', 'package.json', '保留已有行为回归入口，不能删检查来绕过失败')
   require(files.get('AGENTS.md')?.includes('npm run lint') && files.get('AGENTS.md')?.includes('npm run check'), 'AWB019', 'AGENTS.md', '项目规则必须注明静态与行为验证入口')
   return errors

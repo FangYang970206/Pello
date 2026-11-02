@@ -1,5 +1,6 @@
 const PATHS = {
   plus: 'M12 5v14M5 12h14',
+  more: 'M5 12h.01M12 12h.01M19 12h.01',
   terminal: 'M4 17l6-5-6-5M12 19h8',
   folder: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
   settings:

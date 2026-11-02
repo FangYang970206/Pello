@@ -1,0 +1,81 @@
+---
+name: Agent Workbench
+description: 本地 Code Agent 桌面工作台的界面约定
+typography:
+  compact:
+    fontSize: "11px"
+  help:
+    fontSize: "12px"
+  body:
+    fontFamily: "Geist, Segoe UI Variable, Segoe UI, Microsoft YaHei UI, system-ui, sans-serif"
+    fontSize: "13px"
+    lineHeight: 1.5
+  label:
+    fontSize: "14px"
+  reading:
+    fontSize: "15px"
+  compact-heading:
+    fontSize: "16px"
+  dialog-heading:
+    fontSize: "18px"
+  empty-heading:
+    fontSize: "20px"
+  page-heading:
+    fontSize: "24px"
+rounded:
+  inline-code: "2px"
+  compact: "4px"
+  mark: "5px"
+  control: "6px"
+  project-mark: "7px"
+  small-panel: "8px"
+  panel: "10px"
+  dialog: "12px"
+  circle: "50%"
+  scrollbar: "99px"
+spacing:
+  unit: "4px"
+  related: "8px"
+  field: "16px"
+  section: "32px"
+---
+
+## Overview
+
+面向长期使用终端和项目文件的开发者。界面保持克制，任务内容优先；桌面操作采用熟悉的标签、侧栏、表单和对话框。Markdown 阅读区强调内容层级。保留既有紫色主操作色与深浅主题，不引入装饰性卡片、插画或动画。
+
+## Colors
+
+以 `src/renderer/styles/workbench.css` 中的语义变量为准。`--text` 为正文，`--muted` / `--faint` 为辅助信息，不能以降低透明度代替文字颜色。正文、帮助和占位文本对主要表面保持至少 4.5:1。危险实心按钮用 `--danger-fill`，错误文字用 `--red`。
+
+`--accent` 仅用于主要动作、选择与焦点。终端标签黄点运行、绿点可输入、灰点未运行；状态文字、图标与无障碍名称补足颜色含义。
+
+## Typography
+
+界面保留应用随包分发的 Geist 与中文回退，此选择不因“常见字体”检测建议而替换；等宽字体仅用于终端、代码、路径和快捷键。设置页标题 24px，分组标题 13px，对话框标题 18px，表单标签 13px，帮助文字 12px。11px 仅保留在紧凑快捷键、状态数据等位置。设置页按 h1 → h2 排列。Markdown 使用自身的正文与标题层级，源码编辑与终端字体分别控制。
+
+## Layout
+
+间距采用 4px 基准。侧栏宽 240px，窗口不超过 1180px 时为 216px；主内容保留 `minmax(0,1fr)`。设置内容最大宽 760px，窄窗口减少留白。支持的最小窗口为 1024×680，不添加移动端导航。
+
+表单控件高 36px，小按钮 30px，标签与加号同为 32px 并底部对齐。文件工具栏按可用宽度换行，不遮挡编辑区。对话框距窗口至少 24px，正文独立滚动，标题和操作区始终可见。深层文件树可横向滚动；不能以截断目录或文件来维持布局。
+
+## Elevation & Depth
+
+面板采用细边框；对话框、菜单和提示采用柔和阴影，不叠加装饰性外发光。普通页面保持静态，交互反馈使用 160ms 过渡；尊重减少动态效果设置。
+
+## Shapes
+
+控件圆角 6px，设置分组 10px，对话框 12px；胶囊只用于短状态或开关。图标统一使用 `icons.tsx` 的描边 SVG。
+
+## Components
+
+- 按钮、输入框、选择器、分段选项共用样式，具有悬停、焦点、选中、禁用和加载状态。焦点不可仅靠颜色微变表达。
+- 自定义 Agent 菜单使用原生 Popover 顶层，按可用空间向上或向下展开；方向键移动，Home / End 定位，Esc 先关闭菜单并返回触发按钮。
+- 项目选择用原生按钮，项目菜单为兄弟按钮，避免嵌套交互元素；键盘与鼠标均可操作。截断名称提供完整名称或路径提示。
+- 状态、空内容和失败信息保留明确文字；长路径、命令和错误可换行或滚动，不能把关键操作挤出窗口。
+- Markdown、源码、差异和终端共用外层导航，内容区域分别保留适合任务的排版。终端 fit、PTY 与输入协议约束见 AGENTS.md。
+
+## Do's and Don'ts
+
+变更共享控件时检查所有使用界面。执行 `npm run verify`：其中 `scripts/design-check.mjs` 检查深浅主题、宽窄窗口、文字色对比度、键盘项目切换、界面溢出并生成截图。截图与临时项目仅保存在忽略目录；不提交用户数据。
