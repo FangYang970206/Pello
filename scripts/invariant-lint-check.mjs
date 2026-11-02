@@ -26,7 +26,9 @@ const cases = [
   ['AWB021', 'src/main/preview.ts', "server.listen(0, '127.0.0.1'", "server.listen(0, '0.0.0.0'"],
   ['AWB022', 'src/renderer/App.tsx', 'savingDocuments.current.has(key)', "savingDocuments.current.has('unrelated')"],
   ['AWB023', 'src/renderer/MarkdownEditor.tsx', '!interacted.current', 'false'],
-  ['AWB024', 'src/main/preview.ts', '!/\\.html?$/i.test(rel)', '!/./.test(rel)']
+  ['AWB024', 'src/main/preview.ts', '!/\\.html?$/i.test(rel)', '!/./.test(rel)'],
+  ['AWB025', 'src/renderer/documents.ts', '120_000', '800'],
+  ['AWB026', 'src/renderer/FilePane.tsx', 'sandbox="allow-scripts"', 'sandbox="allow-scripts allow-same-origin"']
 ]
 for (const [id, file, before, after] of cases) {
   const mutated = new Map(files)

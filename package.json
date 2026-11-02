@@ -11,7 +11,7 @@
     "dist:win": "node scripts/dist-win.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "lint": "eslint src scripts electron.vite.config.ts --max-warnings 0 && node scripts/invariant-lint.mjs && node scripts/invariant-lint-check.mjs",
-    "check": "node scripts/review-check.mjs && node scripts/terminal-check.mjs && node scripts/ssh-password-check.mjs && node scripts/render-check.mjs && node scripts/workspace-check.mjs && node scripts/editor-check.mjs && node scripts/design-check.mjs",
+    "check": "node scripts/review-check.mjs && node scripts/terminal-check.mjs && node scripts/ssh-password-check.mjs && node scripts/render-check.mjs && node scripts/workspace-check.mjs && node scripts/editor-check.mjs && node scripts/design-check.mjs && node scripts/resources-check.mjs && node scripts/host-management-check.mjs && node scripts/autosave-check.mjs && node scripts/resources-ui-check.mjs",
     "verify": "npm run lint && npm run typecheck && npm run build && npm run check",
     "postinstall": "electron-rebuild -f -w node-pty"
   },
@@ -22,8 +22,12 @@
     "@xterm/addon-fit": "0.10.0",
     "@xterm/addon-webgl": "^0.18.0",
     "@xterm/xterm": "5.5.0",
+    "fflate": "^0.8.3",
+    "jsonc-parser": "^3.3.1",
     "node-pty": "1.1.0",
-    "ssh2": "^1.17.0"
+    "smol-toml": "^1.9.1",
+    "ssh2": "^1.17.0",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@electron/rebuild": "^3.7.2",

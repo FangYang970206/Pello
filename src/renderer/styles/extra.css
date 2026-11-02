@@ -101,3 +101,22 @@ kbd {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+.html-preview { width: 100%; height: 100%; flex: 1; border: 0; background: var(--panel); }
+.resource-agents, .resource-actions, .resource-pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.resource-agents { margin-bottom: 16px; }
+.resource-agents .on { background: var(--sel); color: var(--text); border-color: var(--accent); }
+.resource-help, .resource-path, .resource-pagination { font-size: 12px; color: var(--muted); }
+.resource-path { overflow-wrap: anywhere; margin: 8px 0 16px; }
+.resource-form { padding: 16px 0; border-block: 1px solid var(--line); margin: 16px 0; }
+.resource-json { min-height: 144px; resize: vertical; font-family: var(--mono); width: 100%; padding: 8px 10px; border: 1px solid var(--ctl); border-radius: var(--r1); background: var(--bg); }
+.resource-json:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+.resources fieldset { min-width: 0; border: 0; padding: 0; margin: 16px 0; }
+.resources legend { font-size: 13px; margin-bottom: 8px; }
+.resource-choice { display: flex; align-items: center; gap: 8px; }
+.resource-choice input { accent-color: var(--accent); }
+.resource-item { align-items: flex-start; }
+.resource-item small { white-space: normal; overflow-wrap: anywhere; }
+.resource-item .resource-path { margin: 4px 0 0; }
+.resource-pagination { margin-top: 16px; }
+.resource-results p { overflow-wrap: anywhere; }
+.host-fields { border: 0; min-width: 0; margin: 0; padding: 0; }

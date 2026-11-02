@@ -1,10 +1,11 @@
+import { installDocumentHarness, documentCommand } from './fixtures/document-harness.mjs'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { generateKeyPairSync } from 'node:crypto'
-import { createServer as createTcpServer } from 'node:net'
+import { createServer as createTcpServer, createConnection } from 'node:net'
 import { spawn } from 'node:child_process'
 import ssh2 from 'ssh2'
 import { _electron as electron } from 'playwright'
@@ -22,6 +23,8 @@ const privateKey = () => generateKeyPairSync('rsa', { modulusLength: 2048 }).pri
 let authCount = 0
 let remoteTerminals = 0
 let windowChanges = 0
+let delayUiWrite = false
+let uiWriteStarted = false
 const clients = new Set()
 function createServer(hostKey) {
   return new Server({ hostKeys: [hostKey] }, (connection) => {
@@ -46,6 +49,10 @@ function createServer(hostKey) {
       session.on('signal', (accept) => { try { proc?.kill() } catch { /* process already exited */ }; accept?.() })
       session.on('exec', (accept, _reject, info) => {
         const stream = accept()
+        const encoded = /-EncodedCommand\s+['"]?([A-Za-z0-9+/=]+)/i.exec(info.command)
+        const decoded = encoded ? Buffer.from(encoded[1], 'base64').toString('utf16le') : info.command
+        const delayed = delayUiWrite && decoded.includes('AWB_CONFLICT')
+        if (delayed) uiWriteStarted = true
         const file = isWin ? (process.env.ComSpec || 'cmd.exe') : 'bash'
         const args = isWin ? ['/d', '/s', '/c', info.command] : ['-lc', info.command]
         if (tty) {
@@ -64,7 +71,7 @@ function createServer(hostKey) {
           child.stdout.on('data', (value) => stream.write(value))
           child.stderr.on('data', (value) => stream.stderr.write(value))
           stream.on('data', (value) => child.stdin.write(value))
-          stream.on('end', () => child.stdin.end())
+          stream.on('end', () => { if (delayed) setTimeout(() => child.stdin.end(), 700); else child.stdin.end() })
           child.on('close', (code) => { if (!stream.destroyed) { stream.exit(code ?? 1); stream.end() } })
           stream.once('close', () => child.kill())
         }
@@ -83,6 +90,7 @@ let app
 const start = async () => {
   app = await electron.launch({ args: [root], cwd: root, env })
   const page = await app.firstWindow()
+  await installDocumentHarness(app, page)
   await page.waitForSelector('[data-a=newproj]')
   return page
 }
@@ -146,27 +154,37 @@ try {
   console.log('PASS password authentication for path checks, directory listing, file tree, file reads and Git status')
 
   const pendingSockets = new Set()
+  let stall = false
   const stalled = createTcpServer((socket) => {
     pendingSockets.add(socket)
     socket.resume()
     socket.on('error', () => {})
     socket.once('close', () => pendingSockets.delete(socket))
+    if (!stall) {
+      const upstream = createConnection({ host: '127.0.0.1', port })
+      upstream.on('error', () => socket.destroy())
+      socket.pipe(upstream); upstream.pipe(socket)
+      socket.once('close', () => upstream.destroy())
+    }
   })
   await new Promise((resolve) => stalled.listen(0, '127.0.0.1', resolve))
   try {
-    const cancelled = await page.evaluate(async ({ host, port }) => {
+    const originalState = await page.evaluate(() => window.awb.getState())
+    await page.evaluate(async ({ host, port }) => {
       const state = await window.awb.getState()
       const target = { ...host, id: 'stalled-host', port }
       await window.awb.saveHosts([...state.db.hosts, target])
       await window.awb.saveProjects([...state.db.projects, { id: 'stalled-project', name: 'Stalled', host: target.id, path: '/', agent: 'shell', branch: '' }])
+    }, { host, port: stalled.address().port })
+    stall = true
+    const cancelled = await page.evaluate(async () => {
       const pending = window.awb.ptyCreate({ id: 'stalled-term', projectId: 'stalled-project', kind: 'shell', shell: 'bash' }).then(() => 'created', () => 'cancelled')
       await new Promise((resolve) => setTimeout(resolve, 100))
       await window.awb.ptyClose('stalled-term')
       const result = await Promise.race([pending, new Promise((resolve) => setTimeout(() => resolve('timeout'), 3000))])
-      await window.awb.saveHosts(state.db.hosts)
-      await window.awb.saveProjects(state.db.projects)
       return result
-    }, { host, port: stalled.address().port })
+    })
+    await page.evaluate(async (state) => { await window.awb.saveHosts(state.db.hosts); await window.awb.saveProjects(state.db.projects) }, originalState)
     assert.equal(cancelled, 'cancelled')
     await new Promise((resolve) => setTimeout(resolve, 200))
     assert.equal(pendingSockets.size, 0)
@@ -187,15 +205,17 @@ try {
 
   await page.click('[data-a=rmode][data-id=files]')
   await page.click('[data-a=preview][data-id="README.md"]')
-  await page.getByRole('radio', { name: '源码', exact: true }).click()
+  await documentCommand(app, page, 'mode')
   const remoteEditor = page.getByRole('textbox', { name: '文件内容', exact: true })
+  delayUiWrite = true
   await remoteEditor.fill('remote first version')
-  await page.waitForFunction(() => document.querySelector('.filebar [role=status]')?.textContent === '正在保存…')
+  for (let i = 0; i < 100 && !uiWriteStarted; i++) await new Promise((resolve) => setTimeout(resolve, 50))
+  assert.equal(uiWriteStarted, true)
   await remoteEditor.fill('remote newest version')
-  await page.waitForFunction(() => document.querySelector('.filebar [role=status]')?.textContent === '已保存')
+  await page.waitForFunction(() => !document.querySelector('.tab.on .unsaved'))
   assert.equal(fs.readFileSync(path.join(projectDir, 'README.md'), 'utf8'), 'remote newest version')
   await remoteEditor.press('Control+z')
-  await page.waitForFunction(() => document.querySelector('.filebar [role=status]')?.textContent === '已保存')
+  await page.waitForFunction(() => !document.querySelector('.tab.on .unsaved'))
   assert.equal(fs.readFileSync(path.join(projectDir, 'README.md'), 'utf8'), 'remote first version')
   await page.locator('.tab.on [data-a=close]').click()
   console.log('PASS remote autosave serializes writes while typing and preserves undo history')

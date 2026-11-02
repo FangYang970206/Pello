@@ -100,7 +100,7 @@ export function App() {
     toastTimer.current = setTimeout(() => {
       setToasts((list) => list.filter((item) => item.id !== id))
       toastTimer.current = null
-    }, 2400)
+    }, 2000)
   }, [])
 
   useEffect(() => {
@@ -378,7 +378,7 @@ export function App() {
       putDocument(key, { ...latest, ...saved, draft, saving: false, error: undefined })
       setTabs((list) => list.map((item) => item.id === tab.id ? { ...item, dirty: draft !== editableText(saved.text) } : item))
       setGitTick((tick) => tick + 1)
-      if (!automatic) toast('文件已保存')
+      toast(automatic ? '已自动保存' : '文件已保存')
       return true
     } catch (error) {
       const message = error instanceof Error ? error.message : '保存失败'
@@ -919,7 +919,6 @@ export function App() {
               settings={db.settings}
               custom={db.custom}
               hosts={db.hosts}
-              plugins={db.plugins}
               installed={installed}
               onSection={(id) => {
                 setSection(id)
@@ -929,10 +928,6 @@ export function App() {
               onSettings={(settings) => {
                 setDb({ ...db, settings })
                 void window.awb.saveSettings(settings)
-              }}
-              onPlugins={(plugins) => {
-                setDb({ ...db, plugins })
-                void window.awb.savePlugins(plugins)
               }}
               onEditExec={(id) => setModal({ type: 'exec', id })}
               onNewExec={() => setModal({ type: 'exec' })}
@@ -954,9 +949,9 @@ export function App() {
             installed={installed}
             onClose={() => setModal(null)}
             onToast={toast}
-            onHosts={(hosts) => {
-              setDb({ ...db, hosts })
-              void window.awb.saveHosts(hosts).then((saved) => setDb((current) => current ? { ...current, hosts: saved.hosts } : current)).catch((error) => toast(String(error), true))
+            onHosts={async (hosts) => {
+              const saved = await window.awb.saveHosts(hosts)
+              setDb((current) => current ? { ...current, hosts: saved.hosts } : current)
             }}
             onCreate={(draft) => {
               const created = { id: uid('p'), name: draft.name, host: draft.host, path: draft.path, branch: draft.branch, agent: draft.agent }
@@ -1020,19 +1015,21 @@ export function App() {
                 title: '移除机器？',
                 ok: '移除',
                 body: '使用这台机器的项目将无法打开终端。',
-                run: () => {
+                run: async () => {
                   const hosts = db.hosts.filter((item) => item.id !== id)
-                  setDb({ ...db, hosts })
-                  setModal(null)
-                  void window.awb.saveHosts(hosts)
+                  try {
+                    const saved = await window.awb.saveHosts(hosts)
+                    setDb((current) => current ? { ...current, hosts: saved.hosts } : current)
+                    setModal(null)
+                  } catch (error) { toast(String(error), true) }
                 }
               })
             }}
-            onSave={(item) => {
+            onSave={async (item) => {
               const hosts = item.id ? db.hosts.map((hostItem) => (hostItem.id === item.id ? item : hostItem)) : [...db.hosts, { ...item, id: uid('h') }]
-              setDb({ ...db, hosts })
+              const saved = await window.awb.saveHosts(hosts)
+              setDb((current) => current ? { ...current, hosts: saved.hosts } : current)
               setModal(null)
-              void window.awb.saveHosts(hosts).then((saved) => setDb((current) => current ? { ...current, hosts: saved.hosts } : current)).catch((error) => toast(String(error), true))
               toast('已保存')
             }}
           />

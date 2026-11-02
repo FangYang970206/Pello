@@ -1,8 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { app } from 'electron'
-import type { Database, Executor, Host, Plugin, Project, SavedTerm, Settings, ShellKind } from '../shared/types'
-import { DEFAULT_PLUGINS, PRESETS, uid } from '../shared/types'
+import type { Database, Executor, Host, Project, SavedTerm, Settings, ShellKind } from '../shared/types'
+import { PRESETS, uid } from '../shared/types'
 import { publicHost } from './credentials'
 import { hostPlatform, osLabel } from './platform'
 
@@ -33,7 +33,6 @@ export function defaultDatabase(): Database {
     },
     custom: [],
     hosts: [local],
-    plugins: DEFAULT_PLUGINS.map((p) => ({ ...p })),
     projects: [],
     sessions: {},
     activeTab: {}
@@ -74,7 +73,6 @@ function sanitize(raw: Partial<Database> | null): Database {
     }
     base.hosts = hosts
   }
-  if (Array.isArray(raw.plugins) && raw.plugins.length) base.plugins = raw.plugins.filter(isPlugin)
   if (Array.isArray(raw.projects)) base.projects = raw.projects.filter(isProject)
   const supported = new Set(['shell', ...PRESETS.map((preset) => preset.id), ...base.custom.map((executor) => executor.id)])
   if (!supported.has(base.settings.defAgent)) base.settings.defAgent = 'claude'
@@ -142,11 +140,6 @@ function isHost(v: unknown): v is Host {
   return !!h && typeof h.id === 'string' && typeof h.name === 'string'
 }
 
-function isPlugin(v: unknown): v is Plugin {
-  const p = v as Plugin
-  return !!p && typeof p.id === 'string' && typeof p.name === 'string'
-}
-
 function isProject(v: unknown): v is Project {
   const p = v as Project
   return !!p && typeof p.id === 'string' && typeof p.name === 'string' && typeof p.path === 'string'
@@ -178,7 +171,7 @@ export function loadDb(): Database {
   try {
     const raw = JSON.parse(fs.readFileSync(file(), 'utf8')) as Partial<Database>
     const next = sanitize(raw)
-    if (sessionsNeedSave(raw, next)) saveDb(next)
+    if (sessionsNeedSave(raw, next) || Object.hasOwn(raw, 'plugins')) saveDb(next)
     return next
   } catch {
     return defaultDatabase()

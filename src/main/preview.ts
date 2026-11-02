@@ -4,9 +4,16 @@ import path from 'node:path'
 import { shell } from 'electron'
 import { readAsset, type Target } from './git'
 
-const projects = new Map<string, { token: string; target: Target }>()
+const projects = new Map<string, { token: string; target: Target; drafts: Map<string, { token: string; text: string }> }>()
 let server: Server | null = null
 let listening: Promise<number> | null = null
+export function isPreviewUrl(value: string): boolean {
+  try {
+    const url = new URL(value), address = server?.address()
+    return !!address && typeof address !== 'string' && url.origin === `http://127.0.0.1:${address.port}` &&
+      [...projects.values()].some((entry) => url.pathname.startsWith(`/${entry.token}/`))
+  } catch { return false }
+}
 const mime: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.htm': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
@@ -25,9 +32,13 @@ async function port(): Promise<number> {
         const project = [...projects.values()].find((entry) => entry.token === token)
         if (!project) { response.writeHead(404).end(); return }
         const rel = parts.map(decodeURIComponent).join('/')
-        const bytes = await readAsset(project.target, rel)
+        const draft = project.drafts.get(rel)
+        const bytes = draft && url.searchParams.get('draft') === draft.token ? Buffer.from(draft.text, 'utf8') : await readAsset(project.target, rel)
         response.writeHead(200, { 'Content-Type': mime[path.extname(rel).toLowerCase()] || 'application/octet-stream',
-          'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' })
+          'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
+          // Sandboxed documents have an opaque origin. Permit their module and
+          // font requests while keeping the project token and path checks.
+          ...(request.headers.origin === 'null' ? { 'Access-Control-Allow-Origin': 'null', Vary: 'Origin' } : {}) })
         response.end(request.method === 'HEAD' ? undefined : bytes)
       })().catch(() => { if (!response.headersSent) response.writeHead(404); response.end('资源不存在或不可访问') })
     })
@@ -43,13 +54,17 @@ async function port(): Promise<number> {
   return started
 }
 
-export async function previewUrl(projectId: string, target: Target, rel: string): Promise<string> {
+export async function previewUrl(projectId: string, target: Target, rel: string, draft?: string): Promise<string> {
   await readAsset(target, rel)
+  if (draft !== undefined && (!/\.html?$/i.test(rel) || typeof draft !== 'string' || Buffer.byteLength(draft) > 2 * 1024 * 1024)) throw new Error('预览草稿必须为 2 MB 以内的 HTML')
   const identity = `${projectId}:${target.cwd}:${target.host?.id || 'local'}`
   let entry = projects.get(identity)
-  if (!entry) { entry = { token: randomUUID(), target }; projects.set(identity, entry) }
+  if (!entry) { entry = { token: randomUUID(), target, drafts: new Map() }; projects.set(identity, entry) }
   const number = await port()
-  return `http://127.0.0.1:${number}/${entry.token}/${rel.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/')}`
+  const normalized = rel.replace(/\\/g, '/')
+  let query = ''
+  if (draft !== undefined) { const token = randomUUID(); entry.drafts.set(normalized, { token, text: draft }); query = `?draft=${token}` }
+  return `http://127.0.0.1:${number}/${entry.token}/${normalized.split('/').map(encodeURIComponent).join('/')}${query}`
 }
 
 export async function openHtmlPreview(projectId: string, target: Target, rel: string): Promise<string> {

@@ -2,7 +2,7 @@ export type ThemeName = 'dark' | 'light'
 export type ShellKind = 'pwsh' | 'cmd' | 'bash' | 'zsh'
 export type OsKind = 'windows' | 'linux'
 export type ProcState = 'running' | 'idle' | 'exited' | 'failed'
-export type SettingsSection = 'general' | 'look' | 'agents' | 'hosts' | 'plugins' | 'keys'
+export type SettingsSection = 'general' | 'look' | 'agents' | 'hosts' | 'mcp' | 'skills' | 'keys'
 export type ChangeStatus = 'M' | 'A' | 'D'
 
 export interface EnvVar {
@@ -46,13 +46,11 @@ export interface Host {
   hasPassword?: boolean
 }
 
-export interface Plugin {
-  id: string
-  name: string
-  desc: string
-  url: string
-  on: boolean
-}
+export type ResourceFormat = 'standard' | 'codex' | 'opencode'
+export interface ResourceTarget { id: string; name: string; mcpPath: string; skillPath: string; format: ResourceFormat }
+export interface ResourceItem { name: string; description: string; path: string; transport?: string; enabled?: boolean }
+export interface ResourcePage { items: ResourceItem[]; total: number; page: number; pages: number; errors: string[] }
+export interface ResourceResult { agent: string; ok: boolean; error?: string }
 
 export interface Project {
   id: string
@@ -73,7 +71,6 @@ export interface Database {
   settings: Settings
   custom: Executor[]
   hosts: Host[]
-  plugins: Plugin[]
   projects: Project[]
   sessions: Record<string, SavedTerm[]>
   activeTab: Record<string, string>
@@ -119,12 +116,6 @@ export const SHELL_AGENT: AgentInfo = {
 }
 
 export const EXEC_COLORS = ['#c4aedb', '#a9c3df', '#95cfaa', '#dcc07f', '#e39e9c', '#cdd0d6']
-
-export const DEFAULT_PLUGINS: Plugin[] = [
-  { id: 'repo', name: '内部代码仓', desc: '仓库检索、分支与合并请求', url: 'https://git.intranet', on: true },
-  { id: 'issues', name: '问题系统', desc: '问题检索与状态回写', url: 'https://issues.intranet', on: true },
-  { id: 'build', name: '构建流水线', desc: '触发构建、读取日志', url: 'https://build.intranet', on: false }
-]
 
 export interface GitFile {
   path: string

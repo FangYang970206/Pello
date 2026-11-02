@@ -111,6 +111,13 @@ export function checkInvariants(files) {
   const openHtml = named(preview, 'openHtmlPreview')
   require(openHtml && nodes(openHtml, (node) => ts.isRegularExpressionLiteral(node) && node.text.includes('html?')).length && called(openHtml, 'previewUrl').length,
     'AWB024', 'src/main/preview.ts', '浏览器入口必须验证 HTML 扩展名并使用受控预览 URL')
+  const delay = nodes(documents, (node) => ts.isVariableDeclaration(node) && node.name.getText() === 'AUTO_SAVE_DELAY')[0]
+  require(delay?.initializer && Number(delay.initializer.getText().replaceAll('_', '')) === 120000,
+    'AWB025', documentFile, '自动保存按文件防抖 2 分钟')
+  const filePane = source('src/renderer/FilePane.tsx')
+  const iframe = nodes(filePane, (node) => ts.isJsxSelfClosingElement(node) && node.tagName.getText() === 'iframe')[0]
+  require(iframe && attrText(iframe, 'sandbox') === 'allow-scripts' && called(filePane, 'documentMenu').length,
+    'AWB026', 'src/renderer/FilePane.tsx', '内嵌 HTML 保留 sandbox 隔离与右键源码入口')
 
   const cssFiles = ['src/renderer/styles/workbench.css', 'src/renderer/styles/extra.css']
   const declarations = (selector) => {
@@ -128,7 +135,7 @@ export function checkInvariants(files) {
   require(declarations('.dot.terminal-status.busy').get('background') === 'var(--amber)' && declarations('.dot.terminal-status.ready').get('background') === 'var(--green)',
     'AWB017', cssFiles[0], '运行黄点、可输入绿点，不与连接状态混用')
   const scripts = JSON.parse(files.get('package.json') || '{}').scripts || {}
-  require(['review', 'terminal', 'ssh-password', 'render', 'workspace', 'editor', 'design'].every((name) => scripts.check?.includes(`scripts/${name}-check.mjs`)),
+  require(['review', 'terminal', 'ssh-password', 'render', 'workspace', 'editor', 'design', 'resources', 'host-management', 'autosave'].every((name) => scripts.check?.includes(`scripts/${name}-check.mjs`)),
     'AWB018', 'package.json', '保留已有行为回归入口，不能删检查来绕过失败')
   require(files.get('AGENTS.md')?.includes('npm run lint') && files.get('AGENTS.md')?.includes('npm run check'), 'AWB019', 'AGENTS.md', '项目规则必须注明静态与行为验证入口')
   return errors

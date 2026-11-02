@@ -48,12 +48,32 @@ npm start
 - 终端在切换文件页或项目时保持原实例，保留全屏 TUI、滚动位置与鼠标模式。普通与二进制鼠标事件都转发给终端程序，尺寸按内容区域计算，避免底部状态栏被截断。
 - 文件树按展开的目录逐层读取，不限制目录深度；拖动文件面板左边缘可以调整宽度。文件模式点击文件会打开编辑器，变更模式仍打开差异视图。
 - Markdown 默认使用所见即所得编辑器，支持标题、列表、表格、代码块、公式和图片，可切换源码编辑；打开文件不会自动改写原文，文档属性单独保留。其他 UTF-8 文本支持行号和 Tab 缩进。
-- 停止输入 800 毫秒后自动保存，也可点击保存或按 `Ctrl+S`。`Ctrl+Z` 撤销，`Ctrl+Shift+Z` 或 `Ctrl+Y` 重做；保存、切换标签和编辑模式后仍保留历史。中文组合输入期间暂停自动保存。
+- 停止输入 2 分钟后按文件自动保存，成功时提示 2 秒；也可通过右键菜单保存或按 `Ctrl+S`。`Ctrl+Z` 撤销，`Ctrl+Shift+Z` 或 `Ctrl+Y` 重做；保存、切换标签和编辑模式后仍保留历史。中文组合输入期间暂停自动保存。右键菜单支持源码 / 渲染模式、剪贴板、格式、段落、表格和重新读取等操作，文档区不显示操作栏。
 - 保存保留原有 BOM 和换行格式，并检查磁盘版本。发生冲突时保留草稿并暂停自动保存，避免覆盖外部修改；关闭未保存文件可保存或放弃。超过 2 MB、二进制和非 UTF-8 文件保持只读。远程文件使用相同编辑流程。
-- HTML 文件可点击「浏览器预览」，保存后通过本机回环服务在默认浏览器打开，支持相对 CSS、JS 和图片；远程项目资源通过现有 SSH 认证读取。
+- HTML 默认在应用内隔离预览，右键可切换源码。预览通过受限本机回环服务加载相对 CSS、JS 和图片，草稿预览不隐式保存；文档脚本无法访问工作台 API 或顶层页面。远程项目资源通过现有 SSH 认证读取。
 - 右栏「变更」调用本机或 `ssh` 上的 `git`。丢弃已跟踪文件用 `git restore`；未跟踪文件 `git restore` 删不掉，这时用 `git clean -f`。
 - 远程机器支持 SSH 密钥、SSH Agent 和用户密码认证。密钥模式使用系统 `ssh`；密码模式通过 SSH 协议连接，连接测试、终端、目录、文件和 Git 操作共用认证配置。密码使用系统加密能力单独保存在 `credentials.json`，不写入普通配置；系统加密不可用时仅在本次应用运行期间保留。首次成功认证的主机指纹保存在 `ssh-host-keys.json`，密钥改变时拒绝连接。
-- 终端使用 WebGL 渲染线条和块字符，行高为 1，中文回退到微软雅黑或 Noto Sans Mono CJK；显卡不支持 WebGL 时使用 DOM 渲染。插件开关只保存在本地。
+- 新建 SSH 机器必须通过连接验证后才能保存。连接失败保留输入并提示错误；在项目弹窗或远程机器设置中可编辑、移除已有机器，移除前需要确认。
+- 终端使用 WebGL 渲染线条和块字符，行高为 1，中文回退到微软雅黑或 Noto Sans Mono CJK；显卡不支持 WebGL 时使用 DOM 渲染。
+
+## MCP 与 Skill
+
+设置中的 MCP 和 Skill 为同级入口，按 Claude Code、Codex CLI、OpenCode、Pi 和自定义执行器分别展示，可搜索并按每页 12 项浏览。本版本管理本机用户配置与 Skill 兼容目录。
+
+| Agent | MCP 配置 | Skill 分发目录 |
+| --- | --- | --- |
+| Claude Code | `~/.claude.json` 的 `mcpServers` | `~/.claude/skills` |
+| Codex CLI | `~/.codex/config.toml` 的 `mcp_servers` | `~/.agents/skills` |
+| OpenCode | `~/.config/opencode/opencode.json` / `.jsonc` 的 `mcp` | `~/.config/opencode/skills` |
+| Pi | `~/.pi/agent/mcp.json` 的 `mcpServers` | `~/.pi/agent/skills` |
+
+添加 MCP 时填写名称和单个服务器 JSON 对象，再勾选目标 Agent。例如 stdio 使用 `{"command":"node","args":["C:/tools/server.mjs"],"env":{}}`，HTTP 使用 `{"url":"https://example.com/mcp","headers":{}}`。工作台转换各 Agent 的格式，保留其他配置和注释，写入前备份到 `.awb-backup`；同名服务器不覆盖。配置添加不会自动执行服务器，连接授权和 OAuth 由对应 Agent 完成。添加后重新加载 Agent 或启动新会话。
+
+Skill 可从文件夹或 ZIP 导入，也可打包多个 Skill。每个 Skill 目录须包含带 `name`、`description` 的 `SKILL.md`；附属文件一并分发，同名目录不覆盖。支持按需勾选 Agent，分别显示成功或失败；共享目录（如 `.agents/skills`）中的资源可能被多个 Agent 自动发现。导入限制为 32 MB、10000 个文件，拒绝路径穿越和文件夹内的符号链接，不执行导入脚本。
+
+自定义执行器在其 MCP / Skill 子菜单中设置资源路径与配置格式，之后可参与相同的分发流程。原有演示插件已移除。
+
+格式依据 [Claude Code MCP](https://code.claude.com/docs/en/mcp)、[Codex MCP](https://developers.openai.com/codex/mcp)、[OpenCode MCP](https://opencode.ai/docs/mcp-servers/)、[Pi MCP](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md) 及各 Agent 的 Skill 文档。
 
 在 Linux 或 macOS 上开发时，本机 shell 会退回 bash，Windows 的 PowerShell / CMD 启动代码仍然保留。
 
@@ -69,6 +89,6 @@ AWB_CAPTURE=1 AWB_SHOTS=./shots AWB_USER_DATA=/tmp/awb-userdata npm start
 
 界面约定见 [DESIGN.md](DESIGN.md)。`scripts/design-check.mjs` 覆盖深浅主题、1440×900 / 1024×680 两档窗口的 84 个界面状态，检查菜单边界、对话框布局、文字色对比度及键盘项目切换。菜单支持方向键、Home / End 与 Esc，截图位于 `output/playwright/design-after/`。
 
-行为回归覆盖标签布局、状态颜色、深浅主题、弹窗焦点、会话恢复、进程树清理、密码认证、远程保存、鼠标事件、终端尺寸、深层目录、面板拖宽、Markdown 所见即所得、自动保存与撤销、编辑冲突和浏览器预览，以及 100% / 125% / 150% / 200% 缩放下的边线像素连续性。SSH 检查启动绑定本机回环地址的临时测试服务器。截图写入 `output/playwright/`。
+行为回归覆盖标签布局、状态颜色、深浅主题、弹窗焦点、会话恢复、进程树清理、密码认证、SSH 机器管理、远程保存、鼠标事件、终端尺寸、深层目录、面板拖宽、Markdown 所见即所得、自动保存与撤销、编辑冲突、内嵌 HTML 隔离预览、MCP / Skill 原生格式与界面分发，以及 100% / 125% / 150% / 200% 缩放下的边线像素连续性。精确自动保存时序使用浏览器虚拟时钟验证。SSH 检查启动绑定本机回环地址的临时测试服务器。截图写入 `output/playwright/`。
 
 窗口最小宽度是 1024。

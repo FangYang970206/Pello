@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { Crepe } from '@milkdown/crepe'
-import { serializerCtx } from '@milkdown/kit/core'
+import { editorViewCtx, serializerCtx } from '@milkdown/kit/core'
+import { toggleStrongCommand, toggleEmphasisCommand, toggleInlineCodeCommand, wrapInHeadingCommand, wrapInBlockquoteCommand, wrapInBulletListCommand, wrapInOrderedListCommand, createCodeBlockCommand } from '@milkdown/kit/preset/commonmark'
+import { insertTableCommand } from '@milkdown/kit/preset/gfm'
 import { Plugin } from '@milkdown/kit/prose/state'
-import { $prose, replaceAll } from '@milkdown/kit/utils'
+import { $prose, callCommand, replaceAll } from '@milkdown/kit/utils'
 import '@milkdown/crepe/theme/common/style.css'
 import '@milkdown/crepe/theme/frame.css'
 import './styles/markdown.css'
@@ -22,8 +24,9 @@ function imageSource(source: string, base: string): string {
   return target.origin === root.origin && target.pathname.startsWith(scope) ? target.href : ''
 }
 
-export default function MarkdownEditor({ value, projectId, path, onChange }: {
+export default function MarkdownEditor({ value, projectId, path, onChange, formatRef }: {
   value: string; projectId: string; path: string; onChange: (markdown: string) => void
+  formatRef: { current: ((command: string) => void) | null }
 }) {
   const host = useRef<HTMLDivElement>(null)
   const editor = useRef<Crepe | null>(null)
@@ -75,6 +78,15 @@ export default function MarkdownEditor({ value, projectId, path, onChange }: {
       if (latest !== initial.body) crepe.editor.action(replaceAll(latest))
       ready.current = true
       serialized.current = crepe.getMarkdown()
+      formatRef.current = (command) => {
+        interacted.current = true
+        crepe.editor.action((ctx) => ctx.get(editorViewCtx).focus())
+        const commands = { bold: toggleStrongCommand, italic: toggleEmphasisCommand, code: toggleInlineCodeCommand,
+          quote: wrapInBlockquoteCommand, bullet: wrapInBulletListCommand, ordered: wrapInOrderedListCommand, codeblock: createCodeBlockCommand }
+        if (command === 'heading') crepe.editor.action(callCommand(wrapInHeadingCommand.key, 1))
+        else if (command === 'table') crepe.editor.action(callCommand(insertTableCommand.key, { row: 3, col: 2 }))
+        else if (command in commands) crepe.editor.action(callCommand(commands[command as keyof typeof commands].key))
+      }
       const view = root.querySelector<HTMLElement>('.ProseMirror')
       view?.setAttribute('role', 'textbox')
       view?.setAttribute('aria-label', 'Markdown 内容')
@@ -84,6 +96,7 @@ export default function MarkdownEditor({ value, projectId, path, onChange }: {
       disposed = true
       ready.current = false
       editor.current = null
+      formatRef.current = null
       void created.then(() => crepe.destroy()).catch(() => {})
     }
   }, [projectId, path])

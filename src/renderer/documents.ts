@@ -15,7 +15,7 @@ export type DocumentDraft = FileContent & {
 export const documentKey = (projectId: string, path: string) => `${projectId}:${path}`
 export const editableText = (text: string) => text.replace(/^\ufeff/, '').replace(/\r\n?/g, '\n')
 export const isDirty = (doc: DocumentDraft) => doc.draft !== editableText(doc.text)
-export const AUTO_SAVE_DELAY = 800
+export const AUTO_SAVE_DELAY = 120_000
 
 function historyLimit(entries: string[]): string[] {
   const result = entries.slice(-100)

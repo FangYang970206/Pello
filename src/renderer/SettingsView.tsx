@@ -1,7 +1,8 @@
 import { useState, type ReactNode } from 'react'
 import { useAnchoredMenu } from './useAnchoredMenu'
-import type { Executor, Host, Plugin, Settings, SettingsSection, ShellKind } from '../shared/types'
+import type { Executor, Host, Settings, SettingsSection, ShellKind } from '../shared/types'
 import { PRESETS, cmdline, hostLine, preferredAgent, shellChoices, shellLabel } from '../shared/types'
+import { ResourceSettings } from './ResourceSettings'
 import { Icon, type IconName, Mark } from './icons'
 
 const SECTIONS: { id: SettingsSection; label: string; icon: IconName }[] = [
@@ -9,7 +10,8 @@ const SECTIONS: { id: SettingsSection; label: string; icon: IconName }[] = [
   { id: 'look', label: '外观', icon: 'palette' },
   { id: 'agents', label: '执行器', icon: 'cpu' },
   { id: 'hosts', label: '远程机器', icon: 'server' },
-  { id: 'plugins', label: '插件', icon: 'puzzle' },
+  { id: 'mcp', label: 'MCP', icon: 'puzzle' },
+  { id: 'skills', label: 'Skill', icon: 'file' },
   { id: 'keys', label: '快捷键', icon: 'key' }
 ]
 
@@ -18,7 +20,8 @@ const LEADS: Record<SettingsSection, string> = {
   look: '主题与终端字体',
   agents: '在终端里启动的 Code Agent CLI',
   hosts: '项目可以运行在本机或通过 SSH 连接的远程机器上',
-  plugins: '为 Agent 提供的外部工具',
+  mcp: '管理各个 Code Agent 的 MCP 服务器',
+  skills: '查看与分发 Code Agent 的 Skill',
   keys: '键盘快捷键'
 }
 
@@ -40,12 +43,10 @@ export function SettingsView({
   settings,
   custom,
   hosts,
-  plugins,
   installed,
   onSection,
   onBack,
   onSettings,
-  onPlugins,
   onEditExec,
   onNewExec,
   onEditHost,
@@ -57,12 +58,10 @@ export function SettingsView({
   settings: Settings
   custom: Executor[]
   hosts: Host[]
-  plugins: Plugin[]
   installed: Record<string, boolean>
   onSection: (id: SettingsSection) => void
   onBack: () => void
   onSettings: (next: Settings) => void
-  onPlugins: (next: Plugin[]) => void
   onEditExec: (id: string) => void
   onNewExec: () => void
   onEditHost: (id: string) => void
@@ -324,33 +323,7 @@ export function SettingsView({
       </>
     )
   }
-  if (section === 'plugins') {
-    body = (
-      <div className="group">
-        <h2>已安装</h2>
-        <div className="card">
-          {plugins.map((plugin) => (
-            <Row
-              key={plugin.id}
-              title={plugin.name}
-              desc={plugin.desc}
-              control={
-                <button
-                  className={`switch ${plugin.on ? 'on' : ''}`}
-                  role="switch"
-                  aria-checked={plugin.on}
-                  aria-label={plugin.name}
-                  data-a="swset"
-                  data-k={`plugin:${plugin.id}`}
-                  onClick={() => onPlugins(plugins.map((item) => (item.id === plugin.id ? { ...item, on: !item.on } : item)))}
-                />
-              }
-            />
-          ))}
-        </div>
-      </div>
-    )
-  }
+  if (section === 'mcp' || section === 'skills') body = <ResourceSettings key={section} kind={section} />
   if (section === 'keys') {
     const rows: [string, string][] = [
       ['新建项目', 'Ctrl N'],

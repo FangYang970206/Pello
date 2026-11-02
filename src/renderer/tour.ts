@@ -260,8 +260,8 @@ export async function runTour(): Promise<void> {
     await shot('v4_30_set_agents')
     click('[data-a=sec][data-id=hosts]')
     await shot('v4_30_set_hosts')
-    click('[data-a=sec][data-id=plugins]')
-    await shot('v4_30_set_plugins')
+    click('[data-a=sec][data-id=mcp]')
+    await shot('v4_30_set_mcp')
     click('[data-a=sec][data-id=keys]')
     await shot('v4_30_set_keys')
 

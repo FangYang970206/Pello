@@ -9,7 +9,9 @@ import type {
   Host,
   HostTest,
   PathCheck,
-  Plugin,
+  ResourceTarget,
+  ResourcePage,
+  ResourceResult,
   Project,
   PtyCreateRequest,
   PtyEvent,
@@ -26,7 +28,12 @@ export interface WorkbenchApi {
   saveProjects(projects: Project[]): Promise<Database>
   saveCustom(custom: Executor[]): Promise<Database>
   saveHosts(hosts: Host[]): Promise<Database>
-  savePlugins(plugins: Plugin[]): Promise<Database>
+  resourceTargets(): Promise<ResourceTarget[]>
+  saveResourceTarget(target: ResourceTarget): Promise<void>
+  resourceList(kind: 'mcp' | 'skills', agent: string, page: number, query: string): Promise<ResourcePage>
+  addMcp(name: string, config: Record<string, unknown>, agents: string[]): Promise<ResourceResult[]>
+  importSkills(source: string, agents: string[]): Promise<ResourceResult[]>
+  pickResource(kind: 'folder' | 'zip' | 'config'): Promise<string | null>
   saveSessions(projectId: string, terms: SavedTerm[], activeId?: string | null): Promise<Database>
   saveBranch(projectId: string, branch: string): Promise<Database>
   setUnsavedChanges(dirty: boolean): void
@@ -39,8 +46,10 @@ export interface WorkbenchApi {
   gitTree(projectId: string, rel?: string): Promise<TreeNode[]>
   gitRead(projectId: string, rel: string): Promise<FileContent>
   gitWrite(projectId: string, rel: string, text: string, version: string): Promise<FileContent>
-  previewUrl(projectId: string, rel: string): Promise<string>
+  previewUrl(projectId: string, rel: string, draft?: string): Promise<string>
   openHtmlPreview(projectId: string, rel: string): Promise<string>
+  documentMenu(options: { markdown: boolean; visual: boolean; undo: boolean; redo: boolean; editable: boolean }): Promise<string | null>
+  onPreviewSource(cb: () => void): () => void
   ptyCreate(req: PtyCreateRequest): Promise<{ id: string; state: string; exitCode: number | null; startedAt: number | null; inputReady: boolean; shell: ShellKind; kind: string }>
   ptyWrite(id: string, data: string, binary?: boolean): void
   ptyResize(id: string, cols: number, rows: number): void

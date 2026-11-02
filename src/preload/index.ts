@@ -8,7 +8,12 @@ const api: WorkbenchApi = {
   saveProjects: (projects) => ipcRenderer.invoke('db:projects', projects),
   saveCustom: (custom) => ipcRenderer.invoke('db:custom', custom),
   saveHosts: (hosts) => ipcRenderer.invoke('db:hosts', hosts),
-  savePlugins: (plugins) => ipcRenderer.invoke('db:plugins', plugins),
+  resourceTargets: () => ipcRenderer.invoke('resources:targets'),
+  saveResourceTarget: (target) => ipcRenderer.invoke('resources:target', target),
+  resourceList: (kind, agent, page, query) => ipcRenderer.invoke('resources:list', kind, agent, page, query),
+  addMcp: (name, config, agents) => ipcRenderer.invoke('resources:mcp', name, config, agents),
+  importSkills: (source, agents) => ipcRenderer.invoke('resources:skills', source, agents),
+  pickResource: (kind) => ipcRenderer.invoke('resources:pick', kind),
   saveSessions: (projectId, terms, activeId) => ipcRenderer.invoke('db:sessions', projectId, terms, activeId),
   saveBranch: (projectId, branch) => ipcRenderer.invoke('db:branch', projectId, branch),
   setUnsavedChanges: (dirty) => ipcRenderer.send('files:dirty', dirty),
@@ -21,8 +26,14 @@ const api: WorkbenchApi = {
   gitTree: (projectId, rel) => ipcRenderer.invoke('git:tree', projectId, rel),
   gitRead: (projectId, rel) => ipcRenderer.invoke('git:read', projectId, rel),
   gitWrite: (projectId, rel, text, version) => ipcRenderer.invoke('git:write', projectId, rel, text, version),
-  previewUrl: (projectId, rel) => ipcRenderer.invoke('file:preview-url', projectId, rel),
+  previewUrl: (projectId, rel, draft) => ipcRenderer.invoke('file:preview-url', projectId, rel, draft),
   openHtmlPreview: (projectId, rel) => ipcRenderer.invoke('file:open-html', projectId, rel),
+  documentMenu: (options) => ipcRenderer.invoke('file:menu', options),
+  onPreviewSource: (cb) => {
+    const listener = () => cb()
+    ipcRenderer.on('file:preview-source', listener)
+    return () => ipcRenderer.removeListener('file:preview-source', listener)
+  },
   ptyCreate: (req) => ipcRenderer.invoke('pty:create', req),
   ptyWrite: (id, data, binary) => ipcRenderer.send('pty:write', id, data, binary),
   ptyResize: (id, cols, rows) => ipcRenderer.send('pty:resize', id, cols, rows),

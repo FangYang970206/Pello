@@ -1,3 +1,4 @@
+import { installDocumentHarness, documentCommand } from './fixtures/document-harness.mjs'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -20,7 +21,7 @@ execFileSync('git', ['add', '.'], { cwd: project })
 execFileSync('git', ['-c', 'user.name=Design check', '-c', 'user.email=design@example.invalid', 'commit', '-m', 'fixture'], { cwd: project })
 fs.writeFileSync(path.join(project, 'src/app.ts'), 'export const ready = true\n')
 fs.writeFileSync(path.join(project, 'page.html'), '<!doctype html><h1>项目预览</h1>')
-const env = { ...process.env, AWB_USER_DATA: data }
+const env = { ...process.env, AWB_USER_DATA: data, AWB_RESOURCE_HOME: path.join(data, 'agent-home') }
 delete env.ELECTRON_RUN_AS_NODE
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({
   settings: { theme: 'dark', fontSize: 13, defShell: process.platform === 'win32' ? 'pwsh' : 'bash', defAgent: 'shell', restore: false, confirmKill: false },
@@ -45,6 +46,7 @@ function contrast(first, second) {
 }
 try {
   const page = await app.firstWindow()
+  await installDocumentHarness(app, page)
   page.setDefaultTimeout(20000)
   page.on('pageerror', (error) => errors.push(error.message))
   await page.locator('[data-a=quick]').waitFor()
@@ -83,9 +85,14 @@ try {
         assert.ok(contrast(palette['accent-ink'], palette.accent) >= 4.5)
         assert.ok(contrast('#ffffff', palette['danger-fill']) >= 4.5)
       }
-      for (const section of ['general', 'look', 'agents', 'hosts', 'plugins', 'keys']) {
+      for (const section of ['general', 'look', 'agents', 'hosts', 'mcp', 'skills', 'keys']) {
         await page.click(`[data-a=sec][data-id=${section}]`)
         await shot(`settings-${section}`, theme, size)
+        if (section === 'mcp' || section === 'skills') {
+          const label = section === 'mcp' ? '添加 MCP' : '添加 Skill'
+          await page.getByRole('button', { name: label, exact: true }).click()
+          await shot(`settings-${section}-add`, theme, size)
+        }
       }
       await page.click('[data-a=sec][data-id=hosts]')
       await page.click('[data-a=host]:not([data-id])')
@@ -123,7 +130,7 @@ try {
       await page.click('[data-a=preview][data-id="README.md"]')
       await page.getByRole('textbox', { name: 'Markdown 内容', exact: true }).waitFor()
       await shot('markdown', theme, size)
-      await page.getByRole('radio', { name: '源码', exact: true }).click()
+      await documentCommand(app, page, 'mode')
       await shot('source', theme, size)
       await page.click('[data-a=preview][data-id="page.html"]')
       await shot('html', theme, size)

@@ -1,3 +1,4 @@
+import { installDocumentHarness, documentCommand } from './fixtures/document-harness.mjs'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -16,6 +17,7 @@ fs.writeFileSync(path.join(project, 'docs/assets/pixel.png'), Buffer.from('iVBOR
 fs.writeFileSync(path.join(project, 'docs/page.html'), '<!doctype html><link rel="stylesheet" href="assets/site.css"><h1>浏览器预览</h1><script src="assets/site.js"></script>')
 fs.writeFileSync(path.join(project, 'docs/assets/site.css'), 'h1{color:rgb(10,120,180)}')
 fs.writeFileSync(path.join(project, 'docs/assets/site.js'), 'document.title="preview-ready"')
+fs.writeFileSync(path.join(project, 'docs/assets/module.mjs'), 'export const ready = "module-ready"')
 fs.writeFileSync(path.join(project, 'note.txt'), 'original\n')
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({
   settings: { theme: 'dark', fontSize: 13, defShell: process.platform === 'win32' ? 'pwsh' : 'bash', defAgent: 'shell', restore: false, confirmKill: false },
@@ -31,6 +33,7 @@ const until = async (predicate, message) => {
 }
 try {
   const page = await app.firstWindow()
+  await installDocumentHarness(app, page)
   page.setDefaultTimeout(15000)
   page.on('pageerror', (error) => console.error('Renderer:', error.message))
   await page.click('[data-a=rmode][data-id=files]')
@@ -38,6 +41,7 @@ try {
   await page.click('[data-a=preview][data-id="docs/guide.md"]')
   const rich = page.getByRole('textbox', { name: 'Markdown 内容', exact: true })
   await rich.waitFor()
+  assert.equal(await page.locator('.filebar').count(), 0, 'Document toolbar should be absent')
   assert.equal(await rich.locator('h1').textContent(), '原文')
   assert.equal(await rich.locator('strong').textContent(), '加粗')
   assert.ok(await rich.locator('table').count())
@@ -52,6 +56,9 @@ try {
   await page.keyboard.press('End')
   await page.keyboard.insertText(' 修改')
   await until(() => fs.readFileSync(mdPath, 'utf8').includes('# 原文 修改'), 'Markdown did not autosave')
+  assert.ok((await page.evaluate(() => window.__autosaveDelays)).every((delay) => delay === 120000))
+  await page.getByText('已自动保存', { exact: true }).waitFor()
+  await page.getByText('已自动保存', { exact: true }).waitFor({ state: 'detached', timeout: 3000 })
   assert.ok(fs.readFileSync(mdPath, 'utf8').startsWith('\ufeff---\r\ntitle: 原文\r\n---\r\n'))
   await rich.press('Control+z')
   await until(() => fs.readFileSync(mdPath).equals(original), 'Undo did not survive autosave')
@@ -59,10 +66,10 @@ try {
   await until(() => fs.readFileSync(mdPath, 'utf8').includes('# 原文 修改'), 'Redo did not autosave')
   console.log('PASS Markdown autosave, Ctrl+Z / Ctrl+Shift+Z after saving, front matter, BOM and CRLF preservation')
 
-  await page.getByRole('radio', { name: '源码', exact: true }).click()
+  await documentCommand(app, page, 'mode')
   const source = page.getByRole('textbox', { name: '文件内容', exact: true })
   assert.ok((await source.inputValue()).includes('# 原文 修改'))
-  await page.getByRole('radio', { name: '所见即所得', exact: true }).click()
+  await documentCommand(app, page, 'mode')
   await rich.waitFor()
   await rich.locator('h1').click()
   await page.keyboard.press('End')
@@ -97,7 +104,7 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 1100))
   assert.equal(fs.readFileSync(path.join(project, 'note.txt'), 'utf8'), 'external change')
   assert.equal(await page.locator('.toast.bad').count(), 0, 'Autosave must not repeatedly toast errors')
-  await page.click('[data-a=reload-file]')
+  await documentCommand(app, page, 'reload')
   await page.click('[data-a=confirm]')
   console.log('PASS conflicting autosave pauses and keeps the draft without overwriting external changes')
 
@@ -111,36 +118,36 @@ try {
   console.log('PASS discard confirmation pauses autosave without writing the abandoned draft')
 
   await page.click('[data-a=preview][data-id="docs/page.html"]')
-  await app.evaluate(({ shell }) => { globalThis.__previewOpened = []; shell.openExternal = async (url) => { globalThis.__previewOpened.push(url) } })
-  await page.click('[data-a=preview-html]')
-  await page.waitForFunction(() => document.querySelector('[data-a=preview-html]') && !document.querySelector('[data-a=save-file]:not([disabled])'))
-  let url
-  for (let i = 0; i < 100; i++) {
-    url = await app.evaluate(() => globalThis.__previewOpened[0])
-    if (url) break
-    await new Promise((resolve) => setTimeout(resolve, 50))
-  }
+  const frame = page.frameLocator('iframe[title="HTML 预览"]')
+  await frame.locator('h1').waitFor()
+  const url = await page.locator('iframe').getAttribute('src')
   assert.match(url, /^http:\/\/127\.0\.0\.1:\d+\//)
-  assert.ok((await (await fetch(url)).text()).includes('浏览器预览'))
-  const windowReady = app.waitForEvent('window')
-  const previewId = await app.evaluate(async ({ BrowserWindow }, url) => {
-    const browser = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } })
-    await browser.loadURL(url)
-    return browser.id
-  }, url)
-  const preview = await windowReady
-  await preview.waitForFunction(() => document.title === 'preview-ready')
-  assert.equal(await preview.locator('h1').evaluate((node) => getComputedStyle(node).color), 'rgb(10, 120, 180)')
-  assert.equal(await preview.evaluate(() => typeof window.awb), 'undefined')
-  await app.evaluate(({ BrowserWindow }, id) => BrowserWindow.fromId(id).destroy(), previewId)
+  await frame.locator('h1').evaluate(() => { if (document.title !== 'preview-ready') throw new Error('Relative JS did not load') })
+  assert.equal(await frame.locator('h1').evaluate((node) => getComputedStyle(node).color), 'rgb(10, 120, 180)')
+  assert.equal(await frame.locator('h1').evaluate(() => typeof window.awb), 'undefined')
+  const moduleResult = await frame.locator('h1').evaluate(async () => {
+    try { return (await import('./assets/module.mjs')).ready } catch { return 'module-failed' }
+  })
+  assert.equal(moduleResult, 'module-ready', 'HTML module scripts must load in the isolated preview')
+  const unrelatedOrigin = await fetch(new URL('assets/module.mjs', url), { headers: { Origin: 'https://example.invalid' } })
+  assert.equal(unrelatedOrigin.headers.get('access-control-allow-origin'), null, 'Preview must not grant CORS to unrelated websites')
+  assert.equal(await frame.locator('h1').evaluate(() => { try { return !!parent.document } catch { return false } }), false)
+  await app.evaluate(() => { globalThis.__documentMenuCommand = 'source' })
+  await frame.locator('h1').click({ button: 'right' })
+  await source.waitFor()
+  assert.ok((await source.inputValue()).includes('浏览器预览'))
+  await source.fill('<!doctype html><h1>草稿预览</h1>')
+  await documentCommand(app, page, 'mode')
+  await frame.getByRole('heading', { name: '草稿预览' }).waitFor()
+  assert.ok(fs.readFileSync(path.join(project, 'docs/page.html'), 'utf8').includes('浏览器预览'), 'Rendering a draft must not silently save it')
   const forbidden = new URL(url)
   forbidden.pathname = '/not-a-project-token/secret.txt'
   assert.equal((await fetch(forbidden)).status, 404)
-  console.log('PASS browser HTML entry, relative CSS/JS, isolated execution and scoped preview URLs')
+  console.log('PASS embedded HTML default, native right-click source switch, relative CSS/JS, sandbox isolation and scoped URLs')
 
   await page.click('[data-a=preview][data-id="docs/guide.md"]')
   await rich.waitFor()
-  await page.getByRole('radio', { name: '源码', exact: true }).click()
+  await documentCommand(app, page, 'mode')
   const beforeLoad = await source.inputValue()
   await source.fill(beforeLoad + '\n\nPending editor load')
   await app.evaluate(({ ipcMain }, url) => {
@@ -150,8 +157,8 @@ try {
       return url
     })
   }, url)
-  await page.getByRole('radio', { name: '所见即所得', exact: true }).click()
-  await page.getByRole('button', { name: '撤销编辑', exact: true }).click()
+  await documentCommand(app, page, 'mode')
+  await documentCommand(app, page, 'undo')
   await rich.waitFor()
   assert.ok(!(await rich.textContent()).includes('Pending editor load'), 'An undo during initialization must reach the new editor')
   console.log('PASS undo during delayed editor initialization keeps the current draft visible')

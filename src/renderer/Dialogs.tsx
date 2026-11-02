@@ -149,7 +149,7 @@ export function NewProjectDialog({
   installed: Record<string, boolean>
   onClose: () => void
   onCreate: (draft: { name: string; host: string; path: string; agent: string; branch: string }) => void
-  onHosts: (hosts: Host[]) => void
+  onHosts: (hosts: Host[]) => Promise<void>
   onToast: (text: string, bad?: boolean) => void
 }) {
   const [name, setName] = useState('')
@@ -163,8 +163,14 @@ export function NewProjectDialog({
   const [agent, setAgent] = useState(() => preferredAgent(settings.defAgent, agents))
   const [agentOpen, setAgentOpen] = useState(false)
   const [adding, setAdding] = useState(false)
+  const [connecting, setConnecting] = useState(false)
+  const [editingHost, setEditingHost] = useState<Host | null>(null)
+  const [removingHost, setRemovingHost] = useState<Host | null>(null)
   const [hostName, setHostName] = useState('')
   const [hostAddr, setHostAddr] = useState('')
+  const [hostPort, setHostPort] = useState('22')
+  const hostRequest = useRef(0)
+  useEffect(() => () => { hostRequest.current++ }, [])
   const [hostAuth, setHostAuth] = useState<Host['auth']>('key')
   const [hostPassword, setHostPassword] = useState('')
   const [check, setCheck] = useState<PathCheck>({ kind: 'empty' })
@@ -195,6 +201,15 @@ export function NewProjectDialog({
   const agentLabel = agents.find((item) => item.id === agent)?.name || '仅 Shell'
   const agentMenu = useAnchoredMenu(agentOpen, () => setAgentOpen(false))
 
+  if (editingHost) return <HostDialog initial={editingHost} onClose={() => setEditingHost(null)} onToast={onToast}
+    onSave={async (next) => { await onHosts(hosts.map((item) => item.id === next.id ? next : item)); setEditingHost(null) }}
+    onDelete={() => { setRemovingHost(editingHost); setEditingHost(null) }} />
+  if (removingHost) return <Frame title="移除机器？" onClose={() => setRemovingHost(null)} footer={<>
+    <button className="btn" onClick={() => setRemovingHost(null)}>取消</button>
+    <button className="btn danger" data-a="confirm" onClick={async () => {
+      try { await onHosts(hosts.filter((item) => item.id !== removingHost.id)); if (hostId === removingHost.id) setHostId('local'); setRemovingHost(null) }
+      catch (error) { onToast(String(error), true) }
+    }}>移除</button></>}><p>移除 {removingHost.name} 后，使用这台机器的项目将无法打开终端。远程文件不会被删除。</p></Frame>
   return (
     <Frame
       title="新建项目"
@@ -228,6 +243,8 @@ export function NewProjectDialog({
               key={item.id}
               className={`mopt ${hostId === item.id ? 'on' : ''}`}
               role="radio"
+              tabIndex={0}
+              onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); if (item.on) setHostId(item.id) } }}
               aria-checked={hostId === item.id}
               data-a="nph"
               data-id={item.id}
@@ -255,14 +272,13 @@ export function NewProjectDialog({
                     data-id={item.id}
                     onClick={async (event) => {
                       event.stopPropagation()
-                      const result = await window.awb.testHost(item)
-                      if (!result.ok) {
-                        onToast(result.error || '连接失败', true)
-                        return
-                      }
-                      onHosts(hosts.map((hostItem) => (hostItem.id === item.id ? { ...hostItem, on: true, os: result.os || hostItem.os, platform: result.platform || hostItem.platform } : hostItem)))
-                      setHostId(item.id)
-                      onToast(`已连接 ${item.name}`)
+                      try {
+                        const result = await window.awb.testHost(item)
+                        if (!result.ok) { onToast(result.error || '连接失败', true); return }
+                        await onHosts(hosts.map((hostItem) => (hostItem.id === item.id ? { ...hostItem, on: true, os: result.os || hostItem.os, platform: result.platform || hostItem.platform } : hostItem)))
+                        setHostId(item.id)
+                        onToast(`已连接 ${item.name}`)
+                      } catch (error) { onToast(String(error), true) }
                     }}
                   >
                     连接
@@ -270,11 +286,13 @@ export function NewProjectDialog({
                 </>
               )}
               <span className="radio" />
+              {item.id !== 'local' ? <button className="btn sm" aria-label={`编辑 ${item.name}`} onClick={(event) => { event.stopPropagation(); setEditingHost(item) }}>编辑</button> : null}
             </div>
           ))}
         </div>
         {adding ? (
           <div className="card" style={{ padding: 12, marginTop: 8 }}>
+            <fieldset className="host-fields" disabled={connecting}>
             <div className="two">
               <label className="fld" style={{ margin: 0 }}>
                 <span>名称</span>
@@ -285,42 +303,54 @@ export function NewProjectDialog({
                 <input className="tx mono" data-nh="addr" placeholder="user@host" value={hostAddr} onChange={(e) => setHostAddr(e.target.value)} />
               </label>
             </div>
+            <label className="fld" style={{ marginTop: 12, marginBottom: 0 }}><span>端口</span><input className="tx" aria-label="SSH 端口" inputMode="numeric" value={hostPort} onChange={(event) => setHostPort(event.target.value)} /></label>
             <HostAuthentication host={{ auth: hostAuth, password: hostPassword }} onChange={(next) => {
               if (next.auth) setHostAuth(next.auth)
               if (next.password !== undefined) setHostPassword(next.password)
             }} />
+            </fieldset>
             <div style={{ display: 'flex', gap: 8, marginTop: 12, justifyContent: 'flex-end' }}>
-              <button className="btn sm ghost" data-a="np-addhost" onClick={() => setAdding(false)}>
+              <button className="btn sm ghost" data-a="np-addhost" onClick={() => { hostRequest.current++; setAdding(false); setConnecting(false) }}>
                 取消
               </button>
               <button
                 className="btn sm"
                 data-a="np-savehost"
+                disabled={connecting || !hostName.trim() || !hostAddr.includes('@')}
                 onClick={async () => {
-                  const raw = hostAddr.trim() || 'yang@build-02'
-                  const user = raw.includes('@') ? raw.split('@')[0] : 'yang'
-                  const addr = raw.includes('@') ? raw.split('@').slice(1).join('@') : raw
+                  const raw = hostAddr.trim(), at = raw.indexOf('@')
+                  const user = raw.slice(0, at), addr = raw.slice(at + 1)
+                  const port = Number(hostPort)
+                  if (!user || !addr || !Number.isInteger(port) || port < 1 || port > 65535) { onToast('请填写 user@host 和 1 到 65535 的端口', true); return }
+                  const request = ++hostRequest.current
                   const next: Host = {
                     id: uid('h'),
-                    name: hostName.trim() || 'build-02',
+                    name: hostName.trim(),
                     addr,
                     user,
                     os: 'Linux',
                     on: false,
-                    port: 22,
+                    port,
                     platform: 'linux',
                     auth: hostAuth,
                     ...(hostAuth === 'password' ? { password: hostPassword } : {})
                   }
-                  const result = await window.awb.testHost(next)
-                  const saved = result.ok ? { ...next, on: true, os: result.os || next.os, platform: result.platform || next.platform } : next
-                  onHosts([...hosts, saved])
-                  if (saved.on) setHostId(saved.id)
-                  setAdding(false)
-                  onToast(saved.on ? `已连接 ${saved.name}` : result.error || '未能连接', !saved.on)
+                  setConnecting(true)
+                  try {
+                    const result = await window.awb.testHost(next)
+                    if (request !== hostRequest.current) return
+                    if (!result.ok) { onToast(result.error || '连接失败，请检查地址和认证信息', true); return }
+                    const saved = { ...next, on: true, os: result.os || next.os, platform: result.platform || next.platform }
+                    await onHosts([...hosts, saved])
+                    setHostId(saved.id)
+                    setAdding(false)
+                    setHostPassword('')
+                    onToast(`已连接 ${saved.name}`)
+                  } catch (error) { onToast(String(error), true) }
+                  finally { if (request === hostRequest.current) setConnecting(false) }
                 }}
               >
-                添加并连接
+                {connecting ? '正在连接…' : '添加并连接'}
               </button>
             </div>
           </div>
@@ -804,7 +834,7 @@ export function HostDialog({
 }: {
   initial: Host | null
   onClose: () => void
-  onSave: (host: Host) => void
+  onSave: (host: Host) => Promise<void>
   onDelete: (id: string) => void
   onToast: (text: string, bad?: boolean) => void
 }) {
@@ -812,6 +842,10 @@ export function HostDialog({
     initial || { id: '', name: '', addr: '', user: '', os: 'Linux', on: false, port: 22, platform: 'linux', auth: 'key' }
   )
   const patch = (partial: Partial<Host>) => setDraft((prev) => ({ ...prev, ...partial }))
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const mounted = useRef(true)
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
   return (
     <Frame
       title={initial ? initial.name : '添加机器'}
@@ -837,6 +871,7 @@ export function HostDialog({
             <button
               className="btn"
               data-a="hconn2"
+              disabled={busy}
               onClick={async () => {
                 if (draft.on) {
                   patch({ on: false })
@@ -858,6 +893,7 @@ export function HostDialog({
           <button
             className="btn"
             data-a="htest"
+            disabled={busy}
             onClick={async () => {
               const result = await window.awb.testHost(draft)
               if (!result.ok) onToast(result.error || '连接失败', true)
@@ -872,19 +908,33 @@ export function HostDialog({
           <button
             className="btn pri"
             data-a="hsave"
-            onClick={() => {
+            disabled={busy}
+            onClick={async () => {
               if (!draft.name.trim() || !draft.addr.trim() || !draft.user.trim()) {
                 onToast('请填写名称、用户和地址')
                 return
               }
-              onSave({ ...draft, name: draft.name.trim(), addr: draft.addr.trim(), user: draft.user.trim(), port: Number(draft.port) || 22 })
+              if (!Number.isInteger(draft.port) || draft.port < 1 || draft.port > 65535) { setError('端口必须为 1 到 65535'); return }
+              setBusy(true); setError('')
+              try {
+                const next = { ...draft, name: draft.name.trim(), addr: draft.addr.trim(), user: draft.user.trim() }
+                const changedConnection = !initial || ['addr', 'port', 'user', 'auth'].some((key) => initial[key as keyof Host] !== next[key as keyof Host]) || next.password !== undefined
+                if (changedConnection || next.on) {
+                  const result = await window.awb.testHost(next)
+                  if (!mounted.current) return
+                  if (!result.ok) { setError(result.error || '连接失败，请检查地址和认证信息'); return }
+                  await onSave({ ...next, on: true, os: result.os || next.os, platform: result.platform || next.platform })
+                } else await onSave(next)
+              } catch (reason) { setError(String(reason)) }
+              finally { setBusy(false) }
             }}
           >
-            {initial ? '保存' : '添加'}
+            {busy ? '正在保存…' : initial ? '保存' : '连接并添加'}
           </button>
         </>
       }
     >
+      <fieldset className="host-fields" disabled={busy}>
       <div className="two">
         <label className="fld">
           <span>名称</span>
@@ -906,6 +956,8 @@ export function HostDialog({
         </label>
       </div>
       <HostAuthentication host={draft} onChange={patch} />
+      </fieldset>
+      {error ? <p className="file-error" role="alert">{error}</p> : null}
     </Frame>
   )
 }

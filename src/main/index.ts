@@ -1,7 +1,8 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, type MenuItemConstructorOptions } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
-import { PRESETS, type Executor, type Host, type Plugin, type Project, type SavedTerm, type Settings, type ShellKind } from '../shared/types'
+import { PRESETS, type Executor, type Host, type Project, type SavedTerm, type Settings, type ShellKind, type ResourceTarget } from '../shared/types'
+import { ResourceManager } from './resources'
 import { db, mutate, writeSessions } from './store'
 import { commandExists, osLabel } from './platform'
 import { checkPath, fileTree, gitDiff, gitDiscard, gitStatus, listDir, readFile, targetFor, writeFile } from './git'
@@ -19,7 +20,7 @@ import {
 import { sshBatchArgs } from './platform'
 import { publicHost, rememberPassword } from './credentials'
 import { runPasswordCommand } from './ssh'
-import { openHtmlPreview, previewUrl } from './preview'
+import { isPreviewUrl, openHtmlPreview, previewUrl } from './preview'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
@@ -97,6 +98,14 @@ function createWindow(): void {
   win.once('ready-to-show', () => win?.show())
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   win.webContents.on('will-navigate', (event) => event.preventDefault())
+  win.webContents.on('will-frame-navigate', (event) => { if (!event.isMainFrame && !isPreviewUrl(event.url)) event.preventDefault() })
+  win.webContents.on('context-menu', (_event, params) => {
+    if (!isPreviewUrl(params.frameURL)) return
+    Menu.buildFromTemplate([
+      { id: 'source', label: '源码模式', click: () => win?.webContents.send('file:preview-source') },
+      { type: 'separator' }, { role: 'copy', label: '复制' }, { role: 'selectAll', label: '全选' }
+    ]).popup({ window: win! })
+  })
   const devUrl = process.env.ELECTRON_RENDERER_URL
   if (devUrl) {
     const url = process.env.AWB_CAPTURE ? devUrl + (devUrl.includes('?') ? '&' : '?') + 'capture=1' : devUrl
@@ -133,6 +142,25 @@ function createWindow(): void {
   })
 }
 
+async function testHostConnection(host: Host): Promise<import('../shared/types').HostTest> {
+  if (!host.addr || !host.user) return { ok: false, error: '请填写用户和地址' }
+  try {
+    const probe = 'uname -s 2>/dev/null || ver'
+    const stdout = host.auth === 'password'
+      ? await runPasswordCommand(host, probe)
+      : (await execFileP('ssh', sshBatchArgs(host, [probe]), { timeout: 12000, windowsHide: true })).stdout
+    const text = stdout.trim()
+    const linux = /linux/i.test(text)
+    const platform = linux ? 'linux' : 'windows'
+    const os = text.split(/\r?\n/).filter(Boolean).pop() || (linux ? 'Linux' : 'Windows')
+    return { ok: true, os: os.slice(0, 80), platform }
+  } catch (err) {
+    const e = err as { stderr?: string; message?: string }
+    const message = (e.stderr || e.message || '连接失败').trim().split(/\r?\n/).pop() || '连接失败'
+    return { ok: false, error: message.slice(0, 240) }
+  }
+}
+
 function registerIpc(): void {
   ipcMain.on('files:dirty', (_event, dirty: boolean) => { hasUnsavedChanges = !!dirty })
   ipcMain.handle('db:get', async () => ({ db: db(), installed: await installedMap() }))
@@ -149,20 +177,42 @@ function registerIpc(): void {
   ipcMain.handle('db:custom', (_e, custom: Executor[]) => mutate((draft) => {
     draft.custom = custom
   }))
-  ipcMain.handle('db:hosts', (_e, hosts: Host[]) => mutate((draft) => {
-    const local = hosts.find((h) => h.id === 'local')
-    if (local) {
-      local.on = true
-      local.os = local.os || osLabel()
+  ipcMain.handle('db:hosts', async (_e, hosts: Host[]) => {
+    for (const host of hosts) {
+      if (host.id === 'local') continue
+      const old = db().hosts.find((item) => item.id === host.id)
+      const changed = !old || ['addr', 'port', 'user', 'auth'].some((key) => old[key as keyof Host] !== host[key as keyof Host]) || host.password !== undefined
+      if (changed) {
+        const result = await testHostConnection(host)
+        if (!result.ok) throw new Error(result.error || 'SSH 连接失败，未保存机器')
+        Object.assign(host, { on: true, os: result.os, platform: result.platform })
+      }
     }
-    draft.hosts = hosts.map((host) => {
-      rememberPassword(host)
-      return publicHost(host)
+    return mutate((draft) => {
+      const local = hosts.find((h) => h.id === 'local')
+      if (local) {
+        local.on = true
+        local.os = local.os || osLabel()
+      }
+      draft.hosts = hosts.map((host) => {
+        rememberPassword(host)
+        return publicHost(host)
+      })
     })
-  }))
-  ipcMain.handle('db:plugins', (_e, plugins: Plugin[]) => mutate((draft) => {
-    draft.plugins = plugins
-  }))
+  })
+  const resources = new ResourceManager(app.getPath('userData'))
+  const targets = () => resources.targets(db().custom)
+  ipcMain.handle('resources:targets', () => targets())
+  ipcMain.handle('resources:target', (_e, target: ResourceTarget) => resources.saveTarget(target, db().custom))
+  ipcMain.handle('resources:list', (_e, kind: 'mcp' | 'skills', agent: string, page: number, query: string) => resources.list(targets(), kind, agent, page, query))
+  ipcMain.handle('resources:mcp', (_e, name: string, config: Record<string, unknown>, agents: string[]) => resources.addMcp(targets(), name, config, agents))
+  ipcMain.handle('resources:skills', (_e, source: string, agents: string[]) => resources.importSkills(targets(), source, agents))
+  ipcMain.handle('resources:pick', async (_e, kind: string) => {
+    if (!win) return null
+    const result = await dialog.showOpenDialog(win, { properties: [kind === 'folder' ? 'openDirectory' : 'openFile'],
+      filters: kind === 'folder' ? undefined : [{ name: kind === 'zip' ? 'ZIP 压缩包' : 'Agent 配置', extensions: kind === 'zip' ? ['zip'] : ['json', 'jsonc', 'toml'] }] })
+    return result.canceled ? null : result.filePaths[0] || null
+  })
   ipcMain.handle('db:sessions', (_e, projectId: string, terms: SavedTerm[], activeId?: string | null) => mutate((draft) => {
     writeSessions(draft, projectId, terms, activeId)
   }))
@@ -223,8 +273,23 @@ function registerIpc(): void {
     const { target } = projectTarget(projectId)
     return writeFile(target, rel, text, version)
   })
-  ipcMain.handle('file:preview-url', async (_e, projectId: string, rel: string) => previewUrl(projectId, projectTarget(projectId).target, rel))
+  ipcMain.handle('file:preview-url', async (_e, projectId: string, rel: string, draft?: string) => previewUrl(projectId, projectTarget(projectId).target, rel, draft))
   ipcMain.handle('file:open-html', async (_e, projectId: string, rel: string) => openHtmlPreview(projectId, projectTarget(projectId).target, rel))
+  ipcMain.handle('file:menu', (_e, options: { markdown: boolean; visual: boolean; undo: boolean; redo: boolean; editable: boolean }) => new Promise<string | null>((resolve) => {
+    const action = (label: string, id: string, enabled = true): MenuItemConstructorOptions => ({ id, label, enabled, click: () => resolve(id) })
+    const template: MenuItemConstructorOptions[] = [
+      action(options.visual ? '源码模式' : '渲染模式', 'mode'), { type: 'separator' },
+      action('撤销', 'undo', options.undo), action('重做', 'redo', options.redo),
+      { type: 'separator' }, { role: 'cut', label: '剪切', enabled: options.editable }, { role: 'copy', label: '复制' },
+      { role: 'paste', label: '粘贴', enabled: options.editable }, { role: 'pasteAndMatchStyle', label: '粘贴为纯文本', enabled: options.editable },
+      { role: 'selectAll', label: '全选' }
+    ]
+    if (options.markdown && options.visual && options.editable) template.push({ type: 'separator' },
+      { label: '格式', submenu: [action('加粗', 'bold'), action('斜体', 'italic'), action('行内代码', 'code')] },
+      { label: '段落', submenu: [action('一级标题', 'heading'), action('引用', 'quote'), action('无序列表', 'bullet'), action('有序列表', 'ordered'), action('代码块', 'codeblock'), action('插入表格', 'table')] })
+    template.push({ type: 'separator' }, action('保存', 'save', options.editable), action('重新读取', 'reload'), action('切换文件面板', 'panel'))
+    Menu.buildFromTemplate(template).popup({ window: win!, callback: () => resolve(null) })
+  }))
 
   ipcMain.handle('pty:create', (_e, req: { id: string; projectId: string; kind: string; shell: ShellKind }) => {
     return createSession(send, req)
@@ -246,24 +311,7 @@ function registerIpc(): void {
     })
   })
 
-  ipcMain.handle('host:test', async (_e, host: Host) => {
-    if (!host.addr || !host.user) return { ok: false, error: '请填写用户和地址' }
-    try {
-      const probe = 'uname -s 2>/dev/null || ver'
-      const stdout = host.auth === 'password'
-        ? await runPasswordCommand(host, probe)
-        : (await execFileP('ssh', sshBatchArgs(host, [probe]), { timeout: 12000, windowsHide: true })).stdout
-      const text = stdout.trim()
-      const linux = /linux/i.test(text)
-      const platform = linux ? 'linux' : 'windows'
-      const os = text.split(/\r?\n/).filter(Boolean).pop() || (linux ? 'Linux' : 'Windows')
-      return { ok: true, os: os.slice(0, 80), platform }
-    } catch (err) {
-      const e = err as { stderr?: string; message?: string }
-      const message = (e.stderr || e.message || '连接失败').trim().split(/\r?\n/).pop() || '连接失败'
-      return { ok: false, error: message.slice(0, 240) }
-    }
-  })
+  ipcMain.handle('host:test', (_e, host: Host) => testHostConnection(host))
 
   ipcMain.handle('win:min', () => win?.minimize())
   ipcMain.handle('win:max', () => {

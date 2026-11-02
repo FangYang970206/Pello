@@ -1,3 +1,4 @@
+import { installDocumentHarness, documentCommand } from './fixtures/document-harness.mjs'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -32,6 +33,7 @@ delete env.ELECTRON_RUN_AS_NODE
 const app = await electron.launch({ args: [root], cwd: root, env })
 try {
   const page = await app.firstWindow()
+  await installDocumentHarness(app, page)
   page.setDefaultTimeout(5000)
   await page.waitForFunction(() => window.__awbBuffer?.('ui')?.includes('FOOTER_VISIBLE'))
   await check('terminal footer fits inside the visible pane', async () => {
@@ -87,7 +89,7 @@ try {
     const editor = page.getByRole('textbox', { name: '文件内容' })
     await editor.fill('changed\n中文编辑\n')
     await editor.press('Control+s')
-    await page.waitForFunction(() => document.querySelector('[data-a=save-file]')?.hasAttribute('disabled'))
+    await page.waitForFunction(() => !document.querySelector('.tab.on .unsaved'))
     assert.equal(fs.readFileSync(path.join(projectDir, 'note.txt'), 'utf8'), 'changed\r\n中文编辑\r\n')
   })
   await check('unsaved edits survive tab switches and can be saved on close', async () => {
@@ -110,11 +112,11 @@ try {
     const editor = page.getByRole('textbox', { name: '文件内容' })
     await editor.fill('my unsaved edit')
     fs.writeFileSync(path.join(projectDir, 'note.txt'), 'external change\n')
-    await page.click('[data-a=save-file]')
+    await documentCommand(app, page, 'save')
     await page.getByRole('alert').filter({ hasText: '文件已被其他程序修改' }).waitFor()
     assert.equal(fs.readFileSync(path.join(projectDir, 'note.txt'), 'utf8'), 'external change\n')
     assert.equal(await editor.inputValue(), 'my unsaved edit')
-    await page.click('[data-a=reload-file]')
+    await documentCommand(app, page, 'reload')
     await page.click('[data-a=confirm]')
     await page.waitForFunction(() => document.querySelector('textarea[aria-label="文件内容"]')?.value === 'external change\n')
   })
@@ -130,7 +132,7 @@ try {
     await app.evaluate(({ app }) => app.quit())
     assert.equal(await app.evaluate(() => globalThis.__unsavedPrompts), 2)
     await page.keyboard.press('Control+s')
-    await page.waitForFunction(() => document.querySelector('[data-a=save-file]')?.hasAttribute('disabled'))
+    await page.waitForFunction(() => !document.querySelector('.tab.on .unsaved'))
     await page.click('[data-a=tab][data-id=ui]')
     assert.ok(await page.evaluate(() => window.__awbBuffer('ui').includes('TERM_HEADER')))
   })
