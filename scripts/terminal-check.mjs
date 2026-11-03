@@ -61,6 +61,7 @@ const check = async (label, run) => {
 const env = { ...process.env, AWB_USER_DATA: data }
 delete env.ELECTRON_RUN_AS_NODE
 const app = await electron.launch({ args: [root], cwd: root, env })
+const electronProcess = app.process()
 let appClosed = false
 app.on('console', (message) => {
   if (message.type() === 'error') console.error(`Electron: ${message.text()}`)
@@ -179,6 +180,8 @@ try {
   await page.getByRole('button', { name: '关闭窗口', exact: true }).click()
   await closed
   appClosed = true
+  await until(() => electronProcess.exitCode !== null || electronProcess.signalCode !== null, 'Application process did not finish exiting')
+  assert.equal(electronProcess.exitCode, 0, 'Application must exit normally after cleanup')
 } finally {
   if (!appClosed) await app.close()
   await check('application shutdown stops all remaining agent processes', async () => {

@@ -315,6 +315,7 @@ class Session {
     if (!proc) this.remoteAbort?.abort()
     this.disposal = (async () => {
       if (!proc) return
+      let windowsTreeStopped = false
       try {
         if (alreadyExited || proc.pid === null) return
         const pid = proc.pid
@@ -325,11 +326,16 @@ class Session {
             try { process.kill(pid, 0) } catch { return }
             throw error
           })
+          windowsTreeStopped = true
         } else {
           await killChildren(pid)
         }
       } finally {
-        try { proc.kill() } catch { /* already exited */ }
+        // Windows tree termination already triggers node-pty's exit cleanup.
+        // Killing that ConPTY again can end Electron before other trees finish.
+        if (!this.procExited && !windowsTreeStopped) {
+          try { proc.kill() } catch { /* already exited */ }
+        }
       }
       this.proc = null
     })().catch((error) => {

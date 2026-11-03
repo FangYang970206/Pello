@@ -25,6 +25,8 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
 const execFileP = promisify(execFile)
+const windowsAppId = app.isPackaged ? 'com.agentworkbench.app' : 'com.agentworkbench.app.dev'
+if (process.platform === 'win32') app.setAppUserModelId(windowsAppId)
 
 if (process.env.AWB_USER_DATA) app.setPath('userData', process.env.AWB_USER_DATA)
 if (process.env.AWB_CAPTURE) {
@@ -75,8 +77,10 @@ function broadcastTheme(theme: Settings['theme']): void {
 
 function createWindow(): void {
   const theme = db().settings.theme
+  const iconDirectory = app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'assets')
+  const windowsIconPath = path.join(iconDirectory, 'icon.ico')
   win = new BrowserWindow({
-    icon: path.join(app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'assets'), process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
+    icon: process.platform === 'win32' ? windowsIconPath : path.join(iconDirectory, 'icon.png'),
     width: 1440,
     height: 900,
     minWidth: 1024,
@@ -96,6 +100,16 @@ function createWindow(): void {
       spellcheck: false
     }
   })
+  if (process.platform === 'win32') {
+    // The taskbar group uses Shell relaunch metadata independently of WM_SETICON.
+    win.setAppDetails({
+      appId: windowsAppId,
+      appIconPath: windowsIconPath,
+      appIconIndex: 0,
+      relaunchCommand: app.isPackaged ? `"${process.execPath}"` : `"${process.execPath}" "${app.getAppPath()}"`,
+      relaunchDisplayName: 'Agent Workbench'
+    })
+  }
   win.once('ready-to-show', () => win?.show())
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   win.webContents.on('will-navigate', (event) => event.preventDefault())
@@ -347,7 +361,6 @@ function registerIpc(): void {
 }
 
 app.whenReady().then(() => {
-  if (process.platform === 'win32') app.setAppUserModelId('com.agentworkbench.app')
   registerIpc()
   createWindow()
   broadcastTheme(db().settings.theme)

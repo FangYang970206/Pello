@@ -28,8 +28,8 @@ npm run dist:win
 
 产物在 `dist/`，版本号随 `package.json` 变化：
 
-- `Agent-Workbench-0.1.1-win-x64-setup.exe`：安装向导。
-- `Agent-Workbench-0.1.1-win-x64.zip`：解压后运行 `agent-workbench.exe`，须保留同目录的资源文件。
+- `Agent-Workbench-0.1.2-win-x64-setup.exe`：安装向导。
+- `Agent-Workbench-0.1.2-win-x64.zip`：解压后运行 `agent-workbench.exe`，须保留同目录的资源文件。
 
 使用发布的二进制无需安装 Node.js、Python 或 C++ 构建工具。Agent CLI、Git 和 SSH 等外部工具按需自行安装。
 
@@ -48,6 +48,10 @@ npx electron-rebuild -f -w node-pty
 ## 图标
 
 应用采用用户提供的图标。`assets/icon.ico` 包含 16–256px 七档尺寸，用于 Windows 程序、窗口和安装 / 卸载向导；`assets/icon.png` 用于 README 与其他平台窗口；标题栏使用适合小尺寸的 `assets/icon-small.svg`。打包时只复制运行所需的 ICO 和 PNG，不包含原始附件、设计预览或未使用的图标尺寸。
+
+任务栏分组图标通过窗口的 Windows Shell 属性显式指定，独立于标题栏图标和 EXE 内嵌图标。安装版使用 `com.agentworkbench.app`，开发启动使用 `com.agentworkbench.app.dev`，避免开发版 `electron.exe` 与旧安装快捷方式混为一组。重新启动命令同时保存正确的程序和开发项目路径。
+
+`node scripts/windows-icon-check.mjs` 读取实际窗口的 Shell 属性，校验应用标识、任务栏图标和重新启动目标。传入打包后的 EXE 路径可检查发布包。
 
 ## 代码签名
 
@@ -72,7 +76,7 @@ npm run dist:win
 源码包从发布标签生成，例如：
 
 ```powershell
-git archive --format=zip --prefix=agent-workbench-0.1.1/ --output=dist/Agent-Workbench-0.1.1-source.zip v0.1.1
+git archive --format=zip --prefix=agent-workbench-0.1.2/ --output=dist/Agent-Workbench-0.1.2-source.zip v0.1.2
 ```
 
 `.gitattributes` 的 `export-ignore` 排除 `design/` 设计图、截图输出、缓存、依赖和构建产物；GitHub 自动生成的源码归档也使用此规则。源码包保留 `src/`、运行所需字体、锁文件、构建配置、检查脚本和开发文档，支持安装依赖、构建及完整验证。
