@@ -1,4 +1,4 @@
-# 在 Windows 上打出 NSIS 安装包
+# 在 Windows 上打出安装包与免安装包
 
 只涉及打包。应用本身怎么跑，见 [README.md](README.md)。
 
@@ -21,18 +21,22 @@ npm run dist:win
 
 `npm install` 结束时，已有的 `postinstall` 会执行 `electron-rebuild`，把 `node-pty` 编到当前 Electron 上。
 
-`npm run dist:win`（`scripts/dist-win.mjs`）接着做三件事：
+`npm run dist:win`（`scripts/dist-win.mjs`）接着做两件事：
 
 1. `electron-vite build`，产出 `out/`。
-2. 在 Windows 上执行 `electron-builder install-app-deps`。这一步就是 `@electron/rebuild`，按 `node_modules/electron` 里的 Electron 33 重新编译 `node-pty`。
-3. `electron-builder --win --x64 --publish never`，打出 x64 NSIS 安装包。配置在 `electron-builder.yml`，版本号取自 `package.json` 的 `version`，不会在配置里再写一份。
+2. `electron-builder --win --x64 --publish never -c.npmRebuild=false`，打出 x64 NSIS 安装包和免安装 ZIP。打包钩子校验 `node-pty` 的 Windows x64 Node-API 二进制；已有有效编译产物时使用该产物，否则使用依赖自带的预编译模块。此步骤不重编译未打入应用的可选 SSH 原生依赖。配置在 `electron-builder.yml`，版本号取自 `package.json` 的 `version`。
 
-安装包在 `dist/`。默认文件名是 `Agent Workbench Setup 0.1.0.exe`（版本号随 `package.json` 变）。
+产物在 `dist/`，版本号随 `package.json` 变化：
+
+- `Agent-Workbench-0.1.0-win-x64-setup.exe`：安装向导。
+- `Agent-Workbench-0.1.0-win-x64.zip`：解压后运行 `agent-workbench.exe`，须保留同目录的资源文件。
+
+使用发布的二进制无需安装 Node.js、Python 或 C++ 构建工具。Agent CLI、Git 和 SSH 等外部工具按需自行安装。
 
 只想单独重编原生模块、先不打包时：
 
 ```powershell
-npx electron-builder install-app-deps
+npx electron-rebuild -f -w node-pty
 ```
 
 ## 安装包行为
@@ -61,9 +65,21 @@ npm run dist:win
 
 `electron-builder.yml` 里 `publish: null`，命令行还有 `--publish never`。没有自动更新地址，构建结果不会传到任何服务器。
 
+## 发布归档
+
+提交或发布前运行 `npm run verify`，通过后执行 `npm run dist:win`。Release 上传上述 EXE、ZIP、源码 ZIP 和 `SHA256SUMS.txt`；不要上传 `win-unpacked/`、构建调试文件、截图或本地配置。
+
+源码包从发布标签生成，例如：
+
+```powershell
+git archive --format=zip --prefix=agent-workbench-0.1.0/ --output=dist/Agent-Workbench-0.1.0-source.zip v0.1.0
+```
+
+`.gitattributes` 的 `export-ignore` 排除 `design/` 设计图、截图输出、缓存、依赖和构建产物；GitHub 自动生成的源码归档也使用此规则。源码包保留 `src/`、运行所需字体、锁文件、构建配置、检查脚本和开发文档，支持安装依赖、构建及完整验证。
+
 ## node-pty
 
-Windows 上真正打进安装包的是 `electron-builder install-app-deps` 编出来的 `node_modules/node-pty/build/Release/*.node`（Electron 33 的 ABI）。`node-pty` 的加载顺序是 `build/Release`，然后才是 `prebuilds/win32-x64`。
+`node-pty` 的加载顺序是 `build/Release`，然后才是 `prebuilds/win32-x64`。安装包保留通过 Windows x64 Node-API 校验的模块，打包本身不强制重新编译。
 
 `node-pty@1.1.0` 的 npm 包里带有 `prebuilds/win32-x64`（`conpty.node`、`pty.node`、`conpty_console_list.node`，以及旁边的 `conpty.dll`、`OpenConsole.exe`、`winpty.dll`、`winpty-agent.exe`）。这些 `.node` 是 Node-API 模块。在编不出 MSVC 产物的机器上，打包前的钩子 `scripts/ensure-win32-node-pty.cjs` 会把非 win32 的 `build/` 和 `@electron/rebuild` 顺手复制到 `bin/` 的产物挪走，改用这份预编译包，并检查每个要加载的 `.node` 都是 win32-x64 的 Node-API 二进制。检查失败则直接中止，不会打出一个终端模块打不开的安装包。`node-pty` 不读取 `bin/`，那个目录不会打进安装包。
 

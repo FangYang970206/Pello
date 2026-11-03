@@ -16,12 +16,6 @@
     "postinstall": "electron-rebuild -f -w node-pty"
   },
   "dependencies": {
-    "@fontsource/jetbrains-mono": "^5.2.6",
-    "@milkdown/crepe": "^7.23.0",
-    "@milkdown/kit": "^7.23.0",
-    "@xterm/addon-fit": "0.10.0",
-    "@xterm/addon-webgl": "^0.18.0",
-    "@xterm/xterm": "5.5.0",
     "fflate": "^0.8.3",
     "jsonc-parser": "^3.3.1",
     "node-pty": "1.1.0",
@@ -33,6 +27,9 @@
   "devDependencies": {
     "@electron/rebuild": "^3.7.2",
     "@eslint/js": "^10.0.1",
+    "@fontsource/jetbrains-mono": "^5.2.6",
+    "@milkdown/crepe": "^7.23.0",
+    "@milkdown/kit": "^7.23.0",
     "@playwright/test": "^1.64.1",
     "@tailwindcss/vite": "^4.1.16",
     "@types/node": "^22.19.0",
@@ -40,6 +37,9 @@
     "@types/react-dom": "^19.2.2",
     "@types/ssh2": "^1.15.6",
     "@vitejs/plugin-react": "^4.7.0",
+    "@xterm/addon-fit": "0.10.0",
+    "@xterm/addon-webgl": "^0.18.0",
+    "@xterm/xterm": "5.5.0",
     "electron": "33.4.11",
     "electron-builder": "26.18.1",
     "electron-vite": "6.0.0",

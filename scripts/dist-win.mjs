@@ -29,12 +29,9 @@ function run(cmd, args) {
 run(bin('electron-vite'), ['build'])
 
 const builder = bin('electron-builder')
-if (process.platform === 'win32') {
-  // @electron/rebuild against the Electron version installed in this repo.
-  // Same entry point as `electron-builder install-app-deps`.
-  run(builder, ['install-app-deps'])
-}
-
+// beforePack validates the selected win32-x64 Node-API addons, including the
+// prebuilds shipped by node-pty. Renderer code is already bundled by Vite;
+// rebuilding every optional SSH dependency can fail on unused cpu-features.
 const packArgs = ['--win', '--x64', '--publish', 'never', '-c.npmRebuild=false']
 try {
   run(builder, packArgs)

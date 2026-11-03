@@ -1,0 +1,8 @@
+# Keep design references and local evidence out of source release archives.
+/design export-ignore
+/output export-ignore
+/.cache export-ignore
+/node_modules export-ignore
+/out export-ignore
+/dist export-ignore
+*.log export-ignore

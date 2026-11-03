@@ -14,11 +14,10 @@ publish: null
 directories:
   output: dist
 
-# Production dependencies other than node-pty are bundled into out/ by
-# electron-vite. Only the native module has to ship as a real package.
-# electron-builder also copies production node_modules. Keep only what the
-# packaged app loads: the vite output, and node-pty's JS plus win32-x64 natives.
-# @fontsource and @xterm are already bundled into out/renderer.
+# Renderer dependencies are bundled into out/ and listed as devDependencies.
+# Main-process JS dependencies remain external and are copied by the builder.
+# Keep node-pty's JS and win32-x64 natives; omit optional SSH build helpers,
+# source maps, type declarations and native debug symbols.
 files:
   - out/**/*
   - package.json
@@ -29,6 +28,9 @@ files:
   - "!node_modules/@fontsource/**"
   - "!node_modules/@xterm/**"
   - "!node_modules/node-addon-api/**"
+  - "!node_modules/cpu-features/**"
+  - "!node_modules/buildcheck/**"
+  - "!node_modules/nan/**"
   - "!node_modules/node-pty/src/**"
   - "!node_modules/node-pty/deps/**"
   - "!node_modules/node-pty/third_party/**"
@@ -44,6 +46,9 @@ files:
   - "!node_modules/node-pty/**/*.map"
   - "!node_modules/node-pty/**/*.pdb"
   - "!node_modules/node-pty/**/*.test.js"
+  - "!**/*.map"
+  - "!**/*.d.ts"
+  - "!**/*.pdb"
   - "!**/*.md"
 
 asar: true
@@ -57,11 +62,9 @@ asarUnpack:
   - "**/node_modules/node-pty/**/*.dll"
   - "**/node_modules/node-pty/**/*.exe"
 
-# Windows: `electron-builder install-app-deps` (scripts/dist-win.mjs) rebuilds
-# node-pty with @electron/rebuild against the Electron version in this repo,
-# then the pack step is run with npmRebuild=false so it is not compiled twice.
-# A direct `electron-builder --win` on Windows still rebuilds, because this
-# default stays on.
+# dist-win.mjs skips rebuilding all dependencies and lets beforePack validate
+# node-pty's selected win32-x64 Node-API binaries. A direct builder invocation
+# retains the default rebuild behavior.
 npmRebuild: true
 
 beforePack: scripts/ensure-win32-node-pty.cjs
@@ -74,7 +77,11 @@ win:
     - target: nsis
       arch:
         - x64
+    - target: zip
+      arch:
+        - x64
   executableName: agent-workbench
+  artifactName: Agent-Workbench-${version}-win-${arch}.${ext}
   # Code signing is intentionally not configured.
   # electron-builder signs the executable and the installer only when both
   # of these environment variables are set. Never commit the certificate
@@ -90,6 +97,7 @@ win:
   # certificatePassword: ${env.CSC_KEY_PASSWORD}
 
 nsis:
+  artifactName: Agent-Workbench-${version}-win-${arch}-setup.${ext}
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
