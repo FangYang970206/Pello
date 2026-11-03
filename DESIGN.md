@@ -66,7 +66,7 @@ spacing:
 
 ## Shapes
 
-控件圆角 6px，设置分组 10px，对话框 12px；胶囊只用于短状态或开关。图标统一使用 `icons.tsx` 的描边 SVG。
+控件圆角 6px，设置分组 10px，对话框 12px；胶囊只用于短状态或开关。操作图标统一使用 `icons.tsx` 的描边 SVG；应用品牌使用用户提供的橙色机器人图标，标题栏采用 `assets/icon-small.svg`，保留 18px 尺寸与既有对齐。
 
 ## Components
 

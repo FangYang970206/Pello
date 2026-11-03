@@ -2,6 +2,7 @@
 /design export-ignore
 /output export-ignore
 /.cache export-ignore
+/.codex-remote-attachments export-ignore
 /node_modules export-ignore
 /out export-ignore
 /dist export-ignore

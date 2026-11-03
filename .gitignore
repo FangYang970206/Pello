@@ -2,6 +2,7 @@ node_modules
 out
 dist
 .cache
+.codex-remote-attachments/
 *.log
 .DS_Store
 output/playwright/

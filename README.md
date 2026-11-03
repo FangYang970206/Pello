@@ -1,3 +1,5 @@
+<p><img src="assets/icon.png" width="96" height="96" alt="Agent Workbench 图标"></p>
+
 # Agent Workbench
 
 在本机运行的桌面工作台。每个项目绑定一台机器（本机或 SSH 远程主机）和一个目录，中间的标签是真实终端，用来启动 code agent CLI。没有账号，没有后端，没有云服务。

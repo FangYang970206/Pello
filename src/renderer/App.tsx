@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProp
 import type { AgentInfo, Database, FileDiff, GitPanel, Host, SettingsSection, ShellKind, ThemeName, TreeNode } from '../shared/types'
 import { PRESETS, SHELL_AGENT, cmdline, resolveAgent, shellLabel, uid } from '../shared/types'
 import { Icon } from './icons'
+import appIcon from '../../assets/icon-small.svg'
 import { dropTerm, paint, syncTermSize, writeNotice, writeTerm } from './terms'
 import { SettingsView } from './SettingsView'
 import { ConfirmDialog, ExecDialog, HostDialog, NewProjectDialog, NewTermDialog, dialogOpener, focusableIn } from './Dialogs'
@@ -757,11 +758,7 @@ export function App() {
       <div id="app" className={withRight ? 'with-right' : ''} style={{ '--right-width': `${rightWidth}px` } as CSSProperties}>
         <header className="title">
           <div className="brand">
-            <span className="logo">
-              <svg className="i" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M5 17l6-5-6-5M13 19h6" />
-              </svg>
-            </span>
+            <img className="logo" src={appIcon} width="18" height="18" alt="" aria-hidden="true" />
             Agent Workbench
           </div>
           <span className="grow" />

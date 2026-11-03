@@ -76,6 +76,7 @@ function broadcastTheme(theme: Settings['theme']): void {
 function createWindow(): void {
   const theme = db().settings.theme
   win = new BrowserWindow({
+    icon: path.join(app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'assets'), process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
     width: 1440,
     height: 900,
     minWidth: 1024,
@@ -346,6 +347,7 @@ function registerIpc(): void {
 }
 
 app.whenReady().then(() => {
+  if (process.platform === 'win32') app.setAppUserModelId('com.agentworkbench.app')
   registerIpc()
   createWindow()
   broadcastTheme(db().settings.theme)

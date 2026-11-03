@@ -27,8 +27,7 @@ svg.i.s{width:14px;height:14px}
 .body{display:grid;grid-template-columns:240px minmax(0,1fr);min-height:0}
 .title{display:flex;align-items:center;background:var(--side);-webkit-app-region:drag;user-select:none}
 .title .brand{width:240px;display:flex;align-items:center;gap:8px;padding:0 16px;font-weight:560;font-size:calc(var(--ui-size,13px) - 1px);letter-spacing:.01em}
-.logo{width:18px;height:18px;border-radius:5px;background:var(--accent);display:grid;place-items:center;color:var(--accent-ink)}
-.logo svg{width:11px;height:11px;stroke-width:2}
+.logo{width:18px;height:18px;display:block;flex-shrink:0}
 .title .crumb{display:flex;align-items:center;gap:8px;font-size:calc(var(--ui-size,13px) - 1px);color:var(--muted)}
 .title .crumb b{color:var(--text);font-weight:520}
 .title .demo{font-size:11px;color:var(--faint);padding:0 12px}

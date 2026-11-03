@@ -14,6 +14,13 @@ publish: null
 directories:
   output: dist
 
+extraResources:
+  - from: assets
+    to: .
+    filter:
+      - icon.ico
+      - icon.png
+
 # Renderer dependencies are bundled into out/ and listed as devDependencies.
 # Main-process JS dependencies remain external and are copied by the builder.
 # Keep node-pty's JS and win32-x64 natives; omit optional SSH build helpers,
@@ -71,8 +78,7 @@ beforePack: scripts/ensure-win32-node-pty.cjs
 afterPack: scripts/restore-node-pty-build.cjs
 
 win:
-  # This repository has no .ico / .png icon. electron-builder keeps the
-  # default Electron icon. Do not add a generated icon here.
+  icon: assets/icon.ico
   target:
     - target: nsis
       arch:
@@ -97,6 +103,8 @@ win:
   # certificatePassword: ${env.CSC_KEY_PASSWORD}
 
 nsis:
+  installerIcon: assets/icon.ico
+  uninstallerIcon: assets/icon.ico
   artifactName: Agent-Workbench-${version}-win-${arch}-setup.${ext}
   oneClick: false
   allowToChangeInstallationDirectory: true
