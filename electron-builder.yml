@@ -20,6 +20,7 @@ extraResources:
     filter:
       - icon.ico
       - icon.png
+      - licenses/**
 
 # Renderer dependencies are bundled into out/ and listed as devDependencies.
 # Main-process JS dependencies remain external and are copied by the builder.

@@ -7,7 +7,7 @@ import { _electron as electron } from 'playwright'
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'awb-autosave-'))
 const project = path.join(data, 'project'), file = path.join(project, 'note.txt')
 fs.mkdirSync(project); fs.writeFileSync(file, 'original')
-fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: { restore: false }, projects: [{ id: 'p', name: 'Autosave timing', host: 'local', path: project, agent: 'shell' }] }))
+fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: { layout: 'balanced', restore: false }, projects: [{ id: 'p', name: 'Autosave timing', host: 'local', path: project, agent: 'shell' }] }))
 const env = { ...process.env, AWB_USER_DATA: data }; delete env.ELECTRON_RUN_AS_NODE
 const app = await electron.launch({ args: ['.'], env })
 try {

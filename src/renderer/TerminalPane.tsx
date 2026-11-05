@@ -1,4 +1,5 @@
 import { codeFont } from '../shared/fonts'
+import { workbenchTheme } from '../shared/themes'
 import { useEffect, useRef } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
@@ -9,52 +10,10 @@ import { bindTerm, unbindTerm } from './terms'
 
 
 function xtermTheme(theme: ThemeName) {
-  if (theme === 'light') {
-    return {
-      background: '#f8f8fa',
-      foreground: '#1a1b1e',
-      cursor: '#1a1b1e',
-      selectionBackground: 'rgba(83,85,209,.22)',
-      black: '#1a1b1e',
-      red: '#c93c3c',
-      green: '#1f8a4c',
-      yellow: '#9a6a00',
-      blue: '#2c64c4',
-      magenta: '#8a45b8',
-      cyan: '#137d84',
-      white: '#5c6370',
-      brightBlack: '#666b75',
-      brightRed: '#c93c3c',
-      brightGreen: '#1f8a4c',
-      brightYellow: '#9a6a00',
-      brightBlue: '#2c64c4',
-      brightMagenta: '#8a45b8',
-      brightCyan: '#137d84',
-      brightWhite: '#1a1b1e'
-    }
-  }
-  return {
-    background: '#16171a',
-    foreground: '#e8e9ec',
-    cursor: '#e8e9ec',
-    selectionBackground: 'rgba(142,150,255,.28)',
-    black: '#1c1d21',
-    red: '#f07a7a',
-    green: '#6fcf97',
-    yellow: '#e3b660',
-    blue: '#7fb2ff',
-    magenta: '#c99cf0',
-    cyan: '#6fd0d6',
-    white: '#e8e9ec',
-    brightBlack: '#80858f',
-    brightRed: '#f07a7a',
-    brightGreen: '#6fcf97',
-    brightYellow: '#e3b660',
-    brightBlue: '#7fb2ff',
-    brightMagenta: '#c99cf0',
-    brightCyan: '#6fd0d6',
-    brightWhite: '#e8e9ec'
-  }
+  const { colors, mode } = workbenchTheme(theme)
+  return { background: colors.panel, foreground: colors.text, cursor: colors.text, selectionBackground: `${colors.accent}38`,
+    black: mode === 'light' ? colors.text : colors.elev, red: colors.red, green: colors.green, yellow: colors.amber, blue: colors.blue, magenta: colors.magenta, cyan: colors.cyan, white: colors.text,
+    brightBlack: colors.faint, brightRed: colors.red, brightGreen: colors.green, brightYellow: colors.amber, brightBlue: colors.blue, brightMagenta: colors.magenta, brightCyan: colors.cyan, brightWhite: colors.text }
 }
 
 export function TerminalPane({
@@ -184,7 +143,7 @@ export function TerminalPane({
     if (!term) return
     const next = xtermTheme(theme)
     if (next.foreground.toLowerCase() === next.background.toLowerCase()) {
-      next.foreground = theme === 'light' ? '#1a1b1e' : '#e8e9ec'
+      next.foreground = workbenchTheme(theme).colors.text
     }
     term.options.fontSize = fontSize
     term.options.theme = next

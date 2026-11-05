@@ -1,9 +1,11 @@
 import { useState, type ReactNode } from 'react'
 import { useAnchoredMenu } from './useAnchoredMenu'
 import type { Executor, Host, Settings, SettingsSection, ShellKind } from '../shared/types'
+import { hostColor } from '../shared/host-colors'
 import { PRESETS, cmdline, hostLine, preferredAgent, shellChoices, shellLabel } from '../shared/types'
 import { ResourceSettings } from './ResourceSettings'
 import { CODE_FONTS, UI_FONTS } from '../shared/fonts'
+import { THEMES } from '../shared/themes'
 import { Icon, type IconName, Mark } from './icons'
 
 const SECTIONS: { id: SettingsSection; label: string; icon: IconName }[] = [
@@ -179,23 +181,21 @@ export function SettingsView({
           <div className="card">
             <div className="srow" style={{ padding: 16 }}>
               <div className="themes" role="radiogroup" aria-label="主题">
-                {(
-                  [
-                    ['dark', '深色', '#0c0d0f', '#16171a'],
-                    ['light', '浅色', '#f3f3f5', '#ffffff']
-                  ] as const
-                ).map(([id, label, side, panel]) => (
+                {THEMES.map(({ id, name: label, colors }) => {
+                  const side = colors.side, panel = colors.panel
+                  return (
                   <button key={id} className={`th ${settings.theme === id ? 'on' : ''}`} role="radio" aria-checked={settings.theme === id} data-a="theme" data-id={id} onClick={() => onSettings({ ...settings, theme: id })}>
                     <div className="pv" style={{ background: panel }}>
                       <div style={{ background: side }} />
                       <div style={{ padding: 8 }}>
-                        <div style={{ height: 4, width: '60%', borderRadius: 2, background: id === 'dark' ? '#3a3c44' : '#d9dae0' }} />
-                        <div style={{ height: 4, width: '40%', borderRadius: 2, marginTop: 6, background: id === 'dark' ? '#8e96ff' : '#5355d1' }} />
+                        <div style={{ height: 4, width: '60%', borderRadius: 2, background: colors.muted }} />
+                        <div style={{ height: 4, width: '40%', borderRadius: 2, marginTop: 6, background: colors.accent }} />
                       </div>
                     </div>
                     <span>{label}</span>
                   </button>
-                ))}
+                  )
+                })}
               </div>
             </div>
           </div>
@@ -218,6 +218,12 @@ export function SettingsView({
             />
           </div>
         </div>
+        <div className="group"><h2>布局</h2><div className="card">
+          <Row title="工作布局" control={<select className="sel" aria-label="工作布局" value={settings.layout || 'focus'} onChange={(event) => onSettings({ ...settings, layout: event.target.value as Settings['layout'] })}>
+            <option value="balanced">均衡布局</option><option value="focus">终端专注</option><option value="review">跨仓库审阅</option></select>} />
+          <Row title="文件与变更面板位置" control={<select className="sel" aria-label="文件与变更面板位置" value={settings.panelSide || 'right'} onChange={(event) => onSettings({ ...settings, panelSide: event.target.value as Settings['panelSide'] })}><option value="right">右侧</option><option value="left">左侧</option></select>} />
+          <Row title="界面密度" control={<select className="sel" aria-label="界面密度" value={settings.density || 'comfortable'} onChange={(event) => onSettings({ ...settings, density: event.target.value as Settings['density'] })}><option value="comfortable">舒适</option><option value="compact">紧凑</option></select>} />
+        </div></div>
         <div className="group"><h2>界面与编辑器</h2><div className="card">
           <Row title="界面字体" control={<select className="sel" aria-label="界面字体" value={settings.uiFontFamily || 'Geist'} onChange={(event) => onSettings({ ...settings, uiFontFamily: event.target.value })}>{UI_FONTS.map((family) => <option key={family}>{family}</option>)}</select>} />
           <Row title="界面字号" control={<select className="sel" aria-label="界面字号" value={settings.uiFontSize || 13} onChange={(event) => onSettings({ ...settings, uiFontSize: Number(event.target.value) })}>{[12, 13, 14, 15, 16].map((size) => <option key={size}>{size}</option>)}</select>} />
@@ -309,7 +315,7 @@ export function SettingsView({
                 data-id={host.id}
                 onClick={() => (host.id === 'local' ? onLocalHost() : onEditHost(host.id))}
               >
-                <span className="hic">
+                <span className="hic project-folder" data-color={hostColor(host.color)}>
                   <Icon name={host.id === 'local' ? 'laptop' : 'server'} />
                 </span>
                 <div className="lt">
@@ -320,7 +326,7 @@ export function SettingsView({
                   <span className={`dot ${host.on ? 'running' : 'exited'}`} />
                   {host.on ? '已连接' : '未连接'}
                 </span>
-                {host.id === 'local' ? <span style={{ width: 14 }} /> : <Icon name="chev" className="s" />}
+                <Icon name="chev" className="s" />
               </button>
             ))}
           </div>

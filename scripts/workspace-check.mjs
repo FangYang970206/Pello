@@ -17,7 +17,7 @@ fs.mkdirSync(path.join(projectDir, deep), { recursive: true })
 fs.writeFileSync(path.join(projectDir, deep, 'Main.java'), 'class Main {}\n')
 fs.writeFileSync(path.join(projectDir, 'note.txt'), 'original\r\n中文\r\n')
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({
-  settings: { theme: 'dark', fontSize: 13, defShell: shell, defAgent: 'shell', restore: true, confirmKill: false },
+  settings: { layout: 'balanced', theme: 'dark', fontSize: 13, defShell: shell, defAgent: 'shell', restore: true, confirmKill: false },
   custom: [{ id: 'ui', name: 'UI fixture', cmd: `${process.platform === 'win32' ? '& ' : ''}${quote(process.execPath)}`,
     args: `${quote(path.join(root, 'scripts/fixtures/terminal-ui.cjs'))} ${quote(path.join(data, 'input.log'))}`, shell, letter: 'U', color: '#7fb2ff', env: [] }],
   projects: [{ id: 'p', name: 'Workspace regression', host: 'local', path: projectDir, agent: 'shell' }, { id: 'p2', name: 'Second project', host: 'local', path: projectDir, agent: 'shell' }],

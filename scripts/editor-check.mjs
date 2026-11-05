@@ -20,7 +20,7 @@ fs.writeFileSync(path.join(project, 'docs/assets/site.js'), 'document.title="pre
 fs.writeFileSync(path.join(project, 'docs/assets/module.mjs'), 'export const ready = "module-ready"')
 fs.writeFileSync(path.join(project, 'note.txt'), 'original\n')
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({
-  settings: { theme: 'dark', fontSize: 13, defShell: process.platform === 'win32' ? 'pwsh' : 'bash', defAgent: 'shell', restore: false, confirmKill: false },
+  settings: { layout: 'balanced', theme: 'dark', fontSize: 13, defShell: process.platform === 'win32' ? 'pwsh' : 'bash', defAgent: 'shell', restore: false, confirmKill: false },
   projects: [{ id: 'p', name: 'Markdown editor', host: 'local', path: project, agent: 'shell' }]
 }))
 const env = { ...process.env, AWB_USER_DATA: data }

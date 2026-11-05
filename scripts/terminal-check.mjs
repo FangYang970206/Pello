@@ -91,7 +91,7 @@ try {
   await check('toolbar and shortcut badges are absent', async () => {
     assert.equal(await page.locator('[data-a=ctrlc], [data-a=kill], [data-a=restart], [data-a=split], .pstate, .side kbd, .empty kbd').count(), 0)
   })
-  await check('tab dots show yellow / green / gray', async () => {
+  await check('running terminal spins yellow; waiting and inactive terminals stay still', async () => {
     const colors = await page.evaluate(() => {
       const css = getComputedStyle(document.documentElement)
       return ['busy', 'ready', 'shell'].map((id, i) => {
@@ -101,10 +101,14 @@ try {
         document.body.append(probe)
         const expected = getComputedStyle(probe).color
         probe.remove()
-        return [getComputedStyle(dot).backgroundColor, expected]
+        const style = getComputedStyle(dot)
+        return [i === 0 ? style.borderTopColor : style.backgroundColor, expected, style.animationName]
       })
     })
-    colors.forEach(([actual, expected]) => assert.equal(actual, expected))
+    colors.forEach(([actual, expected, animation], index) => {
+      assert.equal(actual, expected)
+      assert.equal(animation === 'terminal-spin', index === 0)
+    })
   })
   await page.evaluate(() => window.awb.winResize(1440, 900))
   await page.screenshot({ path: path.join(shots, 'terminal-status.png') })

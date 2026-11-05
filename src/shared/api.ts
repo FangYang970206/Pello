@@ -21,7 +21,8 @@ import type {
   Settings,
   ShellKind,
   TestExecRequest,
-  TreeNode
+  TreeNode,
+  WorkSession
 } from './types'
 
 export interface WorkbenchApi {
@@ -35,16 +36,20 @@ export interface WorkbenchApi {
   resourceList(kind: 'mcp' | 'skills', agent: string, page: number, query: string): Promise<ResourcePage>
   resourceToggle(kind: 'mcp' | 'skills', agent: string, item: ResourceItem, enabled: boolean): Promise<void>
   resourceDetail(kind: 'mcp' | 'skills', agent: string, item: ResourceItem): Promise<ResourceDetail>
+  openSkillFolder(agent: string, item: ResourceItem): Promise<void>
+  deleteSkill(agent: string, item: ResourceItem): Promise<void>
   addMcp(name: string, config: Record<string, unknown>, agents: string[]): Promise<ResourceResult[]>
-  importSkills(source: string, agents: string[]): Promise<ResourceResult[]>
+  scanResources(kind: 'mcp' | 'skills', source: string): Promise<import('./types').ResourceSourceItem[]>
+  importMcpConfig(source: string, agents: string[], ids: string[]): Promise<ResourceResult[]>
+  importSkills(source: string, agents: string[], names?: string[]): Promise<ResourceResult[]>
   pickResource(kind: 'folder' | 'zip' | 'config'): Promise<string | null>
-  saveSessions(projectId: string, terms: SavedTerm[], activeId?: string | null): Promise<Database>
+  saveSessions(projectId: string, terms: SavedTerm[], activeId?: string | null, groups?: WorkSession[], selected?: string): Promise<Database>
   saveBranch(projectId: string, branch: string): Promise<Database>
   setUnsavedChanges(dirty: boolean): void
   pickDirectory(): Promise<string | null>
   checkPath(hostId: string, input: string): Promise<PathCheck>
   listDir(hostId: string, input: string): Promise<DirListing>
-  gitStatus(projectId: string): Promise<GitPanel & { untracked: Record<string, boolean> }>
+  gitStatus(projectId: string, rescan?: boolean): Promise<GitPanel & { untracked: Record<string, boolean> }>
   gitDiff(projectId: string, rel: string, untracked: boolean): Promise<FileDiff>
   gitDiscard(projectId: string, rel: string, untracked: boolean): Promise<boolean>
   gitTree(projectId: string, rel?: string): Promise<TreeNode[]>

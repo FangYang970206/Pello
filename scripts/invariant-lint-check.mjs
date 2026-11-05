@@ -11,8 +11,9 @@ const cases = [
   ['AWB006', 'src/main/pty.ts', 'await session.dispose()', 'void session.dispose()'],
   ['AWB007', 'src/main/pty.ts', "Buffer.from(data, 'latin1')", "Buffer.from(data, 'utf8')"],
   ['AWB008', 'src/main/index.ts', 'const closing = win', 'const closing = win; closing?.destroy()'],
-  ['AWB009', 'src/main/index.ts', 'return publicHost(host)', 'return host'],
+  ['AWB009', 'src/main/index.ts', 'return publicHost({ ...host, color: hostColor(host.color) })', 'return host'],
   ['AWB010', 'src/shared/types.ts', "{ id: 'pi',", "{ id: 'gemini',"],
+  ['AWB010', 'src/shared/types.ts', "{ id: 'omp',", "{ id: 'unsupported',"],
   ['AWB011', 'src/main/git.ts', "fileTree(target: Target, rel = ''): Promise<TreeNode[]> {", "fileTree(target: Target, rel = '', depth = 0): Promise<TreeNode[]> { if (depth > 5) return []"],
   ['AWB012', 'src/main/git.ts', 'versionOf(current) !== version', 'false'],
   ['AWB013', 'src/renderer/RightPanel.tsx', 'onPointerMove=', 'onMouseMove='],
@@ -31,8 +32,15 @@ const cases = [
   ['AWB026', 'src/renderer/FilePane.tsx', 'sandbox="allow-scripts"', 'sandbox="allow-scripts allow-same-origin"'],
   ['AWB027', 'src/renderer/ResourceSettings.tsx', '<b className="resource-name">{item.name}</b>', '<b className="resource-name">{item.name}</b><small>{item.path}</small>'],
   ['AWB028', 'src/renderer/ResourceDialog.tsx', 'dialog.showModal()', 'dialog.show()'],
+  ['AWB028', 'src/renderer/ResourceDialog.tsx', 'onPointerUp=', 'onPointerMove='],
+  ['AWB033', 'src/main/index.ts', 'resources.skillDirectory(targets(), agent, item, true)', 'resources.skillDirectory(targets(), agent, item, false)'],
   ['AWB029', 'src/renderer/TerminalPane.tsx', 'document.fonts.load(font)', 'Promise.resolve([])'],
-  ['AWB030', 'src/renderer/FilePane.tsx', 'key={preview.url}', 'key={path}']
+  ['AWB030', 'src/renderer/FilePane.tsx', 'key={preview.url}', 'key={path}'],
+  ['AWB031', 'src/main/platform.ts', '. "$HOME/.bashrc"', '# skip user startup'],
+  ['AWB032', 'src/main/ssh.ts', "stream.setEncoding('utf8')", "stream.setEncoding('ascii')"],
+  ['AWB034', 'src/renderer/Workspace.tsx', 'sessionOf(tab) === sessionId', 'true'],
+  ['AWB035', 'src/renderer/styles/extra.css', 'animation:terminal-spin .85s linear infinite', 'animation:none'],
+  ['AWB036', 'src/main/pty.ts', 'this.programStatus.push(chunk)', '{ text: chunk, queries: 0, states: [] }']
 ]
 for (const [id, file, before, after] of cases) {
   const mutated = new Map(files)

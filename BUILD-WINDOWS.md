@@ -28,8 +28,8 @@ npm run dist:win
 
 产物在 `dist/`，版本号随 `package.json` 变化：
 
-- `Agent-Workbench-0.1.2-win-x64-setup.exe`：安装向导。
-- `Agent-Workbench-0.1.2-win-x64.zip`：解压后运行 `agent-workbench.exe`，须保留同目录的资源文件。
+- `Agent-Workbench-0.1.3-win-x64-setup.exe`：安装向导。
+- `Agent-Workbench-0.1.3-win-x64.zip`：解压后运行 `agent-workbench.exe`，须保留同目录的资源文件。
 
 使用发布的二进制无需安装 Node.js、Python 或 C++ 构建工具。Agent CLI、Git 和 SSH 等外部工具按需自行安装。
 
@@ -76,7 +76,7 @@ npm run dist:win
 源码包从发布标签生成，例如：
 
 ```powershell
-git archive --format=zip --prefix=agent-workbench-0.1.2/ --output=dist/Agent-Workbench-0.1.2-source.zip v0.1.2
+git archive --format=zip --prefix=agent-workbench-0.1.3/ --output=dist/Agent-Workbench-0.1.3-source.zip v0.1.3
 ```
 
 `.gitattributes` 的 `export-ignore` 排除 `design/` 设计图、截图输出、缓存、依赖和构建产物；GitHub 自动生成的源码归档也使用此规则。源码包保留 `src/`、运行所需字体、锁文件、构建配置、检查脚本和开发文档，支持安装依赖、构建及完整验证。

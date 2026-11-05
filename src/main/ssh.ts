@@ -78,11 +78,14 @@ export async function runPasswordCommand(host: Host, command: string, input?: st
     client.once('error', fail)
     client.exec(command, (error, stream) => {
       if (error) return fail(error)
-      stream.on('data', (data: Buffer) => {
-        stdout += data.toString()
+      // SSH packets can end inside a UTF-8 character. Decode across packets.
+      stream.setEncoding('utf8')
+      stream.stderr.setEncoding('utf8')
+      stream.on('data', (data: string) => {
+        stdout += data
         if (Buffer.byteLength(stdout) > 12_000_000) fail(new Error('远程输出过大'))
       })
-      stream.stderr.on('data', (data: Buffer) => { stderr = (stderr + data.toString()).slice(-16000) })
+      stream.stderr.on('data', (data: string) => { stderr = (stderr + data).slice(-16000) })
       stream.on('error', fail)
       stream.on('close', (code: number) => {
         clearTimeout(timer)
@@ -111,6 +114,8 @@ export async function passwordTerminal(host: Host, boot: string[], signal: Abort
       client.exec(remoteCommand(host, boot), { pty: { term: 'xterm-256color', cols: 80, rows: 24, width: 0, height: 0 } },
         (error, channel) => error ? reject(error) : resolve(channel))
     })
+    stream.setEncoding('utf8')
+    stream.stderr.setEncoding('utf8')
     let code = 1
     stream.on('error', () => { code = 1; client.end(); stream.destroy() })
     client.on('error', () => { code = 1; stream.destroy() })
@@ -121,7 +126,7 @@ export async function passwordTerminal(host: Host, boot: string[], signal: Abort
       write: (data) => { stream.write(data) },
       resize: (cols, rows) => stream.setWindow(rows, cols, 0, 0),
       kill: () => { if (!stream.destroyed) { stream.signal('HUP'); stream.close() }; client.end() },
-      onData: (cb) => { stream.on('data', (data: Buffer) => cb(data.toString())); stream.stderr.on('data', (data: Buffer) => cb(data.toString())) },
+      onData: (cb) => { stream.on('data', (data: string) => cb(data)); stream.stderr.on('data', (data: string) => cb(data)) },
       onExit: (cb) => stream.once('close', () => cb({ exitCode: code }))
     }
   } catch (error) { client.end(); throw error }

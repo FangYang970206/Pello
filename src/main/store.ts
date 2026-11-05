@@ -1,8 +1,11 @@
 import { CODE_FONTS, UI_FONTS } from '../shared/fonts'
+import { THEMES } from '../shared/themes'
 import fs from 'node:fs'
 import path from 'node:path'
 import { app } from 'electron'
-import type { Database, Executor, Host, Project, SavedTerm, Settings, ShellKind } from '../shared/types'
+import type { Database, Executor, Host, Project, SavedTerm, Settings, ShellKind, WorkSession } from '../shared/types'
+import { hostColor, nextHostColor } from '../shared/host-colors'
+import { cleanSessions, legacySessionId } from '../shared/work-sessions'
 import { PRESETS, uid } from '../shared/types'
 import { publicHost } from './credentials'
 import { hostPlatform, osLabel } from './platform'
@@ -21,11 +24,12 @@ export function defaultDatabase(): Database {
     on: true,
     port: 22,
     platform: hostPlatform(),
-    auth: 'key'
+    auth: 'key', color: 'blue'
   }
   return {
     settings: {
       theme: 'dark',
+      layout: 'focus',
       fontSize: 13, fontFamily: 'Cascadia Mono', uiFontFamily: 'Geist', uiFontSize: 13, editorFontSize: 14,
       defShell: hostPlatform() === 'linux' ? 'bash' : 'pwsh',
       defAgent: 'claude',
@@ -36,7 +40,7 @@ export function defaultDatabase(): Database {
     hosts: [local],
     projects: [],
     sessions: {},
-    activeTab: {}
+    activeTab: {}, workSessions: {}, activeSession: {}
   }
 }
 
@@ -54,7 +58,10 @@ function sanitize(raw: Partial<Database> | null): Database {
   if (!raw || typeof raw !== 'object') return base
   const settings = (raw.settings || {}) as Partial<Settings>
   base.settings = {
-    theme: settings.theme === 'light' ? 'light' : 'dark',
+    theme: THEMES.some((theme) => theme.id === settings.theme) ? settings.theme! : 'dark',
+    layout: ['balanced', 'focus', 'review'].includes(settings.layout || '') ? settings.layout : 'focus',
+    panelSide: settings.panelSide === 'left' ? 'left' : 'right',
+    density: settings.density === 'compact' ? 'compact' : 'comfortable',
     fontSize: Number.isInteger(settings.fontSize) && Number(settings.fontSize) >= 10 && Number(settings.fontSize) <= 24 ? Number(settings.fontSize) : 13,
     fontFamily: CODE_FONTS.some((family) => family === settings.fontFamily) ? settings.fontFamily : 'Cascadia Mono',
     uiFontFamily: UI_FONTS.some((family) => family === settings.uiFontFamily) ? settings.uiFontFamily : 'Geist',
@@ -82,7 +89,9 @@ function sanitize(raw: Partial<Database> | null): Database {
   const supported = new Set(['shell', ...PRESETS.map((preset) => preset.id), ...base.custom.map((executor) => executor.id)])
   if (!supported.has(base.settings.defAgent)) base.settings.defAgent = 'claude'
   base.projects = base.projects.map((project) => supported.has(project.agent) ? project : { ...project, agent: 'shell' })
-  base.hosts = base.hosts.map(publicHost)
+  const coloredHosts: Host[] = []
+  for (const host of base.hosts) coloredHosts.push(publicHost({ ...host, color: host.color ? hostColor(host.color) : nextHostColor(coloredHosts) }))
+  base.hosts = coloredHosts
   const sessions: Database['sessions'] = {}
   const activeTab: Record<string, string> = {}
   if (raw.sessions && typeof raw.sessions === 'object') {
@@ -98,6 +107,9 @@ function sanitize(raw: Partial<Database> | null): Database {
   }
   base.sessions = sessions
   base.activeTab = activeTab
+  for (const project of base.projects) {
+    writeSessions(base, project.id, sessions[project.id] || [], activeTab[project.id], raw.workSessions?.[project.id], raw.activeSession?.[project.id])
+  }
   return base
 }
 
@@ -118,13 +130,29 @@ function normalizeTerms(list: unknown[]): SavedTerm[] {
     let id = typeof item.id === 'string' ? item.id : ''
     if (!id || seen.has(id)) id = uid('t')
     seen.add(id)
-    terms.push({ id, kind: item.kind, shell: item.shell })
+    terms.push({ id, kind: item.kind, shell: item.shell, ...(typeof item.sessionId === 'string' && item.sessionId ? { sessionId: item.sessionId.slice(0, 160) } : {}), ...(typeof item.name === 'string' && item.name.trim() ? { name: [...item.name.trim()].filter((char) => char.codePointAt(0)! >= 32).join('').slice(0, 80) } : {}) })
   }
   return terms
 }
 
-export function writeSessions(draft: Database, projectId: string, terms: unknown, activeId?: string | null): void {
+export function writeSessions(draft: Database, projectId: string, terms: unknown, activeId?: string | null, groups?: WorkSession[], selected?: string): void {
   const clean = Array.isArray(terms) ? normalizeTerms(terms) : []
+  const sessions = cleanSessions(groups ?? draft.workSessions?.[projectId])
+  if (clean.length && !sessions.length) sessions.push({ id: legacySessionId(projectId), name: '会话一' })
+  for (const term of clean) if (!sessions.some((session) => session.id === term.sessionId)) term.sessionId = sessions[0].id
+  draft.workSessions ??= {}
+  draft.activeSession ??= {}
+  draft.workSessions[projectId] = sessions
+  const wantedSession = selected ?? draft.activeSession[projectId]
+  const activeTerm = clean.find((term) => term.id === activeId)
+  const selectedId = sessions.find((session) => session.id === wantedSession)?.id || activeTerm?.sessionId || sessions[0]?.id
+  if (selectedId) draft.activeSession[projectId] = selectedId
+  else delete draft.activeSession[projectId]
+  for (const session of sessions) {
+    const mine = clean.filter((term) => term.sessionId === session.id)
+    const wanted = activeTerm?.sessionId === session.id ? activeId : session.activeTab
+    session.activeTab = mine.find((term) => term.id === wanted)?.id || mine[0]?.id
+  }
   if (clean.length) draft.sessions[projectId] = clean
   else delete draft.sessions[projectId]
   if (!clean.length) {
@@ -150,12 +178,13 @@ function isProject(v: unknown): v is Project {
   return !!p && typeof p.id === 'string' && typeof p.name === 'string' && typeof p.path === 'string'
 }
 
-function isSaved(v: unknown): v is { id?: string; kind: string; shell: ShellKind } {
+function isSaved(v: unknown): v is { id?: string; kind: string; shell: ShellKind; name?: unknown; sessionId?: unknown } {
   const s = v as { id?: string; kind?: unknown; shell?: unknown }
   return !!s && typeof s.kind === 'string' && (s.shell === 'pwsh' || s.shell === 'cmd' || s.shell === 'bash' || s.shell === 'zsh')
 }
 
 function sessionsNeedSave(raw: Partial<Database>, next: Database): boolean {
+  if (JSON.stringify(raw.workSessions || {}) !== JSON.stringify(next.workSessions || {}) || JSON.stringify(raw.activeSession || {}) !== JSON.stringify(next.activeSession || {})) return true
   if (typeof raw.activeTab === 'string') return true
   const rawSessions = raw.sessions && typeof raw.sessions === 'object' ? raw.sessions : {}
   const keys = new Set([...Object.keys(rawSessions), ...Object.keys(next.sessions)])

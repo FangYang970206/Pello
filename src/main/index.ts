@@ -1,10 +1,12 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, type MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell, type MenuItemConstructorOptions } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
-import { PRESETS, type Executor, type Host, type Project, type SavedTerm, type Settings, type ShellKind, type ResourceTarget } from '../shared/types'
+import { PRESETS, type Executor, type Host, type Project, type SavedTerm, type Settings, type ShellKind, type ResourceTarget, type WorkSession } from '../shared/types'
+import { hostColor } from '../shared/host-colors'
 import { ResourceManager, validateResourcePaths } from './resources'
 import { db, mutate, writeSessions } from './store'
 import { commandExists, osLabel } from './platform'
+import { workbenchTheme } from '../shared/themes'
 import { checkPath, fileTree, gitDiff, gitDiscard, gitStatus, listDir, readFile, targetFor, writeFile } from './git'
 import {
   closeAllSessions,
@@ -70,9 +72,9 @@ function projectTarget(projectId: string) {
 }
 
 function broadcastTheme(theme: Settings['theme']): void {
-  const color = theme === 'light' ? '#f3f3f5' : '#131417'
+  const color = workbenchTheme(theme).colors.side
   win?.setBackgroundColor(color)
-  nativeTheme.themeSource = theme
+  nativeTheme.themeSource = workbenchTheme(theme).mode
 }
 
 function createWindow(): void {
@@ -89,7 +91,7 @@ function createWindow(): void {
     x: process.env.AWB_CAPTURE ? 0 : undefined,
     y: process.env.AWB_CAPTURE ? 0 : undefined,
     frame: false,
-    backgroundColor: theme === 'light' ? '#f3f3f5' : '#131417',
+    backgroundColor: workbenchTheme(theme).colors.side,
     show: false,
     autoHideMenuBar: true,
     webPreferences: {
@@ -212,7 +214,7 @@ function registerIpc(): void {
       }
       draft.hosts = hosts.map((host) => {
         rememberPassword(host)
-        return publicHost(host)
+        return publicHost({ ...host, color: hostColor(host.color) })
       })
     })
   })
@@ -223,16 +225,31 @@ function registerIpc(): void {
   ipcMain.handle('resources:list', (_e, kind: 'mcp' | 'skills', agent: string, page: number, query: string) => resources.list(targets(), kind, agent, page, query))
   ipcMain.handle('resources:toggle', (_e, kind, agent, item, enabled) => resources.toggle(targets(), kind, agent, item, enabled))
   ipcMain.handle('resources:detail', (_e, kind, agent, item) => resources.detail(targets(), kind, agent, item))
+  ipcMain.handle('resources:skill-open', async (_e, agent, item) => {
+    const error = await shell.openPath(resources.skillDirectory(targets(), agent, item))
+    if (error) throw new Error(error)
+  })
+  ipcMain.handle('resources:skill-delete', async (_e, agent, item) => {
+    await shell.trashItem(resources.skillDirectory(targets(), agent, item, true))
+  })
   ipcMain.handle('resources:mcp', (_e, name: string, config: Record<string, unknown>, agents: string[]) => resources.addMcp(targets(), name, config, agents))
-  ipcMain.handle('resources:skills', (_e, source: string, agents: string[]) => resources.importSkills(targets(), source, agents))
+  ipcMain.handle('resources:scan', (_e, kind: string, source: string) => kind === 'skills' ? resources.scanSkills(source).map((item) => ({ ...item, id: item.name })) : resources.scanMcp(source))
+  ipcMain.handle('resources:import-mcp', (_e, source: string, agents: string[], ids: string[]) => resources.importMcpConfig(targets(), source, agents, ids))
+  ipcMain.handle('resources:skills', (_e, source: string, agents: string[], names?: string[]) => resources.importSkills(targets(), source, agents, names))
   ipcMain.handle('resources:pick', async (_e, kind: string) => {
     if (!win) return null
     const result = await dialog.showOpenDialog(win, { properties: [kind === 'folder' ? 'openDirectory' : 'openFile'],
-      filters: kind === 'folder' ? undefined : [{ name: kind === 'zip' ? 'ZIP 压缩包' : 'Agent 配置', extensions: kind === 'zip' ? ['zip'] : ['json', 'jsonc', 'toml'] }] })
+      filters: kind === 'folder' ? undefined : [{ name: kind === 'zip' ? 'ZIP 压缩包' : 'Agent 配置', extensions: kind === 'zip' ? ['zip'] : ['json', 'jsonc', 'toml', 'yaml', 'yml'] }] })
     return result.canceled ? null : result.filePaths[0] || null
   })
-  ipcMain.handle('db:sessions', (_e, projectId: string, terms: SavedTerm[], activeId?: string | null) => mutate((draft) => {
-    writeSessions(draft, projectId, terms, activeId)
+  ipcMain.handle('db:sessions', (_e, projectId: string, terms: SavedTerm[], activeId?: string | null, groups?: WorkSession[], selected?: string) => mutate((draft) => {
+    if (!draft.projects.some((project) => project.id === projectId)) {
+      delete draft.sessions[projectId]; delete draft.activeTab[projectId]
+      if (draft.workSessions) delete draft.workSessions[projectId]
+      if (draft.activeSession) delete draft.activeSession[projectId]
+      return
+    }
+    writeSessions(draft, projectId, terms, activeId, groups, selected)
   }))
   ipcMain.handle('db:branch', (_e, projectId: string, branch: string) => mutate((draft) => {
     const project = draft.projects.find((p) => p.id === projectId)
@@ -259,16 +276,16 @@ function registerIpc(): void {
     return listDir(target, input)
   })
 
-  ipcMain.handle('git:status', async (_e, projectId: string) => {
+  ipcMain.handle('git:status', async (_e, projectId: string, rescan?: boolean) => {
     const { project, target } = projectTarget(projectId)
-    const panel = await gitStatus(target)
+    const panel = await gitStatus(target, rescan === true)
     if (panel.isRepo && panel.branch && panel.branch !== project.branch) {
       mutate((draft) => {
         const item = draft.projects.find((p) => p.id === projectId)
         if (item) item.branch = panel.branch
       })
     }
-    return { isRepo: panel.isRepo, branch: panel.branch, files: panel.files, untracked: panel.flags }
+    return { isRepo: panel.isRepo, branch: panel.branch, files: panel.files, repositories: panel.repositories, errors: panel.errors, untracked: panel.flags }
   })
   ipcMain.handle('git:diff', async (_e, projectId: string, rel: string, untracked: boolean) => {
     const { target } = projectTarget(projectId)

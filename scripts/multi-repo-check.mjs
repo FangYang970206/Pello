@@ -1,0 +1,79 @@
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { execFileSync } from 'node:child_process'
+import { _electron as electron } from 'playwright'
+
+const data = fs.mkdtempSync(path.join(os.tmpdir(), 'awb-multi-repo-'))
+const workspace = path.join(data, 'workspace')
+const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', windowsHide: true })
+for (const [rel, marker] of [['repo-a', 'alpha'], ['group/深层/repo-b', 'beta']]) {
+  const cwd = path.join(workspace, rel)
+  fs.mkdirSync(cwd, { recursive: true })
+  git(cwd, 'init', '-q')
+  git(cwd, 'config', 'core.autocrlf', 'false')
+  fs.writeFileSync(path.join(cwd, 'shared.txt'), marker + ' original\n')
+  fs.writeFileSync(path.join(cwd, '中文 空格.txt'), marker + ' unicode original\n')
+  git(cwd, 'add', '.')
+  git(cwd, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture')
+  fs.writeFileSync(path.join(cwd, 'shared.txt'), marker + ' changed\n')
+  fs.writeFileSync(path.join(cwd, '中文 空格.txt'), marker + ' unicode changed\n')
+}
+fs.writeFileSync(path.join(workspace, 'repo-a/new.txt'), 'new file\n')
+const scoped = path.join(workspace, 'repo-a/scoped')
+fs.mkdirSync(scoped)
+fs.writeFileSync(path.join(scoped, 'inside.txt'), 'inside original\n')
+git(path.dirname(scoped), 'add', 'scoped/inside.txt')
+git(path.dirname(scoped), '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'scope fixture')
+fs.writeFileSync(path.join(scoped, 'inside.txt'), 'inside changed\n')
+const linked = path.join(workspace, 'linked-worktree')
+git(path.join(workspace, 'repo-a'), 'worktree', 'add', '--detach', linked, 'HEAD')
+fs.writeFileSync(path.join(linked, 'shared.txt'), 'linked changed\n')
+fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ projects: [{ id: 'multi', name: 'Multiple repositories', host: 'local', path: workspace, branch: '', agent: 'shell' }, { id: 'scope', name: 'Scoped project', host: 'local', path: scoped, branch: '', agent: 'shell' }] }))
+const env = { ...process.env, AWB_USER_DATA: data }
+delete env.ELECTRON_RUN_AS_NODE
+const app = await electron.launch({ args: ['.'], env })
+try {
+  const page = await app.firstWindow()
+  await page.getByRole('button', { name: '显示文件面板', exact: true }).click()
+  const panel = await page.evaluate(() => window.awb.gitStatus('multi'))
+  assert.equal(panel.repositories?.length, 3, 'A non-Git parent must discover repositories and Git worktrees')
+  assert.ok(panel.files.some((file) => file.path === 'repo-a/shared.txt'))
+  assert.ok(panel.files.some((file) => file.path === 'group/深层/repo-b/shared.txt'))
+  assert.ok(panel.files.some((file) => file.path === 'group/深层/repo-b/中文 空格.txt'), 'Unicode and spaces must remain exact in Git paths')
+  await page.locator('[data-repository="repo-a"]').waitFor()
+  await page.getByLabel('选择仓库', { exact: true }).selectOption('repo-a')
+  assert.equal(await page.locator('[data-repository]').count(), 1)
+  await page.getByLabel('选择仓库', { exact: true }).selectOption('')
+  assert.equal(await page.locator('[data-repository]').count(), 3)
+  const linkedDiff = await page.evaluate(() => window.awb.gitDiff('multi', 'linked-worktree/shared.txt', false))
+  assert.equal(linkedDiff.before, 'alpha original\n')
+  assert.equal(linkedDiff.after, 'linked changed\n')
+  for (const [rel, marker] of [['repo-a', 'alpha'], ['group/深层/repo-b', 'beta']]) {
+    const diff = await page.evaluate((rel) => window.awb.gitDiff('multi', rel + '/shared.txt', false), rel)
+    assert.equal(diff.before, marker + ' original\n')
+    assert.equal(diff.after, marker + ' changed\n')
+  }
+  const added = await page.evaluate(() => window.awb.gitDiff('multi', 'repo-a/new.txt', true))
+  assert.equal(added.before, '')
+  assert.equal(added.after, 'new file\n')
+  await page.evaluate(() => window.awb.gitDiscard('multi', 'repo-a/shared.txt', false))
+  assert.equal(fs.readFileSync(path.join(workspace, 'repo-a/shared.txt'), 'utf8'), 'alpha original\n')
+  assert.equal(fs.readFileSync(path.join(workspace, 'group/深层/repo-b/shared.txt'), 'utf8'), 'beta changed\n')
+  assert.equal(await page.evaluate(() => window.awb.gitDiscard('multi', '../outside.txt', false).then(() => false, () => true)), true)
+  const scopedPanel = await page.evaluate(() => window.awb.gitStatus('scope'))
+  assert.deepEqual(scopedPanel.files.map((file) => file.path), ['inside.txt'], 'A project inside a Git repository must stay scoped to its directory')
+  const scopedDiff = await page.evaluate(() => window.awb.gitDiff('scope', 'inside.txt', false))
+  assert.equal(scopedDiff.before, 'inside original\n')
+  const fresh = path.join(workspace, 'new-repository')
+  fs.mkdirSync(fresh); git(fresh, 'init', '-q')
+  fs.writeFileSync(path.join(fresh, 'new.txt'), 'new repository\n')
+  await page.getByRole('button', { name: '重新扫描仓库', exact: true }).click()
+  await page.locator('[data-repository="new-repository"]').waitFor()
+  fs.renameSync(path.join(linked, '.git'), path.join(linked, '.git.awb-fixture'))
+  await page.evaluate(() => window.awb.gitStatus('multi'))
+  const afterRemoval = await page.evaluate(() => window.awb.gitStatus('multi'))
+  assert.equal(afterRemoval.errors.filter((error) => error.includes('linked-worktree')).length, 1, 'A missing repository error must not accumulate on every poll')
+  console.log('PASS non-Git parent discovers nested repositories and routes same-name diffs, new files and discard to the correct repository')
+} finally { await app.close() }

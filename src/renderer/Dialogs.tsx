@@ -2,6 +2,9 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } f
 import type { AgentInfo, Executor, Host, OsKind, PathCheck, Settings, ShellKind } from '../shared/types'
 import { EXEC_COLORS, PRESETS, SHELL_AGENT, cmdline, hostLine, preferredAgent, shellLabel, uid } from '../shared/types'
 import { useAnchoredMenu } from './useAnchoredMenu'
+import { DirectoryBrowser } from './DirectoryBrowser'
+import { HostColorPicker } from './HostColorPicker'
+import { hostColor, nextHostColor } from '../shared/host-colors'
 
 export const dialogOpener: { current: HTMLElement | null } = { current: null }
 
@@ -9,6 +12,7 @@ export function focusableIn(root: ParentNode): HTMLElement[] {
   const nodes = root.querySelectorAll<HTMLElement>('a[href], button, input, select, textarea, [tabindex]')
   return [...nodes].filter((el) => {
     if (el.hasAttribute('disabled')) return false
+    if (el.closest('[inert]')) return false
     if (el.getAttribute('aria-disabled') === 'true') return false
     if (el.tabIndex < 0) return false
     if (el.closest('[aria-hidden="true"]') && el.closest('[aria-hidden="true"]') !== root) return false
@@ -40,6 +44,7 @@ function Frame({
   small,
   children,
   footer,
+  busy = false,
   onClose
 }: {
   title: string
@@ -49,10 +54,14 @@ function Frame({
   small?: boolean
   children: ReactNode
   footer: ReactNode
+  busy?: boolean
   onClose: () => void
 }) {
   const headingId = useId()
   const descriptionId = useId()
+  const busyRef = useRef(busy)
+  busyRef.current = busy
+  const dismiss = () => { if (!busyRef.current) onClose() }
   useLayoutEffect(() => {
     const root = document.querySelector('#modal .dlg') as HTMLElement | null
     if (!root) return
@@ -60,6 +69,7 @@ function Frame({
     const first = root.querySelector<HTMLElement>('[data-autofocus], input:not([disabled]), .btn.pri')
     first?.focus()
     const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && busyRef.current) { event.preventDefault(); event.stopPropagation(); return }
       if (event.key !== 'Tab') return
       const items = focusableIn(root)
       if (!items.length) {
@@ -91,29 +101,32 @@ function Frame({
       className="bd"
       data-a="bd"
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose()
+        if (event.target === event.currentTarget) dismiss()
       }}
     >
-      <div className={`dlg ${wide ? 'lg' : ''} ${small ? 'sm' : ''}`} role="dialog" aria-modal="true" aria-labelledby={headingId} aria-describedby={sub ? descriptionId : undefined}>
+      <div className={`dlg ${wide ? 'lg' : ''} ${small ? 'sm' : ''}`} role="dialog" tabIndex={-1} aria-busy={busy || undefined} aria-modal="true" aria-labelledby={headingId} aria-describedby={sub ? descriptionId : undefined}>
         <header>
           <h2 id={headingId}>{title}</h2>
-          <button className="ib" data-a="mclose" aria-label="关闭" onClick={onClose}>
+          <button className="ib" data-a="mclose" aria-label="关闭" disabled={busy} onClick={dismiss}>
             <Icon name="x" />
           </button>
         </header>
         {sub ? <p id={descriptionId} className={`sub ${subClass || ''}`}>{sub}</p> : null}
-        <div className="bdy">{children}</div>
-        <footer>{footer}</footer>
+        <div className="bdy" inert={busy ? true : undefined}>{children}</div>
+        <footer inert={busy ? true : undefined}>{footer}</footer>
       </div>
     </div>
   )
 }
 
-export function ConfirmDialog({ title, body, ok, onOk, onClose, onSave }: { title: string; body: ReactNode; ok: string; onOk: () => void; onClose: () => void; onSave?: () => void }) {
+export function ConfirmDialog({ title, body, ok, onOk, onClose, onSave }: { title: string; body: ReactNode; ok: string; onOk: () => void | Promise<void>; onClose: () => void; onSave?: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const submitting = useRef(false)
   return (
     <Frame
       title={title}
       small
+      busy={busy}
       onClose={onClose}
       footer={
         <>
@@ -121,7 +134,7 @@ export function ConfirmDialog({ title, body, ok, onOk, onClose, onSave }: { titl
           <button className="btn ghost" data-a="mclose" onClick={onClose}>
             取消
           </button>
-          <button className="btn dangerf" data-a="confirm" onClick={onOk}>
+          <button className="btn dangerf" data-a="confirm" disabled={busy} onClick={async () => { if (submitting.current) return; submitting.current = true; setBusy(true); try { await onOk() } finally { submitting.current = false; setBusy(false) } }}>
             {ok}
           </button>
           {onSave ? <button className="btn pri" data-a="save-close" onClick={onSave}>保存并关闭</button> : null}
@@ -169,14 +182,15 @@ export function NewProjectDialog({
   const [hostName, setHostName] = useState('')
   const [hostAddr, setHostAddr] = useState('')
   const [hostPort, setHostPort] = useState('22')
+  const [hostTint, setHostTint] = useState(() => nextHostColor(hosts))
   const hostRequest = useRef(0)
   useEffect(() => () => { hostRequest.current++ }, [])
   const [hostAuth, setHostAuth] = useState<Host['auth']>('key')
   const [hostPassword, setHostPassword] = useState('')
   const [check, setCheck] = useState<PathCheck>({ kind: 'empty' })
   const [browsing, setBrowsing] = useState(false)
-  const [listing, setListing] = useState<{ path: string; parent: string | null; dirs: { name: string; path: string }[] } | null>(null)
   const host = hosts.find((item) => item.id === hostId) || hosts[0]
+  function selectHost(id: string) { setBrowsing(false); setHostId(id) }
 
   useEffect(() => {
     const value = dir.trim()
@@ -201,13 +215,13 @@ export function NewProjectDialog({
   const agentLabel = agents.find((item) => item.id === agent)?.name || '仅 Shell'
   const agentMenu = useAnchoredMenu(agentOpen, () => setAgentOpen(false))
 
-  if (editingHost) return <HostDialog initial={editingHost} onClose={() => setEditingHost(null)} onToast={onToast}
+  if (editingHost) return <HostDialog hosts={hosts} initial={editingHost} onClose={() => setEditingHost(null)} onToast={onToast}
     onSave={async (next) => { await onHosts(hosts.map((item) => item.id === next.id ? next : item)); setEditingHost(null) }}
     onDelete={() => { setRemovingHost(editingHost); setEditingHost(null) }} />
   if (removingHost) return <Frame title="移除机器？" onClose={() => setRemovingHost(null)} footer={<>
     <button className="btn" onClick={() => setRemovingHost(null)}>取消</button>
     <button className="btn danger" data-a="confirm" onClick={async () => {
-      try { await onHosts(hosts.filter((item) => item.id !== removingHost.id)); if (hostId === removingHost.id) setHostId('local'); setRemovingHost(null) }
+      try { await onHosts(hosts.filter((item) => item.id !== removingHost.id)); if (hostId === removingHost.id) selectHost('local'); setRemovingHost(null) }
       catch (error) { onToast(String(error), true) }
     }}>移除</button></>}><p>移除 {removingHost.name} 后，使用这台机器的项目将无法打开终端。远程文件不会被删除。</p></Frame>
   return (
@@ -244,7 +258,7 @@ export function NewProjectDialog({
               className={`mopt ${hostId === item.id ? 'on' : ''}`}
               role="radio"
               tabIndex={0}
-              onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); if (item.on) setHostId(item.id) } }}
+              onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); if (item.on) selectHost(item.id) } }}
               aria-checked={hostId === item.id}
               data-a="nph"
               data-id={item.id}
@@ -253,10 +267,10 @@ export function NewProjectDialog({
                   onToast('请先连接该机器')
                   return
                 }
-                setHostId(item.id)
+                selectHost(item.id)
               }}
             >
-              <span className="ic">
+              <span className="ic project-folder" data-color={hostColor(item.color)}>
                 <Icon name={item.id === 'local' ? 'laptop' : 'server'} />
               </span>
               <span className="grow">
@@ -276,7 +290,7 @@ export function NewProjectDialog({
                         const result = await window.awb.testHost(item)
                         if (!result.ok) { onToast(result.error || '连接失败', true); return }
                         await onHosts(hosts.map((hostItem) => (hostItem.id === item.id ? { ...hostItem, on: true, os: result.os || hostItem.os, platform: result.platform || hostItem.platform } : hostItem)))
-                        setHostId(item.id)
+                        selectHost(item.id)
                         onToast(`已连接 ${item.name}`)
                       } catch (error) { onToast(String(error), true) }
                     }}
@@ -308,6 +322,7 @@ export function NewProjectDialog({
               if (next.auth) setHostAuth(next.auth)
               if (next.password !== undefined) setHostPassword(next.password)
             }} />
+            <HostColorPicker value={hostTint} hosts={hosts} onChange={setHostTint} />
             </fieldset>
             <div style={{ display: 'flex', gap: 8, marginTop: 12, justifyContent: 'flex-end' }}>
               <button className="btn sm ghost" data-a="np-addhost" onClick={() => { hostRequest.current++; setAdding(false); setConnecting(false) }}>
@@ -333,6 +348,7 @@ export function NewProjectDialog({
                     port,
                     platform: 'linux',
                     auth: hostAuth,
+                    color: hostTint,
                     ...(hostAuth === 'password' ? { password: hostPassword } : {})
                   }
                   setConnecting(true)
@@ -342,7 +358,7 @@ export function NewProjectDialog({
                     if (!result.ok) { onToast(result.error || '连接失败，请检查地址和认证信息', true); return }
                     const saved = { ...next, on: true, os: result.os || next.os, platform: result.platform || next.platform }
                     await onHosts([...hosts, saved])
-                    setHostId(saved.id)
+                    selectHost(saved.id)
                     setAdding(false)
                     setHostPassword('')
                     onToast(`已连接 ${saved.name}`)
@@ -355,7 +371,7 @@ export function NewProjectDialog({
             </div>
           </div>
         ) : (
-          <button className="disc" data-a="np-addhost" style={{ margin: '4px 0 0' }} onClick={() => setAdding(true)}>
+          <button className="disc" data-a="np-addhost" style={{ margin: '4px 0 0' }} onClick={() => { setHostTint(nextHostColor(hosts)); setAdding(true) }}>
             <Icon name="plus" className="s" />
             添加 SSH 机器
           </button>
@@ -376,8 +392,6 @@ export function NewProjectDialog({
                 if (!name.trim()) setName(baseName(picked))
                 return
               }
-              const list = await window.awb.listDir(host.id, dir.trim())
-              setListing(list)
               setBrowsing(true)
             }}
           >
@@ -402,44 +416,11 @@ export function NewProjectDialog({
           {check.kind === 'invalid' ? <small className="bad">{invalidPath(host.platform)}</small> : null}
           {check.kind === 'error' ? <small className="bad">{check.detail || '无法检查目录'}</small> : null}
         </div>
-        {browsing && listing ? (
-          <div className="mlist browse">
-            {listing.parent ? (
-              <button
-                className="mopt"
-                onClick={async () => {
-                  const next = await window.awb.listDir(host.id, listing.parent || '/')
-                  setListing(next)
-                }}
-              >
-                <span className="grow">..</span>
-              </button>
-            ) : null}
-            <button
-              className="mopt"
-              onClick={() => {
-                setDir(listing.path)
-                if (!name.trim()) setName(baseName(listing.path))
-                setBrowsing(false)
-              }}
-            >
-              <span className="grow">选择 {listing.path}</span>
-            </button>
-            {listing.dirs.map((entry) => (
-              <button
-                key={entry.path}
-                className="mopt"
-                onClick={async () => {
-                  const next = await window.awb.listDir(host.id, entry.path)
-                  setListing(next)
-                }}
-              >
-                <Icon name="folder" className="s" />
-                <span className="grow">{entry.name}</span>
-              </button>
-            ))}
-          </div>
-        ) : null}
+        {browsing ? <DirectoryBrowser key={host.id} hostId={host.id} initialPath={dir.trim()} onClose={() => setBrowsing(false)} onSelect={(picked) => {
+          setDir(picked)
+          if (!name.trim()) setName(baseName(picked))
+          setBrowsing(false)
+        }} /> : null}
       </div>
       <div className="fld" style={{ margin: 0 }}>
         <span>默认 Agent</span>
@@ -496,6 +477,7 @@ function commandPreview(host: Host, shell: string, cwd: string, command: string)
 }
 
 export function NewTermDialog({
+  newSession = false,
   host,
   cwd,
   initialKind,
@@ -505,13 +487,14 @@ export function NewTermDialog({
   onOpen,
   onManage
 }: {
+  newSession?: boolean
   host: Host
   cwd: string
   initialKind: string
   initialShell: ShellKind
   agents: AgentInfo[]
   onClose: () => void
-  onOpen: (kind: string, shell: ShellKind) => void
+  onOpen: (kind: string, shell: ShellKind) => void | Promise<void>
   onManage: () => void
 }) {
   const options = shellOptions(host.platform)
@@ -528,12 +511,21 @@ export function NewTermDialog({
     setShell(id)
   }
   const agent = agents.find((item) => item.id === kind) || SHELL_AGENT
-  const open = () => onOpen(kindRef.current, shellRef.current)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const submitting = useRef(false)
+  const open = async () => {
+    if (submitting.current) return
+    submitting.current = true; setBusy(true); setError('')
+    try { await onOpen(kindRef.current, shellRef.current) }
+    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)) }
+    finally { submitting.current = false; setBusy(false) }
+  }
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Enter' && (event.target as HTMLElement).tagName !== 'BUTTON') {
         event.preventDefault()
-        open()
+        void open()
       }
     }
     window.addEventListener('keydown', onKey)
@@ -541,9 +533,10 @@ export function NewTermDialog({
   })
   return (
     <Frame
-      title="新建终端"
+      title={newSession ? '新建会话' : '新建终端'}
+      busy={busy}
       wide
-      onClose={onClose}
+      onClose={() => { if (!submitting.current) onClose() }}
       subClass="subline"
       sub={
         <>
@@ -562,8 +555,8 @@ export function NewTermDialog({
           <button className="btn ghost" data-a="mclose" onClick={onClose}>
             取消
           </button>
-          <button className="btn pri" data-a="nt-ok" onClick={open}>
-            打开
+          <button className="btn pri" data-a="nt-ok" disabled={busy} onClick={() => void open()}>
+            {busy ? '正在启动…' : newSession ? '创建并启动' : '打开'}
             <kbd className="enter">Enter</kbd>
           </button>
         </>
@@ -623,6 +616,7 @@ export function NewTermDialog({
           {commandPreview(host, shell, cwd, '').replace(/\s+$/, '')} <b>{cmdline(agent)}</b>
         </div>
       </div>
+      {error ? <p className="file-error" role="alert">{error}</p> : null}
     </Frame>
   )
 }
@@ -761,7 +755,7 @@ export function ExecDialog({
             <label className="fld"><span>Skill 存放目录</span><input className="tx mono" aria-label="Skill 存放目录" value={resourcePaths.skillPath} placeholder="Skill 目录的绝对路径" onChange={(event) => resourcePatch({ skillPath: event.target.value })} /></label>
             <label className="fld"><span>MCP 配置文件</span><input className="tx mono" aria-label="MCP 配置文件" value={resourcePaths.mcpPath} placeholder="JSON、JSONC 或 TOML 文件的绝对路径" onChange={(event) => resourcePatch({ mcpPath: event.target.value })} /></label>
             <div className="two"><label className="fld"><span>MCP 格式</span><select className="sel" aria-label="MCP 格式" value={resourcePaths.format} onChange={(event) => resourcePatch({ format: event.target.value as typeof resourcePaths.format })}><option value="standard">JSON · mcpServers</option><option value="codex">TOML · mcp_servers</option><option value="opencode">JSONC · mcp</option></select></label>
-            <label className="fld"><span>Skill 管理方式</span><select className="sel" aria-label="Skill 管理方式" value={resourcePaths.skillAdapter || 'portable'} onChange={(event) => resourcePatch({ skillAdapter: event.target.value as typeof resourcePaths.skillAdapter })}>{['portable', 'claude', 'codex', 'opencode', 'pi'].map((adapter) => <option key={adapter} value={adapter}>{adapter === 'portable' ? '通用 · 文件开关' : adapter}</option>)}</select></label></div>
+            <label className="fld"><span>Skill 管理方式</span><select className="sel" aria-label="Skill 管理方式" value={resourcePaths.skillAdapter || 'portable'} onChange={(event) => resourcePatch({ skillAdapter: event.target.value as typeof resourcePaths.skillAdapter })}>{['portable', 'claude', 'codex', 'opencode', 'pi', 'omp'].map((adapter) => <option key={adapter} value={adapter}>{adapter === 'portable' ? '通用 · 文件开关' : adapter}</option>)}</select></label></div>
             <label className="fld"><span>Skill 配置文件（可选）</span><input className="tx mono" aria-label="Skill 配置文件" value={resourcePaths.skillConfigPath || ''} onChange={(event) => resourcePatch({ skillConfigPath: event.target.value })} /></label>
             <p className="resource-help">选择执行器支持的原生格式。通用开关会保留文件，并切换 SKILL.md 的文件名；独立目录可避免影响其他执行器。</p>
           </div>
@@ -850,19 +844,21 @@ function HostAuthentication({ host, onChange }: {
 
 export function HostDialog({
   initial,
+  hosts = [],
   onClose,
   onSave,
   onDelete,
   onToast
 }: {
   initial: Host | null
+  hosts?: Host[]
   onClose: () => void
   onSave: (host: Host) => Promise<void>
   onDelete: (id: string) => void
   onToast: (text: string, bad?: boolean) => void
 }) {
   const [draft, setDraft] = useState<Host>(
-    initial || { id: '', name: '', addr: '', user: '', os: 'Linux', on: false, port: 22, platform: 'linux', auth: 'key' }
+    initial ? { ...initial, color: hostColor(initial.color) } : { id: '', name: '', addr: '', user: '', os: 'Linux', on: false, port: 22, platform: 'linux', auth: 'key', color: nextHostColor(hosts) }
   )
   const patch = (partial: Partial<Host>) => setDraft((prev) => ({ ...prev, ...partial }))
   const [busy, setBusy] = useState(false)
@@ -872,6 +868,7 @@ export function HostDialog({
   return (
     <Frame
       title={initial ? initial.name : '添加机器'}
+      busy={busy}
       sub={
         initial ? (
           <span className="tag">
@@ -883,14 +880,14 @@ export function HostDialog({
       onClose={onClose}
       footer={
         <>
-          {draft.id ? (
+          {draft.id && draft.id !== 'local' ? (
             <button className="btn ghost" data-a="hdel" style={{ color: 'var(--red)' }} onClick={() => onDelete(draft.id)}>
               <Icon name="trash" className="s" />
               移除
             </button>
           ) : null}
           <span className="grow" />
-          {draft.id ? (
+          {draft.id && draft.id !== 'local' ? (
             <button
               className="btn"
               data-a="hconn2"
@@ -916,6 +913,7 @@ export function HostDialog({
           <button
             className="btn"
             data-a="htest"
+            hidden={draft.id === 'local'}
             disabled={busy}
             onClick={async () => {
               const result = await window.awb.testHost(draft)
@@ -933,7 +931,7 @@ export function HostDialog({
             data-a="hsave"
             disabled={busy}
             onClick={async () => {
-              if (!draft.name.trim() || !draft.addr.trim() || !draft.user.trim()) {
+              if (draft.id !== 'local' && (!draft.name.trim() || !draft.addr.trim() || !draft.user.trim())) {
                 onToast('请填写名称、用户和地址')
                 return
               }
@@ -941,6 +939,7 @@ export function HostDialog({
               setBusy(true); setError('')
               try {
                 const next = { ...draft, name: draft.name.trim(), addr: draft.addr.trim(), user: draft.user.trim() }
+                if (draft.id === 'local') { await onSave(next); return }
                 const changedConnection = !initial || ['addr', 'port', 'user', 'auth'].some((key) => initial[key as keyof Host] !== next[key as keyof Host]) || next.password !== undefined
                 if (changedConnection || next.on) {
                   const result = await window.awb.testHost(next)
@@ -958,6 +957,8 @@ export function HostDialog({
       }
     >
       <fieldset className="host-fields" disabled={busy}>
+      <HostColorPicker value={hostColor(draft.color)} id={draft.id} hosts={hosts} onChange={(color) => patch({ color })} />
+      {draft.id === 'local' ? <p className="host-local-description">此环境的所有项目使用上方选择的文件夹颜色。</p> : <>
       <div className="two">
         <label className="fld">
           <span>名称</span>
@@ -979,6 +980,7 @@ export function HostDialog({
         </label>
       </div>
       <HostAuthentication host={draft} onChange={patch} />
+      </>}
       </fieldset>
       {error ? <p className="file-error" role="alert">{error}</p> : null}
     </Frame>

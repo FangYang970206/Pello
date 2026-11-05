@@ -92,6 +92,7 @@ function commandExistsSync(file: string): boolean {
 
 export async function commandExists(cmd: string): Promise<boolean> {
   if (!cmd.trim()) return false
+  if (cmd === 'omp' && fs.existsSync(path.join(ompInstallDirectory(), process.platform === 'win32' ? 'omp.exe' : 'omp'))) return true
   const checker = process.platform === 'win32' ? 'where.exe' : 'which'
   try {
     await execFileP(checker, [cmd], { timeout: 4000, windowsHide: true })
@@ -99,6 +100,11 @@ export async function commandExists(cmd: string): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+/** Official binary installers use these paths; an already-running app may have an older PATH. */
+export function ompInstallDirectory(): string {
+  return process.platform === 'win32' ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'omp') : path.join(os.homedir(), '.local', 'bin')
 }
 
 /** Resolve the real shell binary for this machine. Linux uses bash or zsh; Windows uses PowerShell or CMD. */
@@ -143,7 +149,11 @@ export function shellForHost(platform: OsKind, pref: ShellKind): ShellKind {
 }
 
 export function bashRc(): string {
-  return `unset HISTFILE
+  return `# Keep user-installed commands, aliases and environment in managed shells.
+if [ -r "$HOME/.bashrc" ]; then
+  . "$HOME/.bashrc"
+fi
+unset HISTFILE
 PS1='\\w\\$ '
 __awb_prompt() {
   local c=$?
@@ -214,16 +224,7 @@ export function sshBatchArgs(host: { user: string; addr: string; port: number; a
 export function remoteBootstrap(platform: OsKind, cwd: string): string[] {
   if (platform === 'linux') {
     const script = `export AWB_CWD=${bashQuote(cwd)}; exec bash --noprofile --rcfile <(cat << 'AWB_RC'
-unset HISTFILE
-PS1='\\w\\$ '
-__awb_prompt() {
-  local c=$?
-  printf '\\033]777;awb;prompt;%s\\007' "$c"
-}
-PROMPT_COMMAND=__awb_prompt
-if [ -n "$AWB_CWD" ] && [ -d "$AWB_CWD" ]; then
-  cd "$AWB_CWD" || true
-fi
+${bashRc()}
 AWB_RC
 ) -i`
     return ['bash', '-lc', script]

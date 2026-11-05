@@ -4,16 +4,17 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import { parse as parseJson, modify, applyEdits, type ParseError } from 'jsonc-parser'
-import { parse as parseYaml } from 'yaml'
+import { parse as parseYaml, parseDocument } from 'yaml'
 import { unzipSync } from 'fflate'
 import type { Executor, ResourceTarget, ResourceItem, ResourcePage, ResourceResult, ResourceDetail } from '../shared/types'
 import { setTomlValue } from './resource-config'
+import { readMcpImport } from './mcp-import'
 
 type ObjectValue = Record<string, unknown>
 export function validateResourcePaths(target: Executor['resources']) {
   if (!target) return
   if (![target.mcpPath, target.skillPath, target.skillConfigPath || ''].every((value) => typeof value === 'string' && (!value || path.isAbsolute(value)))) throw new Error('资源目录和配置文件必须使用绝对路径')
-  if (!['standard', 'codex', 'opencode'].includes(target.format) || !['portable', 'claude', 'codex', 'opencode', 'pi'].includes(target.skillAdapter || 'portable')) throw new Error('请选择支持的资源格式')
+  if (!['standard', 'codex', 'opencode'].includes(target.format) || !['portable', 'claude', 'codex', 'opencode', 'pi', 'omp'].includes(target.skillAdapter || 'portable')) throw new Error('请选择支持的资源格式')
 }
 const object = (value: unknown): ObjectValue => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('配置必须是对象')
@@ -49,6 +50,22 @@ function json(text: string): ObjectValue {
 function parseConfig(target: ResourceTarget, text: string) {
   return target.format === 'codex' ? parseToml(text.replace(/^\ufeff/, '')) : json(text)
 }
+function opencodeV2(config: ObjectValue): boolean {
+  const servers = object(config.mcp || {}).servers
+  return Array.isArray(config.permissions) || !!config.providers || Array.isArray(config.skills) ||
+    (!!servers && typeof servers === 'object' && !Array.isArray(servers) && !['type', 'command', 'url'].some(key => Object.hasOwn(servers, key)))
+}
+function mcpRoot(target: ResourceTarget, config: ObjectValue) {
+  const v2 = target.format === 'opencode' && opencodeV2(config)
+  const keys = target.format === 'codex' ? ['mcp_servers'] : target.format === 'opencode' ? v2 ? ['mcp', 'servers'] : ['mcp'] : ['mcpServers']
+  let value: unknown = config
+  for (const key of keys) value = object(value || {})[key]
+  return { keys, servers: object(value || {}), v2 }
+}
+function wildcardMatches(pattern: string, value: string): boolean {
+  const regex = pattern.split(/([*?])/).map(part => part === '*' ? '.*' : part === '?' ? '.' : part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('')
+  return new RegExp('^' + regex + '$').test(value)
+}
 function atomicText(file: string, before: string, next: string) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   if (fs.existsSync(file) && fs.lstatSync(file).isSymbolicLink()) throw new Error('配置是符号链接，请选择真实配置文件')
@@ -60,14 +77,14 @@ function atomicText(file: string, before: string, next: string) {
     fs.renameSync(temp, file)
   } finally { if (fs.existsSync(temp)) fs.unlinkSync(temp) }
 }
-function skillInfo(file: string): { name: string; description: string } {
+function skillInfo(file: string): { name: string; description: string; enabled: boolean } {
   const text = readText(file).replace(/^\ufeff/, '')
   const front = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text)
   if (!front) throw new Error('SKILL.md 缺少 YAML 文档属性')
   const value = object(parseYaml(front[1]))
   if (typeof value.name !== 'string' || value.name.length > 64 || !namePattern.test(value.name)) throw new Error('Skill 名称须为小写字母、数字和单连字符，最多 64 字符')
   if (typeof value.description !== 'string' || !value.description.trim() || value.description.length > 1024) throw new Error('Skill 需要 1 到 1024 字符的 description')
-  return { name: value.name, description: value.description.trim() }
+  return { name: value.name, description: value.description.trim(), enabled: value.enabled !== false }
 }
 function safeRelative(value: string) {
   const normalized = value.replace(/\\/g, '/')
@@ -89,7 +106,8 @@ export class ResourceManager {
       { id: 'claude', name: 'Claude Code', mcpPath: join('.claude.json'), skillPath: path.join(claude, 'skills'), format: 'standard' },
       { id: 'codex', name: 'Codex CLI', mcpPath: path.join(codex, 'config.toml'), skillPath: join('.agents', 'skills'), format: 'codex' },
       { id: 'opencode', name: 'OpenCode', mcpPath: path.join(config, 'opencode', fs.existsSync(path.join(config, 'opencode', 'opencode.jsonc')) ? 'opencode.jsonc' : 'opencode.json'), skillPath: path.join(config, 'opencode', 'skills'), format: 'opencode' },
-      { id: 'pi', name: 'Pi', mcpPath: path.join(pi, 'mcp.json'), skillPath: path.join(pi, 'skills'), format: 'standard' }
+      { id: 'pi', name: 'Pi', mcpPath: path.join(pi, 'mcp.json'), skillPath: path.join(pi, 'skills'), format: 'standard' },
+      { id: 'omp', name: 'Oh My Pi', mcpPath: join('.omp', 'agent', 'mcp.json'), skillPath: join('.omp', 'agent', 'skills'), skillConfigPath: join('.omp', 'agent', 'config.yml'), format: 'standard' }
     ]
     const saved = json(readText(path.join(this.data, 'resource-targets.json')))
     return [...builtins.map((item): ResourceTarget => ({ ...item, skillAdapter: item.id as ResourceTarget['skillAdapter'] })), ...custom.map((item): ResourceTarget => ({ mcpPath: '', skillPath: '', format: 'standard', ...(saved[item.id] as Partial<ResourceTarget> || {}), ...item.resources, id: item.id, name: item.name }))]
@@ -120,11 +138,11 @@ export class ResourceManager {
     if (kind === 'mcp' && target.mcpPath) {
       try {
         const config = parseConfig(target, readText(target.mcpPath))
-        const servers = config[target.format === 'codex' ? 'mcp_servers' : target.format === 'opencode' ? 'mcp' : 'mcpServers'] || {}
+        const { servers, v2 } = mcpRoot(target, config)
         for (const [name, raw] of Object.entries(object(servers))) {
           const value = object(raw)
           const description = mcpDescription(value)
-          items.push({ name, description, path: target.mcpPath, transport: value.url ? String(value.type || 'http') : 'stdio', enabled: value.enabled !== false })
+          items.push({ name, description, path: target.mcpPath, transport: value.url ? String(value.type || 'http') : 'stdio', enabled: v2 ? value.disabled !== true : value.enabled !== false })
         }
         for (const [name, raw] of Object.entries(object(config.awbDisabledMcp || {}))) {
           if (Object.hasOwn(object(servers), name)) continue
@@ -157,6 +175,7 @@ export class ResourceManager {
     if (target.skillConfigPath) return target.skillConfigPath
     if (target.skillAdapter === 'codex' || target.skillAdapter === 'opencode') return target.mcpPath
     if (target.skillAdapter === 'claude') return path.join(path.dirname(target.skillPath), 'settings.json')
+    if (target.skillAdapter === 'omp') return target.skillPath ? path.join(path.dirname(target.skillPath), 'config.yml') : ''
     return target.skillPath ? path.join(path.dirname(target.skillPath), 'settings.json') : ''
   }
   private skillEnabled(target: ResourceTarget, file: string, name: string): boolean {
@@ -169,15 +188,23 @@ export class ResourceManager {
       const entries = (parseToml(raw.replace(/^\ufeff/, '')).skills as { config?: { path?: string; name?: string; enabled?: boolean }[] } | undefined)?.config || []
       return entries.filter((item) => item.path === file || item.name === name).at(-1)?.enabled !== false
     }
-    const config = json(raw)
+    const config = target.skillAdapter === 'omp' ? object(parseYaml(raw) || {}) : json(raw)
+    if (target.skillAdapter === 'omp') {
+      const skills = object(config.skills || {}), include = (skills.includeSkills || []) as string[]
+      return skillInfo(file).enabled && skills.enabled !== false && !((config.disabledExtensions || []) as string[]).includes(`skill:${name}`) &&
+        !((skills.ignoredSkills || []) as string[]).some((pattern) => wildcardMatches(pattern, name)) && (!include.length || include.some((pattern) => wildcardMatches(pattern, name)))
+    }
     if (target.skillAdapter === 'claude') return object(config.skillOverrides || {})[name] !== 'off'
     if (target.skillAdapter === 'opencode') {
       const permission = object(config.permission || {}).skill
-      if (typeof permission === 'string') return permission !== 'deny'
-      let enabled = true
-      for (const [pattern, policy] of Object.entries(object(permission || {}))) {
-        const regex = new RegExp('^' + pattern.split('*').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$')
-        if (regex.test(name)) enabled = policy !== 'deny'
+      let enabled = typeof permission === 'string' ? permission !== 'deny' : true
+      for (const [pattern, policy] of Object.entries(typeof permission === 'string' ? {} : object(permission || {}))) {
+        if (wildcardMatches(pattern, name)) enabled = policy !== 'deny'
+      }
+      if (config.permissions !== undefined && !Array.isArray(config.permissions)) throw new Error('OpenCode V2 permissions 必须是数组')
+      for (const raw of config.permissions as unknown[] || []) {
+        const rule = object(raw)
+        if (typeof rule.action === 'string' && typeof rule.resource === 'string' && wildcardMatches(rule.action, 'skill') && wildcardMatches(rule.resource, name)) enabled = rule.effect !== 'deny'
       }
       return enabled
     }
@@ -188,6 +215,24 @@ export class ResourceManager {
     const found = this.list(targets, kind, agent, 1, '', true).items.find((entry) => entry.name === item.name && entry.path === item.path)
     if (!found) throw new Error('资源已改变或不属于当前 Agent，请刷新后重试')
     return found
+  }
+  skillDirectory(targets: ResourceTarget[], agent: string, raw: ResourceItem, removing = false): string {
+    const item = this.listed(targets, 'skills', agent, raw), target = this.target(targets, agent)
+    const folder = path.dirname(item.path), real = fs.realpathSync(folder)
+    const roots = this.skillRoots(target).filter((root) => fs.existsSync(root))
+    if (!roots.some((root) => { const rel = path.relative(path.resolve(root), folder); return !rel.startsWith('..') && !path.isAbsolute(rel) })) throw new Error('Skill 路径不属于当前 Agent')
+    if (!removing) return folder
+    const inside = roots.some((root) => {
+      const relative = path.relative(fs.realpathSync(root), real)
+      return !!relative && !relative.startsWith('..') && !path.isAbsolute(relative)
+    })
+    if (!inside) throw new Error('Skill 目录超出 Agent 资源范围，不能执行此操作')
+    const root = roots.find((root) => { const rel = path.relative(path.resolve(root), folder); return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel) })
+    if (!root) throw new Error('不能删除整个 Skill 发现目录')
+    for (let current = folder; path.relative(path.resolve(root), current); current = path.dirname(current)) {
+      if (fs.lstatSync(current).isSymbolicLink()) throw new Error('不能删除通过符号链接发现的 Skill，请在资源管理器中管理该链接')
+    }
+    return folder
   }
   private patchJson(file: string, keys: (string | number)[], value: unknown) {
     const before = readText(file), bom = before.startsWith('\ufeff') ? '\ufeff' : ''
@@ -202,8 +247,8 @@ export class ResourceManager {
     if (kind === 'mcp') {
       const before = readText(target.mcpPath), config = parseConfig(target, before)
       if (target.format === 'codex') { atomicText(target.mcpPath, before, setTomlValue(before, ['mcp_servers', item.name, 'enabled'], enabled)); return }
-      const key = target.format === 'opencode' ? 'mcp' : 'mcpServers'
-      if (target.id === 'claude' || (target.format === 'standard' && target.id !== 'pi')) {
+      const { keys, v2 } = mcpRoot(target, config), key = keys[0]
+      if (target.id === 'claude' || (target.format === 'standard' && target.id !== 'pi' && target.id !== 'omp')) {
         // Claude has project-scoped toggles. For a user-level switch, park the
         // entry outside mcpServers so every new project stops discovering it.
         const active = object(config[key] || {}), parked = object(config.awbDisabledMcp || {})
@@ -215,7 +260,7 @@ export class ResourceManager {
         let next = before.replace(/^\ufeff/, '') || '{}'
         for (const [keys, value] of [[[enabled ? key : 'awbDisabledMcp', item.name], source], [[enabled ? 'awbDisabledMcp' : key, item.name], undefined]] as [(string | number)[], unknown][]) next = applyEdits(next, modify(next, keys, value, { formattingOptions: { insertSpaces: true, tabSize: 2 } }))
         atomicText(target.mcpPath, before, bom + next)
-      } else this.patchJson(target.mcpPath, [key, item.name, 'enabled'], enabled)
+      } else this.patchJson(target.mcpPath, [...keys, item.name, v2 ? 'disabled' : 'enabled'], v2 ? !enabled : enabled)
     } else {
       const settings = this.settingsFile(target)
       if (target.skillAdapter && target.skillAdapter !== 'portable' && !settings) throw new Error('请先在执行器高级属性中设置 Skill 配置文件或 MCP 配置文件')
@@ -227,9 +272,29 @@ export class ResourceManager {
         parseToml(next.replace(/^\ufeff/, '')); atomicText(settings, before, next)
       } else if (target.skillAdapter === 'claude') this.patchJson(settings, ['skillOverrides', item.name], enabled ? 'on' : 'off')
       else if (target.skillAdapter === 'opencode') {
-        const config = json(readText(settings)), skill = object(config.permission || {}).skill
-        if (typeof skill === 'string') this.patchJson(settings, ['permission', 'skill'], { '*': skill, [item.name]: enabled ? 'allow' : 'deny' })
-        else this.patchJson(settings, ['permission', 'skill', item.name], enabled ? 'allow' : 'deny')
+        const config = json(readText(settings))
+        if (opencodeV2(config)) {
+          if (config.permissions !== undefined && !Array.isArray(config.permissions)) throw new Error('OpenCode V2 permissions 必须是数组')
+          const rules = (config.permissions || []) as ObjectValue[], last = rules.at(-1)
+          if (last?.action === 'skill' && last.resource === item.name) this.patchJson(settings, ['permissions', rules.length - 1, 'effect'], enabled ? 'allow' : 'deny')
+          else this.patchJson(settings, ['permissions', rules.length], { action: 'skill', resource: item.name, effect: enabled ? 'allow' : 'deny' })
+        } else {
+          const skill = object(config.permission || {}).skill
+          if (typeof skill === 'string') this.patchJson(settings, ['permission', 'skill'], { '*': skill, [item.name]: enabled ? 'allow' : 'deny' })
+          else this.patchJson(settings, ['permission', 'skill', item.name], enabled ? 'allow' : 'deny')
+        }
+      }
+      else if (target.skillAdapter === 'omp') {
+        const before = readText(settings), document = parseDocument(before || '{}')
+        if (document.errors.length) throw new Error('Oh My Pi YAML 配置存在语法错误')
+        if (enabled) {
+          const config = object(document.toJS() || {}), skills = object(config.skills || {}), include = (skills.includeSkills || []) as string[]
+          if (!skillInfo(item.path).enabled || skills.enabled === false || ((skills.ignoredSkills || []) as string[]).some((pattern) => wildcardMatches(pattern, item.name)) || (include.length && !include.some((pattern) => wildcardMatches(pattern, item.name)))) throw new Error('此 Skill 受 Oh My Pi 全局筛选或 SKILL.md 停用限制，请先修改对应设置')
+        }
+        const entries = ((document.toJS()?.disabledExtensions || []) as string[]).filter((entry) => entry !== `skill:${item.name}`)
+        if (!enabled) entries.push(`skill:${item.name}`)
+        document.set('disabledExtensions', entries)
+        atomicText(settings, before, document.toString())
       }
       else if (target.skillAdapter === 'pi') {
         const config = json(readText(settings)), entries = (config.skills as unknown[] || []).filter((entry) => entry !== '-' + item.path)
@@ -248,8 +313,8 @@ export class ResourceManager {
   detail(targets: ResourceTarget[], kind: 'mcp' | 'skills', agent: string, raw: ResourceItem): ResourceDetail {
     const item = this.listed(targets, kind, agent, raw), target = this.target(targets, agent)
     if (kind === 'skills') return { ...item, content: readText(fs.existsSync(item.path) ? item.path : item.path + '.awb-disabled') }
-    const config = parseConfig(target, readText(target.mcpPath)), key = target.format === 'codex' ? 'mcp_servers' : target.format === 'opencode' ? 'mcp' : 'mcpServers'
-    const value = object(object(config[key] || {})[item.name] || object(config.awbDisabledMcp || {})[item.name])
+    const config = parseConfig(target, readText(target.mcpPath)), { servers } = mcpRoot(target, config)
+    const value = object(servers[item.name] || object(config.awbDisabledMcp || {})[item.name])
     const clean = { ...value }
     for (const field of ['env', 'environment', 'headers', 'http_headers']) if (clean[field]) clean[field] = Object.fromEntries(Object.keys(object(clean[field])).map((key) => [key, '********']))
     for (const field of Object.keys(clean)) if (/token|password|secret/i.test(field)) clean[field] = '********'
@@ -266,7 +331,18 @@ export class ResourceManager {
       catch (error) { return { agent, ok: false, error: message(error) } }
     }) } finally { this.busy = false }
   }
-  addMcp(targets: ResourceTarget[], name: string, raw: ObjectValue, agents: string[]): ResourceResult[] {
+  scanMcp(source: string) {
+    return readMcpImport(source).map(({ config: _config, ...item }) => item)
+  }
+  importMcpConfig(targets: ResourceTarget[], source: string, agents: string[], ids: string[]): ResourceResult[] {
+    const entries = readMcpImport(source)
+    if (!Array.isArray(ids) || !ids.length || ids.some((id) => !entries.some((entry) => entry.id === id))) throw new Error('请选择扫描结果中的 MCP')
+    return entries.filter((entry) => ids.includes(entry.id)).flatMap<ResourceResult>((entry) => {
+      if (!entry.config || entry.error) return agents.map((agent) => ({ agent, name: entry.name, id: entry.id, ok: false, error: entry.error || '无效配置' }))
+      return this.addMcp(targets, entry.name, entry.config, agents, entry.enabled).map((result) => ({ ...result, name: entry.name, id: entry.id }))
+    })
+  }
+  addMcp(targets: ResourceTarget[], name: string, raw: ObjectValue, agents: string[], enabled = true): ResourceResult[] {
     if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name)) throw new Error('MCP 名称只能包含字母、数字、下划线、连字符，最多 64 字符')
     const config = object(raw)
     const remote = typeof config.url === 'string'
@@ -284,12 +360,15 @@ export class ResourceManager {
     return this.distribute(targets, agents, (target) => {
       if (!target.mcpPath) throw new Error('请先设置这个 Agent 的 MCP 配置路径')
       const before = readText(target.mcpPath), parsed = parseConfig(target, before)
-      const key = target.format === 'codex' ? 'mcp_servers' : target.format === 'opencode' ? 'mcp' : 'mcpServers'
-      if (Object.hasOwn(object(parsed[key] || {}), name) || Object.hasOwn(object(parsed.awbDisabledMcp || {}), name)) throw new Error('已存在同名 MCP，保留原配置')
+      const { keys: activeKeys, servers, v2 } = mcpRoot(target, parsed)
+      const parked = !enabled && target.format === 'standard' && target.id !== 'pi' && target.id !== 'omp'
+      const keys = parked ? ['awbDisabledMcp'] : activeKeys
+      if (Object.hasOwn(servers, name) || Object.hasOwn(object(parsed.awbDisabledMcp || {}), name)) throw new Error('已存在同名 MCP，保留原配置')
       let value: ObjectValue
-      if (target.format === 'codex') value = remote ? { url: config.url, ...(config.headers ? { http_headers: config.headers } : {}) } : { command: config.command, args: config.args || [], ...(config.env ? { env: config.env } : {}) }
-      else if (target.format === 'opencode') value = remote ? { type: 'remote', url: config.url, enabled: true, ...(config.headers ? { headers: config.headers } : {}) } : { type: 'local', command: [config.command, ...(config.args as string[] || [])], enabled: true, ...(config.env ? { environment: config.env } : {}) }
+      if (target.format === 'codex') value = { ...(remote ? { url: config.url, ...(config.headers ? { http_headers: config.headers } : {}) } : { command: config.command, args: config.args || [], ...(config.env ? { env: config.env } : {}) }), ...(!enabled ? { enabled: false } : {}) }
+      else if (target.format === 'opencode') value = { ...(remote ? { type: 'remote', url: config.url, ...(config.headers ? { headers: config.headers } : {}) } : { type: 'local', command: [config.command, ...(config.args as string[] || [])], ...(config.env ? { environment: config.env } : {}) }), ...(v2 ? { disabled: !enabled } : { enabled }) }
       else value = remote ? { type: 'http', url: config.url, ...(config.headers ? { headers: config.headers } : {}) } : { command: config.command, args: config.args || [], ...(config.env ? { env: config.env } : {}) }
+      if (!enabled && !parked && target.format === 'standard') value.enabled = false
       let next: string
       if (target.format === 'codex') {
         // Append a new table to preserve comments, ordering and unrelated settings.
@@ -298,14 +377,43 @@ export class ResourceManager {
       } else {
         const bom = before.startsWith('\ufeff') ? '\ufeff' : ''
         const source = before.replace(/^\ufeff/, '') || '{}'
-        next = bom + applyEdits(source, modify(source, [key, name], value, { formattingOptions: { insertSpaces: true, tabSize: 2, eol: before.includes('\r\n') ? '\r\n' : '\n' } }))
+        next = bom + applyEdits(source, modify(source, [...keys, name], value, { formattingOptions: { insertSpaces: true, tabSize: 2, eol: before.includes('\r\n') ? '\r\n' : '\n' } }))
         json(next)
       }
       atomicText(target.mcpPath, before, next)
     })
   }
-  importSkills(targets: ResourceTarget[], source: string, agents: string[]): ResourceResult[] {
+  scanSkills(source: string): { name: string; description: string; path: string }[] {
+    return this.withSkills(source, (skills, staging) => skills.map((skill) => ({ name: skill.name, description: skillInfo(path.join(skill.folder, 'SKILL.md')).description, path: path.relative(staging, skill.folder) || '.' })))
+  }
+  importSkills(targets: ResourceTarget[], source: string, agents: string[], names?: string[]): ResourceResult[] {
+    return this.withSkills(source, (discovered) => {
+      const skills = names ? discovered.filter((skill) => names.includes(skill.name)) : discovered
+      if (!skills.length || (names && names.some((name) => !discovered.some((skill) => skill.name === name)))) throw new Error('请选择扫描结果中的 Skill')
+      const results = this.distribute(targets, agents, (target) => {
+        if (!target.skillPath) throw new Error('请先设置这个 Agent 的 Skill 目录')
+        fs.mkdirSync(target.skillPath, { recursive: true })
+        const root = fs.realpathSync(target.skillPath)
+        for (const skill of skills) if (fs.existsSync(path.join(root, skill.name))) throw new Error(`已存在 ${skill.name}，保留原文件`)
+        const prepared: { temp: string; dest: string }[] = [], installed: string[] = []
+        try {
+          for (const skill of skills) {
+            const temp = path.join(root, `.awb-${randomUUID()}`), dest = path.join(root, skill.name)
+            prepared.push({ temp, dest }); fs.cpSync(skill.folder, temp, { recursive: true, errorOnExist: true, force: false })
+          }
+          for (const item of prepared) {
+            if (fs.existsSync(item.dest)) throw new Error('目标目录已变化，请刷新后重试')
+            fs.renameSync(item.temp, item.dest); installed.push(item.dest)
+          }
+        } catch (error) { for (const dest of installed) removeInside(root, dest); throw error }
+        finally { for (const { temp } of prepared) removeInside(root, temp) }
+      })
+      return skills.length === 1 ? results : results.flatMap((result) => skills.map((skill) => ({ ...result, name: skill.name })))
+    })
+  }
+  private withSkills<T>(source: string, operation: (skills: { folder: string; name: string }[], staging: string) => T): T {
     if (!path.isAbsolute(source)) throw new Error('请选择 Skill 文件夹或 ZIP 压缩包')
+    if (fs.lstatSync(source).isSymbolicLink()) throw new Error('导入文件夹包含符号链接，请选择真实目录')
     const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'awb-skills-'))
     let bytes = 0, count = 0
     try {
@@ -338,30 +446,13 @@ export class ResourceManager {
       }
       const skills: { folder: string; name: string }[] = []
       const discover = (folder: string) => {
-        if (fs.existsSync(path.join(folder, 'SKILL.md'))) { skills.push({ folder, name: skillInfo(path.join(folder, 'SKILL.md')).name }); return }
+        if (fs.existsSync(path.join(folder, 'SKILL.md'))) { skills.push({ folder, name: skillInfo(path.join(folder, 'SKILL.md')).name }) }
         for (const entry of fs.readdirSync(folder, { withFileTypes: true })) if (entry.isDirectory()) discover(path.join(folder, entry.name))
       }
       discover(staging)
       if (!skills.length) throw new Error('未找到包含有效 SKILL.md 的目录')
       if (new Set(skills.map((item) => item.name)).size !== skills.length) throw new Error('导入包包含同名 Skill')
-      return this.distribute(targets, agents, (target) => {
-        if (!target.skillPath) throw new Error('请先设置这个 Agent 的 Skill 目录')
-        fs.mkdirSync(target.skillPath, { recursive: true })
-        const root = fs.realpathSync(target.skillPath)
-        for (const skill of skills) if (fs.existsSync(path.join(root, skill.name))) throw new Error(`已存在 ${skill.name}，保留原文件`)
-        const prepared: { temp: string; dest: string }[] = [], installed: string[] = []
-        try {
-          for (const skill of skills) {
-            const temp = path.join(root, `.awb-${randomUUID()}`), dest = path.join(root, skill.name)
-            prepared.push({ temp, dest }); fs.cpSync(skill.folder, temp, { recursive: true, errorOnExist: true, force: false })
-          }
-          for (const item of prepared) {
-            if (fs.existsSync(item.dest)) throw new Error('目标目录已变化，请刷新后重试')
-            fs.renameSync(item.temp, item.dest); installed.push(item.dest)
-          }
-        } catch (error) { for (const dest of installed) removeInside(root, dest); throw error }
-        finally { for (const { temp } of prepared) removeInside(root, temp) }
-      })
+      return operation(skills, staging)
     } finally { removeInside(os.tmpdir(), staging) }
   }
 }

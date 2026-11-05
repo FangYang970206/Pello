@@ -50,7 +50,7 @@ async function run(target: Target, command: string, input?: string): Promise<str
 function gitBin(target: Target, args: string[]): string {
   const quoted = args.map((a) => (target.platform === 'windows' ? psQuote(a) : bashQuote(a))).join(' ')
   const cwd = target.platform === 'windows' ? psQuote(target.cwd) : bashQuote(target.cwd)
-  return `git -C ${cwd} ${quoted}`
+  return `${target.platform === 'windows' ? '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); ' : ''}git -C ${cwd} -c core.quotepath=false ${quoted}`
 }
 
 async function git(target: Target, args: string[]): Promise<string> {
@@ -65,7 +65,7 @@ async function git(target: Target, args: string[]): Promise<string> {
 }
 
 function parseBranch(status: string): string {
-  const line = status.split(/\r?\n/).find((l) => l.startsWith('## '))
+  const line = status.split(/\r?\n|\0/).find((l) => l.startsWith('## '))
   if (!line) return ''
   const body = line.slice(3)
   if (body.startsWith('No commits yet on ')) return body.slice('No commits yet on '.length).split('...')[0]
@@ -75,13 +75,15 @@ function parseBranch(status: string): string {
 
 function parseStatus(text: string): { branch: string; files: { path: string; st: GitFile['st']; untracked: boolean }[] } {
   const files: { path: string; st: GitFile['st']; untracked: boolean }[] = []
-  for (const line of text.split(/\r?\n/)) {
+  const nul = text.includes('\0'), entries = nul ? text.split('\0') : text.split(/\r?\n/)
+  for (let index = 0; index < entries.length; index++) {
+    const line = entries[index]
     if (!line || line.startsWith('## ')) continue
     if (line.length < 4) continue
     const xy = line.slice(0, 2)
     let file = line.slice(3)
-    const arrow = file.indexOf(' -> ')
-    if (arrow !== -1) file = file.slice(arrow + 4)
+    if (nul && /[RC]/.test(xy)) index++ // In -z format the new name comes first, followed by the old name.
+    if (!nul) { const arrow = file.indexOf(' -> '); if (arrow !== -1) file = file.slice(arrow + 4) }
     if (xy === '??') files.push({ path: file, st: 'A', untracked: true })
     else if (xy.includes('D')) files.push({ path: file, st: 'D', untracked: false })
     else if (xy.includes('A')) files.push({ path: file, st: 'A', untracked: false })
@@ -92,12 +94,15 @@ function parseStatus(text: string): { branch: string; files: { path: string; st:
 
 function parseNumstat(text: string): Map<string, [number, number]> {
   const map = new Map<string, [number, number]>()
-  for (const line of text.split(/\r?\n/)) {
-    const m = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line)
+  const nul = text.includes('\0'), entries = nul ? text.split('\0') : text.split(/\r?\n/)
+  for (let index = 0; index < entries.length; index++) {
+    const m = /^(\d+|-)\t(\d+|-)\t([\s\S]*)$/.exec(entries[index])
     if (!m) continue
     const add = m[1] === '-' ? 0 : Number(m[1])
     const del = m[2] === '-' ? 0 : Number(m[2])
-    map.set(m[3], [add, del])
+    let name = m[3]
+    if (nul && !name) { index++; name = entries[++index] }
+    if (name) map.set(name, [add, del])
   }
   return map
 }
@@ -125,21 +130,23 @@ async function countLines(target: Target, rel: string): Promise<number> {
   }
 }
 
-export async function gitStatus(target: Target): Promise<GitPanel & { flags: Record<string, boolean> }> {
+async function singleGitStatus(target: Target): Promise<GitPanel & { flags: Record<string, boolean> }> {
   let status: string
   try {
-    status = await git(target, ['status', '--porcelain=v1', '-uall', '-b'])
+    status = await git(target, ['status', '--porcelain=v1', '-z', '-uall', '-b', '--', '.'])
   } catch {
     return { isRepo: false, branch: '', files: [], flags: {} }
   }
   if (!status.trim() && !(await isRepo(target))) return { isRepo: false, branch: '', files: [], flags: {} }
   const parsed = parseStatus(status)
+  const prefix = (await git(target, ['rev-parse', '--show-prefix'])).trim()
+  if (prefix) parsed.files = parsed.files.filter((file) => file.path.startsWith(prefix)).map((file) => ({ ...file, path: file.path.slice(prefix.length) }))
   let nums: Map<string, [number, number]>
   try {
-    nums = parseNumstat(await git(target, ['diff', '--numstat', 'HEAD']))
+    nums = parseNumstat(await git(target, ['diff', '--relative', '--numstat', '-z', 'HEAD', '--', '.']))
   } catch {
     try {
-      nums = parseNumstat(await git(target, ['diff', '--numstat']))
+      nums = parseNumstat(await git(target, ['diff', '--relative', '--numstat', '-z', '--', '.']))
     } catch {
       nums = new Map()
     }
@@ -157,6 +164,105 @@ export async function gitStatus(target: Target): Promise<GitPanel & { flags: Rec
     files.push({ path: f.path, st: f.st, add, del })
   }
   return { isRepo: true, branch: parsed.branch, files, flags }
+}
+
+type Discovery = { roots: string[]; errors: string[] }
+const discoveries = new Map<string, { at: number; value: Promise<Discovery> }>()
+const statusRequests = new Map<string, Promise<GitPanel & { flags: Record<string, boolean> }>>()
+const targetKey = (target: Target) => `${target.host?.id || 'local'}:${target.platform}:${target.cwd}`
+
+async function discoverRepositories(target: Target): Promise<Discovery> {
+  const key = targetKey(target), cached = discoveries.get(key)
+  if (cached && Date.now() - cached.at < 30000) return cached.value
+  const value = (async (): Promise<Discovery> => {
+    const roots: string[] = [], errors: string[] = []
+    if (!target.host || target.host.id === 'local') {
+      const queue = [fs.realpathSync(target.cwd)]
+      for (let index = 0; index < queue.length; index++) {
+        const folder = queue[index]
+        try {
+          const entries = await fs.promises.readdir(folder, { withFileTypes: true })
+          if (entries.some((entry) => entry.name === '.git')) { roots.push(folder); continue }
+          for (const entry of entries) if (entry.isDirectory() && !entry.isSymbolicLink() && !IGNORE.has(entry.name)) queue.push(path.join(folder, entry.name))
+        } catch (error) { errors.push(`${path.relative(target.cwd, folder) || '.'}：${(error as NodeJS.ErrnoException).code || '无法读取'}`) }
+      }
+    } else if (target.platform === 'linux') {
+      const excluded = [...IGNORE].filter((name) => name !== '.git').map((name) => `-name ${bashQuote(name)}`).join(' -o ')
+      const command = `find ${bashQuote(target.cwd)} -type d \\( ${excluded} \\) -prune -o -name .git -print0 -prune`
+      try { roots.push(...(await run(target, command)).split('\0').filter(Boolean).map((name) => path.posix.dirname(name))) }
+      catch (error) {
+        const failure = error as { stdout?: string }
+        if (failure.stdout) roots.push(...failure.stdout.split('\0').filter(Boolean).map((name) => path.posix.dirname(name)))
+        errors.push('部分远程目录无法读取，请检查目录权限或连接后重试')
+      }
+    } else {
+      const command = `$q=[Collections.Generic.Queue[string]]::new();$q.Enqueue(${psQuote(target.cwd)});$r=@();$e=@();while($q.Count){$p=$q.Dequeue();try{$d=@(Get-ChildItem -LiteralPath $p -Force -ErrorAction Stop);if($d.Name -contains '.git'){$r+=$p;continue};foreach($x in $d){if($x.PSIsContainer -and -not ($x.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $x.Name -notin @(${[...IGNORE].map(psQuote).join(',')})){$q.Enqueue($x.FullName)}}}catch{$e+=$p}};@{roots=@($r);errors=@($e)}|ConvertTo-Json -Compress`
+      const result = JSON.parse(await run(target, command)) as Discovery
+      roots.push(...result.roots); errors.push(...result.errors.map((folder) => `${folder}：无法读取目录`))
+    }
+    const api = target.platform === 'windows' ? path.win32 : path.posix
+    const unique = [...new Set(roots)].sort()
+    return { roots: unique.filter((root) => !unique.some((parent) => parent !== root && !api.relative(parent, root).startsWith('..') && !api.isAbsolute(api.relative(parent, root)))), errors }
+  })()
+  discoveries.set(key, { at: Date.now(), value })
+  try { return await value } catch (error) { discoveries.delete(key); throw error }
+}
+
+/** A workspace may be a repository or a directory containing independent repositories. */
+export async function gitStatus(target: Target, rescan = false): Promise<GitPanel & { flags: Record<string, boolean> }> {
+  const key = targetKey(target)
+  if (rescan) { await statusRequests.get(key)?.catch(() => undefined); discoveries.delete(key) }
+  const pending = statusRequests.get(key)
+  if (pending) return pending
+  const request = (async () => {
+    const root = await singleGitStatus(target)
+    if (root.isRepo) return root
+    const { roots, errors } = await discoverRepositories(target)
+    const panel: GitPanel & { flags: Record<string, boolean> } = { ...root, repositories: [], errors: [...errors], files: [], flags: {} }
+    const api = target.platform === 'windows' ? path.win32 : path.posix
+    // Bound native Git processes while allowing large workspaces to remain responsive.
+    let next = 0
+    await Promise.all(Array.from({ length: Math.min(4, roots.length) }, async () => {
+      while (next < roots.length) {
+        const cwd = roots[next++], prefix = api.relative(target.cwd, cwd).replace(/\\/g, '/')
+        let repo: Awaited<ReturnType<typeof singleGitStatus>>
+        try { repo = await singleGitStatus({ ...target, cwd }) }
+        catch { panel.errors!.push(`${prefix}：无法读取 Git 状态`); continue }
+        if (!repo.isRepo) { panel.errors!.push(`${prefix}：无法读取 Git 状态`); continue }
+        panel.repositories!.push({ path: prefix, branch: repo.branch, count: repo.files.length })
+        for (const file of repo.files) {
+          const rel = `${prefix}/${file.path}`
+          panel.files.push({ ...file, path: rel, repository: prefix }); panel.flags[rel] = !!repo.flags[file.path]
+        }
+      }
+    }))
+    panel.repositories!.sort((a, b) => a.path.localeCompare(b.path))
+    panel.files.sort((a, b) => a.path.localeCompare(b.path))
+    return panel
+  })()
+  statusRequests.set(key, request)
+  try { return await request } finally { statusRequests.delete(key) }
+}
+
+async function owningRepository(target: Target, rel: string): Promise<{ target: Target; relative: string }> {
+  rel = cleanRelative(rel)
+  const api = target.platform === 'windows' ? path.win32 : path.posix
+  const absolute = api.resolve(target.cwd, rel)
+  let parent = api.dirname(absolute)
+  while (true) {
+    if (!target.host || target.host.id === 'local') {
+      if (fs.existsSync(parent) && !inside(fs.realpathSync(target.cwd), fs.realpathSync(parent))) throw new Error('路径超出项目目录')
+    }
+    try {
+      const root = (await git({ ...target, cwd: parent }, ['rev-parse', '--show-toplevel'])).trim()
+      const relative = api.relative(root, absolute).replace(/\\/g, '/')
+      if (!relative || relative === '..' || relative.startsWith('../') || api.isAbsolute(relative)) throw new Error('路径超出 Git 仓库')
+      return { target: { ...target, cwd: root }, relative }
+    } catch (error) {
+      if (parent === target.cwd || api.relative(target.cwd, parent).startsWith('..')) throw error
+      parent = api.dirname(parent)
+    }
+  }
 }
 
 async function isRepo(target: Target): Promise<boolean> {
@@ -220,8 +326,10 @@ async function showHead(target: Target, rel: string): Promise<string> {
 }
 
 export async function gitDiff(target: Target, rel: string, untracked: boolean): Promise<FileDiff> {
+  rel = cleanRelative(rel)
+  const owner = await owningRepository(target, rel)
   const st: GitFile['st'] = untracked ? 'A' : 'M'
-  const head = untracked ? '' : await showHead(target, rel)
+  const head = untracked ? '' : await showHead(owner.target, owner.relative)
   const work = !target.host || target.host.id === 'local' ? await readLocal(target.cwd, rel) : await readRemote(target, rel)
   if (work.binary) return { path: rel, st, before: '', after: '', binary: true, tooBig: false }
   const before = head
@@ -234,7 +342,8 @@ export async function gitDiff(target: Target, rel: string, untracked: boolean): 
 }
 
 export async function gitDiscard(target: Target, rel: string, untracked: boolean): Promise<void> {
-  if (rel.includes('\0')) throw new Error('非法路径')
+  const owner = await owningRepository(target, rel)
+  target = owner.target; rel = owner.relative
   if (untracked) {
     await git(target, ['clean', '-f', '--', rel])
     return

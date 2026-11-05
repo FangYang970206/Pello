@@ -203,6 +203,7 @@ try {
   assert.equal(again.ok, true, again.error)
   console.log('PASS saved password works after application restart')
 
+  await page.getByRole('button', { name: '显示文件面板', exact: true }).click()
   await page.click('[data-a=rmode][data-id=files]')
   await page.click('[data-a=preview][data-id="README.md"]')
   await documentCommand(app, page, 'mode')
@@ -223,8 +224,8 @@ try {
   await page.click('[data-a=settings]')
   await page.click('[data-a=sec][data-id=agents]')
   const presets = await page.locator('.group').first().locator('.srow b').allTextContents()
-  assert.deepEqual(presets, ['Claude Code', 'Codex CLI', 'OpenCode', 'Pi'])
-  console.log('PASS only Claude Code, Codex, OpenCode and Pi presets are shown')
+  assert.deepEqual(presets, ['Claude Code', 'Codex CLI', 'OpenCode', 'Pi', 'Oh My Pi'])
+  console.log('PASS Claude Code, Codex, OpenCode, Pi and Oh My Pi presets are shown')
   await page.click('[data-a=sec][data-id=hosts]')
   await page.click('button[data-a=host][data-id=remote]')
   await page.getByLabel('认证方式').selectOption('password')

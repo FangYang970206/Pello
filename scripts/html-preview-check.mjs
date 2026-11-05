@@ -8,7 +8,7 @@ import { installDocumentHarness, documentCommand } from './fixtures/document-har
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'awb-html-switch-'))
 const file = path.join(data, 'page.html')
 fs.writeFileSync(file, '<h1>original</h1>')
-fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: { restore: false }, projects: [{ id: 'p', name: 'HTML switching', host: 'local', path: data, agent: 'shell' }] }))
+fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: { layout: 'balanced', restore: false }, projects: [{ id: 'p', name: 'HTML switching', host: 'local', path: data, agent: 'shell' }] }))
 const env = { ...process.env, AWB_USER_DATA: data }; delete env.ELECTRON_RUN_AS_NODE
 const app = await electron.launch({ args: ['.'], env })
 try {

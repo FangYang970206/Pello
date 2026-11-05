@@ -29,7 +29,7 @@ fs.mkdirSync(skillFolder, { recursive: true })
 fs.writeFileSync(path.join(skillFolder, 'SKILL.md'), '---\nname: project-conventions\ndescription: 项目开发约定与检查流程\n---\n# 项目约定\n')
 delete env.ELECTRON_RUN_AS_NODE
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({
-  settings: { theme: 'dark', fontSize: 13, defShell: process.platform === 'win32' ? 'pwsh' : 'bash', defAgent: 'shell', restore: false, confirmKill: false },
+  settings: { layout: 'balanced', theme: 'dark', fontSize: 13, defShell: process.platform === 'win32' ? 'pwsh' : 'bash', defAgent: 'shell', restore: false, confirmKill: false },
   projects: [{ id: 'p', name: 'Agent Workbench', host: 'local', path: project, agent: 'shell' },
     { id: 'long', name: '跨团队协作与远程项目名称很长时的显示检查', host: 'local', path: project, agent: 'shell' }],
   custom: [{ id: 'custom', name: '项目专用 Agent', cmd: 'custom-agent', args: '--interactive --workspace current-project', shell: 'pwsh', color: '#7fb2ff', letter: 'A', env: [] }]

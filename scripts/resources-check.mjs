@@ -6,6 +6,7 @@ import { createRequire } from 'node:module'
 import { buildSync } from 'esbuild'
 import { parse as parseToml } from 'smol-toml'
 import { zipSync, strToU8 } from 'fflate'
+import { parse as parseJson } from 'jsonc-parser'
 
 const root = process.cwd(), data = fs.mkdtempSync(path.join(os.tmpdir(), 'awb-resources-'))
 const home = path.join(data, 'home')
@@ -41,6 +42,7 @@ fs.mkdirSync(path.join(source, 'references'), { recursive: true })
 fs.writeFileSync(path.join(source, 'SKILL.md'), '---\nname: fixture-skill\ndescription: "Use this for fixture testing"\n---\n# Body\n')
 fs.writeFileSync(path.join(source, 'references', 'guide.md'), 'support file')
 assert.ok(manager.importSkills(targets, source, ['claude', 'codex']).every((item) => item.ok))
+assert.ok(manager.importSkills(targets, source, ['omp']).every((item) => item.ok))
 assert.equal(fs.readFileSync(path.join(target('claude').skillPath, 'fixture-skill/references/guide.md'), 'utf8'), 'support file')
 assert.ok(manager.importSkills(targets, source, ['claude']).every((item) => !item.ok))
 for (let i = 0; i < 14; i++) {
@@ -118,3 +120,50 @@ assert.throws(() => manager.toggle(targets, 'mcp', 'claude', privateItem, true),
 assert.throws(() => manager.toggle(targets, 'mcp', 'claude', privateItem, false), /同名/)
 assert.equal(JSON.parse(fs.readFileSync(conflictFile, 'utf8')).mcpServers['private-endpoint'].command, 'another-server')
 console.log('PASS externally recreated MCP conflicts preserve both active and parked configurations')
+
+const v2 = { ...target('opencode'), mcpPath: path.join(data, 'opencode-v2.jsonc') }
+fs.writeFileSync(v2.mcpPath, '{\n// Keep native V2 config comment\n"providers": {"example":{"settings":{"apiKey":"keep-provider-secret"}}},\n"permissions": [\n// Keep unrelated permission comment\n{"action":"read","resource":"*","effect":"allow"}],\n"mcp":{"servers":{"native-existing":{"type":"remote","url":"https://example.invalid/mcp","disabled":true,"headers":{"Authorization":"hide-native-token"}}}}\n}')
+assert.deepEqual(manager.list([v2], 'mcp', 'opencode').items.map(item => item.name), ['native-existing'], 'OpenCode V2 must list actual servers, not its servers container')
+const nativeItem = manager.list([v2], 'mcp', 'opencode').items[0]
+assert.equal(nativeItem.enabled, false)
+manager.toggle([v2], 'mcp', 'opencode', nativeItem, true)
+assert.equal(parseJson(fs.readFileSync(v2.mcpPath, 'utf8')).mcp.servers['native-existing'].disabled, false)
+assert.ok(!manager.detail([v2], 'mcp', 'opencode', nativeItem).content.includes('hide-native-token'))
+assert.ok(manager.addMcp([v2], 'native-added', { command: 'node', args: ['server.js'] }, ['opencode'])[0].ok)
+assert.equal(parseJson(fs.readFileSync(v2.mcpPath, 'utf8')).mcp.servers['native-added'].disabled, false)
+assert.equal(manager.addMcp([v2], 'native-added', { command: 'other' }, ['opencode'])[0].ok, false)
+const nativeSkill = manager.list([v2], 'skills', 'opencode', 1, 'fixture-skill').items[0]
+manager.toggle([v2], 'skills', 'opencode', nativeSkill, false)
+assert.equal(manager.list([v2], 'skills', 'opencode', 1, 'fixture-skill').items[0].enabled, false)
+assert.deepEqual(parseJson(fs.readFileSync(v2.mcpPath, 'utf8')).permissions.at(-1), { action: 'skill', resource: 'fixture-skill', effect: 'deny' })
+manager.toggle([v2], 'skills', 'opencode', nativeSkill, true)
+const nativeText = fs.readFileSync(v2.mcpPath, 'utf8'), nativeConfig = parseJson(nativeText)
+assert.equal(nativeConfig.permissions.at(-1).effect, 'allow')
+assert.equal(nativeConfig.permissions.length, 2)
+assert.match(nativeText, /Keep native V2 config comment/)
+assert.match(nativeText, /Keep unrelated permission comment/)
+assert.equal(nativeConfig.providers.example.settings.apiKey, 'keep-provider-secret')
+console.log('PASS native OpenCode V2 MCP discovery, disabled switches, Skill permissions, secret redaction and comment preservation')
+const customOmp = { id: 'custom-omp', name: 'Custom OMP', cmd: 'omp', args: '', shell: 'pwsh', letter: 'O', color: '#95cfaa', env: [], resources: { skillPath: path.join(data, 'custom-omp/skills'), mcpPath: path.join(data, 'custom-omp/mcp.json'), format: 'standard', skillAdapter: 'omp' } }
+const ompTargets = manager.targets([customOmp])
+assert.ok(manager.importSkills(ompTargets, source, ['custom-omp'])[0].ok)
+const ompSkill = manager.list(ompTargets, 'skills', 'custom-omp').items[0]
+manager.toggle(ompTargets, 'skills', 'custom-omp', ompSkill, false)
+assert.ok(fs.existsSync(path.join(data, 'custom-omp/config.yml')), 'Custom OMP adapters default to native config.yml')
+assert.equal(manager.list(ompTargets, 'skills', 'custom-omp').items[0].enabled, false)
+assert.equal(manager.skillDirectory(ompTargets, 'custom-omp', ompSkill, true), path.dirname(ompSkill.path))
+assert.equal(manager.skillDirectory(customTargets, 'custom', portable, true), path.dirname(portable.path))
+assert.throws(() => manager.skillDirectory(targets, 'claude', { name: 'fixture-skill', path: path.join(data, 'outside/SKILL.md') }, true), /资源已改变/)
+const outside = path.join(data, 'outside-linked-skill')
+fs.mkdirSync(outside)
+fs.writeFileSync(path.join(outside, 'SKILL.md'), '---\nname: linked-skill\ndescription: External skill fixture\n---\nBody')
+const link = path.join(target('claude').skillPath, 'linked')
+fs.symlinkSync(outside, link, process.platform === 'win32' ? 'junction' : 'dir')
+const linkedSkill = manager.list(targets, 'skills', 'claude', 1, 'linked-skill').items[0]
+assert.equal(manager.skillDirectory(targets, 'claude', linkedSkill), link, 'Discovered links can be opened in the file manager')
+assert.throws(() => manager.skillDirectory(targets, 'claude', linkedSkill, true), /资源范围|符号链接/)
+assert.ok(fs.existsSync(path.join(outside, 'SKILL.md')))
+fs.writeFileSync(path.join(target('claude').skillPath, 'SKILL.md'), '---\nname: root-skill\ndescription: Discovery root fixture\n---\nBody')
+const rootSkill = manager.list(targets, 'skills', 'claude', 1, 'root-skill').items[0]
+assert.throws(() => manager.skillDirectory(targets, 'claude', rootSkill, true), /资源范围|整个 Skill/)
+console.log('PASS Skill folder actions accept listed native/portable directories and reject forged paths, external linked deletion and discovery-root deletion')

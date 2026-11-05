@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import type { AgentInfo, Database, FileDiff, GitPanel, Host, SettingsSection, ShellKind, ThemeName, TreeNode } from '../shared/types'
+import type { AgentInfo, Database, FileDiff, GitPanel, Host, SettingsSection, ShellKind, ThemeName, TreeNode, WorkSession } from '../shared/types'
+import { legacySessionId, sessionOf } from '../shared/work-sessions'
 import { PRESETS, SHELL_AGENT, cmdline, resolveAgent, shellLabel, uid } from '../shared/types'
 import { Icon } from './icons'
 import appIcon from '../../assets/icon-small.svg'
@@ -7,16 +8,18 @@ import { dropTerm, paint, syncTermSize, writeNotice, writeTerm } from './terms'
 import { SettingsView } from './SettingsView'
 import { ConfirmDialog, ExecDialog, HostDialog, NewProjectDialog, NewTermDialog, dialogOpener, focusableIn } from './Dialogs'
 import { RightPanel } from './RightPanel'
+import { ProjectSidebar } from './ProjectSidebar'
 import { Workspace, type FileTab, type Tab, type TermTab } from './Workspace'
 import { codeFont, uiFont } from '../shared/fonts'
+import { themeVariables, workbenchTheme } from '../shared/themes'
 import { AUTO_SAVE_DELAY, documentKey, editableText, fileText, isDirty, recordChange, undoDocument, type DocumentDraft } from './documents'
 
 type Modal =
   | { type: 'project' }
-  | { type: 'term' }
+  | { type: 'term'; newSession?: boolean }
   | { type: 'exec'; id?: string }
   | { type: 'host'; id?: string }
-  | { type: 'confirm'; title: string; body: ReactNode; ok: string; run: () => void; save?: () => void }
+  | { type: 'confirm'; title: string; body: ReactNode; ok: string; run: () => void | Promise<void>; save?: () => void }
 
 type GitState = GitPanel & { untracked: Record<string, boolean> }
 
@@ -32,12 +35,23 @@ export function App() {
   const [route, setRoute] = useState<'work' | 'settings'>('work')
   const [section, setSection] = useState<SettingsSection>('general')
   const [projectId, setProjectId] = useState<string | null>(null)
+  const projectIdRef = useRef(projectId)
+  projectIdRef.current = projectId
   const [tabs, setTabs] = useState<Tab[]>([])
+  const [workSessions, setWorkSessions] = useState<Record<string, WorkSession[]>>({})
+  const sessionsRef = useRef(workSessions)
+  const [selectedSessions, setSelectedSessions] = useState<Record<string, string>>({})
+  const selectedSessionsRef = useRef(selectedSessions)
+  function putSessions(next: Record<string, WorkSession[]>) { sessionsRef.current = next; setWorkSessions(next) }
+  function pickSession(project: string, id: string) {
+    const next = { ...selectedSessionsRef.current, [project]: id }
+    selectedSessionsRef.current = next; setSelectedSessions(next)
+  }
   const [activeMap, setActiveMap] = useState<Record<string, string | undefined>>({})
   const activeMapRef = useRef(activeMap)
   activeMapRef.current = activeMap
   const [menuId, setMenuId] = useState<string | null>(null)
-  const [right, setRight] = useState(true)
+  const [right, setRight] = useState(false)
   const [rightWidth, setRightWidth] = useState(() => Number(localStorage.getItem('awb:rightWidth')) || 296)
   const [rmode, setRmode] = useState<'files' | 'changes'>('changes')
   const [dmode, setDmode] = useState<'unified' | 'split'>('unified')
@@ -58,6 +72,7 @@ export function App() {
   const autoSaveTimers = useRef(new Map<string, { draft: string; timer: ReturnType<typeof setTimeout> }>())
   const [gitTick, setGitTick] = useState(0)
   const booted = useRef(false)
+  const restoring = useRef(false)
   const closingTerms = useRef(new Set<string>())
   const touring = useRef(false)
   const modalRef = useRef<Modal | null>(null)
@@ -66,11 +81,11 @@ export function App() {
   const settingsReturn = useRef<HTMLElement | null>(null)
   modalRef.current = modal
 
-  useEffect(() => { localStorage.setItem('awb:rightWidth', String(rightWidth)) }, [rightWidth])
-
   function resizeRight(width: number) {
     const sideWidth = window.innerWidth <= 1180 ? 216 : 240
-    setRightWidth(Math.max(220, Math.min(width, window.innerWidth - sideWidth - 320, 800)))
+    const next = Math.max(220, Math.min(width, window.innerWidth - sideWidth - 320, 800))
+    setRightWidth(next)
+    localStorage.setItem('awb:rightWidth', String(next))
   }
 
   useEffect(() => {
@@ -108,19 +123,32 @@ export function App() {
   useEffect(() => {
     void window.awb.getState().then((state) => {
       setDb(state.db)
+      putSessions(state.db.workSessions || {})
+      selectedSessionsRef.current = state.db.activeSession || {}
+      setSelectedSessions(selectedSessionsRef.current)
       setInstalled(state.installed)
     })
   }, [])
 
   useEffect(() => {
     if (!db) return
-    document.documentElement.dataset.theme = db.settings.theme
+    document.documentElement.dataset.theme = workbenchTheme(db.settings.theme).mode
+    document.documentElement.dataset.palette = db.settings.theme
+    document.documentElement.dataset.density = db.settings.density || 'comfortable'
+    for (const [key, value] of Object.entries(themeVariables(db.settings.theme))) document.documentElement.style.setProperty(key, value)
     document.documentElement.style.setProperty('--fs', `${db.settings.fontSize}px`)
     document.documentElement.style.setProperty('--mono', codeFont(db.settings.fontFamily))
     document.documentElement.style.setProperty('--ui', uiFont(db.settings.uiFontFamily))
     document.documentElement.style.setProperty('--ui-size', `${db.settings.uiFontSize || 13}px`)
     document.documentElement.style.setProperty('--editor-size', `${db.settings.editorFontSize || 14}px`)
   }, [db])
+
+  useEffect(() => {
+    const layout = db?.settings.layout || 'focus'
+    setRight(layout !== 'focus')
+    if (layout === 'review') { setRightWidth(360); setDmode(window.innerWidth >= 1180 ? 'split' : 'unified') }
+    else if (layout === 'balanced') { setRightWidth(Number(localStorage.getItem('awb:rightWidth')) || 296); setDmode('unified') }
+  }, [db?.settings.layout])
 
   useEffect(() => {
     if (!menuId) return
@@ -136,7 +164,8 @@ export function App() {
   const project = db?.projects.find((item) => item.id === projectId) || null
   const host = db?.hosts.find((item) => item.id === project?.host) || db?.hosts[0]
   const theme: ThemeName = db?.settings.theme || 'dark'
-  const projectTabs = project ? tabs.filter((tab) => tab.projectId === project.id) : []
+  const sessionId = project ? selectedSessions[project.id] || workSessions[project.id]?.[0]?.id : undefined
+  const projectTabs = project ? tabs.filter((tab) => tab.projectId === project.id && (tab.type !== 'term' || sessionOf(tab) === sessionId)) : []
   const active = projectTabs.find((tab) => tab.id === activeMap[project?.id || '']) ?? projectTabs[0]
   const preview = active?.type === 'file' ? documents[documentKey(active.projectId, active.path)] || null : null
   const agents: AgentInfo[] = db
@@ -149,26 +178,40 @@ export function App() {
     for (const item of db.projects) {
       const terms = next
         .filter((tab): tab is TermTab => tab.type === 'term' && tab.projectId === item.id)
-        .map((tab) => ({ id: tab.id, kind: tab.kind, shell: tab.shell }))
+        .map((tab) => ({ id: tab.id, kind: tab.kind, shell: tab.shell, name: tab.name, sessionId: sessionOf(tab) }))
       const wanted = map[item.id]
       const activeId = terms.some((term) => term.id === wanted) ? wanted : terms[0]?.id ?? null
-      void window.awb.saveSessions(item.id, terms, activeId)
+      const groups = (sessionsRef.current[item.id] || []).map((session) => ({ ...session, activeTab: terms.find((term) => term.id === wanted && term.sessionId === session.id)?.id || session.activeTab }))
+      sessionsRef.current = { ...sessionsRef.current, [item.id]: groups }
+      void window.awb.saveSessions(item.id, terms, activeId, groups, selectedSessionsRef.current[item.id]).catch((error) => toast(String(error), true))
     }
-  }, [db])
+  }, [db, toast])
 
-  const openTerm = useCallback(async (target: NonNullable<typeof project>, kind: string, shell: ShellKind, activate = true, existingId?: string) => {
+  const openTerm = useCallback(async (target: NonNullable<typeof project>, kind: string, shell: ShellKind, activate = true, existingId?: string, existingName?: string, targetSession?: string) => {
     const id = existingId || uid('t')
+    const groupId = targetSession || selectedSessionsRef.current[target.id] || sessionsRef.current[target.id]?.[0]?.id || legacySessionId(target.id)
+    if (!sessionsRef.current[target.id]?.some((session) => session.id === groupId)) {
+      const next = { ...sessionsRef.current, [target.id]: [...(sessionsRef.current[target.id] || []), { id: groupId, name: '会话一' }] }
+      sessionsRef.current = next; setWorkSessions(next)
+    }
+    if (activate) {
+      const next = { ...selectedSessionsRef.current, [target.id]: groupId }
+      selectedSessionsRef.current = next; setSelectedSessions(next)
+    }
     closingTerms.current.delete(id)
     const tab: TermTab = {
       id,
       type: 'term',
       projectId: target.id,
+      sessionId: groupId,
       kind,
       shell,
       state: kind === 'shell' ? 'idle' : 'running',
       startedAt: kind === 'shell' ? null : Date.now(),
       exitCode: null,
-      inputReady: false
+      inputReady: false,
+      name: existingName,
+      hasRun: kind !== 'shell'
     }
     setTabs((list) => (list.some((item) => item.id === id) ? list : [...list, tab]))
     if (activate) setActiveMap((map) => ({ ...map, [target.id]: id }))
@@ -189,7 +232,7 @@ export function App() {
     } catch (err) {
       setTabs((list) => {
         const next = list.filter((item) => item.id !== id)
-        const mine = next.filter((item) => item.projectId === target.id)
+        const mine = next.filter((item) => item.projectId === target.id && (item.type !== 'term' || sessionOf(item) === selectedSessionsRef.current[target.id]))
         const current = activeMapRef.current[target.id]
         const keep = current !== id && mine.some((item) => item.id === current) ? current : mine[0]?.id
         const activeIds = { ...activeMapRef.current, [target.id]: keep }
@@ -217,24 +260,29 @@ export function App() {
     const first = db.projects[0]?.id ?? null
     setProjectId(first)
     if (!db.settings.restore) return
+    restoring.current = true
     const seeded: Record<string, string | undefined> = {}
+    const pending: Promise<unknown>[] = []
     for (const item of db.projects) {
       const saved = db.sessions[item.id] || []
       if (!saved.length) continue
       const wanted = db.activeTab?.[item.id]
       seeded[item.id] = saved.some((term) => term.id === wanted) ? wanted : saved[0].id
-      for (const term of saved) void openTerm(item, term.kind, term.shell, false, term.id)
+      for (const term of saved) pending.push(openTerm(item, term.kind, term.shell, false, term.id, term.name, term.sessionId))
     }
+    activeMapRef.current = seeded
     setActiveMap(seeded)
+    void Promise.allSettled(pending).then(() => { restoring.current = false; setTabs((list) => [...list]) })
   }, [db, openTerm])
 
   useEffect(() => {
+    if (restoring.current) return
     setActiveMap((map) => {
       const ids = new Set([...Object.keys(map), ...tabs.map((tab) => tab.projectId)])
       const next = { ...map }
       let changed = false
       for (const id of ids) {
-        const mine = tabs.filter((tab) => tab.projectId === id)
+        const mine = tabs.filter((tab) => tab.projectId === id && (tab.type !== 'term' || sessionOf(tab) === selectedSessionsRef.current[id]))
         if (!mine.length) {
           if (id in next) {
             delete next[id]
@@ -249,7 +297,7 @@ export function App() {
       }
       return changed ? next : map
     })
-  }, [tabs])
+  }, [tabs, selectedSessions])
 
   useEffect(() => {
     return window.awb.onPty((event) => {
@@ -261,7 +309,7 @@ export function App() {
       setTabs((list) =>
         list.map((tab) =>
           tab.id === event.id && tab.type === 'term'
-            ? { ...tab, state: event.state, exitCode: event.exitCode, startedAt: event.startedAt, inputReady: event.inputReady }
+            ? { ...tab, hasRun: tab.hasRun || event.state === 'running', state: event.state, exitCode: event.exitCode, startedAt: event.startedAt, inputReady: event.inputReady }
             : tab
         )
       )
@@ -461,7 +509,7 @@ export function App() {
     })
     setTabs((list) => {
       const next = list.filter((item) => item.id !== id)
-      const mine = next.filter((item) => item.projectId === tab.projectId)
+      const mine = next.filter((item) => item.projectId === tab.projectId && (item.type !== 'term' || sessionOf(item) === selectedSessionsRef.current[tab.projectId]))
       let preferred = activeMapRef.current[tab.projectId]
       if (preferred === id) preferred = undefined
       const keep = mine.some((item) => item.id === preferred) ? preferred : mine[0]?.id
@@ -512,7 +560,8 @@ export function App() {
 
   function selectProject(id: string) {
     setProjectId(id)
-    const mine = tabs.filter((tab) => tab.projectId === id)
+    const wantedSession = selectedSessionsRef.current[id] || sessionsRef.current[id]?.[0]?.id
+    const mine = tabs.filter((tab) => tab.projectId === id && (tab.type !== 'term' || sessionOf(tab) === wantedSession))
     if (mine.length && !mine.some((tab) => tab.id === activeMap[id])) {
       const activeIds = { ...activeMap, [id]: mine[0].id }
       setActiveMap(activeIds)
@@ -524,10 +573,98 @@ export function App() {
   }
 
   function selectTab(id: string) {
+    const tab = tabs.find((item) => item.id === id)
+    if (!tab) return
+    if (tab.type === 'term') pickSession(tab.projectId, sessionOf(tab))
+    const activeIds = { ...activeMap, [tab.projectId]: id }
+    setProjectId(tab.projectId); setRoute('work'); setActiveMap(activeIds)
+    if (tab.type === 'term') persist(tabs, activeIds)
+  }
+
+  function selectSession(project: string, id: string) {
+    pickSession(project, id)
+    const session = sessionsRef.current[project]?.find((item) => item.id === id)
+    const mine = tabs.filter((tab): tab is TermTab => tab.type === 'term' && tab.projectId === project && sessionOf(tab) === id)
+    const wanted = mine.find((tab) => tab.id === session?.activeTab) || mine[0]
+    const ids = { ...activeMapRef.current, [project]: wanted?.id }
+    activeMapRef.current = ids; setActiveMap(ids)
+    setProjectId(project); setRoute('work'); setMenuId(null)
+    persist(tabs, ids)
+  }
+
+  async function renameSession(project: string, id: string, name: string) {
+    const groups = (sessionsRef.current[project] || []).map((item) => item.id === id ? { ...item, name } : item)
+    const terms = tabs.filter((tab): tab is TermTab => tab.type === 'term' && tab.projectId === project)
+    await window.awb.saveSessions(project, terms, activeMapRef.current[project], groups, selectedSessionsRef.current[project])
+    putSessions({ ...sessionsRef.current, [project]: groups })
+  }
+
+  function removeSession(project: string, id: string) {
+    const group = sessionsRef.current[project]?.find((item) => item.id === id)
+    if (!group) return
+    const terms = tabs.filter((tab): tab is TermTab => tab.type === 'term' && tab.projectId === project && sessionOf(tab) === id)
+    setModal({ type: 'confirm', title: '删除会话？', body: `删除 ${group.name} 将关闭其中的 ${terms.length} 个终端，项目文件会保留。`, ok: '删除会话', run: async () => {
+      for (const term of terms) closingTerms.current.add(term.id)
+      try { await Promise.all(terms.map((term) => window.awb.ptyClose(term.id))) }
+      catch (error) { for (const term of terms) closingTerms.current.delete(term.id); toast(String(error), true); return }
+      for (const term of terms) dropTerm(term.id)
+      const groups = (sessionsRef.current[project] || []).filter((item) => item.id !== id)
+      putSessions({ ...sessionsRef.current, [project]: groups })
+      if (selectedSessionsRef.current[project] === id) pickSession(project, groups[0]?.id || '')
+      setTabs((list) => {
+        const next = list.filter((tab) => !terms.some((term) => term.id === tab.id))
+        const mine = next.filter((tab) => tab.projectId === project && (tab.type !== 'term' || sessionOf(tab) === selectedSessionsRef.current[project]))
+        const keep = mine.find((tab) => tab.id === activeMapRef.current[project]) || mine[0]
+        const ids = { ...activeMapRef.current, [project]: keep?.id }
+        activeMapRef.current = ids; setActiveMap(ids); persist(next, ids)
+        return next
+      })
+      setModal(null)
+    } })
+  }
+
+  async function createTerminal(kind: string, shell: ShellKind, newSession = false) {
     if (!project) return
-    const activeIds = { ...activeMap, [project.id]: id }
-    setActiveMap(activeIds)
-    if (tabs.some((tab) => tab.id === id && tab.type === 'term')) persist(tabs, activeIds)
+    let groupId = sessionId
+    const created = newSession || !groupId
+    if (created) {
+      groupId = uid('s')
+      const groups = sessionsRef.current[project.id] || []
+      let number = groups.length + 1
+      while (groups.some((group) => group.name === `会话 ${number}`)) number++
+      putSessions({ ...sessionsRef.current, [project.id]: [...groups, { id: groupId, name: `会话 ${number}` }] })
+    }
+    const result = await openTerm(project, kind, shell, true, undefined, undefined, groupId)
+    if (result) setModal(null)
+    else {
+      if (created) {
+        putSessions({ ...sessionsRef.current, [project.id]: (sessionsRef.current[project.id] || []).filter((group) => group.id !== groupId) })
+        pickSession(project.id, sessionId || '')
+        setTabs((list) => {
+          const previous = sessionsRef.current[project.id]?.find((group) => group.id === sessionId)
+          const mine = list.filter((tab) => tab.projectId === project.id && tab.type === 'term' && sessionOf(tab) === sessionId)
+          const keep = mine.find((tab) => tab.id === previous?.activeTab) || mine[0]
+          const ids = { ...activeMapRef.current, [project.id]: keep?.id }
+          activeMapRef.current = ids; setActiveMap(ids); persist(list, ids)
+          return [...list]
+        })
+      }
+      throw new Error('终端启动失败，请检查项目目录、环境连接与执行器配置后重试。')
+    }
+  }
+
+  async function renameProject(id: string, name: string) {
+    if (!db) return
+    const projects = db.projects.map((item) => item.id === id ? { ...item, name } : item)
+    setDb(await window.awb.saveProjects(projects))
+  }
+
+  async function renameTerm(id: string, name: string) {
+    const tab = tabs.find((item) => item.id === id && item.type === 'term')
+    if (!tab) return
+    const terms = tabs.filter((item): item is TermTab => item.type === 'term' && item.projectId === tab.projectId).map((item) => ({ id: item.id, kind: item.kind, shell: item.shell, sessionId: sessionOf(item), name: item.id === id ? name : item.name }))
+    await window.awb.saveSessions(tab.projectId, terms, activeMapRef.current[tab.projectId], sessionsRef.current[tab.projectId], selectedSessionsRef.current[tab.projectId])
+    setTabs((list) => list.map((item) => item.id === id ? { ...item, name } : item))
   }
 
   function askDiscard() {
@@ -755,7 +892,7 @@ export function App() {
 
   return (
     <>
-      <div id="app" className={withRight ? 'with-right' : ''} style={{ '--right-width': `${rightWidth}px` } as CSSProperties}>
+      <div id="app" className={withRight ? 'with-right' : ''} data-panel-side={db?.settings.panelSide || 'right'} style={{ '--right-width': `${rightWidth}px` } as CSSProperties}>
         <header className="title">
           <div className="brand">
             <img className="logo" src={appIcon} width="18" height="18" alt="" aria-hidden="true" />
@@ -781,70 +918,12 @@ export function App() {
                   <Icon name="plus" />
                   新建项目
                 </button>
-                <div className="sec">项目</div>
                 <nav className="plist" aria-label="项目">
-                  {db?.projects.length ? (
-                    db.projects.map((item) => {
-                      const itemHost = db.hosts.find((hostItem) => hostItem.id === item.host) || db.hosts[0]
-                      const live = tabs.some((tab) => tab.projectId === item.id && tab.type === 'term' && tab.state === 'running')
-                      const on = projectId === item.id && route === 'work'
-                      const open = menuId === item.id
-                      return (
-                        <div
-                          key={item.id}
-                          className={`proj ${on ? 'on' : ''} ${open ? 'menu' : ''}`}
-                          data-a="proj"
-                          data-id={item.id}
-                          aria-current={on ? 'true' : undefined}
-                          onContextMenu={(event) => {
-                            event.preventDefault()
-                            setMenuId(item.id)
-                          }}
-                        >
-                          <button className="project-open" aria-label={`打开项目 ${item.name}`} aria-current={on ? 'true' : undefined}
-                            title={`${item.name}\n${item.path}`} onClick={() => selectProject(item.id)}>
-                            <span className="pi">{item.name[0]?.toUpperCase()}</span>
-                            <span className="grow">
-                              <span className="n" style={{ display: 'block' }}>{item.name}</span>
-                              <span className="m">
-                                <Icon name={itemHost.id === 'local' ? 'laptop' : 'server'} className="s" />
-                                {itemHost.name}
-                              </span>
-                            </span>
-                            {live ? <span className="live" title="有终端在运行" aria-label="有终端在运行" /> : null}
-                          </button>
-                          <button
-                            className="more"
-                            data-a="proj-more"
-                            data-id={item.id}
-                            aria-label={`项目菜单 ${item.name}`}
-                            onClick={(event) => {
-                              event.stopPropagation()
-                              setMenuId(open ? null : item.id)
-                            }}
-                          >
-                            <Icon name="more" className="s" />
-                          </button>
-                          {open ? (
-                            <div className="pmenu" role="menu">
-                              <button
-                                data-a="proj-remove"
-                                role="menuitem"
-                                onClick={(event) => {
-                                  event.stopPropagation()
-                                  askRemove(item.id)
-                                }}
-                              >
-                                移除项目
-                              </button>
-                            </div>
-                          ) : null}
-                        </div>
-                      )
-                    })
-                  ) : (
-                    <p style={{ fontSize: 12, color: 'var(--faint)', padding: '4px 8px' }}>暂无项目</p>
-                  )}
+                  <ProjectSidebar projects={db?.projects || []} hosts={db?.hosts || []} terms={tabs.filter((tab): tab is TermTab => tab.type === 'term')} agents={agents}
+                    sessions={workSessions} selectedSession={sessionId} onSession={selectSession} onRenameSession={renameSession} onRemoveSession={removeSession}
+                    projectId={projectId} activeId={active?.id} menuId={menuId} onMenu={setMenuId} onProject={selectProject} onTerm={selectTab}
+                    onRenameProject={renameProject} onRenameTerm={renameTerm} onRemoveProject={askRemove} onCloseTerm={requestClose}
+                    onNewSession={(id) => { selectProject(id); setModal({ type: 'term', newSession: true }) }} />
                 </nav>
                 <div className="sfoot">
                   <button className="navb" data-a="settings" onClick={() => openSettings()}>
@@ -856,6 +935,7 @@ export function App() {
               <div id="mainwrap" style={{ display: 'contents' }}>
                 <Workspace
                   project={project}
+                  sessionId={sessionId}
                   tabs={tabs}
                   active={active}
                   rightOpen={right}
@@ -902,10 +982,13 @@ export function App() {
                     loaded={!!git}
                     isRepo={!!git?.isRepo}
                     branch={git?.branch || project.branch}
+                    repositories={git?.repositories}
+                    errors={git?.errors}
                     tree={tree}
                     treeChildren={treeChildren}
                     openDirs={openDirs}
                     width={rightWidth}
+                    placement={db?.settings.panelSide}
                     onResize={resizeRight}
                     activePath={active && active.type !== 'term' ? active.path : undefined}
                     onMode={setRmode}
@@ -913,6 +996,7 @@ export function App() {
                     onOpenDiff={openDiff}
                     onOpenFile={openFile}
                     onCollapse={() => setRight(false)}
+                    onRescan={async () => { const id = project.id; try { const panel = await window.awb.gitStatus(id, true); if (projectIdRef.current === id) setGit(panel) } catch { toast('无法重新扫描仓库，请检查连接和目录权限', true) } }}
                   />
                 ) : null}
               </div>
@@ -938,7 +1022,7 @@ export function App() {
               onEditHost={(id) => setModal({ type: 'host', id })}
               onNewHost={() => setModal({ type: 'host' })}
               onInstall={(name, cmd) => toast(cmd ? `请先安装 ${name}，并确保命令 ${cmd} 在 PATH 中` : name)}
-              onLocalHost={() => toast('本机无需配置')}
+              onLocalHost={() => setModal({ type: 'host', id: 'local' })}
             />
           ) : null}
         </div>
@@ -971,6 +1055,7 @@ export function App() {
         ) : null}
         {modal?.type === 'term' && project && host ? (
           <NewTermDialog
+            newSession={modal.newSession || !sessionId}
             host={host}
             cwd={project.path}
             initialKind={project.agent}
@@ -981,10 +1066,7 @@ export function App() {
               setModal(null)
               openSettings('agents')
             }}
-            onOpen={(kind, shell) => {
-              setModal(null)
-              void openTerm(project, kind, shell)
-            }}
+            onOpen={(kind, shell) => createTerminal(kind, shell, modal.newSession)}
           />
         ) : null}
         {modal?.type === 'exec' && db ? (
@@ -1011,6 +1093,7 @@ export function App() {
         ) : null}
         {modal?.type === 'host' && db ? (
           <HostDialog
+            hosts={db.hosts}
             initial={editingHost}
             onClose={() => setModal(null)}
             onToast={toast}

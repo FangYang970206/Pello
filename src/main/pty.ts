@@ -8,9 +8,12 @@ import type { EnvVar, ProcState, PtyStateEvent, ShellKind } from '../shared/type
 import { cmdline, PRESETS } from '../shared/types'
 import { db } from './store'
 import { OscStrip } from './osc'
+import { ProgramStatus } from './program-status'
+import { replyProgramStatus } from './windows-status'
 import { passwordTerminal, remoteCommand, type TerminalProcess } from './ssh'
 import {
   bashRc,
+  ompInstallDirectory,
   pwshProfile,
   remoteBootstrap,
   resolveLocalShell,
@@ -86,9 +89,14 @@ function shellFiles(): { bash: string; pwsh: string; zsh: string } {
   const bash = path.join(dir, 'bashrc.sh')
   const pwsh = path.join(dir, 'profile.ps1')
   const zsh = path.join(dir, '.zshrc')
-  fs.writeFileSync(bash, bashRc())
-  fs.writeFileSync(pwsh, pwshProfile())
-  fs.writeFileSync(zsh, zshRc())
+  for (const [file, content] of [[bash, bashRc()], [pwsh, pwshProfile()], [zsh, zshRc()]]) {
+    let current: string | undefined
+    try { current = fs.readFileSync(file, 'utf8') }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+    // PowerShell can hold a profile open during startup. Other terminals must
+    // reuse its unchanged contents rather than race with that read on Windows.
+    if (current !== content) fs.writeFileSync(file, content)
+  }
   return { bash, pwsh, zsh }
 }
 
@@ -116,6 +124,10 @@ class Session {
   private rows = 24
   private remoteAbort: AbortController | null = null
   private osc = new OscStrip()
+  private programStatus = new ProgramStatus()
+  private programWaiting = false
+  private outputQueue: Promise<void> = Promise.resolve()
+  private statusAbort = new AbortController()
   private phase: 'starting' | 'armed' | 'command' | 'prompt' | 'dead' = 'starting'
   private lastC = 0
   private exitAnnounced = false
@@ -139,6 +151,11 @@ class Session {
     this.cwd = opts.cwd
     this.command = opts.command
     this.env = { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor', AWB_CWD: opts.cwd }
+    const ompDirectory = ompInstallDirectory()
+    if (fs.existsSync(ompDirectory)) {
+      const pathKey = Object.keys(this.env).find((key) => key.toLowerCase() === 'path') || 'PATH'
+      this.env[pathKey] = [ompDirectory, this.env[pathKey] || ''].join(path.delimiter)
+    }
     for (const item of opts.env) {
       if (item.k) this.env[item.k] = item.v
     }
@@ -148,7 +165,7 @@ class Session {
   hostId: string
 
   info(): SessionInfo {
-    return { id: this.id, state: this.state, exitCode: this.exitCode, startedAt: this.startedAt, inputReady: this.phase === 'prompt', shell: this.shell, kind: this.kind }
+    return { id: this.id, state: this.state, exitCode: this.exitCode, startedAt: this.startedAt, inputReady: this.phase === 'prompt' || this.programWaiting, shell: this.shell, kind: this.kind }
   }
 
   async spawn(): Promise<void> {
@@ -159,6 +176,9 @@ class Session {
     const files = shellFiles()
     this.phase = 'starting'
     this.osc = new OscStrip()
+    this.programStatus = new ProgramStatus()
+    this.programWaiting = false
+    this.statusAbort = new AbortController()
     let proc: TerminalProcess
     if (!host || host.id === 'local') {
       const rc = this.shell === 'pwsh' ? files.pwsh : this.shell === 'zsh' ? files.zsh : files.bash
@@ -190,7 +210,7 @@ class Session {
     proc.onData((data) => {
       if (this.disposed) return
       if (process.env.AWB_DEBUG) console.log(`[pty ${this.id}]`, JSON.stringify(data).slice(0, 300))
-      this.onData(data)
+      this.outputQueue = this.outputQueue.then(() => this.onData(data)).catch((error) => { if (!this.disposed) console.error('Terminal status reply failed', error) })
     })
     setTimeout(() => {
       if (this.phase === 'starting') {
@@ -201,16 +221,21 @@ class Session {
     }, 1200)
     proc.onExit((result) => {
       this.procExited = true
-      if (this.disposed) return
-      const code = typeof result === 'number' ? result : (result?.exitCode ?? 1)
-      this.phase = 'dead'
-      const state: ProcState = code === 0 ? 'exited' : 'failed'
-      this.apply(state, code, !this.exitAnnounced, 'exit')
+      this.statusAbort.abort()
+      this.outputQueue = this.outputQueue.then(() => {
+        if (this.disposed) return
+        const code = typeof result === 'number' ? result : (result?.exitCode ?? 1)
+        this.phase = 'dead'
+        this.programWaiting = false
+        const state: ProcState = code === 0 ? 'exited' : 'failed'
+        this.apply(state, code, !this.exitAnnounced, 'exit')
+      })
     })
   }
 
   write(data: string, binary = false): void {
     if (!this.proc || this.phase === 'dead') return
+    if (!binary && /[\r\n]/.test(data) && this.programWaiting) { this.programWaiting = false; this.emit(false) }
     if (!binary && (data.includes('\r') || data.includes('\n')) && this.phase === 'prompt' && this.state !== 'running') {
       this.phase = 'command'
       this.state = 'running'
@@ -308,6 +333,7 @@ class Session {
     if (this.disposal) return this.disposal
     const alreadyExited = this.procExited
     this.disposed = true
+    this.statusAbort.abort()
     this.phase = 'dead'
     this.restartPending = false
     this.override = null
@@ -353,6 +379,7 @@ class Session {
   private beginCommand(): void {
     if (!this.proc || this.phase === 'dead') return
     this.phase = 'command'
+    this.programWaiting = false
     this.state = 'running'
     this.startedAt = Date.now()
     this.exitCode = null
@@ -386,8 +413,22 @@ class Session {
     if (data) this.send({ type: 'data', id: this.id, data })
   }
 
-  private onData(chunk: string): void {
-    const parsed = this.osc.push(chunk)
+  private async onData(chunk: string): Promise<void> {
+    if (this.disposed) return
+    const activity = this.programStatus.push(chunk)
+    // Reply in the main process before xterm can answer the following DA query.
+    for (let index = 0; index < activity.queries; index++) {
+      try {
+        if (process.platform === 'win32' && this.proc?.pid) await replyProgramStatus(this.proc.pid, this.statusAbort.signal)
+        else this.proc?.write('\x1b]7501;?\x1b\\')
+      } catch (error) { if (!this.disposed && !this.procExited) console.error('Native status capability reply unavailable', error) }
+    }
+    if (this.disposed) return
+    for (const state of activity.states) {
+      this.programWaiting = state === 'waiting'
+      this.emit(false)
+    }
+    const parsed = this.osc.push(activity.text)
     const head = stripMarker(parsed.text).text
     const tail = stripMarker(parsed.tail).text
     const code = parsed.codes.length ? parsed.codes[parsed.codes.length - 1] : null
@@ -461,7 +502,7 @@ class Session {
       state: this.state,
       exitCode: this.exitCode,
       startedAt: this.startedAt,
-      inputReady: this.phase === 'prompt',
+      inputReady: this.phase === 'prompt' || this.programWaiting,
       announce,
       reason
     })

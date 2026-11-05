@@ -1,5 +1,5 @@
-import type { GitFile, Host, Project, TreeNode } from '../shared/types'
-import { useRef } from 'react'
+import type { GitFile, GitPanel, Host, Project, TreeNode } from '../shared/types'
+import { useRef, useState } from 'react'
 import { Icon } from './icons'
 
 export function RightPanel({
@@ -10,17 +10,21 @@ export function RightPanel({
   loaded,
   isRepo,
   branch,
+  repositories = [],
+  errors = [],
   tree,
   treeChildren,
   openDirs,
   width,
+  placement = 'right',
   onResize,
   activePath,
   onMode,
   onToggleDir,
   onOpenDiff,
   onOpenFile,
-  onCollapse
+  onCollapse,
+  onRescan
 }: {
   project: Project
   host: Host
@@ -29,10 +33,13 @@ export function RightPanel({
   loaded: boolean
   isRepo: boolean
   branch: string
+  repositories?: GitPanel['repositories']
+  errors?: string[]
   tree: TreeNode[]
   treeChildren: Record<string, TreeNode[]>
   openDirs: Record<string, boolean>
   width: number
+  placement?: 'left' | 'right'
   onResize: (width: number) => void
   activePath?: string
   onMode: (mode: 'files' | 'changes') => void
@@ -40,8 +47,24 @@ export function RightPanel({
   onOpenDiff: (path: string) => void
   onOpenFile: (path: string) => void
   onCollapse: () => void
+  onRescan: () => Promise<void>
 }) {
   const drag = useRef<{ x: number; width: number } | null>(null)
+  const [repositoryFilter, setRepositoryFilter] = useState('')
+  const [rescanning, setRescanning] = useState(false)
+  async function rescan() {
+    setRescanning(true)
+    try { await onRescan() } finally { setRescanning(false) }
+  }
+  const filter = repositories.some((repo) => repo.path === repositoryFilter) ? repositoryFilter : ''
+  const renderChange = (file: GitFile) => {
+    const parts = (file.repository ? file.path.slice(file.repository.length + 1) : file.path).split('/')
+    const name = parts.pop() || file.path
+    return <button key={file.path} className={`row ${activePath === file.path ? 'on' : ''}`} data-a="diff" data-id={file.path} title={file.path} onClick={() => onOpenDiff(file.path)}>
+      <span className={`st ${file.st}`}>{file.st}</span><span className="nm">{name}</span><span className="dir grow">{parts.join('/')}</span>
+      <span className="num"><span className="a">+{file.add}</span>{file.del ? <span className="d">−{file.del}</span> : null}</span>
+    </button>
+  }
   const changed = new Map(files.map((file) => [file.path, file]))
   const renderTree = (nodes: TreeNode[], depth: number) =>
     nodes.map((node) => {
@@ -84,7 +107,7 @@ export function RightPanel({
   if (mode === 'changes') {
     if (!loaded) {
       body = <div className="rmeta">正在读取…</div>
-    } else if (!isRepo) {
+    } else if (!isRepo && !repositories.length) {
       body = (
         <div className="empty" style={{ background: 'none' }}>
           <div className="in">
@@ -92,11 +115,13 @@ export function RightPanel({
               <Icon name="folder" />
             </div>
             <p style={{ marginTop: 8 }}>不是 Git 仓库</p>
-            <p style={{ fontSize: 11, color: 'var(--faint)' }}>变更面板不可用</p>
+            <p className="repository-help">未发现子仓库。自动发现目录中的 Git 仓库，跳过依赖、构建、缓存及符号链接目录。</p>
+            {errors.map((error) => <p className="bad" key={error}>{error}</p>)}
+            <button className="btn sm" disabled={rescanning} onClick={() => void rescan()}>{rescanning ? '正在扫描…' : '重新扫描仓库'}</button>
           </div>
         </div>
       )
-    } else if (!files.length) {
+    } else if (!files.length && !repositories.length) {
       body = (
         <div className="empty" style={{ background: 'none' }}>
           <div className="in">
@@ -114,27 +139,23 @@ export function RightPanel({
           <div className="rmeta">
             <span className="br">
               <Icon name="branch" className="s" />
-              {branch || 'HEAD'}
+              {repositories.length ? `${repositories.length} 个仓库` : branch || 'HEAD'}
             </span>
             <span className="grow" />
             <span>git status</span>
           </div>
+          {repositories.length ? <div className="repository-discovery"><small title="自动发现子仓库；跳过依赖、构建、缓存及符号链接目录。">自动发现子仓库</small><button className="btn sm" aria-label="重新扫描仓库" disabled={rescanning} onClick={() => void rescan()}>{rescanning ? '正在扫描…' : '重新扫描'}</button></div> : null}
+
+          {repositories.length ? <label className="repository-filter"><span className="vh">选择仓库</span><select className="sel" aria-label="选择仓库" value={filter} onChange={(event) => setRepositoryFilter(event.target.value)}>
+            <option value="">所有仓库</option>{repositories.map((repo) => <option key={repo.path} value={repo.path}>{repo.path} · {repo.count} 项变更</option>)}
+          </select></label> : null}
+          {errors.map((error) => <p role="alert" className="repository-help bad" key={error}>{error}</p>)}
           <div className="rlist">
-            {files.map((file) => {
-              const parts = file.path.split('/')
-              const name = parts.pop() || file.path
-              return (
-                <button key={file.path} className={`row ${activePath === file.path ? 'on' : ''}`} data-a="diff" data-id={file.path} title={file.path} onClick={() => onOpenDiff(file.path)}>
-                  <span className={`st ${file.st}`}>{file.st}</span>
-                  <span className="nm">{name}</span>
-                  <span className="dir grow">{parts.join('/')}</span>
-                  <span className="num">
-                    <span className="a">+{file.add}</span>
-                    {file.del ? <span className="d">−{file.del}</span> : null}
-                  </span>
-                </button>
-              )
-            })}
+            {repositories.length ? repositories.filter((repo) => !filter || repo.path === filter).map((repo) => <details className="repository-group" key={`${project.id}:${repo.path}`} data-repository={repo.path} open>
+              <summary><Icon name="branch" className="s" /><span className="grow">{repo.path}</span><small>{repo.branch || 'HEAD'} · {repo.count}</small></summary>
+              {files.filter((file) => file.repository === repo.path).map(renderChange)}
+              {!repo.count ? <p className="repository-help">工作区干净</p> : null}
+            </details>) : files.map(renderChange)}
           </div>
         </>
       )
@@ -153,7 +174,7 @@ export function RightPanel({
   }
 
   return (
-    <aside className="right" aria-label="文件面板">
+    <aside className="right" data-placement={placement} aria-label="文件面板">
       <div className="right-resize" role="separator" aria-label="调整文件面板宽度" aria-orientation="vertical" aria-valuenow={width} aria-valuemin={220} tabIndex={0}
         onPointerDown={(event) => {
           event.preventDefault()
@@ -161,7 +182,7 @@ export function RightPanel({
           drag.current = { x: event.clientX, width }
         }}
         onPointerMove={(event) => {
-          if (drag.current) onResize(drag.current.width + drag.current.x - event.clientX)
+          if (drag.current) onResize(drag.current.width + (drag.current.x - event.clientX) * (placement === 'left' ? -1 : 1))
         }}
         onPointerUp={(event) => { drag.current = null; event.currentTarget.releasePointerCapture(event.pointerId) }}
         onPointerCancel={() => { drag.current = null }}
@@ -169,7 +190,7 @@ export function RightPanel({
         onKeyDown={(event) => {
           if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
             event.preventDefault()
-            onResize(width + (event.key === 'ArrowLeft' ? 20 : -20))
+            onResize(width + (event.key === 'ArrowLeft' ? 20 : -20) * (placement === 'left' ? -1 : 1))
           }
         }} />
       <div className="rh">

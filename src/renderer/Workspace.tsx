@@ -6,30 +6,30 @@ import { TerminalPane } from './TerminalPane'
 import { DiffPane } from './DiffPane'
 import { FilePane } from './FilePane'
 import type { DocumentDraft } from './documents'
+import { terminalStatus } from './terminal-state'
+import { sessionOf } from '../shared/work-sessions'
 
 export type TermTab = {
   id: string
   type: 'term'
   projectId: string
+  sessionId?: string
   kind: string
   shell: ShellKind
   state: ProcState
   startedAt: number | null
   exitCode: number | null
   inputReady: boolean
+  name?: string
+  hasRun?: boolean
 }
 export type DiffTab = { id: string; type: 'diff'; projectId: string; path: string }
 export type FileTab = { id: string; type: 'file'; projectId: string; path: string; pinned?: boolean; dirty?: boolean }
 export type Tab = TermTab | DiffTab | FileTab
 
-function terminalStatus(tab: TermTab) {
-  if (tab.state === 'running') return { color: 'busy', label: '正在运行任务' }
-  if (tab.inputReady && tab.state !== 'idle') return { color: 'ready', label: '任务已完成，可以继续输入' }
-  return { color: 'inactive', label: tab.inputReady ? '尚未运行 CodeAgent' : '终端未运行' }
-}
-
 export function Workspace({
   project,
+  sessionId,
   tabs,
   active,
   rightOpen,
@@ -61,6 +61,7 @@ export function Workspace({
   untracked
 }: {
   project: Project | null
+  sessionId?: string
   tabs: Tab[]
   active?: Tab
   rightOpen: boolean
@@ -95,7 +96,7 @@ export function Workspace({
   const [overflow, setOverflow] = useState(false)
   const [fade, setFade] = useState<'none' | 'left' | 'right' | 'both'>('none')
   const [menu, setMenu] = useState(false)
-  const mine = project ? tabs.filter((tab) => tab.projectId === project.id) : []
+  const mine = project ? tabs.filter((tab) => tab.projectId === project.id && (tab.type !== 'term' || sessionOf(tab) === sessionId)) : []
   const shown = mine.find((tab) => tab.id === active?.id) ?? mine[0]
   const terms = tabs.filter((tab): tab is TermTab => tab.type === 'term')
 
@@ -201,7 +202,7 @@ export function Workspace({
                   )
                 }
                 const agent = agentOf(tab.kind)
-                const name = tab.kind === 'shell' ? shellLabel(tab.shell) : agent.name
+                const name = tab.name || (tab.kind === 'shell' ? shellLabel(tab.shell) : agent.name)
                 const letter = tab.kind === 'shell' ? shellLetter(tab.shell) : agent.letter
                 const color = tab.kind === 'shell' ? '#8fa3cc' : agent.color
                 const status = terminalStatus(tab)
@@ -210,7 +211,7 @@ export function Workspace({
                     <button style={{ display: 'flex', alignItems: 'center', gap: 8 }} data-a="tab" data-id={tab.id} data-state={tab.state} title={`${name} · ${status.label}`} onClick={() => onSelect(tab.id)}>
                       <Mark letter={letter} color={color} />
                       <span className="lbl">{name}</span>
-                      <span className={`dot terminal-status ${status.color}`} role="img" aria-label={status.label} />
+                      <span className={`dot terminal-status ${status.color}${status.spinning ? ' spinning' : ''}`} role="img" aria-label={status.label} />
                     </button>
                     <button className="x" data-a="close" data-id={tab.id} aria-label={`关闭 ${name}`} onClick={() => onClose(tab.id)}>
                       <Icon name="x" className="s" />
@@ -234,7 +235,7 @@ export function Workspace({
             {menu ? (
               <div className="pop" style={{ left: 8, right: 'auto' }}>
                 {mine.map((tab) => {
-                  const label = tab.type === 'term' ? (tab.kind === 'shell' ? shellLabel(tab.shell) : agentOf(tab.kind).name) : tab.path.split('/').pop()
+                  const label = tab.type === 'term' ? tab.name || (tab.kind === 'shell' ? shellLabel(tab.shell) : agentOf(tab.kind).name) : tab.path.split('/').pop()
                   return (
                     <button
                       key={tab.id}
@@ -246,7 +247,7 @@ export function Workspace({
                     >
                       <span style={{ width: 14, flex: 'none', color: 'var(--muted)' }}>{tab.id === shown?.id ? '✓' : ''}</span>
                       <span className="nm grow">{label}</span>
-                      {tab.type === 'term' ? <span className={`dot terminal-status ${terminalStatus(tab).color}`} role="img" aria-label={terminalStatus(tab).label} /> : null}
+                      {tab.type === 'term' ? <span className={`dot terminal-status ${terminalStatus(tab).color}${terminalStatus(tab).spinning ? ' spinning' : ''}`} role="img" aria-label={terminalStatus(tab).label} /> : null}
                     </button>
                   )
                 })}

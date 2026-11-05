@@ -1,4 +1,4 @@
-export type ThemeName = 'dark' | 'light'
+export type ThemeName = 'dark' | 'light' | 'nord' | 'dracula' | 'catppuccin' | 'solarized-light'
 export type ShellKind = 'pwsh' | 'cmd' | 'bash' | 'zsh'
 export type OsKind = 'windows' | 'linux'
 export type ProcState = 'running' | 'idle' | 'exited' | 'failed'
@@ -22,6 +22,9 @@ export interface Settings {
   defAgent: string
   restore: boolean
   confirmKill: boolean
+  layout?: 'balanced' | 'focus' | 'review'
+  panelSide?: 'left' | 'right'
+  density?: 'comfortable' | 'compact'
 }
 
 export interface Executor {
@@ -49,15 +52,17 @@ export interface Host {
   /** Supplied only while editing; removed before saving workbench.json. */
   password?: string
   hasPassword?: boolean
+  color?: string
 }
 
 export type ResourceFormat = 'standard' | 'codex' | 'opencode'
-export interface ResourcePaths { mcpPath: string; skillPath: string; format: ResourceFormat; skillAdapter?: 'claude' | 'codex' | 'opencode' | 'pi' | 'portable'; skillConfigPath?: string }
+export interface ResourcePaths { mcpPath: string; skillPath: string; format: ResourceFormat; skillAdapter?: 'claude' | 'codex' | 'opencode' | 'pi' | 'omp' | 'portable'; skillConfigPath?: string }
 export interface ResourceTarget extends ResourcePaths { id: string; name: string }
 export interface ResourceItem { name: string; description: string; path: string; transport?: string; enabled?: boolean }
 export interface ResourceDetail extends ResourceItem { content: string; notice?: string }
 export interface ResourcePage { items: ResourceItem[]; total: number; page: number; pages: number; errors: string[] }
-export interface ResourceResult { agent: string; ok: boolean; error?: string }
+export interface ResourceResult { agent: string; ok: boolean; error?: string; name?: string; id?: string }
+export interface ResourceSourceItem { id: string; name: string; path: string; description?: string; enabled?: boolean; error?: string }
 
 export interface Project {
   id: string
@@ -72,7 +77,11 @@ export interface SavedTerm {
   id: string
   kind: string
   shell: ShellKind
+  name?: string
+  sessionId?: string
 }
+
+export interface WorkSession { id: string; name: string; activeTab?: string }
 
 export interface Database {
   settings: Settings
@@ -81,6 +90,8 @@ export interface Database {
   projects: Project[]
   sessions: Record<string, SavedTerm[]>
   activeTab: Record<string, string>
+  workSessions?: Record<string, WorkSession[]>
+  activeSession?: Record<string, string>
 }
 
 export interface Preset {
@@ -109,7 +120,8 @@ export const PRESETS: Preset[] = [
   { id: 'claude', name: 'Claude Code', cmd: 'claude', args: '', letter: 'C', color: '#e0a27c' },
   { id: 'codex', name: 'Codex CLI', cmd: 'codex', args: '', letter: 'X', color: '#a9c3df' },
   { id: 'opencode', name: 'OpenCode', cmd: 'opencode', args: '', letter: 'O', color: '#dcc07f' },
-  { id: 'pi', name: 'Pi', cmd: 'pi', args: '', letter: 'π', color: '#c4aedb' }
+  { id: 'pi', name: 'Pi', cmd: 'pi', args: '', letter: 'π', color: '#c4aedb' },
+  { id: 'omp', name: 'Oh My Pi', cmd: 'omp', args: '', letter: 'O', color: '#95cfaa' }
 ]
 
 export const SHELL_AGENT: AgentInfo = {
@@ -126,6 +138,7 @@ export const EXEC_COLORS = ['#c4aedb', '#a9c3df', '#95cfaa', '#dcc07f', '#e39e9c
 
 export interface GitFile {
   path: string
+  repository?: string
   st: ChangeStatus
   add: number
   del: number
@@ -135,6 +148,8 @@ export interface GitPanel {
   isRepo: boolean
   branch: string
   files: GitFile[]
+  repositories?: { path: string; branch: string; count: number }[]
+  errors?: string[]
 }
 
 export interface FileDiff {

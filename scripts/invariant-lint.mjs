@@ -78,7 +78,7 @@ export function checkInvariants(files) {
   const typesFile = 'src/shared/types.ts', types = source(typesFile)
   const presets = nodes(types, (node) => ts.isVariableDeclaration(node) && node.name.getText() === 'PRESETS')[0]
   const ids = presets ? nodes(presets, (node) => ts.isPropertyAssignment(node) && node.name.getText() === 'id').map((node) => node.initializer.text).sort() : []
-  require(JSON.stringify(ids) === JSON.stringify(['claude', 'codex', 'opencode', 'pi']), 'AWB010', typesFile, '内置预设仅 claude/codex/opencode/pi')
+  require(JSON.stringify(ids) === JSON.stringify(['claude', 'codex', 'omp', 'opencode', 'pi']), 'AWB010', typesFile, '内置预设仅 claude/codex/opencode/pi/omp')
   const gitFile = 'src/main/git.ts', git = source(gitFile), tree = named(git, 'fileTree'), write = named(git, 'writeFile')
   require(tree && !called(tree, 'fileTree').length && !/(-Recurse|-maxdepth|MAX_TREE|depth\s*>)/.test(tree.getText()), 'AWB011', gitFile, '文件树必须逐层加载，不能以深度或全局数量静默截断')
   const versionChecks = write ? nodes(write, (node) => ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken && node.right.getText() === 'version' && called(node.left, 'versionOf').length) : []
@@ -123,14 +123,27 @@ export function checkInvariants(files) {
   require(resourceRow && ts.isJsxElement(resourceRow) && !resourceRow.children.some((child) => /item\.(path|description|transport)/.test(child.getText())) && called(resources, 'resourceToggle').length,
     'AWB027', resourcesFile, '资源列表保持名称、详情与真实配置开关，路径和说明放入详情')
   const resourceDialogFile = 'src/renderer/ResourceDialog.tsx', resourceDialog = source(resourceDialogFile)
-  require(called(resourceDialog, 'showModal').length && nodes(resourceDialog, (node) => ts.isJsxOpeningElement(node) && node.tagName.getText() === 'dialog' && attr(node, 'onCancel')).length,
-    'AWB028', resourceDialogFile, '资源配置弹窗必须约束焦点并处理 Esc')
+  require(called(resourceDialog, 'showModal').length && nodes(resourceDialog, (node) => ts.isJsxOpeningElement(node) && node.tagName.getText() === 'dialog' && attr(node, 'onCancel') && attr(node, 'onPointerUp')).length,
+    'AWB028', resourceDialogFile, '资源配置弹窗必须约束焦点、处理 Esc 与详情遮罩关闭')
+  const resourceMain = source('src/main/resources.ts')
+  require(called(named(resourceMain, 'skillDirectory'), 'listed').length && called(main, 'trashItem').some((call) => called(call, 'skillDirectory').some((check) => check.arguments.at(-1)?.kind === ts.SyntaxKind.TrueKeyword)),
+    'AWB033', 'src/main/index.ts', 'Skill 删除必须在主进程校验实际发现目录并移入系统回收站')
   require(called(terminal, 'load').some((call) => call.expression.getText() === 'document.fonts.load') && nodes(terminal, (node) => ts.isBinaryExpression(node) && node.left.getText() === 'term.options.fontFamily').length,
     'AWB029', terminalFile, '字体加载后更新现有终端字体，不能重建会话')
   require(iframe && attr(iframe, 'key')?.initializer?.getText() === '{preview.url}' && files.get('src/renderer/FilePane.tsx')?.includes('preview.content === document.draft'),
     'AWB030', 'src/renderer/FilePane.tsx', 'HTML 框架必须匹配当前草稿，并按预览 URL 更新')
+  const platform = source('src/main/platform.ts')
+  require(named(platform, 'bashRc')?.getText().includes('. "$HOME/.bashrc"') && called(named(platform, 'remoteBootstrap'), 'bashRc').length,
+    'AWB031', 'src/main/platform.ts', '本地和远程托管 Bash 必须先加载用户环境，再安装工作台提示标记')
+  require(['runPasswordCommand', 'passwordTerminal'].every((name) => {
+    const decoders = called(named(ssh, name), 'setEncoding').filter((call) => call.arguments[0]?.text === 'utf8')
+    return ['stream.setEncoding', 'stream.stderr.setEncoding'].every((method) => decoders.some((call) => call.expression.getText() === method))
+  }), 'AWB032', 'src/main/ssh.ts', 'SSH 命令及终端的 stdout/stderr 必须分别连续解码 UTF-8')
 
   const cssFiles = ['src/renderer/styles/workbench.css', 'src/renderer/styles/extra.css']
+  require(files.get(workspaceFile)?.includes('sessionOf(tab) === sessionId'), 'AWB034', workspaceFile, '标签按当前会话过滤，终端实例仍须全部常驻')
+  require(files.get('src/renderer/styles/extra.css')?.includes('animation:terminal-spin .85s linear infinite') && files.get('src/renderer/terminal-state.ts')?.includes("tab.state === 'running' && !tab.inputReady"), 'AWB035', 'src/renderer/styles/extra.css', '只有执行中的终端旋转，等待输入时停止')
+  require(files.get(ptyFile)?.includes('this.programStatus.push(chunk)') && files.get(ptyFile)?.includes("this.phase === 'prompt' || this.programWaiting"), 'AWB036', ptyFile, 'Agent 状态接入原生协议，不能只根据 CLI 进程存在或输出静默推断运行')
   const declarations = (selector) => {
     const values = new Map()
     for (const file of cssFiles) postcss.parse(files.get(file) || '').walkRules((rule) => {
@@ -146,7 +159,7 @@ export function checkInvariants(files) {
   require(declarations('.dot.terminal-status.busy').get('background') === 'var(--amber)' && declarations('.dot.terminal-status.ready').get('background') === 'var(--green)',
     'AWB017', cssFiles[0], '运行黄点、可输入绿点，不与连接状态混用')
   const scripts = JSON.parse(files.get('package.json') || '{}').scripts || {}
-  require(['review', 'terminal', 'ssh-password', 'render', 'workspace', 'editor', 'design', 'resources', 'host-management', 'autosave', 'resources-ui', 'html-preview'].every((name) => scripts.check?.includes(`scripts/${name}-check.mjs`)),
+  require(['review', 'windows-icon', 'shell-profile', 'terminal', 'ssh-password', 'remote-terminal', 'render', 'workspace', 'multi-repo', 'program-status', 'sidebar', 'editor', 'design', 'appearance', 'resources', 'resource-import', 'resource-import-ui', 'opencode-mcp', 'host-management', 'directory-browser', 'autosave', 'resources-ui', 'resource-dialog', 'html-preview'].every((name) => scripts.check?.includes(`scripts/${name}-check.mjs`)),
     'AWB018', 'package.json', '保留已有行为回归入口，不能删检查来绕过失败')
   require(files.get('AGENTS.md')?.includes('npm run lint') && files.get('AGENTS.md')?.includes('npm run check'), 'AWB019', 'AGENTS.md', '项目规则必须注明静态与行为验证入口')
   return errors
