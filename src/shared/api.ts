@@ -20,13 +20,17 @@ import type {
   SavedTerm,
   Settings,
   ShellKind,
+  LocalShell,
   TestExecRequest,
   TreeNode,
+  TransferSnapshot,
+  ReplacementEvent,
   WorkSession
 } from './types'
 
 export interface WorkbenchApi {
   getState(): Promise<{ db: Database; installed: Record<string, boolean> }>
+  localShells(): Promise<LocalShell[]>
   saveSettings(settings: Settings): Promise<Database>
   saveProjects(projects: Project[]): Promise<Database>
   saveCustom(custom: Executor[]): Promise<Database>
@@ -53,10 +57,34 @@ export interface WorkbenchApi {
   gitDiff(projectId: string, rel: string, untracked: boolean): Promise<FileDiff>
   gitDiscard(projectId: string, rel: string, untracked: boolean): Promise<boolean>
   gitTree(projectId: string, rel?: string): Promise<TreeNode[]>
+  treeIgnoreGet(projectId: string): Promise<string[]>
+  treeIgnoreSet(projectId: string, rules: string[]): Promise<void>
+  treeCreate(projectId: string, parent: string, name: string, directory: boolean): Promise<string>
+  treeRename(projectId: string, rel: string, name: string, directory: boolean): Promise<string>
+  treeMove(projectId: string, rel: string, parent: string, directory: boolean): Promise<string>
+  treeTrash(projectId: string, rel: string, directory: boolean): Promise<void>
+  transferPick(projectId: string, parent: string, kind: 'files' | 'directory'): Promise<string | null>
+  droppedFilePath(file: File): string
+  transferDrop(projectId: string, parent: string, sources: string[]): Promise<string>
+  transferCancel(id: string): Promise<void>
+  transferDownload(projectId: string, rel: string, directory?: boolean): Promise<string | null>
+  transferDecide(id: string, choice: 'skip' | 'keep' | 'cancel' | 'merge' | 'overwrite', applyToBatch?: boolean): Promise<void>
+  onReplacement(cb: (event: ReplacementEvent) => void): () => void
+  replacementReady(id: string, allow: boolean): void
+  transferRetry(id: string): Promise<string>
+  transferKeepBoth(id: string): Promise<string>
+  transferDismiss(id: string): Promise<void>
+  onTransfer(cb: (snapshot: TransferSnapshot) => void): () => void
+  treeSearchStart(projectId: string, id: string, query: string): Promise<void>
+  treeSearchNext(id: string): Promise<{ items: TreeNode[]; done: boolean }>
+  treeSearchCancel(id: string): Promise<void>
   gitRead(projectId: string, rel: string): Promise<FileContent>
   gitWrite(projectId: string, rel: string, text: string, version: string): Promise<FileContent>
   previewUrl(projectId: string, rel: string, draft?: string): Promise<string>
   openHtmlPreview(projectId: string, rel: string): Promise<string>
+  treeMenu(projectId: string, rel: string, directory: boolean): Promise<string | null>
+  treeAction(projectId: string, rel: string, directory: boolean, action: string): Promise<void>
+  treeReference(projectId: string, rel: string, kind: string, shell: ShellKind): Promise<string>
   documentMenu(options: { markdown: boolean; visual: boolean; undo: boolean; redo: boolean; editable: boolean }): Promise<string | null>
   onPreviewSource(cb: () => void): () => void
   ptyCreate(req: PtyCreateRequest): Promise<{ id: string; state: string; exitCode: number | null; startedAt: number | null; inputReady: boolean; shell: ShellKind; kind: string }>

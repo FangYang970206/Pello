@@ -86,6 +86,13 @@ function sanitize(raw: Partial<Database> | null): Database {
     base.hosts = hosts
   }
   if (Array.isArray(raw.projects)) base.projects = raw.projects.filter(isProject)
+  if (raw.treeIgnores && typeof raw.treeIgnores === 'object' && !Array.isArray(raw.treeIgnores)) {
+    base.treeIgnores = {}
+    for (const project of base.projects) {
+      const rules = raw.treeIgnores[project.id]
+      if (validTreeIgnores(rules)) base.treeIgnores[project.id] = [...new Set(rules)]
+    }
+  }
   const supported = new Set(['shell', ...PRESETS.map((preset) => preset.id), ...base.custom.map((executor) => executor.id)])
   if (!supported.has(base.settings.defAgent)) base.settings.defAgent = 'claude'
   base.projects = base.projects.map((project) => supported.has(project.agent) ? project : { ...project, agent: 'shell' })
@@ -111,6 +118,10 @@ function sanitize(raw: Partial<Database> | null): Database {
     writeSessions(base, project.id, sessions[project.id] || [], activeTab[project.id], raw.workSessions?.[project.id], raw.activeSession?.[project.id])
   }
   return base
+}
+
+export function validTreeIgnores(rules: unknown): rules is string[] {
+  return Array.isArray(rules) && rules.length <= 100 && rules.every((item) => typeof item === 'string' && !!item && item.length <= 255 && !/[\\/\0]/.test(item) && item !== '.' && item !== '..')
 }
 
 function wantedActive(raw: unknown, projectId: string): string {

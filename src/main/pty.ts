@@ -7,6 +7,7 @@ import * as pty from 'node-pty'
 import type { EnvVar, ProcState, PtyStateEvent, ShellKind } from '../shared/types'
 import { cmdline, PRESETS } from '../shared/types'
 import { db } from './store'
+import { discoverLocalShells } from './local-shells'
 import { OscStrip } from './osc'
 import { ProgramStatus } from './program-status'
 import { replyProgramStatus } from './windows-status'
@@ -137,6 +138,7 @@ class Session {
   private skipPrompt = false
   private disposed = false
   private procExited = false
+  private processExit: Promise<void> | null = null
   private disposal: Promise<void> | null = null
   private env: NodeJS.ProcessEnv
 
@@ -181,10 +183,14 @@ class Session {
     this.statusAbort = new AbortController()
     let proc: TerminalProcess
     if (!host || host.id === 'local') {
+      await discoverLocalShells()
+      if (this.disposed) return
       const rc = this.shell === 'pwsh' ? files.pwsh : this.shell === 'zsh' ? files.zsh : files.bash
-      const spec = resolveLocalShell(this.shell, rc)
+      const spec = resolveLocalShell(this.shell, rc, this.env)
       this.shell = spec.shell
       if (spec.env) Object.assign(this.env, spec.env)
+      if (process.platform === 'win32' && spec.env?.PATH) for (const key of Object.keys(this.env)) { if (key.toLowerCase() === 'path' && key !== 'PATH') delete this.env[key] }
+      if (process.platform === 'win32' && spec.shell === 'bash') this.env.AWB_CWD = this.cwd.replaceAll('\\', '/')
       proc = pty.spawn(spec.file, spec.args, {
         name: 'xterm-256color',
         cols: 80,
@@ -206,6 +212,8 @@ class Session {
     }
     if (this.disposed) { proc.kill(); return }
     this.proc = proc
+    let finishExit: () => void = () => undefined
+    this.processExit = new Promise<void>((resolve) => { finishExit = resolve })
     proc.resize(this.cols, this.rows)
     proc.onData((data) => {
       if (this.disposed) return
@@ -221,6 +229,7 @@ class Session {
     }, 1200)
     proc.onExit((result) => {
       this.procExited = true
+      finishExit()
       this.statusAbort.abort()
       this.outputQueue = this.outputQueue.then(() => {
         if (this.disposed) return
@@ -252,7 +261,7 @@ class Session {
     if (cols < 2 || rows < 2) return
     this.cols = cols
     this.rows = rows
-    if (!this.proc) return
+    if (!this.proc || this.disposed || this.procExited) return
     try {
       this.proc.resize(cols, rows)
     } catch {
@@ -343,17 +352,16 @@ class Session {
       if (!proc) return
       let windowsTreeStopped = false
       try {
-        if (alreadyExited || proc.pid === null) return
-        const pid = proc.pid
+        const pid = alreadyExited ? null : proc.pid
         // ConPTY only knows processes attached to its console. Kill the tree
         // before closing that console, while parent IDs still identify children.
-        if (process.platform === 'win32') {
+        if (pid !== null && process.platform === 'win32') {
           await execFileP('taskkill', ['/F', '/T', '/PID', String(pid)], { timeout: 10000, windowsHide: true }).catch((error) => {
             try { process.kill(pid, 0) } catch { return }
             throw error
           })
           windowsTreeStopped = true
-        } else {
+        } else if (pid !== null) {
           await killChildren(pid)
         }
       } finally {
@@ -362,6 +370,14 @@ class Session {
         if (!this.procExited && !windowsTreeStopped) {
           try { proc.kill() } catch { /* already exited */ }
         }
+      }
+      if (proc.pid !== null && this.processExit && !this.procExited) {
+        // taskkill completion precedes ConPTY's asynchronous output/exit cleanup.
+        // Keep Electron alive until the native exit callback has released this PTY.
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('等待终端退出超时')), 10000)
+          void this.processExit!.then(() => { clearTimeout(timer); resolve() })
+        })
       }
       this.proc = null
     })().catch((error) => {
@@ -521,7 +537,7 @@ export async function createSession(
   const host = draft.hosts.find((h) => h.id === project.host)
   if (host && host.id !== 'local' && !host.on) throw new Error('这台机器未连接')
   const agent = agentCommand(opts.kind)
-  const shell = shellForHost(host?.platform || (process.platform === 'win32' ? 'windows' : 'linux'), opts.shell)
+  const shell = (!host || host.id === 'local') && process.platform === 'win32' && opts.shell === 'bash' ? 'bash' : shellForHost(host?.platform || (process.platform === 'win32' ? 'windows' : 'linux'), opts.shell)
   const existing = sessions.get(opts.id)
   await existing?.dispose()
   const session = new Session(send, {
@@ -579,7 +595,12 @@ export async function closeSession(id: string): Promise<void> {
 }
 
 export async function closeAllSessions(): Promise<void> {
-  const results = await Promise.allSettled([...sessions.keys()].map(closeSession))
+  const results: PromiseSettledResult<void>[] = []
+  if (process.platform === 'win32') {
+    // The bundled ConPTY addon mutates its native handle list from exit threads.
+    // Complete each close before starting the next native teardown.
+    for (const id of [...sessions.keys()]) results.push(...await Promise.allSettled([closeSession(id)]))
+  } else results.push(...await Promise.allSettled([...sessions.keys()].map(closeSession)))
   const errors = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
   if (errors.length) throw new AggregateError(errors.map((result) => result.reason), 'Failed to close terminal sessions')
 }

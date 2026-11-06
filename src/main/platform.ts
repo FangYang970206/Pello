@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import type { OsKind, ShellKind } from '../shared/types'
+import { localShell } from './local-shells'
 
 export const execFileP = promisify(execFile)
 
@@ -107,20 +108,30 @@ export function ompInstallDirectory(): string {
   return process.platform === 'win32' ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'omp') : path.join(os.homedir(), '.local', 'bin')
 }
 
-/** Resolve the real shell binary for this machine. Linux uses bash or zsh; Windows uses PowerShell or CMD. */
-export function resolveLocalShell(pref: ShellKind, rcFile: string): ShellLaunch {
+/** Resolve a detected shell binary; Windows Bash uses the managed native rc file. */
+export function resolveLocalShell(pref: ShellKind, rcFile: string, environment: NodeJS.ProcessEnv = process.env): ShellLaunch {
   if (process.platform === 'win32') {
+    const detected = localShell(pref)
+    if (!detected) throw new Error(`未检测到 ${pref === 'bash' ? 'Git Bash 或本机 Bash' : pref === 'pwsh' ? 'PowerShell' : pref.toUpperCase()}，请在设置中选择可用 Shell`)
+    if (pref === 'bash') {
+      const binaryDirectory = path.dirname(detected.path)
+      const gitRoot = path.basename(path.dirname(binaryDirectory)).toLowerCase() === 'usr' ? path.dirname(path.dirname(binaryDirectory)) : path.dirname(binaryDirectory)
+      const paths = [path.join(gitRoot, 'mingw64', 'bin'), path.join(gitRoot, 'usr', 'bin'), path.join(gitRoot, 'bin')].filter((directory) => fs.existsSync(directory))
+      return {
+        file: detected.path, args: ['--noprofile', '--rcfile', rcFile.replaceAll('\\', '/'), '-i'], shell: 'bash', label: detected.label,
+        env: { CHERE_INVOKING: '1', MSYSTEM: environment.MSYSTEM || (fs.existsSync(path.join(gitRoot, 'mingw64')) ? 'MINGW64' : 'MSYS'), PATH: [...paths, environment.PATH || environment.Path || ''].join(path.delimiter) }
+      }
+    }
     if (pref === 'cmd') {
       return {
-        file: process.env.ComSpec || 'cmd.exe',
+        file: detected.path,
         args: ['/Q', '/V:ON'],
         shell: 'cmd',
         label: 'CMD'
       }
     }
-    const file = commandExistsSync('pwsh.exe') || commandExistsSync('pwsh') ? 'pwsh.exe' : 'powershell.exe'
     return {
-      file,
+      file: detected.path,
       args: ['-NoLogo', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', rcFile],
       shell: 'pwsh',
       label: 'PowerShell'

@@ -1,5 +1,6 @@
 export type ThemeName = 'dark' | 'light' | 'nord' | 'dracula' | 'catppuccin' | 'solarized-light'
 export type ShellKind = 'pwsh' | 'cmd' | 'bash' | 'zsh'
+export type LocalShell = { id: ShellKind; label: string; path: string }
 export type OsKind = 'windows' | 'linux'
 export type ProcState = 'running' | 'idle' | 'exited' | 'failed'
 export type SettingsSection = 'general' | 'look' | 'agents' | 'hosts' | 'mcp' | 'skills' | 'keys'
@@ -82,12 +83,16 @@ export interface SavedTerm {
 }
 
 export interface WorkSession { id: string; name: string; activeTab?: string }
+export type TransferItem = { source: string; destination: string; status: 'done' | 'conflict' | 'failed'; error?: string; mergeable?: boolean; replaceable?: boolean }
+export type ReplacementEvent = { id: string; projectId: string; path: string; phase: 'prepare' | 'finish'; success?: boolean }
+export type TransferSnapshot = { id: string; projectId: string; state: 'running' | 'conflicts' | 'cancelled' | 'completed'; current: string; destination: string; bytes: number; total: number; items: TransferItem[]; direction?: 'download' | 'upload'; retryable?: boolean; pendingConflicts?: number }
 
 export interface Database {
   settings: Settings
   custom: Executor[]
   hosts: Host[]
   projects: Project[]
+  treeIgnores?: Record<string, string[]>
   sessions: Record<string, SavedTerm[]>
   activeTab: Record<string, string>
   workSessions?: Record<string, WorkSession[]>

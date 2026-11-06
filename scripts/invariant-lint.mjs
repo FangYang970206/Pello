@@ -67,6 +67,8 @@ export function checkInvariants(files) {
   const awaited = close && nodes(close, (node) => ts.isAwaitExpression(node) && called(node, 'dispose').length)[0]
   require(dispose && hasString(dispose, 'taskkill') && hasString(dispose, '/T') && hasString(dispose, '/F') && awaited &&
     called(close, 'delete').some((call) => call.pos > awaited.end), 'AWB006', ptyFile, '关闭必须等待进程树清理完成后再删除会话')
+  require(dispose && called(dispose, 'then').some((call) => call.expression.getText() === 'this.processExit!.then'),
+    'AWB006', ptyFile, 'Windows 关闭必须等待原生 PTY 退出回调，不能只等待 taskkill')
   require(hasString(named(pty, 'write'), 'latin1'), 'AWB007', ptyFile, '二进制鼠标输入必须保留字节，不转换为 UTF-8 文本')
   const mainFile = 'src/main/index.ts', main = source(mainFile)
   const windowClose = called(main, 'on').find((call) => call.arguments[0]?.text === 'close' && called(call, 'closeAllSessions').length)
@@ -159,7 +161,7 @@ export function checkInvariants(files) {
   require(declarations('.dot.terminal-status.busy').get('background') === 'var(--amber)' && declarations('.dot.terminal-status.ready').get('background') === 'var(--green)',
     'AWB017', cssFiles[0], '运行黄点、可输入绿点，不与连接状态混用')
   const scripts = JSON.parse(files.get('package.json') || '{}').scripts || {}
-  require(['review', 'windows-icon', 'shell-profile', 'terminal', 'ssh-password', 'remote-terminal', 'render', 'workspace', 'multi-repo', 'program-status', 'sidebar', 'editor', 'design', 'appearance', 'resources', 'resource-import', 'resource-import-ui', 'opencode-mcp', 'host-management', 'directory-browser', 'autosave', 'resources-ui', 'resource-dialog', 'html-preview'].every((name) => scripts.check?.includes(`scripts/${name}-check.mjs`)),
+  require(['review', 'windows-icon', 'shell-profile', 'terminal', 'terminal-shutdown', 'ssh-password', 'remote-terminal', 'render', 'workspace', 'multi-repo', 'program-status', 'sidebar', 'editor', 'design', 'appearance', 'resources', 'resource-import', 'resource-import-ui', 'opencode-mcp', 'host-management', 'directory-browser', 'autosave', 'resources-ui', 'resource-dialog', 'html-preview'].every((name) => scripts.check?.includes(`scripts/${name}-check.mjs`)) && scripts.check?.includes('npm run check:shells') && scripts['check:shells']?.includes('scripts/local-shells-check.mjs'),
     'AWB018', 'package.json', '保留已有行为回归入口，不能删检查来绕过失败')
   require(files.get('AGENTS.md')?.includes('npm run lint') && files.get('AGENTS.md')?.includes('npm run check'), 'AWB019', 'AGENTS.md', '项目规则必须注明静态与行为验证入口')
   return errors

@@ -5,6 +5,12 @@ import { shell } from 'electron'
 import { readAsset, type Target } from './git'
 
 const projects = new Map<string, { token: string; target: Target; drafts: Map<string, { token: string; text: string }> }>()
+export function invalidatePreview(projectId: string, rel: string): void {
+  for (const [identity, entry] of projects) {
+    if (!identity.startsWith(`${projectId}:`)) continue
+    for (const key of entry.drafts.keys()) if (key === rel || key.startsWith(`${rel}/`)) entry.drafts.delete(key)
+  }
+}
 let server: Server | null = null
 let listening: Promise<number> | null = null
 export function isPreviewUrl(value: string): boolean {

@@ -10,6 +10,8 @@ export type DocumentDraft = FileContent & {
   future?: string[]
   editAt?: number
   composing?: boolean
+  replacing?: boolean
+  replacementId?: string
 }
 
 export const documentKey = (projectId: string, path: string) => `${projectId}:${path}`

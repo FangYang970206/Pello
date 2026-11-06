@@ -13,7 +13,13 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const source = ts.transpileModule(fs.readFileSync(path.join(root, 'src/main/platform.ts'), 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 }
 }).outputText
-const { remoteBootstrap } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
+const localShellSource = ts.transpileModule(fs.readFileSync(path.join(root, 'src/main/local-shells.ts'), 'utf8'), {
+  compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 }
+}).outputText
+const localShellUrl = `data:text/javascript;base64,${Buffer.from(localShellSource).toString('base64')}`
+const linkedSource = source.replace("from './local-shells'", `from '${localShellUrl}'`)
+assert.notEqual(linkedSource, source, 'Link the actual Shell detection dependency before loading platform.ts')
+const { remoteBootstrap } = await import(`data:text/javascript;base64,${Buffer.from(linkedSource).toString('base64')}`)
 const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`
 const failures = []
 const check = async (name, run) => {

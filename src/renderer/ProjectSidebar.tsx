@@ -38,11 +38,12 @@ type Props = {
   onRenameSession: (project: string, id: string, name: string) => Promise<void>
   onRemoveSession: (project: string, id: string) => void
   onRemoveProject: (id: string) => void; onCloseTerm: (id: string) => void; onNewSession: (id: string) => void
+  onCreateEntry: (id: string, directory: boolean) => void
 }
 const FILTERS = [{ id: 'running', name: '运行中' }, { id: 'waiting', name: '等待指令' }, { id: 'failed', name: '执行失败' }, { id: 'closed', name: '已退出' }, { id: 'starting', name: '正在启动' }]
 
 export function ProjectSidebar(props: Props) {
-  const { projects, hosts, terms, agents, sessions, selectedSession, projectId, activeId, menuId, onMenu, onProject, onTerm, onSession, onRenameProject, onRenameTerm, onRenameSession, onRemoveSession, onRemoveProject, onCloseTerm, onNewSession } = props
+  const { projects, hosts, terms, agents, sessions, selectedSession, projectId, activeId, menuId, onMenu, onProject, onTerm, onSession, onRenameProject, onRenameTerm, onRenameSession, onRemoveSession, onRemoveProject, onCloseTerm, onNewSession, onCreateEntry } = props
   const [editing, setEditing] = useState<{ kind: 'project' | 'session' | 'term'; id: string } | null>(null)
   const pendingFocus = useRef<{ action: string; id: string } | null>(null)
   useLayoutEffect(() => {
@@ -78,7 +79,7 @@ export function ProjectSidebar(props: Props) {
               if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); setCollapsed((value) => ({ ...value, [project.id]: event.key === 'ArrowLeft' })) }
             }}><span className="project-folder" data-color={hostColor(host?.color)}><Icon name="folder" /></span><span className="n grow">{project.name}</span></button>
             <button className="more" data-a="proj-more" data-id={project.id} aria-label={`项目菜单 ${project.name}`} aria-haspopup="menu" aria-expanded={open} onClick={() => onMenu(open ? null : project.id)}><Icon name="more" className="s" /></button>
-            {open ? <SidebarMenu onClose={() => onMenu(null)}><button role="menuitem" onClick={() => beginRename('project', project.id)}>重命名项目</button><button role="menuitem" data-a="proj-remove" onClick={() => { onMenu(null); onRemoveProject(project.id) }}>移除项目</button></SidebarMenu> : null}
+            {open ? <SidebarMenu onClose={() => onMenu(null)}><button role="menuitem" onClick={() => { onMenu(null); onCreateEntry(project.id, false) }}>新建文件</button><button role="menuitem" onClick={() => { onMenu(null); onCreateEntry(project.id, true) }}>新建文件夹</button><button role="menuitem" onClick={() => beginRename('project', project.id)}>重命名项目</button><button role="menuitem" data-a="proj-remove" onClick={() => { onMenu(null); onRemoveProject(project.id) }}>移除项目</button></SidebarMenu> : null}
             <button className="project-add" data-a="new-session" data-id={project.id} aria-label={`为 ${project.name} 新建会话`} onClick={() => { setCollapsed((value) => ({ ...value, [project.id]: false })); onNewSession(project.id) }}><Icon name="plus" className="s" /></button>
           </>}
         </div>

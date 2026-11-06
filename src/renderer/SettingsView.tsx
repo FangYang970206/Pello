@@ -1,8 +1,10 @@
 import { useState, type ReactNode } from 'react'
 import { useAnchoredMenu } from './useAnchoredMenu'
-import type { Executor, Host, Settings, SettingsSection, ShellKind } from '../shared/types'
+import type { Executor, Host, Project, Settings, SettingsSection, ShellKind } from '../shared/types'
+import { FileSearchSettings } from './FileSearchSettings'
 import { hostColor } from '../shared/host-colors'
-import { PRESETS, cmdline, hostLine, preferredAgent, shellChoices, shellLabel } from '../shared/types'
+import { PRESETS, cmdline, hostLine, preferredAgent, shellLabel } from '../shared/types'
+import { useLocalShells } from './useLocalShells'
 import { ResourceSettings } from './ResourceSettings'
 import { CODE_FONTS, UI_FONTS } from '../shared/fonts'
 import { THEMES } from '../shared/themes'
@@ -46,6 +48,7 @@ export function SettingsView({
   settings,
   custom,
   hosts,
+  projects,
   installed,
   onSection,
   onBack,
@@ -61,6 +64,7 @@ export function SettingsView({
   settings: Settings
   custom: Executor[]
   hosts: Host[]
+  projects: Project[]
   installed: Record<string, boolean>
   onSection: (id: SettingsSection) => void
   onBack: () => void
@@ -73,9 +77,8 @@ export function SettingsView({
   onLocalHost: () => void
 }) {
   const title = SECTIONS.find((item) => item.id === section)?.label || ''
-  const localPlatform = hosts.find((item) => item.id === 'local')?.platform || 'linux'
-  const shells = shellChoices(localPlatform)
-  const shellValue: ShellKind = shells.some((item) => item.id === settings.defShell) ? settings.defShell : shells[0].id
+  const { shells, loading: shellsLoading, error: shellsError, refresh: refreshShells } = useLocalShells()
+  const shellValue: ShellKind = settings.defShell
   const agentChoices = [
     ...PRESETS.map((item) => ({ id: item.id, name: item.name, installed: !!installed[item.cmd] })),
     ...custom.map((item) => ({ id: item.id, name: item.name, installed: true })),
@@ -94,20 +97,22 @@ export function SettingsView({
           <div className="card">
             <Row
               title="默认 Shell"
-              desc="新建终端时预选"
+              desc={<>{shellsLoading ? '正在检测本机 Shell…' : shellsError || '新建终端时预选'} <button className="btn sm ghost" type="button" disabled={shellsLoading} onClick={refreshShells}>重新检测</button></>}
               control={
                 <select
                   className="sel"
                   aria-label="默认 Shell"
                   value={shellValue}
+                  disabled={shellsLoading || !shells.length}
                   data-set="defShell"
                   onChange={(e) => {
-                    const next = shells.find((item) => item.id === e.target.value)?.id || shells[0].id
-                    onSettings({ ...settings, defShell: next })
+                    const next = shells.find((item) => item.id === e.target.value)?.id
+                    if (next) onSettings({ ...settings, defShell: next })
                   }}
                 >
+                  {!shells.some((item) => item.id === shellValue) ? <option value={shellValue} disabled>{shellLabel(shellValue)}（{shellsLoading ? '检测中' : '未检测到'}）</option> : null}
                   {shells.map((item) => (
-                    <option key={item.id} value={item.id}>
+                    <option key={item.id} value={item.id} title={item.path}>
                       {item.label}
                     </option>
                   ))}
@@ -126,6 +131,7 @@ export function SettingsView({
             />
           </div>
         </div>
+        <FileSearchSettings projects={projects} />
         <div className="group">
           <h2>项目</h2>
           <div className="card">

@@ -2,9 +2,11 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { app } from 'electron'
 import { Client, type ClientChannel } from 'ssh2'
+import { spawn } from 'node:child_process'
+import type { Readable, Writable } from 'node:stream'
 import type { Host } from '../shared/types'
 import { hostPassword, rememberPassword } from './credentials'
-import { bashQuote } from './platform'
+import { bashQuote, sshBatchArgs } from './platform'
 
 /** Password connections pin the first authenticated server key, like accept-new. */
 export function connectPasswordHost(host: Host, signal?: AbortSignal): Promise<Client> {
@@ -66,6 +68,70 @@ export function remoteCommand(host: Host, args: string[]): string {
     return `${args.slice(0, scriptAt).join(' ')} -EncodedCommand ${Buffer.from(args[scriptAt + 1], 'utf16le').toString('base64')}`
   }
   return args.map((arg) => /[\s"]/u.test(arg) ? `"${arg.replaceAll('"', '\\"')}"` : arg).join(' ')
+}
+
+export interface RemoteStream {
+  stdin: Writable
+  stdout: Readable
+  completion: Promise<void>
+  close(): void
+}
+
+/** Open a binary SSH command with the same authentication and host-key policy as terminals. */
+export async function openRemoteStream(host: Host, args: string[], signal: AbortSignal): Promise<RemoteStream> {
+  if (signal.aborted) throw new Error('传输已取消')
+  const command = remoteCommand(host, args)
+  if (host.auth === 'password') {
+    const client = await connectPasswordHost(host, signal)
+    try {
+      if (signal.aborted) throw new Error('传输已取消')
+      const channel = await new Promise<ClientChannel>((resolve, reject) => {
+        const abort = () => { client.destroy(); reject(new Error('传输已取消')) }
+        signal.addEventListener('abort', abort, { once: true })
+        client.exec(command, (error, stream) => {
+          signal.removeEventListener('abort', abort)
+          if (error) reject(error)
+          else if (signal.aborted) { stream.destroy(); reject(new Error('传输已取消')) }
+          else resolve(stream)
+        })
+      })
+      let stderr = '', exitCode: number | null = null
+      channel.stderr.setEncoding('utf8')
+      channel.stderr.on('data', (text: string) => { stderr = (stderr + text).slice(-16000) })
+      const abort = () => { channel.destroy(); client.destroy() }
+      signal.addEventListener('abort', abort, { once: true })
+      if (signal.aborted) abort()
+      const completion = new Promise<void>((resolve, reject) => {
+        channel.on('exit', (code: number | null) => { exitCode = code })
+        channel.once('error', reject)
+        client.once('error', reject)
+        channel.once('close', () => {
+          signal.removeEventListener('abort', abort); client.end()
+          if (signal.aborted) reject(new Error('传输已取消'))
+          else if (exitCode === 0) resolve()
+          else reject(new Error(stderr.trim() || (exitCode === null ? 'SSH 连接中断' : `远程命令退出码 ${exitCode}`)))
+        })
+      })
+      return { stdin: channel, stdout: channel, completion, close: abort }
+    } catch (error) { client.destroy(); throw error }
+  }
+  const child = spawn('ssh', sshBatchArgs(host, [command]), { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+  let stderr = ''
+  child.stderr.setEncoding('utf8')
+  child.stderr.on('data', (text: string) => { stderr = (stderr + text).slice(-16000) })
+  const abort = () => { child.kill() }
+  signal.addEventListener('abort', abort, { once: true })
+  if (signal.aborted) abort()
+  const completion = new Promise<void>((resolve, reject) => {
+    child.once('error', reject)
+    child.once('close', (code) => {
+      signal.removeEventListener('abort', abort)
+      if (signal.aborted) reject(new Error('传输已取消'))
+      else if (code === 0) resolve()
+      else reject(new Error(stderr.trim() || (code === null ? 'SSH 连接中断' : `SSH 退出码 ${code}`)))
+    })
+  })
+  return { stdin: child.stdin, stdout: child.stdout, completion, close: abort }
 }
 
 export async function runPasswordCommand(host: Host, command: string, input?: string): Promise<string> {

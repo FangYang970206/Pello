@@ -37,7 +37,7 @@ try {
   page.setDefaultTimeout(15000)
   page.on('pageerror', (error) => console.error('Renderer:', error.message))
   await page.click('[data-a=rmode][data-id=files]')
-  await page.click('[data-a=tog][data-id=docs]')
+  await page.locator('[data-a=tog][data-id=docs]').press('ArrowRight')
   await page.click('[data-a=preview][data-id="docs/guide.md"]')
   const rich = page.getByRole('textbox', { name: 'Markdown 内容', exact: true })
   await rich.waitFor()

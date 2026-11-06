@@ -13,6 +13,7 @@ import { Workspace, type FileTab, type Tab, type TermTab } from './Workspace'
 import { codeFont, uiFont } from '../shared/fonts'
 import { themeVariables, workbenchTheme } from '../shared/themes'
 import { AUTO_SAVE_DELAY, documentKey, editableText, fileText, isDirty, recordChange, undoDocument, type DocumentDraft } from './documents'
+import type { TransferSnapshot } from '../shared/types'
 
 type Modal =
   | { type: 'project' }
@@ -25,6 +26,7 @@ type GitState = GitPanel & { untracked: Record<string, boolean> }
 
 function shellFor(host: Host | undefined, pref: ShellKind): ShellKind {
   if (host?.platform === 'linux') return pref === 'zsh' ? 'zsh' : 'bash'
+  if (host?.id === 'local' && pref === 'bash') return 'bash'
   if (pref === 'cmd') return 'cmd'
   return 'pwsh'
 }
@@ -50,18 +52,27 @@ export function App() {
   const [activeMap, setActiveMap] = useState<Record<string, string | undefined>>({})
   const activeMapRef = useRef(activeMap)
   activeMapRef.current = activeMap
+  const lastTerminal = useRef<Record<string, string>>({})
+  useEffect(() => {
+    for (const [project, id] of Object.entries(activeMap)) if (tabs.some((tab) => tab.id === id && tab.type === 'term')) lastTerminal.current[project] = id!
+  }, [activeMap, tabs])
   const [menuId, setMenuId] = useState<string | null>(null)
+  const [createRequest, setCreateRequest] = useState<{ projectId: string; directory: boolean } | null>(null)
   const [right, setRight] = useState(false)
   const [rightWidth, setRightWidth] = useState(() => Number(localStorage.getItem('awb:rightWidth')) || 296)
   const [rmode, setRmode] = useState<'files' | 'changes'>('changes')
   const [dmode, setDmode] = useState<'unified' | 'split'>('unified')
   const [openDirs, setOpenDirs] = useState<Record<string, boolean>>({})
+  const [treeQueries, setTreeQueries] = useState<Record<string, string>>({})
+  const [treeSelections, setTreeSelections] = useState<Record<string, { path: string; dir: boolean }>>({})
+  const treeScrollPositions = useRef<Record<string, number>>({})
   const openDirsRef = useRef(openDirs)
   openDirsRef.current = openDirs
   const [modal, setModal] = useState<Modal | null>(null)
   const [toasts, setToasts] = useState<{ id: string; text: string; bad?: boolean }[]>([])
   const [git, setGit] = useState<GitState | null>(null)
   const [tree, setTree] = useState<TreeNode[]>([])
+  const [treeProjectId, setTreeProjectId] = useState<string | null>(null)
   const [treeChildren, setTreeChildren] = useState<Record<string, TreeNode[]>>({})
   const directoryRequests = useRef(new Set<string>())
   const [diff, setDiff] = useState<FileDiff | null>(null)
@@ -69,14 +80,60 @@ export function App() {
   const documentsRef = useRef(documents)
   documentsRef.current = documents
   const savingDocuments = useRef(new Set<string>())
+  const pathMutations = useRef(new Map<string, { projectId: string; path: string; directory: boolean }>())
   const autoSaveTimers = useRef(new Map<string, { draft: string; timer: ReturnType<typeof setTimeout> }>())
   const [gitTick, setGitTick] = useState(0)
+  const [transferStates, setTransferStates] = useState<Record<string, TransferSnapshot>>({})
+  useEffect(() => window.awb.onTransfer((snapshot) => {
+    setTransferStates((current) => ({ ...current, [snapshot.id]: snapshot }))
+    if (snapshot.state === 'completed' || snapshot.state === 'cancelled') setGitTick((tick) => tick + 1)
+  }), [])
   const booted = useRef(false)
   const restoring = useRef(false)
   const closingTerms = useRef(new Set<string>())
   const touring = useRef(false)
   const modalRef = useRef<Modal | null>(null)
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const replacementConfirm = useRef<string | null>(null)
+  useEffect(() => window.awb.onReplacement((event) => {
+    const key = documentKey(event.projectId, event.path)
+    const finishLock = () => {
+      pathMutations.current.delete(`replace:${event.id}`)
+      const doc = documentsRef.current[key]
+      if (doc) putDocument(key, { ...doc, replacing: false })
+      if (replacementConfirm.current === event.id) { replacementConfirm.current = null; setModal(null) }
+    }
+    if (event.phase === 'finish') {
+      if (!event.success) { finishLock(); return }
+      void window.awb.gitRead(event.projectId, event.path).then((file) => {
+        const doc = documentsRef.current[key]
+        if (doc) {
+          const next = recordChange({ ...doc, editAt: 0 }, editableText(file.text))
+          putDocument(key, { ...next, ...file, replacing: false, replacementId: event.id, saving: false, error: undefined })
+          setTabs((list) => list.map((tab) => tab.type === 'file' && tab.projectId === event.projectId && tab.path === event.path ? { ...tab, dirty: false } : tab))
+        }
+        setGitTick((tick) => tick + 1)
+      }).catch((error: unknown) => {
+        const doc = documentsRef.current[key]
+        if (doc) putDocument(key, { ...doc, error: error instanceof Error ? error.message : '覆盖后读取失败' })
+      }).finally(finishLock)
+      return
+    }
+    const doc = documentsRef.current[key]
+    if (replacementConfirm.current || doc?.saving || doc?.composing || savingDocuments.current.has(key) || [...pathMutations.current.values()].some((operation) => operation.projectId === event.projectId && (operation.path === event.path || (operation.directory && event.path.startsWith(`${operation.path}/`))))) {
+      window.awb.replacementReady(event.id, false); return
+    }
+    pathMutations.current.set(`replace:${event.id}`, { projectId: event.projectId, path: event.path, directory: false })
+    const timer = autoSaveTimers.current.get(key)
+    if (timer) { clearTimeout(timer.timer); autoSaveTimers.current.delete(key) }
+    if (doc) putDocument(key, { ...doc, replacing: true })
+    if (!doc || !isDirty(doc)) { window.awb.replacementReady(event.id, true); return }
+    replacementConfirm.current = event.id
+    setModal({ type: 'confirm', title: '覆盖未保存的文件？', ok: '放弃草稿并覆盖', body: <>文件 <span className="mono">{event.path}</span> 有未保存的草稿。覆盖成功后将读取新内容，撤销历史仍会保留。</>, run: () => { replacementConfirm.current = null; setModal(null); window.awb.replacementReady(event.id, true) } })
+  }), [])
+  useEffect(() => {
+    if (!modal && replacementConfirm.current) { const id = replacementConfirm.current; replacementConfirm.current = null; window.awb.replacementReady(id, false) }
+  }, [modal])
   const settingsOpener = useRef<HTMLElement | null>(null)
   const settingsReturn = useRef<HTMLElement | null>(null)
   modalRef.current = modal
@@ -108,6 +165,25 @@ export function App() {
       setOpenDirs((map) => ({ ...map, [key]: false }))
       toast(error instanceof Error ? error.message : '无法读取目录', true)
     } finally { directoryRequests.current.delete(key) }
+  }
+
+  async function revealFile(projectId: string, rel: string) {
+    const segments = rel.split('/')
+    segments.pop()
+    const dirs = segments.map((_, index) => segments.slice(0, index + 1).join('/'))
+    const listings = await Promise.all(dirs.map(async (dir) => [dir, await window.awb.gitTree(projectId, dir)] as const))
+    if (projectIdRef.current !== projectId) return false
+    setTreeChildren((current) => {
+      const next = { ...current }
+      for (const [dir, nodes] of listings) next[`${projectId}:${dir}`] = nodes
+      return next
+    })
+    setOpenDirs((current) => {
+      const next = { ...current }
+      for (const dir of dirs) next[`${projectId}:${dir}`] = true
+      return next
+    })
+    return true
   }
 
   const toast = useCallback((text: string, bad = false) => {
@@ -334,7 +410,7 @@ export function App() {
         void window.awb
           .gitTree(project.id)
           .then((nodes) => {
-            if (!stop) setTree(nodes)
+            if (!stop) { setTree(nodes); setTreeProjectId(project.id) }
           })
           .catch(() => undefined)
         for (const [key, open] of Object.entries(openDirsRef.current)) {
@@ -357,6 +433,7 @@ export function App() {
   useEffect(() => {
     setGit(null)
     setTree([])
+    setTreeProjectId(null)
     setDiff(null)
   }, [projectId])
 
@@ -409,6 +486,7 @@ export function App() {
     const key = documentKey(tab.projectId, tab.path)
     const doc = documentsRef.current[key]
     if (!doc) return
+    if (doc.replacing) return
     const next = update(doc)
     putDocument(key, next)
     setTabs((list) => list.map((item) => item.id === id ? { ...item, pinned: true, dirty: isDirty(next) } : item))
@@ -421,6 +499,7 @@ export function App() {
   async function saveFile(tab: FileTab, automatic = false): Promise<boolean> {
     const key = documentKey(tab.projectId, tab.path)
     const doc = documentsRef.current[key]
+    if ([...pathMutations.current.values()].some((operation) => operation.projectId === tab.projectId && (tab.path === operation.path || (operation.directory && tab.path.startsWith(`${operation.path}/`))))) return false
     if (!doc?.version || doc.binary || doc.missing || doc.tooBig || savingDocuments.current.has(key)) return false
     if (!isDirty(doc)) return true
     savingDocuments.current.add(key)
@@ -454,7 +533,7 @@ export function App() {
     }
     if (paused) return
     for (const [key, doc] of Object.entries(documents)) {
-      if (!isDirty(doc) || doc.saving || doc.composing || doc.error || doc.binary || doc.missing || doc.tooBig || timers.has(key)) continue
+      if (!isDirty(doc) || doc.saving || doc.replacing || doc.composing || doc.error || doc.binary || doc.missing || doc.tooBig || timers.has(key)) continue
       const tab = tabs.find((item): item is FileTab => item.type === 'file' && item.projectId === doc.projectId && item.path === doc.path)
       if (!tab) continue
       const timer = setTimeout(() => { timers.delete(key); void saveFile(tab, true) }, AUTO_SAVE_DELAY)
@@ -721,10 +800,10 @@ export function App() {
     setActiveMap((map) => ({ ...map, [project.id]: id }))
   }
 
-  function openFile(rel: string) {
+  function openFile(rel: string, pin = false) {
     if (!project) return
     const opened = tabs.find((tab) => tab.type === 'file' && tab.projectId === project.id && tab.path === rel)
-    if (opened) { selectTab(opened.id); return }
+    if (opened) { if (pin) pinFile(opened.id); selectTab(opened.id); return }
     const existing = tabs.find((tab) => tab.type === 'file' && tab.projectId === project.id && !tab.pinned)
     if (existing && existing.type === 'file') {
       setDocuments((map) => {
@@ -732,17 +811,113 @@ export function App() {
         delete next[documentKey(existing.projectId, existing.path)]
         return next
       })
-      setTabs((list) => list.map((tab) => (tab.id === existing.id && tab.type === 'file' ? { ...tab, path: rel } : tab)))
+      setTabs((list) => list.map((tab) => (tab.id === existing.id && tab.type === 'file' ? { ...tab, path: rel, pinned: pin } : tab)))
       setActiveMap((map) => ({ ...map, [project.id]: existing.id }))
       return
     }
     const id = uid('f')
-    setTabs((list) => [...list, { id, type: 'file', projectId: project.id, path: rel, pinned: false }])
+    setTabs((list) => [...list, { id, type: 'file', projectId: project.id, path: rel, pinned: pin }])
     setActiveMap((map) => ({ ...map, [project.id]: id }))
   }
 
   function pinFile(id: string) {
     setTabs((list) => list.map((tab) => (tab.id === id && tab.type === 'file' ? { ...tab, pinned: true } : tab)))
+  }
+
+  async function renameTree(projectId: string, rel: string, name: string, directory: boolean): Promise<void> {
+    await relocateTree(projectId, rel, directory, () => window.awb.treeRename(projectId, rel, name, directory))
+  }
+
+  async function moveTree(projectId: string, rel: string, parent: string, directory: boolean): Promise<void> {
+    await relocateTree(projectId, rel, directory, () => window.awb.treeMove(projectId, rel, parent, directory))
+  }
+
+  async function relocateTree(projectId: string, rel: string, directory: boolean, operation: () => Promise<string>): Promise<void> {
+    const affected = (value: string) => value === rel || (directory && value.startsWith(`${rel}/`))
+    const pending = Object.values(documentsRef.current).filter((doc) => doc.projectId === projectId && affected(doc.path))
+    if (pending.some((doc) => doc.saving || savingDocuments.current.has(documentKey(projectId, doc.path)))) throw new Error('文件正在保存，请稍候')
+    const lockId = documentKey(projectId, rel)
+    if ([...pathMutations.current.values()].some((item) => item.projectId === projectId && (affected(item.path) || (item.directory && rel.startsWith(`${item.path}/`))))) throw new Error('文件操作正在进行')
+    pathMutations.current.set(lockId, { projectId, path: rel, directory })
+    for (const doc of pending) {
+      const key = documentKey(projectId, doc.path), timer = autoSaveTimers.current.get(key)
+      if (timer) { clearTimeout(timer.timer); autoSaveTimers.current.delete(key) }
+    }
+    try {
+      const nextPath = await operation()
+      const remap = (value: string) => affected(value) ? nextPath + value.slice(rel.length) : value
+      const parentOf = (value: string) => value.split('/').slice(0, -1).join('/')
+      const oldParent = parentOf(rel), newParent = parentOf(nextPath)
+      const oldList = oldParent ? treeChildren[`${projectId}:${oldParent}`] || [] : tree
+      const movingNode = oldList.find((node) => node.path === rel)
+      const docs: Record<string, DocumentDraft> = {}
+      for (const [key, doc] of Object.entries(documentsRef.current)) {
+        if (doc.projectId === projectId && affected(doc.path)) { const newPath = remap(doc.path); docs[documentKey(projectId, newPath)] = { ...doc, path: newPath } }
+        else docs[key] = doc
+      }
+      documentsRef.current = docs; setDocuments(docs)
+      setTabs((list) => list.map((tab) => tab.projectId === projectId && tab.type !== 'term' && affected(tab.path) ? { ...tab, path: remap(tab.path) } : tab))
+      const rewriteNodes = (nodes: TreeNode[], parent: string) => {
+        const result = nodes.filter((node) => oldParent === newParent || node.path !== rel).map((node) => affected(node.path) ? { ...node, path: remap(node.path), name: node.path === rel ? nextPath.split('/').pop()! : node.name } : node)
+        if (oldParent !== newParent && parent === newParent && movingNode && !result.some((node) => node.path === nextPath)) result.push({ ...movingNode, path: nextPath, name: nextPath.split('/').pop()! })
+        return result
+      }
+      if (projectIdRef.current === projectId) setTree((nodes) => rewriteNodes(nodes, ''))
+      setTreeChildren((current) => Object.fromEntries(Object.entries(current).map(([key, nodes]) => {
+        const prefix = `${projectId}:`
+        if (!key.startsWith(prefix)) return [key, nodes]
+        const path = key.slice(prefix.length)
+        return [`${prefix}${remap(path)}`, rewriteNodes(nodes, remap(path))]
+      })))
+      setOpenDirs((current) => Object.fromEntries(Object.entries(current).map(([key, open]) => { const prefix = `${projectId}:`; return key.startsWith(prefix) ? [`${prefix}${remap(key.slice(prefix.length))}`, open] : [key, open] })))
+      if (newParent && oldParent !== newParent) setOpenDirs((current) => ({ ...current, [`${projectId}:${newParent}`]: true }))
+      setTreeSelections((current) => current[projectId] && affected(current[projectId].path) ? { ...current, [projectId]: { ...current[projectId], path: remap(current[projectId].path) } } : current)
+      setGitTick((tick) => tick + 1)
+    } finally {
+      pathMutations.current.delete(lockId)
+      setDocuments((current) => ({ ...current }))
+    }
+  }
+
+  function askTrash(projectId: string, rel: string, directory: boolean) {
+    if (!rel) return
+    const owner = db?.projects.find((item) => item.id === projectId)
+    const projectHost = db?.hosts.find((item) => item.id === owner?.host)
+    if (!owner || !projectHost) { toast('项目或环境不存在', true); return }
+    const remote = projectHost.id !== 'local'
+    const affected = (path: string) => path === rel || (directory && path.startsWith(`${rel}/`))
+    const relevant = Object.values(documentsRef.current).filter((doc) => doc.projectId === projectId && affected(doc.path))
+    if (relevant.some((doc) => doc.saving || savingDocuments.current.has(documentKey(projectId, doc.path)))) { toast('文件正在保存，请稍候', true); return }
+    for (const doc of relevant) {
+      const key = documentKey(projectId, doc.path), pending = autoSaveTimers.current.get(key)
+      if (pending) { clearTimeout(pending.timer); autoSaveTimers.current.delete(key) }
+    }
+    const dirty = relevant.filter(isDirty).length
+    const remove = async () => {
+      if (Object.values(documentsRef.current).some((doc) => doc.projectId === projectId && affected(doc.path) && (doc.saving || savingDocuments.current.has(documentKey(projectId, doc.path))))) { toast('文件正在保存，请稍候', true); return }
+      try {
+        await window.awb.treeTrash(projectId, rel, directory)
+        const nextDocs = Object.fromEntries(Object.entries(documentsRef.current).filter(([, doc]) => !(doc.projectId === projectId && affected(doc.path))))
+        documentsRef.current = nextDocs; setDocuments(nextDocs)
+        setTabs((list) => {
+          const next = list.filter((tab) => !(tab.projectId === projectId && tab.type !== 'term' && affected(tab.path)))
+          const wanted = activeMapRef.current[projectId]
+          if (wanted && !next.some((tab) => tab.id === wanted)) {
+            const fallback = next.find((tab) => tab.projectId === projectId && (tab.type !== 'term' || sessionOf(tab) === selectedSessionsRef.current[projectId]))?.id
+            const activeIds = { ...activeMapRef.current, [projectId]: fallback }
+            activeMapRef.current = activeIds; setActiveMap(activeIds)
+          }
+          return next
+        })
+        setTreeSelections((current) => current[projectId] && affected(current[projectId].path) ? Object.fromEntries(Object.entries(current).filter(([id]) => id !== projectId)) : current)
+        setOpenDirs((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${projectId}:`) || !affected(key.slice(projectId.length + 1)))))
+        setModal(null); setGitTick((tick) => tick + 1); toast(remote ? '远程对象已永久删除' : '已移入回收站')
+      } catch (error) { toast(error instanceof Error ? error.message : '删除失败', true) }
+    }
+    const impact = <>将{directory ? '文件夹及其全部内容' : '文件'} <span className="mono">{rel}</span> {remote ? '从远程机器永久删除，无法通过工作台恢复' : '移入系统回收站'}。
+      {dirty ? <> 有 {dirty} 个未保存的文件，删除后这些草稿将被放弃。</> : null}</>
+    if (remote) setModal({ type: 'confirm', title: '删除远程对象？', ok: '继续', body: impact, run: () => setModal({ type: 'confirm', title: '再次确认永久删除？', ok: '永久删除', body: impact, run: remove }) })
+    else setModal({ type: 'confirm', title: '移入回收站？', ok: '移入回收站', body: impact, run: remove })
   }
 
   function askRemove(id: string) {
@@ -923,6 +1098,7 @@ export function App() {
                     sessions={workSessions} selectedSession={sessionId} onSession={selectSession} onRenameSession={renameSession} onRemoveSession={removeSession}
                     projectId={projectId} activeId={active?.id} menuId={menuId} onMenu={setMenuId} onProject={selectProject} onTerm={selectTab}
                     onRenameProject={renameProject} onRenameTerm={renameTerm} onRemoveProject={askRemove} onCloseTerm={requestClose}
+                    onCreateEntry={(id, directory) => { selectProject(id); setRight(true); setRmode('files'); setCreateRequest({ projectId: id, directory }) }}
                     onNewSession={(id) => { selectProject(id); setModal({ type: 'term', newSession: true }) }} />
                 </nav>
                 <div className="sfoot">
@@ -984,9 +1160,15 @@ export function App() {
                     branch={git?.branch || project.branch}
                     repositories={git?.repositories}
                     errors={git?.errors}
-                    tree={tree}
+                    tree={treeProjectId === project.id ? tree : []}
+                    treeLoaded={treeProjectId === project.id}
                     treeChildren={treeChildren}
                     openDirs={openDirs}
+                    queries={treeQueries}
+                    setQueries={setTreeQueries}
+                    selections={treeSelections}
+                    setSelections={setTreeSelections}
+                    scrollPositions={treeScrollPositions}
                     width={rightWidth}
                     placement={db?.settings.panelSide}
                     onResize={resizeRight}
@@ -995,6 +1177,17 @@ export function App() {
                     onToggleDir={(dir) => void toggleDirectory(dir)}
                     onOpenDiff={openDiff}
                     onOpenFile={openFile}
+                    onRevealFile={revealFile}
+                    onTreeRulesChanged={() => setGitTick((tick) => tick + 1)}
+                    createRequest={createRequest}
+                    onCreateRequestHandled={() => setCreateRequest(null)}
+                    referenceTerms={tabs.filter((tab): tab is TermTab => tab.type === 'term' && tab.projectId === project.id && tab.state !== 'exited' && tab.state !== 'failed').sort((a, b) => Number(b.id === lastTerminal.current[project.id]) - Number(a.id === lastTerminal.current[project.id]))}
+                    onReference={(id, text) => { const term = tabs.find((tab): tab is TermTab => tab.id === id && tab.type === 'term' && tab.projectId === project.id && tab.state !== 'exited' && tab.state !== 'failed'); if (!term) { toast('目标终端已关闭', true); return }; window.awb.ptyWrite(id, text); selectTab(id) }}
+                    onTrash={askTrash}
+                    onRename={renameTree}
+                    onMove={moveTree}
+                    transfers={Object.values(transferStates).filter((item) => item.projectId === project.id)}
+                    onDismissTransfer={(id) => { void window.awb.transferDismiss(id); setTransferStates((current) => { const next = { ...current }; delete next[id]; return next }) }}
                     onCollapse={() => setRight(false)}
                     onRescan={async () => { const id = project.id; try { const panel = await window.awb.gitStatus(id, true); if (projectIdRef.current === id) setGit(panel) } catch { toast('无法重新扫描仓库，请检查连接和目录权限', true) } }}
                   />
@@ -1007,6 +1200,7 @@ export function App() {
               settings={db.settings}
               custom={db.custom}
               hosts={db.hosts}
+              projects={db.projects}
               installed={installed}
               onSection={(id) => {
                 setSection(id)

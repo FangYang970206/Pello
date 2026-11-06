@@ -1,9 +1,10 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { PtyEvent } from '../shared/types'
 import type { WorkbenchApi } from '../shared/api'
 
 const api: WorkbenchApi = {
   getState: () => ipcRenderer.invoke('db:get'),
+  localShells: () => ipcRenderer.invoke('shells:local'),
   saveSettings: (settings) => ipcRenderer.invoke('db:settings', settings),
   saveProjects: (projects) => ipcRenderer.invoke('db:projects', projects),
   saveCustom: (custom) => ipcRenderer.invoke('db:custom', custom),
@@ -30,10 +31,42 @@ const api: WorkbenchApi = {
   gitDiff: (projectId, rel, untracked) => ipcRenderer.invoke('git:diff', projectId, rel, untracked),
   gitDiscard: (projectId, rel, untracked) => ipcRenderer.invoke('git:discard', projectId, rel, untracked),
   gitTree: (projectId, rel) => ipcRenderer.invoke('git:tree', projectId, rel),
+  treeIgnoreGet: (projectId) => ipcRenderer.invoke('tree:ignore-get', projectId),
+  treeIgnoreSet: (projectId, rules) => ipcRenderer.invoke('tree:ignore-set', projectId, rules),
+  treeCreate: (projectId, parent, name, directory) => ipcRenderer.invoke('tree:create', projectId, parent, name, directory),
+  treeRename: (projectId, rel, name, directory) => ipcRenderer.invoke('tree:rename', projectId, rel, name, directory),
+  treeMove: (projectId, rel, parent, directory) => ipcRenderer.invoke('tree:move', projectId, rel, parent, directory),
+  treeTrash: (projectId, rel, directory) => ipcRenderer.invoke('tree:trash', projectId, rel, directory),
+  transferPick: (projectId, parent, kind) => ipcRenderer.invoke('transfer:pick', projectId, parent, kind),
+  droppedFilePath: (file) => webUtils.getPathForFile(file),
+  transferDrop: (projectId, parent, sources) => ipcRenderer.invoke('transfer:drop', projectId, parent, sources),
+  transferCancel: (id) => ipcRenderer.invoke('transfer:cancel', id),
+  transferDownload: (projectId, rel, directory) => ipcRenderer.invoke('transfer:download', projectId, rel, directory),
+  transferDecide: (id, choice, applyToBatch) => ipcRenderer.invoke('transfer:decide', id, choice, applyToBatch),
+  replacementReady: (id, allow) => ipcRenderer.send('file:replacement-ready', id, allow),
+  onReplacement: (cb) => {
+    const listener = (_event: Electron.IpcRendererEvent, event: Parameters<typeof cb>[0]) => cb(event)
+    ipcRenderer.on('file:replacement', listener)
+    return () => { ipcRenderer.removeListener('file:replacement', listener) }
+  },
+  transferRetry: (id) => ipcRenderer.invoke('transfer:retry', id),
+  transferKeepBoth: (id) => ipcRenderer.invoke('transfer:keep-both', id),
+  transferDismiss: (id) => ipcRenderer.invoke('transfer:dismiss', id),
+  onTransfer: (cb) => {
+    const listener = (_event: unknown, payload: import('../shared/types').TransferSnapshot) => cb(payload)
+    ipcRenderer.on('transfer:update', listener)
+    return () => ipcRenderer.removeListener('transfer:update', listener)
+  },
+  treeSearchStart: (projectId, id, query) => ipcRenderer.invoke('tree:search-start', projectId, id, query),
+  treeSearchNext: (id) => ipcRenderer.invoke('tree:search-next', id),
+  treeSearchCancel: (id) => ipcRenderer.invoke('tree:search-cancel', id),
   gitRead: (projectId, rel) => ipcRenderer.invoke('git:read', projectId, rel),
   gitWrite: (projectId, rel, text, version) => ipcRenderer.invoke('git:write', projectId, rel, text, version),
   previewUrl: (projectId, rel, draft) => ipcRenderer.invoke('file:preview-url', projectId, rel, draft),
   openHtmlPreview: (projectId, rel) => ipcRenderer.invoke('file:open-html', projectId, rel),
+  treeMenu: (projectId, rel, directory) => ipcRenderer.invoke('tree:menu', projectId, rel, directory),
+  treeAction: (projectId, rel, directory, action) => ipcRenderer.invoke('tree:action', projectId, rel, directory, action),
+  treeReference: (projectId, rel, kind, shell) => ipcRenderer.invoke('tree:reference', projectId, rel, kind, shell),
   documentMenu: (options) => ipcRenderer.invoke('file:menu', options),
   onPreviewSource: (cb) => {
     const listener = () => cb()

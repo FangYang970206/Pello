@@ -4,6 +4,7 @@ import { EXEC_COLORS, PRESETS, SHELL_AGENT, cmdline, hostLine, preferredAgent, s
 import { useAnchoredMenu } from './useAnchoredMenu'
 import { DirectoryBrowser } from './DirectoryBrowser'
 import { HostColorPicker } from './HostColorPicker'
+import { useLocalShells } from './useLocalShells'
 import { hostColor, nextHostColor } from '../shared/host-colors'
 
 export const dialogOpener: { current: HTMLElement | null } = { current: null }
@@ -497,9 +498,11 @@ export function NewTermDialog({
   onOpen: (kind: string, shell: ShellKind) => void | Promise<void>
   onManage: () => void
 }) {
-  const options = shellOptions(host.platform)
+  const local = useLocalShells(host.id === 'local')
+  const options = host.id === 'local' ? local.shells : shellOptions(host.platform)
+  const detecting = host.id === 'local' && local.loading
   const [kind, setKind] = useState(() => preferredAgent(initialKind, agents))
-  const [shell, setShell] = useState(options.some((item) => item.id === initialShell) ? initialShell : options[0].id)
+  const [shell, setShell] = useState(initialShell)
   const kindRef = useRef(kind)
   const shellRef = useRef(shell)
   const pickKind = (id: string) => {
@@ -515,7 +518,7 @@ export function NewTermDialog({
   const [error, setError] = useState('')
   const submitting = useRef(false)
   const open = async () => {
-    if (submitting.current) return
+    if (submitting.current || detecting || !options.some((item) => item.id === shellRef.current)) return
     submitting.current = true; setBusy(true); setError('')
     try { await onOpen(kindRef.current, shellRef.current) }
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)) }
@@ -555,7 +558,7 @@ export function NewTermDialog({
           <button className="btn ghost" data-a="mclose" onClick={onClose}>
             取消
           </button>
-          <button className="btn pri" data-a="nt-ok" disabled={busy} onClick={() => void open()}>
+          <button className="btn pri" data-a="nt-ok" disabled={busy || detecting || !options.some((item) => item.id === shell)} onClick={() => void open()}>
             {busy ? '正在启动…' : newSession ? '创建并启动' : '打开'}
             <kbd className="enter">Enter</kbd>
           </button>
@@ -593,8 +596,8 @@ export function NewTermDialog({
           )
         })}
       </div>
-      {options.length < 2 ? (
-        <div className="shellone">Shell：{options[0]?.label || 'bash'}</div>
+      {detecting ? <p role="status">正在检测本机 Shell…</p> : options.length === 1 && options[0].id === shell ? (
+        <div className="shellone">Shell：{options[0].label}</div>
       ) : (
         <div style={{ display: 'flex', alignItems: 'flex-end', gap: 16, marginTop: 16 }}>
           <div className="fld" style={{ margin: 0 }}>
@@ -610,6 +613,7 @@ export function NewTermDialog({
           <span className="grow" />
         </div>
       )}
+      {!detecting && host.id === 'local' && (local.error || !options.some((item) => item.id === shell)) ? <p className="file-error" role="alert">{local.error || `未检测到 ${shellLabel(shell)}，请选择可用 Shell。`} <button type="button" className="btn sm ghost" onClick={local.refresh}>重新检测</button></p> : null}
       <div className="fld" style={{ margin: '16px 0 0' }}>
         <span>将执行</span>
         <div className="cmdpv">

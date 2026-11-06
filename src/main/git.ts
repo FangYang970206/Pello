@@ -8,9 +8,11 @@ import { isUtf8 } from 'node:buffer'
 import type { DirListing, FileContent, FileDiff, GitFile, GitPanel, Host, OsKind, PathCheck, TreeNode } from '../shared/types'
 import { bashQuote, hostPlatform, isAbsPath, joinPath, parentPath, psQuote, sshBatchArgs } from './platform'
 import { remoteCommand, runPasswordCommand } from './ssh'
+import { LINUX_CREATE_SCRIPT, LINUX_RENAME_SCRIPT } from './linux-rename'
 
 const exec = promisify(execFile)
-const IGNORE = new Set(['.git', 'node_modules', 'dist', 'out', '.next', '__pycache__', '.cache'])
+export const TREE_DEFAULT_IGNORE = ['.git', 'node_modules', 'dist', 'out', '.next', '__pycache__', '.cache']
+const IGNORE = new Set(TREE_DEFAULT_IGNORE)
 const MAX_DIFF = 250_000
 
 interface Target {
@@ -373,8 +375,104 @@ function localPath(cwd: string, rel: string): string {
   return abs
 }
 
+export function validateEntryName(name: string, platform: OsKind): void {
+  if (typeof name !== 'string' || !name || name === '.' || name === '..' || /[\0/\\]/.test(name)) throw new Error('名称无效')
+  if (platform === 'windows' && (/[<>:"|?*]/.test(name) || [...name].some((char) => char.charCodeAt(0) < 32) || /[. ]$/.test(name) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name))) throw new Error('Windows 名称无效')
+}
+
+/** Resolve a tree path in the main process before exposing it to native actions. */
+export function treePath(target: Target, rel: string): { full: string; relative: string } {
+  const relative = cleanRelative(rel)
+  if (target.platform === 'windows' && relative.split('/').some((part) => part.includes(':'))) throw new Error('非法文件路径')
+  if (!target.host || target.host.id === 'local') return { full: localPath(target.cwd, relative), relative: relative || '.' }
+  const paths = target.platform === 'windows' ? path.win32 : path.posix
+  const root = paths.resolve(target.cwd)
+  const full = paths.resolve(root, relative)
+  const within = paths.relative(root, full)
+  if (within === '..' || within.startsWith(`..${paths.sep}`) || paths.isAbsolute(within)) throw new Error('路径超出项目目录')
+  return { full, relative: relative || '.' }
+}
+
+/** Create a single child without replacing an existing file or directory. */
+export async function createTreeEntry(target: Target, parent: string, name: string, directory: boolean): Promise<string> {
+  parent = cleanRelative(parent)
+  validateEntryName(name, target.platform)
+  const rel = parent ? `${parent}/${name}` : name
+  if (!target.host || target.host.id === 'local') {
+    const base = localPath(target.cwd, parent)
+    if (!fs.statSync(base).isDirectory()) throw new Error('目标不是目录')
+    const destination = path.join(base, name)
+    if (directory) fs.mkdirSync(destination)
+    else fs.closeSync(fs.openSync(destination, 'wx'))
+    return rel
+  }
+  const abs = joinPath(target.platform, target.cwd, rel)
+  const parentAbs = parent ? joinPath(target.platform, target.cwd, parent) : target.cwd
+  if (target.platform === 'windows') {
+    const command = `$root=(Resolve-Path -LiteralPath ${psQuote(target.cwd)} -ErrorAction Stop).Path.TrimEnd('\\'); $parent=[IO.Path]::GetFullPath(${psQuote(parentAbs)}).TrimEnd('\\'); if ($parent -ne $root -and -not $parent.StartsWith($root+'\\',[StringComparison]::OrdinalIgnoreCase)) { throw '非法路径' }; $walk=$root; if ($parent -ne $root) { foreach ($part in $parent.Substring($root.Length+1).Split('\\')) { $walk=Join-Path $walk $part; if ((Get-Item -LiteralPath $walk -Force -ErrorAction Stop).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw '不支持链接目录' } } }; $dest=${psQuote(abs)}; ${directory ? 'New-Item -ItemType Directory -Path $dest -ErrorAction Stop | Out-Null' : '$f=[IO.File]::Open($dest,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None); $f.Dispose()'}`
+    await run(target, command)
+  } else {
+    const command = `python3 -c ${bashQuote(LINUX_CREATE_SCRIPT)} ${bashQuote(target.cwd)} ${bashQuote(parent)} ${bashQuote(name)} ${directory ? '1' : '0'}`
+    await run(target, command)
+  }
+  return rel
+}
+
+/** Rename without replacing an existing destination. */
+export async function renameTreeEntry(target: Target, rel: string, name: string, directory: boolean): Promise<string> {
+  const clean = cleanRelative(rel)
+  return relocateTreeEntry(target, clean, clean.split('/').slice(0, -1).join('/'), name, directory)
+}
+
+export async function moveTreeEntry(target: Target, rel: string, destinationParent: string, directory: boolean): Promise<string> {
+  const clean = cleanRelative(rel)
+  return relocateTreeEntry(target, clean, destinationParent, clean.split('/').pop() || '', directory)
+}
+
+async function relocateTreeEntry(target: Target, rel: string, destinationParent: string, name: string, directory: boolean): Promise<string> {
+  rel = cleanRelative(rel)
+  if (!rel) throw new Error('不能重命名项目根目录')
+  destinationParent = cleanRelative(destinationParent)
+  validateEntryName(name, target.platform)
+  const parts = rel.split('/')
+  const oldName = parts.pop()!
+  const nextRel = [destinationParent, name].filter(Boolean).join('/')
+  const comparable = (value: string) => target.platform === 'windows' ? value.toLowerCase() : value
+  if (directory && (comparable(destinationParent) === comparable(rel) || comparable(destinationParent).startsWith(`${comparable(rel)}/`))) throw new Error('不能移入自身或子目录')
+  if (rel === nextRel) return rel
+  if (target.platform === 'linux') {
+    await run(target, `python3 -c ${bashQuote(LINUX_RENAME_SCRIPT)} ${bashQuote(target.cwd)} ${bashQuote(rel)} ${bashQuote(name)} ${directory ? '1' : '0'} ${bashQuote(destinationParent)}`)
+    return nextRel
+  }
+  const walk = [...parts, oldName].map((part) => `$walk=Join-Path $walk ${psQuote(part)}; $item=Get-Item -LiteralPath $walk -Force -ErrorAction Stop; if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw '不支持通过符号链接重命名' }`).join('; ')
+  const targetWalk = destinationParent ? destinationParent.split('/').map((part) => `$parent=Join-Path $parent ${psQuote(part)}; $parentItem=Get-Item -LiteralPath $parent -Force -ErrorAction Stop; if (($parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or -not $parentItem.PSIsContainer) { throw '目标不是安全目录' }`).join('; ') : ''
+  const move = directory ? '[IO.Directory]::Move' : '[IO.File]::Move'
+  const temporary = `.awb-rename-${randomUUID()}`
+  const command = `$ErrorActionPreference='Stop'; $root=(Resolve-Path -LiteralPath ${psQuote(target.cwd)} -ErrorAction Stop).Path; $walk=$root; ${walk}; if ($item.PSIsContainer -ne $${directory ? 'true' : 'false'}) { throw '文件类型已更改' }; $parent=$root; ${targetWalk ? `${targetWalk}; ` : ''}$dest=Join-Path $parent ${psQuote(name)}; if ([String]::Equals($walk,$dest,[StringComparison]::OrdinalIgnoreCase)) { $temp=Join-Path $parent ${psQuote(temporary)}; ${move}($walk,$temp); try { ${move}($temp,$dest) } catch { try { ${move}($temp,$walk) } catch { throw ('重命名失败，原对象保留于 '+$temp) }; throw } } else { ${move}($walk,$dest) }`
+  await run(target, command)
+  return nextRel
+}
+
+/** Permanently remove a remote descendant after checking every path component. */
+export async function removeRemoteEntry(target: Target, rel: string, directory: boolean): Promise<void> {
+  if (!target.host || target.host.id === 'local') throw new Error('此操作仅适用于远程项目')
+  rel = cleanRelative(rel)
+  if (!rel) throw new Error('不能删除项目根目录')
+  const parts = rel.split('/')
+  if (target.platform === 'windows') {
+    if (parts.some((part) => part.includes(':'))) throw new Error('非法文件路径')
+    const walk = parts.map((part) => `$walk=Join-Path $walk ${psQuote(part)}; $item=Get-Item -LiteralPath $walk -Force -ErrorAction Stop; if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw '不支持删除符号链接' }`).join('; ')
+    const command = `$ErrorActionPreference='Stop'; $walk=(Resolve-Path -LiteralPath ${psQuote(target.cwd)} -ErrorAction Stop).Path; ${walk}; if ($item.PSIsContainer -ne $${directory ? 'true' : 'false'}) { throw '文件类型已更改' }; ${directory ? "Get-ChildItem -LiteralPath $walk -Force -Recurse | ForEach-Object { if ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw '目录包含符号链接' } }; Remove-Item -LiteralPath $walk -Recurse -Force -ErrorAction Stop" : 'Remove-Item -LiteralPath $walk -Force -ErrorAction Stop'}`
+    await run(target, command)
+  } else {
+    const walk = parts.map((part) => `p="$p"/${bashQuote(part)}; [ ! -L "$p" ] || { echo '不支持删除符号链接' >&2; exit 1; }`).join('; ')
+    const command = `p=$(cd -P -- ${bashQuote(target.cwd)} && pwd) || exit 1; ${walk}; ${directory ? '[ -d "$p" ]' : '[ -f "$p" ]'} || { echo '文件类型已更改' >&2; exit 1; }; ${directory ? 'rm -rf -- "$p"' : 'rm -f -- "$p"'}`
+    await run(target, command)
+  }
+}
+
 /** List one level on demand. Directory depth no longer truncates the tree. */
-export async function fileTree(target: Target, rel = ''): Promise<TreeNode[]> {
+export async function fileTree(target: Target, rel = '', ignored: ReadonlySet<string> = IGNORE): Promise<TreeNode[]> {
   rel = cleanRelative(rel)
   let entries: { name: string; dir: boolean }[]
   if (!target.host || target.host.id === 'local') {
@@ -385,7 +483,7 @@ export async function fileTree(target: Target, rel = ''): Promise<TreeNode[]> {
     const abs = rel ? joinPath(target.platform, target.cwd, rel) : target.cwd
     const q = target.platform === 'windows' ? psQuote(abs) : bashQuote(abs)
     if (target.platform === 'windows') {
-      const text = await run(target, `@(Get-ChildItem -LiteralPath ${q} -Force -ErrorAction Stop | Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } | ForEach-Object { @{ name=$_.Name; dir=$_.PSIsContainer } }) | ConvertTo-Json -Compress`)
+      const text = await run(target, `[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); @(Get-ChildItem -LiteralPath ${q} -Force -ErrorAction Stop | Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } | ForEach-Object { @{ name=$_.Name; dir=$_.PSIsContainer } }) | ConvertTo-Json -Compress`)
       const parsed = JSON.parse(text.trim() || '[]')
       entries = Array.isArray(parsed) ? parsed : [parsed]
     } else {
@@ -393,7 +491,7 @@ export async function fileTree(target: Target, rel = ''): Promise<TreeNode[]> {
       entries = text.split('\0').filter(Boolean).map((entry) => ({ name: entry.slice(1), dir: entry[0] === 'd' }))
     }
   }
-  return sortNodes(entries.filter((entry) => !IGNORE.has(entry.name)).map((entry) => ({
+  return sortNodes(entries.filter((entry) => !entry.dir || !ignored.has(entry.name)).map((entry) => ({
     name: entry.name, dir: entry.dir, path: rel ? `${rel}/${entry.name}` : entry.name
   })))
 }
