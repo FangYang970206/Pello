@@ -80,7 +80,15 @@ export function App() {
   const documentsRef = useRef(documents)
   documentsRef.current = documents
   const savingDocuments = useRef(new Set<string>())
-  const pathMutations = useRef(new Map<string, { projectId: string; path: string; directory: boolean }>())
+  const pathMutations = useRef(new Map<string, { projectId: string; path: string; directory: boolean; caseInsensitive?: boolean }>())
+  const [fileReadTick, setFileReadTick] = useState(0)
+  function replacementAt(projectId: string, path: string): boolean {
+    return [...pathMutations.current].some(([key, operation]) => {
+      if (!key.startsWith('replace:') || projectId !== operation.projectId) return false
+      const current = operation.caseInsensitive ? path.toLowerCase() : path, parent = operation.caseInsensitive ? operation.path.toLowerCase() : operation.path
+      return current === parent || (operation.directory && (!parent || current.startsWith(`${parent}/`)))
+    })
+  }
   const autoSaveTimers = useRef(new Map<string, { draft: string; timer: ReturnType<typeof setTimeout> }>())
   const [gitTick, setGitTick] = useState(0)
   const [transferStates, setTransferStates] = useState<Record<string, TransferSnapshot>>({})
@@ -96,40 +104,50 @@ export function App() {
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const replacementConfirm = useRef<string | null>(null)
   useEffect(() => window.awb.onReplacement((event) => {
-    const key = documentKey(event.projectId, event.path)
+    const normalize = (value: string) => event.caseInsensitive ? value.toLowerCase() : value
+    const targets = event.targets || [{ projectId: event.projectId, path: event.path }]
+    const matches = (projectId: string, path: string) => targets.some((target) => target.projectId === projectId && (normalize(path) === normalize(target.path) || (event.directory && (!target.path || normalize(path).startsWith(`${normalize(target.path)}/`)))))
+    const affected = () => Object.values(documentsRef.current).filter((doc) => matches(doc.projectId, doc.path))
     const finishLock = () => {
-      pathMutations.current.delete(`replace:${event.id}`)
-      const doc = documentsRef.current[key]
-      if (doc) putDocument(key, { ...doc, replacing: false })
+      for (const key of pathMutations.current.keys()) if (key.startsWith(`replace:${event.id}:`)) pathMutations.current.delete(key)
+      setFileReadTick((tick) => tick + 1)
+      for (const doc of affected()) putDocument(documentKey(doc.projectId, doc.path), { ...doc, replacing: false })
       if (replacementConfirm.current === event.id) { replacementConfirm.current = null; setModal(null) }
     }
     if (event.phase === 'finish') {
       if (!event.success) { finishLock(); return }
-      void window.awb.gitRead(event.projectId, event.path).then((file) => {
-        const doc = documentsRef.current[key]
-        if (doc) {
-          const next = recordChange({ ...doc, editAt: 0 }, editableText(file.text))
-          putDocument(key, { ...next, ...file, replacing: false, replacementId: event.id, saving: false, error: undefined })
-          setTabs((list) => list.map((tab) => tab.type === 'file' && tab.projectId === event.projectId && tab.path === event.path ? { ...tab, dirty: false } : tab))
+      if (event.directory) setTreeChildren((map) => Object.fromEntries(Object.entries(map).filter(([key]) => !targets.some((target) => key === `${target.projectId}:${target.path}` || key.startsWith(`${target.projectId}:${target.path}${target.path ? '/' : ''}`)))))
+      void Promise.all(affected().map(async (previous) => {
+        const key = documentKey(previous.projectId, previous.path)
+        try {
+          const file = await window.awb.gitRead(previous.projectId, previous.path)
+          const doc = documentsRef.current[key]
+          if (doc) {
+            const next = recordChange({ ...doc, editAt: 0 }, editableText(file.text))
+            putDocument(key, { ...next, ...file, replacing: false, replacementId: event.id, saving: false, error: undefined })
+            setTabs((list) => list.map((tab) => tab.type === 'file' && tab.projectId === previous.projectId && tab.path === previous.path ? { ...tab, dirty: false } : tab))
+          }
+        } catch (error) {
+          const doc = documentsRef.current[key]
+          if (doc) putDocument(key, { ...doc, error: error instanceof Error ? error.message : '覆盖后读取失败' })
         }
-        setGitTick((tick) => tick + 1)
-      }).catch((error: unknown) => {
-        const doc = documentsRef.current[key]
-        if (doc) putDocument(key, { ...doc, error: error instanceof Error ? error.message : '覆盖后读取失败' })
-      }).finally(finishLock)
+      })).finally(() => { setGitTick((tick) => tick + 1); finishLock() })
       return
     }
-    const doc = documentsRef.current[key]
-    if (replacementConfirm.current || doc?.saving || doc?.composing || savingDocuments.current.has(key) || [...pathMutations.current.values()].some((operation) => operation.projectId === event.projectId && (operation.path === event.path || (operation.directory && event.path.startsWith(`${operation.path}/`))))) {
+    const docs = affected(), dirty = docs.filter(isDirty)
+    if (replacementConfirm.current || (dirty.length && (modalRef.current || document.querySelector('dialog[open]'))) || docs.some((doc) => doc.saving || doc.composing || savingDocuments.current.has(documentKey(doc.projectId, doc.path))) || [...pathMutations.current.values()].some((operation) => matches(operation.projectId, operation.path) || (operation.directory && targets.some((target) => target.projectId === operation.projectId && normalize(target.path).startsWith(`${normalize(operation.path)}/`))))) {
       window.awb.replacementReady(event.id, false); return
     }
-    pathMutations.current.set(`replace:${event.id}`, { projectId: event.projectId, path: event.path, directory: false })
-    const timer = autoSaveTimers.current.get(key)
-    if (timer) { clearTimeout(timer.timer); autoSaveTimers.current.delete(key) }
-    if (doc) putDocument(key, { ...doc, replacing: true })
-    if (!doc || !isDirty(doc)) { window.awb.replacementReady(event.id, true); return }
+    targets.forEach((target, index) => pathMutations.current.set(`replace:${event.id}:${index}`, { ...target, directory: !!event.directory, caseInsensitive: event.caseInsensitive }))
+    setFileReadTick((tick) => tick + 1)
+    for (const doc of docs) {
+      const key = documentKey(doc.projectId, doc.path), timer = autoSaveTimers.current.get(key)
+      if (timer) { clearTimeout(timer.timer); autoSaveTimers.current.delete(key) }
+      putDocument(key, { ...doc, replacing: true })
+    }
+    if (!dirty.length) { window.awb.replacementReady(event.id, true); return }
     replacementConfirm.current = event.id
-    setModal({ type: 'confirm', title: '覆盖未保存的文件？', ok: '放弃草稿并覆盖', body: <>文件 <span className="mono">{event.path}</span> 有未保存的草稿。覆盖成功后将读取新内容，撤销历史仍会保留。</>, run: () => { replacementConfirm.current = null; setModal(null); window.awb.replacementReady(event.id, true) } })
+    setModal({ type: 'confirm', title: '覆盖未保存的文件？', ok: '放弃草稿并覆盖', body: <>{event.directory ? '替换目录' : '文件'} <span className="mono">{event.path}</span> 会影响 {dirty.length} 个未保存的文件。{dirty.map((doc) => <span className="mono" style={{ display: 'block' }} key={`${doc.projectId}:${doc.path}`}>{doc.path}</span>)}覆盖成功后将读取新内容，撤销历史仍会保留。</>, run: () => { replacementConfirm.current = null; setModal(null); window.awb.replacementReady(event.id, true) } })
   }), [])
   useEffect(() => {
     if (!modal && replacementConfirm.current) { const id = replacementConfirm.current; replacementConfirm.current = null; window.awb.replacementReady(id, false) }
@@ -451,15 +469,16 @@ export function App() {
   useEffect(() => {
     if (!project || active?.type !== 'file') return
     const key = documentKey(project.id, active.path)
+    if (replacementAt(project.id, active.path)) return
     if (documentsRef.current[key]) return
     let stop = false
     void window.awb.gitRead(project.id, active.path).then((file) => {
-      if (!stop) setDocuments((map) => ({ ...map, [key]: { ...file, projectId: project.id, path: active.path, draft: editableText(file.text) } }))
+      if (!stop) putDocument(key, { ...file, projectId: project.id, path: active.path, draft: editableText(file.text) })
     }).catch((error) => toast(error instanceof Error ? error.message : '无法读取文件', true))
     return () => {
       stop = true
     }
-  }, [project?.id, active?.type === 'file' ? active.id + active.path : ''])
+  }, [project?.id, active?.type === 'file' ? active.id + active.path : '', fileReadTick])
 
   useEffect(() => {
     window.awb.setUnsavedChanges(Object.values(documents).some(isDirty))
@@ -476,6 +495,7 @@ export function App() {
   }, [])
 
   function putDocument(key: string, doc: DocumentDraft) {
+    if (replacementAt(doc.projectId, doc.path)) doc = { ...doc, replacing: true }
     documentsRef.current = { ...documentsRef.current, [key]: doc }
     setDocuments((map) => ({ ...map, [key]: doc }))
   }
@@ -804,6 +824,7 @@ export function App() {
     if (!project) return
     const opened = tabs.find((tab) => tab.type === 'file' && tab.projectId === project.id && tab.path === rel)
     if (opened) { if (pin) pinFile(opened.id); selectTab(opened.id); return }
+    if (replacementAt(project.id, rel)) { toast('此目录正在替换，完成后可打开文件'); return }
     const existing = tabs.find((tab) => tab.type === 'file' && tab.projectId === project.id && !tab.pinned)
     if (existing && existing.type === 'file') {
       setDocuments((map) => {

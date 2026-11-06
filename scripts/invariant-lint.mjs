@@ -161,9 +161,12 @@ export function checkInvariants(files) {
   require(declarations('.dot.terminal-status.busy').get('background') === 'var(--amber)' && declarations('.dot.terminal-status.ready').get('background') === 'var(--green)',
     'AWB017', cssFiles[0], '运行黄点、可输入绿点，不与连接状态混用')
   const scripts = JSON.parse(files.get('package.json') || '{}').scripts || {}
+  require(nodes(named(main, 'startRemoteUpload'), (node) => ts.isPropertyAssignment(node) && node.name.getText() === 'automatic' && node.initializer.getText() === '!keepBoth').length && called(source('src/main/remote-file.ts'), 'publishRemoteStage').length,
+    'AWB037', mainFile, '远程上传默认自动覆盖，同名目录经临时上传完成后整体替换')
   require(['review', 'windows-icon', 'shell-profile', 'terminal', 'terminal-shutdown', 'ssh-password', 'remote-terminal', 'render', 'workspace', 'multi-repo', 'program-status', 'sidebar', 'editor', 'design', 'appearance', 'resources', 'resource-import', 'resource-import-ui', 'opencode-mcp', 'host-management', 'directory-browser', 'autosave', 'resources-ui', 'resource-dialog', 'html-preview'].every((name) => scripts.check?.includes(`scripts/${name}-check.mjs`)) && scripts.check?.includes('npm run check:shells') && scripts['check:shells']?.includes('scripts/local-shells-check.mjs'),
     'AWB018', 'package.json', '保留已有行为回归入口，不能删检查来绕过失败')
   require(files.get('AGENTS.md')?.includes('npm run lint') && files.get('AGENTS.md')?.includes('npm run check'), 'AWB019', 'AGENTS.md', '项目规则必须注明静态与行为验证入口')
+  require(scripts['check:files']?.includes('scripts/upload-replace-check.mjs'), 'AWB018', 'package.json', '保留上传整体替换、草稿与进度的实际行为回归')
   return errors
 }
 

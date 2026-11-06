@@ -9,6 +9,7 @@ import { psQuote } from './platform'
 import { openRemoteStream } from './ssh'
 import { LINUX_FILE_VERSION, WINDOWS_FILE_VERSION, remoteFileVersion } from './remote-version'
 import { createTreeEntry, fileTree, treePath, validateEntryName, type Target } from './git'
+import { publishRemoteStage, remoteEntryVersion, removeRemoteStage } from './remote-replace'
 
 const READ_LINUX = `import os, stat, sys
 root, relative = sys.argv[1:]
@@ -82,7 +83,7 @@ finally:
 `
 
 /** Send one local file via stdin and publish remotely only after explicit stream completion. */
-export async function uploadRemoteFile(target: Target, parent: string, name: string, source: string, signal: AbortSignal, progress: (bytes: number, total: number) => void, expectedVersion = ''): Promise<void> {
+export async function uploadRemoteFile(target: Target, parent: string, name: string, source: string, signal: AbortSignal, progress: (bytes: number, total: number) => void, expectedVersion = '', committing?: () => void): Promise<void> {
   if (!target.host || target.host.id === 'local') throw new Error('请选择远程项目')
   validateEntryName(name, target.platform)
   const relative = treePath(target, parent).relative
@@ -90,6 +91,10 @@ export async function uploadRemoteFile(target: Target, parent: string, name: str
   const info = await fsp.lstat(source)
   if (!info.isFile() || info.isSymbolicLink()) throw new Error('仅支持上传普通文件')
   const handle = await fsp.open(source, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0))
+  const transport = new AbortController()
+  const abort = () => transport.abort()
+  signal.addEventListener('abort', abort, { once: true })
+  if (signal.aborted) abort()
   let remote: Awaited<ReturnType<typeof openRemoteStream>> | undefined
   try {
     const opened = await handle.stat()
@@ -102,28 +107,32 @@ export async function uploadRemoteFile(target: Target, parent: string, name: str
       const script = `$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $parent=(Resolve-Path -LiteralPath ${psQuote(target.cwd)} -ErrorAction Stop).Path; ${walk ? `${walk}; ` : ''}$tmp=Join-Path $parent ${psQuote(temporary)}; $dest=Join-Path $parent ${psQuote(name)}; $created=$false; try { $out=[IO.File]::Open($tmp,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None); $created=$true; try { $inputStream=[Console]::OpenStandardInput(); $remaining=[long]${opened.size}; $buffer=New-Object byte[] 262144; while($remaining -gt 0) { $read=$inputStream.Read($buffer,0,[int][Math]::Min($buffer.Length,$remaining)); if($read -le 0) { throw '传输不完整' }; $out.Write($buffer,0,$read); $remaining-=$read }; if($inputStream.ReadByte() -ne 1) { throw '传输未确认' }; $out.Flush($true) } finally { $out.Dispose() }; ${publish}; $created=$false } finally { if($created) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } }`
       args = ['powershell.exe', '-NoProfile', '-OutputFormat', 'Text', '-Command', script]
     } else args = ['python3', '-c', WRITE_LINUX, target.cwd, cleanParent, name, String(opened.size), temporary, expectedVersion]
-    remote = await openRemoteStream(target.host, args, signal)
+    remote = await openRemoteStream(target.host, args, transport.signal)
     remote.stdout.resume()
     let bytes = 0
+    progress(0, opened.size)
     const meter = new Transform({ transform(chunk: Buffer, _encoding, callback) { bytes += chunk.length; progress(bytes, opened.size); callback(null, chunk) } })
     const input = opened.size ? fs.createReadStream(source, { fd: handle.fd, autoClose: false, start: 0, end: opened.size - 1 }) : Readable.from([])
     const send = async () => {
       await pipeline(input, meter, remote!.stdin, { signal, end: false })
       const current = await handle.stat()
       if (signal.aborted || bytes !== opened.size || current.size !== opened.size || current.mtimeMs !== opened.mtimeMs) throw new Error('来源文件已更改或传输已取消')
+      committing?.()
+      signal.removeEventListener('abort', abort)
       remote!.stdin.end(Buffer.from([1]))
     }
     await Promise.all([send(), remote.completion])
   } catch (error) { remote?.close(); throw error }
-  finally { await handle.close() }
+  finally { signal.removeEventListener('abort', abort); await handle.close() }
 }
 
 export type UploadChoice = 'skip' | 'keep' | 'merge' | 'cancel' | 'overwrite'
 export type UploadConflict = { source: string; relative: string; mergeable: boolean; replaceable: boolean }
+type UploadOptions = { automatic?: boolean; planned?: (bytes: number) => void; publishing?: () => void; file?: (relative: string) => void; warning?: (message: string) => void }
 
 /** Plan all destinations and resolve conflicts before creating any remote object. */
-export async function uploadRemoteSources(target: Target, parent: string, sources: string[], signal: AbortSignal, progress: (source: string, bytes: number, total: number) => void, result: (source: string, destination: string, error?: string, skipped?: boolean) => void, decide?: (conflict: UploadConflict) => Promise<UploadChoice>, replace?: (relative: string, operation: () => Promise<void>) => Promise<void>): Promise<void> {
-  type Plan = { source: string; parent: string; name: string; relative: string; directory: boolean; merge?: boolean; expectedVersion?: string; skipped?: boolean; error?: string; children: Plan[] }
+export async function uploadRemoteSources(target: Target, parent: string, sources: string[], signal: AbortSignal, progress: (source: string, bytes: number, total: number) => void, result: (source: string, destination: string, error?: string, skipped?: boolean) => void, decide?: (conflict: UploadConflict) => Promise<UploadChoice>, replace?: (relative: string, operation: () => Promise<void>, directory?: boolean) => Promise<void>, options: UploadOptions = {}): Promise<void> {
+  type Plan = { source: string; parent: string; name: string; relative: string; directory: boolean; merge?: boolean; expectedVersion?: string; replacementVersion?: string; skipped?: boolean; error?: string; local?: { dev: number; ino: number; size: number; mtimeMs: number }; children: Plan[] }
   const clean = treePath(target, parent).relative
   const destination = clean === '.' ? '' : clean
   const listings = new Map<string, Map<string, { dir: boolean; reserved?: boolean }>>()
@@ -139,13 +148,19 @@ export async function uploadRemoteSources(target: Target, parent: string, source
       if (info.isSymbolicLink()) throw new Error('不上传符号链接')
       if (!info.isDirectory() && !info.isFile()) throw new Error('不支持此文件类型')
       item.directory = info.isDirectory()
+      item.local = { dev: info.dev, ino: info.ino, size: info.size, mtimeMs: info.mtimeMs }
       let listing = listings.get(remoteParent)
       if (!listing) {
         listing = new Map(virtual ? [] : (await fileTree(target, remoteParent, new Set())).map((node) => [key(node.name), { dir: node.dir }]))
         listings.set(remoteParent, listing)
       }
       const existing = listing.get(key(original))
-      if (existing) {
+      if (options.automatic && existing && (item.directory || existing.dir)) {
+        if (existing.reserved) throw new Error('本批次存在重复目标名称')
+        item.replacementVersion = await remoteEntryVersion(target, item.relative, signal)
+        if (item.replacementVersion === 'absent') throw new Error('目标已更改，请重新上传')
+      } else if (existing) {
+        if (options.automatic && existing.reserved) throw new Error('本批次存在重复目标名称')
         const mergeable = item.directory && existing.dir && !existing.reserved
         let version: string | undefined
         if (replace && !item.directory && !existing.dir && !existing.reserved) {
@@ -153,7 +168,7 @@ export async function uploadRemoteSources(target: Target, parent: string, source
           catch { check() /* An unverifiable target may still be skipped or kept under a new name. */ }
         }
         const replaceable = !!version
-        const choice = decide ? await decide({ source, relative: item.relative, mergeable, replaceable }) : 'skip'
+        const choice = options.automatic ? 'overwrite' : decide ? await decide({ source, relative: item.relative, mergeable, replaceable }) : 'skip'
         check()
         if (choice === 'cancel') throw new Error('传输已取消')
         if (choice === 'skip') { item.skipped = true; return item }
@@ -182,28 +197,80 @@ export async function uploadRemoteSources(target: Target, parent: string, source
   }
   const plans: Plan[] = []
   for (const source of sources) plans.push(await plan(source, destination, false))
+  const logicalPaths = new Map<string, string>()
+  const rememberPath = (item: Plan) => { logicalPaths.set(item.source, item.relative); item.children.forEach(rememberPath) }
+  plans.forEach(rememberPath)
+  const plannedBytes = (item: Plan): number => item.error || item.skipped ? 0 : item.directory ? item.children.reduce((sum, child) => sum + plannedBytes(child), 0) : item.local?.size || 0
+  options.planned?.(plans.reduce((sum, item) => sum + plannedBytes(item), 0))
   check()
-  const upload = async (item: Plan): Promise<boolean> => {
+  const validateSource = async (item: Plan): Promise<void> => {
+    if (item.error) throw new Error(item.error)
+    const info = await fsp.lstat(item.source), expected = item.local
+    if (!expected || info.isSymbolicLink() || info.dev !== expected.dev || info.ino !== expected.ino || info.size !== expected.size || info.mtimeMs !== expected.mtimeMs) throw new Error('来源已更改，请重新上传')
+    for (const child of item.children) await validateSource(child)
+  }
+  const rebase = (item: Plan, parent: string, name = item.name): Plan => {
+    const relative = parent ? `${parent}/${name}` : name
+    return { ...item, parent, name, relative, replacementVersion: undefined, expectedVersion: undefined, merge: false, children: item.children.map((child) => rebase(child, relative)) }
+  }
+  const upload = async (item: Plan, report = result): Promise<boolean> => {
     check()
-    if (item.skipped) { result(item.source, item.relative, '已跳过同名对象', true); return true }
+    if (item.skipped) { report(item.source, item.relative, '已跳过同名对象', true); return true }
     try {
       if (item.error) throw new Error(item.error)
+      if (item.replacementVersion) {
+        if (!replace) throw new Error('覆盖保护不可用')
+        await validateSource(item)
+        const stage = `.awb-upload-tree-${randomUUID()}`
+        const staged = rebase(item, item.parent, stage)
+        const buffered: Parameters<typeof result>[] = []
+        let owned = false, publishing = false
+        await replace(item.relative, async () => {
+          try {
+            await createTreeEntry(target, item.parent, stage, item.directory); owned = true
+            let copied = true
+            if (item.directory) { staged.merge = true; copied = await upload(staged, (...args) => buffered.push(args)) }
+            else {
+              options.file?.(logicalPaths.get(item.source) || item.relative)
+              const emptyVersion = await remoteFileVersion(target, staged.relative, signal)
+              await uploadRemoteFile(target, item.parent, stage, item.source, signal, (bytes, total) => progress(item.source, bytes, total), emptyVersion)
+              buffered.push([item.source, staged.relative])
+            }
+            if (!copied) throw new Error(buffered.find((entry) => entry[2])?.[2] || '上传未完成')
+            owned = true
+            await validateSource(item); check()
+            options.publishing?.(); publishing = true
+            const warning = await publishRemoteStage(target, item.relative, stage, item.replacementVersion!)
+            if (warning) options.warning?.(warning)
+          } catch (error) {
+            if (owned && !publishing) {
+              try { await removeRemoteStage(target, staged.relative) }
+              catch { throw new Error(`${error instanceof Error ? error.message : '上传失败'}；临时上传保留于 ${staged.relative}`) }
+            }
+            throw error
+          }
+        }, true)
+        for (const [source, relative] of buffered) report(source, item.relative + relative.slice(staged.relative.length))
+        return true
+      }
       // New names are exclusive; replacements recheck the captured version before publication.
       if (item.directory) {
         if (!item.merge) await createTreeEntry(target, item.parent, item.name, true)
         let allDone = true
-        for (const child of item.children) if (!await upload(child)) allDone = false
-        if (!allDone) { result(item.source, item.relative, '部分内容未能上传'); return false }
+        for (const child of item.children) if (!await upload(child, report)) allDone = false
+        if (!allDone) { report(item.source, item.relative, '部分内容未能上传'); return false }
       } else {
-        const send = () => uploadRemoteFile(target, item.parent, item.name, item.source, signal, (bytes, total) => progress(item.source, bytes, total), item.expectedVersion)
+        options.file?.(logicalPaths.get(item.source) || item.relative)
+        const send = () => uploadRemoteFile(target, item.parent, item.name, item.source, signal, (bytes, total) => progress(item.source, bytes, total), item.expectedVersion, report === result ? options.publishing : undefined)
         if (item.expectedVersion) { if (!replace) throw new Error('覆盖保护不可用'); await replace(item.relative, send) }
         else await send()
       }
-      result(item.source, item.relative)
+      report(item.source, item.relative)
       return true
     } catch (error) {
+      if (signal.aborted) { report(item.source, item.relative, error instanceof Error ? error.message : '传输已取消'); throw error }
       check()
-      result(item.source, item.relative, error instanceof Error ? error.message : '上传失败')
+      report(item.source, item.relative, error instanceof Error ? error.message : '上传失败')
       return false
     }
   }

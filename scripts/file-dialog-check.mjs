@@ -77,6 +77,22 @@ for (const scale of baseline ? [1] : [1, 1.25, 1.5, 2]) for (const theme of base
       await task.getByText('导入结束', { exact: true }).waitFor()
       assert.equal(fs.readFileSync(path.join(project, 'conflict-task.txt'), 'utf8'), 'old task content')
       await task.getByRole('button', { name: '关闭', exact: true }).click()
+      const uploadId = `upload-layout-${theme}-${width}-${scale}`
+      const upload = { id: uploadId, projectId: 'p', direction: 'upload', state: 'running', phase: 'transferring', current: filename, destination: `${project}/${'中文长目录/'.repeat(12)}`, bytes: 1048576, total: 4194304, overallBytes: 5242880, overallTotal: 10485760, items: [] }
+      await app.evaluate(({ BrowserWindow }, upload) => BrowserWindow.getAllWindows()[0].webContents.send('transfer:update', upload), upload)
+      const uploading = page.locator('.transfer-task').last()
+      const aggregate = uploading.getByRole('progressbar', { name: '上传总进度', exact: true })
+      await aggregate.waitFor()
+      assert.equal(await aggregate.getAttribute('value'), '5242880')
+      assert.equal(await uploading.getByRole('progressbar', { name: '当前文件进度', exact: true }).getAttribute('value'), '1048576')
+      const uploadBounds = await uploading.evaluate((element) => {
+        const box = element.getBoundingClientRect()
+        return { left: box.left, right: box.right, top: box.top, bottom: box.bottom, overflow: element.scrollWidth > element.clientWidth + 1, viewport: innerWidth, height: innerHeight }
+      })
+      assert.ok(!uploadBounds.overflow && uploadBounds.left >= 0 && uploadBounds.right <= width && uploadBounds.top >= 0 && uploadBounds.bottom <= height, JSON.stringify(uploadBounds))
+      await page.screenshot({ path: path.join(captures, `${theme}-${width}-${scale}-upload-progress.png`), animations: 'disabled' })
+      await app.evaluate(({ BrowserWindow }, upload) => BrowserWindow.getAllWindows()[0].webContents.send('transfer:update', { ...upload, state: 'completed' }), upload)
+      await uploading.getByRole('button', { name: '关闭', exact: true }).click()
       assert.equal(await page.evaluate(() => devicePixelRatio), scale)
       await page.click('[data-a=settings]')
       await page.waitForFunction(() => !document.querySelector('[aria-label="默认 Shell"]').disabled)

@@ -47,7 +47,7 @@ if (process.env.AWB_CAPTURE) {
 
 let win: BrowserWindow | null = null
 const transfers = new TransferManager((snapshot) => { if (win && !win.isDestroyed()) win.webContents.send('transfer:update', snapshot) }, guardReplacement)
-const replacementLocks = new Set<string>()
+const replacementLocks = new Map<string, boolean>()
 const activeFileWrites = new Set<string>()
 const replacementAnswers = new Map<string, (allow: boolean) => void>()
 const downloads = new Map<string, AbortController>()
@@ -74,15 +74,41 @@ function fileWriteKey(target: ReturnType<typeof targetFor>, relative: string): s
     : `local:${normalized}`
 }
 
-async function guardReplacement(projectId: string, destination: string, operation: () => Promise<void>, signal: AbortSignal): Promise<void> {
+function withinWriteKey(candidate: string, parent: string): boolean {
+  if (candidate === parent) return true
+  if (candidate.startsWith('local:') && parent.startsWith('local:')) return candidate.startsWith(parent + path.sep)
+  if (candidate.startsWith('local:') || parent.startsWith('local:')) return false
+  const a = JSON.parse(candidate) as [string, number, string, string], b = JSON.parse(parent) as [string, number, string, string]
+  return a[0] === b[0] && a[1] === b[1] && a[2] === b[2] && (a[3].startsWith(b[3] + '/') || a[3].startsWith(b[3] + '\\'))
+}
+function replacementBlocked(key: string, directory = false): boolean {
+  return [...replacementLocks].some(([locked, tree]) => locked === key || (tree && withinWriteKey(key, locked)) || (directory && withinWriteKey(locked, key)))
+}
+
+async function guardReplacement(projectId: string, destination: string, operation: () => Promise<void>, signal: AbortSignal, directory = false): Promise<void> {
   const { target, host } = projectTarget(projectId)
   const relative = host.id === 'local' ? path.relative(fs.realpathSync(target.cwd), fs.realpathSync(destination)).replaceAll('\\', '/') : destination
   const resolved = treePath(target, relative)
-  if (resolved.relative === '.' || (host.id === 'local' && !fs.lstatSync(destination).isFile())) throw new Error('只能覆盖项目中的普通文件')
+  if (resolved.relative === '.' || (host.id === 'local' && !fs.lstatSync(destination).isFile())) throw new Error('不能覆盖项目根目录或不支持的对象')
   const key = fileWriteKey(target, resolved.relative)
-  if (replacementLocks.has(key) || activeFileWrites.has(key)) throw new Error('文件正在保存或进行其他操作')
-  replacementLocks.add(key)
-  const event: ReplacementEvent = { id: randomUUID(), projectId, path: resolved.relative, phase: 'prepare' }
+  if (replacementBlocked(key, directory) || [...activeFileWrites].some((active) => active === key || (directory && withinWriteKey(active, key)))) throw new Error('文件正在保存或进行其他操作')
+  const targets = [{ projectId, path: resolved.relative }]
+  const paths = target.platform === 'windows' ? path.win32 : path.posix
+  for (const project of db().projects) {
+    if (project.id === projectId) continue
+    const aliasHost = db().hosts.find((item) => item.id === project.host)
+    if (!aliasHost || (host.id === 'local' ? aliasHost.id !== 'local' : aliasHost.id === 'local' || aliasHost.addr !== host.addr || aliasHost.port !== host.port || aliasHost.user !== host.user || aliasHost.platform !== host.platform)) continue
+    let aliasRoot = project.path
+    if (host.id === 'local') { try { aliasRoot = fs.realpathSync(project.path) } catch { continue } }
+    const relative = paths.relative(aliasRoot, resolved.full)
+    if (!relative || (relative !== '..' && !relative.startsWith(`..${paths.sep}`) && !paths.isAbsolute(relative))) targets.push({ projectId: project.id, path: relative.replaceAll('\\', '/') })
+    else if (directory) {
+      const nested = paths.relative(resolved.full, aliasRoot)
+      if (nested && nested !== '..' && !nested.startsWith(`..${paths.sep}`) && !paths.isAbsolute(nested)) targets.push({ projectId: project.id, path: '' })
+    }
+  }
+  const event: ReplacementEvent = { id: randomUUID(), projectId, path: resolved.relative, directory, caseInsensitive: target.platform === 'windows', targets, phase: 'prepare' }
+  replacementLocks.set(key, directory)
   let success = false
   try {
     if (!win || win.isDestroyed() || signal.aborted) throw new Error('覆盖已取消')
@@ -96,7 +122,7 @@ async function guardReplacement(projectId: string, destination: string, operatio
     if (!allowed || signal.aborted) throw new Error('覆盖已取消，原文件和草稿已保留')
     await operation()
     success = true
-    invalidatePreview(projectId, resolved.relative)
+    for (const item of targets) invalidatePreview(item.projectId, item.path)
   } finally {
     replacementAnswers.delete(event.id)
     replacementLocks.delete(key)
@@ -157,15 +183,22 @@ function startRemoteUpload(projectId: string, parent: string, sources: string[],
   for (const [key, history] of uploadHistory) if (uploadHistory.size >= 50 && history.complete) uploadHistory.delete(key)
   const history = { projectId, identity: uploadIdentity(target, host), entries: [] as UploadRetry[], conflicts: [] as UploadRetry[], complete: false }
   uploadHistory.set(id, history)
-  const snapshot: TransferSnapshot = { id, projectId, state: 'running', current: '', destination, bytes: 0, total: 0, items: [], direction: 'upload' }
+  const snapshot: TransferSnapshot = { id, projectId, state: 'running', current: '', destination, bytes: 0, total: 0, items: [], direction: 'upload', overallBytes: 0, phase: 'preparing' }
   const emit = () => { if (win && !win.isDestroyed()) win.webContents.send('transfer:update', snapshot) }
   const completion = new Promise<void>((done) => setImmediate(() => {
     emit()
     let last = 0
+    let previousBytes = 0
+    let progressTimer: ReturnType<typeof setTimeout> | undefined
     const policy = new ConflictPolicy()
     const progress = (source: string, bytes: number, total: number) => {
+      if (bytes === 0) previousBytes = 0
+      snapshot.overallBytes = (snapshot.overallBytes || 0) + Math.max(0, bytes - previousBytes)
+      previousBytes = bytes; snapshot.phase = 'transferring'
       snapshot.current = source; snapshot.bytes = bytes; snapshot.total = total
-      if (Date.now() - last > 100) { last = Date.now(); emit() }
+      const remaining = 100 - (Date.now() - last)
+      if (remaining <= 0) { if (progressTimer) clearTimeout(progressTimer); progressTimer = undefined; last = Date.now(); emit() }
+      else if (!progressTimer) progressTimer = setTimeout(() => { progressTimer = undefined; last = Date.now(); emit() }, remaining)
     }
     const result = (source: string, rel: string, error?: string, skipped = false) => {
       const separator = target.platform === 'windows' ? '\\' : '/'
@@ -199,18 +232,19 @@ function startRemoteUpload(projectId: string, parent: string, sources: string[],
       return choice
     }
     const operation = async () => {
-      const replace = (relative: string, write: () => Promise<void>) => {
+      const replace = (relative: string, write: () => Promise<void>, directory = false) => {
         const fresh = projectTarget(projectId)
         if (uploadIdentity(fresh.target, fresh.host) !== history.identity) throw new Error('项目环境已更改')
-        return guardReplacement(projectId, relative, write, controller.signal)
+        return guardReplacement(projectId, relative, write, controller.signal, directory)
       }
-      if (retryEntries) for (const entry of retryEntries) await uploadRemoteSources(target, entry.parent, [entry.source], controller.signal, progress, result, decide, replace)
-      else await uploadRemoteSources(target, parent, sources, controller.signal, progress, result, decide, replace)
+      const options = { automatic: !keepBoth, planned: (bytes: number) => { snapshot.overallTotal = (snapshot.overallTotal || 0) + bytes; emit() }, publishing: () => { snapshot.phase = 'publishing'; emit() }, file: (relative: string) => { snapshot.destination = treePath(target, relative.split('/').slice(0, -1).join('/')).full }, warning: (message: string) => { snapshot.warnings = [...(snapshot.warnings || []), message]; emit() } }
+      if (retryEntries) for (const entry of retryEntries) await uploadRemoteSources(target, entry.parent, [entry.source], controller.signal, progress, result, decide, replace, options)
+      else await uploadRemoteSources(target, parent, sources, controller.signal, progress, result, decide, replace, options)
     }
     void operation().then(() => { snapshot.state = 'completed' }).catch((error: unknown) => {
       snapshot.state = controller.signal.aborted ? 'cancelled' : 'completed'
       if (!controller.signal.aborted) snapshot.items.push({ source: '', destination, status: 'failed', error: error instanceof Error ? error.message : '上传失败' })
-    }).finally(() => { history.complete = true; downloads.delete(id); emit(); done() })
+    }).finally(() => { if (progressTimer) clearTimeout(progressTimer); history.complete = true; downloads.delete(id); emit(); done() })
   }))
   uploadCompletions.add(completion)
   void completion.then(() => uploadCompletions.delete(completion))
@@ -598,7 +632,7 @@ function registerIpc(): void {
   ipcMain.handle('git:write', async (_e, projectId: string, rel: string, text: string, version: string) => {
     const { target } = projectTarget(projectId)
     const key = fileWriteKey(target, rel)
-    if (replacementLocks.has(key) || activeFileWrites.has(key)) throw new Error('文件正在进行其他写入操作')
+    if (replacementBlocked(key) || activeFileWrites.has(key)) throw new Error('文件正在进行其他写入操作')
     activeFileWrites.add(key)
     try { return await writeFile(target, rel, text, version) } finally { activeFileWrites.delete(key) }
   })

@@ -18,6 +18,7 @@ let interruptDownload = ''
 let interruptUpload = ''
 let failDownload = ''
 let failVersion = false
+let alterUpload = false
 let uploadPaused
 let releaseUpload = () => {}
 const server = new ssh2.Server({ hostKeys: [hostKey] }, (client) => {
@@ -35,6 +36,7 @@ const server = new ssh2.Server({ hostKeys: [hostKey] }, (client) => {
       if (failDownload && info.command.includes(failDownload) && info.command.includes('sys.stdout.buffer.write')) {
         failDownload = ''; stream.stderr.write('fixture download failure'); stream.exit(1); stream.end(); return
       }
+      if (alterUpload && info.command.includes('传输未确认')) { alterUpload = false; wsl('python3', '-c', "import pathlib,sys; pathlib.Path(sys.argv[1], '上传 大文件.bin').write_text('external content must survive')", remoteRoot) }
       const encoded = Buffer.from(info.command, 'utf8').toString('base64')
       const child = spawn('wsl.exe', ['-d', 'Ubuntu', '--', 'bash', '-c', `exec bash <(base64 -d<<<${encoded})`], { windowsHide: true })
       let inputStopped = false
@@ -91,23 +93,16 @@ try {
   wsl('python3', '-c', "import pathlib,sys; p=pathlib.Path(sys.argv[1]); (p/'batch-folder'/'deep').mkdir(parents=True); [(p/n).write_text('old '+n) for n in ['batch-a.txt','batch-b.txt','batch-folder/deep/a.txt','batch-folder/deep/b.txt']]", remoteRoot)
   await page.evaluate(() => { window.__batchStates = []; window.awb.onTransfer((state) => window.__batchStates.push(state)) })
   const batchId = await page.evaluate((sources) => window.awb.transferDrop('linux-project', '', sources), ['batch-a.txt', 'batch-b.txt', 'batch-folder'].map((name) => path.join(batchRoot, name)))
-  await page.waitForFunction((id) => window.__batchStates.some((state) => state.id === id && state.state === 'conflicts'), batchId, { timeout: 30000 })
-  await page.evaluate((id) => window.awb.transferDecide(id, 'overwrite', true), batchId)
-  await page.waitForFunction((id) => window.__batchStates.some((state) => state.id === id && state.state === 'conflicts' && state.items.at(-1)?.mergeable), batchId, { timeout: 30000 })
-  assert.equal(wsl('python3', '-c', "import pathlib,sys; print((pathlib.Path(sys.argv[1])/'batch-a.txt').read_text())", remoteRoot), 'old batch-a.txt')
-  await page.evaluate((id) => window.awb.transferDecide(id, 'merge', true), batchId)
-  await page.waitForFunction((id) => window.__batchStates.some((state) => state.id === id && state.state === 'completed'), batchId, { timeout: 30000 })
+  await page.waitForFunction((id) => window.__batchStates.some((state) => state.id === id && state.state === 'completed'), batchId, { timeout: 60000 })
   const batchStates = await page.evaluate((id) => window.__batchStates.filter((state) => state.id === id), batchId)
-  assert.equal(batchStates.filter((state) => state.state === 'conflicts').length, 2)
+  assert.equal(batchStates.some((state) => state.state === 'conflicts'), false)
   assert.ok(batchStates.at(-1).items.every((item) => item.status === 'done'), JSON.stringify(batchStates.at(-1)))
   assert.equal(wsl('python3', '-c', "import pathlib,sys; p=pathlib.Path(sys.argv[1]); names=['batch-a.txt','batch-b.txt','batch-folder/deep/a.txt','batch-folder/deep/b.txt']; assert all((p/n).read_text()=='new '+n for n in names); print('OK')", remoteRoot), 'OK')
   const freshBatchId = await page.evaluate((source) => window.awb.transferDrop('linux-project', '', [source]), path.join(batchRoot, 'batch-a.txt'))
-  await page.waitForFunction((id) => window.__batchStates.some((state) => state.id === id && state.state === 'conflicts'), freshBatchId, { timeout: 30000 })
-  await assert.rejects(page.evaluate((id) => window.awb.transferDecide(id, 'merge', true), freshBatchId))
-  await page.evaluate((id) => window.awb.transferDecide(id, 'keep'), freshBatchId)
   await page.waitForFunction((id) => window.__batchStates.some((state) => state.id === id && state.state === 'completed'), freshBatchId, { timeout: 30000 })
-  assert.equal(wsl('python3', '-c', "import pathlib,sys; print((pathlib.Path(sys.argv[1])/'batch-a (1).txt').read_text())", remoteRoot), 'new batch-a.txt')
-  console.log('PASS remote batch policies separate files and directories, include nested conflicts and expire between tasks')
+  await assert.rejects(page.evaluate((id) => window.awb.transferDecide(id, 'merge', true), freshBatchId))
+  assert.equal(wsl('python3', '-c', "import pathlib,sys; p=pathlib.Path(sys.argv[1]); assert not (p/'batch-a (1).txt').exists(); print((p/'batch-a.txt').read_text())", remoteRoot), 'new batch-a.txt')
+  console.log('PASS remote batches automatically replace files and nested directories without conflict decisions or renamed copies')
   wsl('ln', '-s', `${remoteRoot}/destination`, `${remoteRoot}/create-link`)
   await assert.rejects(page.evaluate(() => window.awb.treeCreate('linux-project', 'create-link', 'must-not-create', false)))
   await assert.rejects(page.evaluate(() => window.awb.treeCreate('linux-project', 'create-link', 'must-not-create-dir', true)))
@@ -134,44 +129,24 @@ try {
   assert.equal(remoteHash, createHash('sha256').update(expected).digest('hex'))
   assert.deepEqual(fs.readFileSync(uploadSource), expected)
   const uploadConflictId = await page.evaluate((source) => window.awb.transferDrop('linux-project', '', [source]), uploadSource)
-  await page.waitForFunction((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'conflicts'), uploadConflictId, { timeout: 30000 })
-  await page.evaluate((id) => window.awb.transferDecide(id, 'skip'), uploadConflictId)
   await page.waitForFunction((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'completed'), uploadConflictId, { timeout: 30000 })
   const uploadConflict = await page.evaluate((id) => window.__downloadStates.filter((item) => item.id === id).at(-1), uploadConflictId)
-  assert.ok(uploadConflict.items.some((item) => item.status === 'conflict'))
-  const keptId = await page.evaluate((id) => window.awb.transferKeepBoth(id), uploadConflictId)
-  await page.waitForFunction((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'completed'), keptId, { timeout: 30000 })
-  const kept = await page.evaluate((id) => window.__downloadStates.filter((item) => item.id === id).at(-1), keptId)
-  assert.ok(kept.items.every((item) => item.status === 'done'), JSON.stringify(kept))
-  assert.equal(wsl('python3', '-c', "import hashlib,pathlib,sys; print(hashlib.sha256(pathlib.Path(sys.argv[1], '上传 大文件 (1).bin').read_bytes()).hexdigest())", remoteRoot), remoteHash)
-  const racedId = await page.evaluate((source) => window.awb.transferDrop('linux-project', '', [source]), uploadSource)
-  await page.waitForFunction((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'conflicts'), racedId, { timeout: 30000 })
-  wsl('python3', '-c', "import pathlib,sys; pathlib.Path(sys.argv[1], '上传 大文件 (2).bin').write_text('created after preflight')", remoteRoot)
-  await page.evaluate((id) => window.awb.transferDecide(id, 'keep'), racedId)
-  await page.waitForFunction((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'completed'), racedId, { timeout: 30000 })
-  const raced = await page.evaluate((id) => window.__downloadStates.filter((item) => item.id === id).at(-1), racedId)
-  assert.ok(raced.items.some((item) => item.status === 'failed'), JSON.stringify(raced))
-  assert.equal(wsl('python3', '-c', "import pathlib,sys; print(pathlib.Path(sys.argv[1], '上传 大文件 (2).bin').read_text())", remoteRoot), 'created after preflight')
+  assert.ok(uploadConflict.items.every((item) => item.status === 'done'), JSON.stringify(uploadConflict))
+  assert.equal(await page.evaluate((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'conflicts'), uploadConflictId), false)
   failVersion = true
   const unavailableVersionId = await page.evaluate((source) => window.awb.transferDrop('linux-project', '', [source]), uploadSource)
-  await page.waitForFunction((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'conflicts'), unavailableVersionId, { timeout: 30000 })
-  const unavailable = await page.evaluate((id) => window.__downloadStates.filter((item) => item.id === id).at(-1), unavailableVersionId)
-  assert.equal(unavailable.items.at(-1).replaceable, false)
-  await page.evaluate((id) => window.awb.transferDecide(id, 'keep'), unavailableVersionId)
   await page.waitForFunction((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'completed'), unavailableVersionId, { timeout: 30000 })
-  assert.equal(wsl('python3', '-c', "import hashlib,pathlib,sys; print(hashlib.sha256(pathlib.Path(sys.argv[1], '上传 大文件 (3).bin').read_bytes()).hexdigest())", remoteRoot), remoteHash)
+  const unavailable = await page.evaluate((id) => window.__downloadStates.filter((item) => item.id === id).at(-1), unavailableVersionId)
+  assert.ok(unavailable.items.some((item) => item.status === 'failed'), JSON.stringify(unavailable))
+  assert.equal(wsl('python3', '-c', "import hashlib,pathlib,sys; p=pathlib.Path(sys.argv[1]); assert not (p/'上传 大文件 (1).bin').exists(); print(hashlib.sha256((p/'上传 大文件.bin').read_bytes()).hexdigest())", remoteRoot), remoteHash)
   wsl('chmod', '640', `${remoteRoot}/上传 大文件.bin`)
+  alterUpload = true
   const changedOverwriteId = await page.evaluate((source) => window.awb.transferDrop('linux-project', '', [source]), uploadSource)
-  await page.waitForFunction((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'conflicts'), changedOverwriteId, { timeout: 30000 })
-  wsl('python3', '-c', "import pathlib,sys; pathlib.Path(sys.argv[1], '上传 大文件.bin').write_text('external content must survive')", remoteRoot)
-  await page.evaluate((id) => window.awb.transferDecide(id, 'overwrite'), changedOverwriteId)
   await page.waitForFunction((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'completed'), changedOverwriteId, { timeout: 30000 })
   const rejectedOverwrite = await page.evaluate((id) => window.__downloadStates.filter((item) => item.id === id).at(-1), changedOverwriteId)
   assert.ok(rejectedOverwrite.items.some((item) => item.status === 'failed'), JSON.stringify(rejectedOverwrite))
   assert.equal(wsl('python3', '-c', "import pathlib,sys; print(pathlib.Path(sys.argv[1], '上传 大文件.bin').read_text())", remoteRoot), 'external content must survive')
   const overwriteId = await page.evaluate((source) => window.awb.transferDrop('linux-project', '', [source]), uploadSource)
-  await page.waitForFunction((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'conflicts'), overwriteId, { timeout: 30000 })
-  await page.evaluate((id) => window.awb.transferDecide(id, 'overwrite'), overwriteId)
   await page.waitForFunction((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'completed'), overwriteId, { timeout: 30000 })
   const overwritten = await page.evaluate((id) => window.__downloadStates.filter((item) => item.id === id).at(-1), overwriteId)
   assert.ok(overwritten.items.every((item) => item.status === 'done'), JSON.stringify(overwritten))
@@ -182,8 +157,6 @@ try {
   const cancelSource = path.join(data, 'preflight-new.txt')
   fs.writeFileSync(cancelSource, 'must not be uploaded')
   const cancelBatchId = await page.evaluate((sources) => window.awb.transferDrop('linux-project', '', sources), [cancelSource, uploadSource])
-  await page.waitForFunction((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'conflicts'), cancelBatchId, { timeout: 30000 })
-  assert.equal(wsl('python3', '-c', "import pathlib,sys; print(pathlib.Path(sys.argv[1], 'preflight-new.txt').exists())", remoteRoot), 'False')
   await page.evaluate((id) => window.awb.transferCancel(id), cancelBatchId)
   await page.waitForFunction((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'cancelled'), cancelBatchId, { timeout: 30000 })
   assert.equal(wsl('python3', '-c', "import pathlib,sys; print(pathlib.Path(sys.argv[1], 'preflight-new.txt').exists())", remoteRoot), 'False')
@@ -206,10 +179,6 @@ try {
     fs.writeFileSync(cancelUploadSource, Buffer.alloc(32_000_000, 7))
     interruptUpload = 'pause'; uploadPaused = false
     const cancelUploadId = await page.evaluate((source) => window.awb.transferDrop('linux-project', '', [source]), cancelUploadSource)
-    if (replacement) {
-      await page.waitForFunction((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'conflicts'), cancelUploadId, { timeout: 30000 })
-      await page.evaluate((id) => window.awb.transferDecide(id, 'overwrite'), cancelUploadId)
-    }
     const pauseDeadline = Date.now() + 15000
     while (!uploadPaused && Date.now() < pauseDeadline) await new Promise((resolve) => setTimeout(resolve, 25))
     assert.equal(uploadPaused, true, 'Remote upload fixture must receive data before cancellation')
@@ -266,25 +235,13 @@ try {
   fs.writeFileSync(path.join(uploadFolder, 'deep', 'data.bin'), 'new binary version')
   fs.writeFileSync(path.join(uploadFolder, 'deep', 'fresh.txt'), 'new child')
   const mergeId = await page.evaluate((source) => window.awb.transferDrop('linux-project', '', [source]), uploadFolder)
-  let previousConflict = '', decisions = 0
-  for (;;) {
-    await page.waitForFunction(({ id, previous }) => {
-      const state = window.__downloadStates.filter((item) => item.id === id).at(-1)
-      return state && (state.state === 'completed' || (state.state === 'conflicts' && state.items.at(-1)?.destination !== previous))
-    }, { id: mergeId, previous: previousConflict }, { timeout: 30000 })
-    const state = await page.evaluate((id) => window.__downloadStates.filter((item) => item.id === id).at(-1), mergeId)
-    if (state.state === 'completed') { assert.ok(state.items.every((item) => item.status === 'done'), JSON.stringify(state)); break }
-    const conflict = state.items.at(-1)
-    previousConflict = conflict.destination
-    assert.equal(wsl('python3', '-c', "import pathlib,sys; print((pathlib.Path(sys.argv[1])/'Linux 上传目录'/'deep'/'fresh.txt').exists())", remoteRoot), 'False')
-    await page.evaluate(({ id, choice }) => window.awb.transferDecide(id, choice), { id: mergeId, choice: conflict.mergeable ? 'merge' : 'keep' })
-    assert.ok(++decisions < 10)
-  }
-  assert.ok(decisions >= 3)
-  assert.equal(wsl('python3', '-c', "import pathlib,sys; p=pathlib.Path(sys.argv[1])/'Linux 上传目录'/'deep'; assert (p/'data (1).bin').read_text()=='new binary version'; print((p/'fresh.txt').read_text())", remoteRoot), 'new child')
-  console.log('PASS remote upload preflights all writes, cancels pending decisions and merges nested directories with explicit keep-both choices')
-  assert.equal(wsl('python3', '-c', "import hashlib,pathlib,sys; p=pathlib.Path(sys.argv[1])/'Linux 上传目录'/'deep'; assert (p/'empty').is_dir(); print(hashlib.sha256((p/'data.bin').read_bytes()).hexdigest())", remoteRoot), remoteHash)
-  console.log('PASS Linux SSH streaming upload preserves large binary sources and rejects same-name targets')
+  await page.waitForFunction((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'completed'), mergeId, { timeout: 60000 })
+  const replacedFolder = await page.evaluate((id) => window.__downloadStates.filter((item) => item.id === id).at(-1), mergeId)
+  assert.ok(replacedFolder.items.every((item) => item.status === 'done'), JSON.stringify(replacedFolder))
+  assert.equal(await page.evaluate((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'conflicts'), mergeId), false)
+  assert.equal(wsl('python3', '-c', "import pathlib,sys; p=pathlib.Path(sys.argv[1])/'Linux 上传目录'/'deep'; assert (p/'empty').is_dir(); assert (p/'data.bin').read_text()=='new binary version'; assert not (p/'data (1).bin').exists(); print((p/'fresh.txt').read_text())", remoteRoot), 'new child')
+  assert.deepEqual(fs.readFileSync(uploadSource), expected)
+  console.log('PASS Linux SSH streaming uploads preserve sources, cancel cleanly and replace entire same-name directories automatically')
   fs.writeFileSync(download, 'do not overwrite')
   const conflictId = await page.evaluate(() => window.awb.transferDownload('linux-project', 'large 中文.bin'))
   await page.waitForFunction((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'completed'), conflictId, { timeout: 30000 })

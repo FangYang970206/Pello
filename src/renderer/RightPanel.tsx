@@ -3,6 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Icon } from './icons'
 import type { TermTab } from './Workspace'
 import { FileOperationDialog } from './FileOperationDialog'
+import { TransferProgress } from './TransferProgress'
 
 function MoveEntryDialog({ projectId, path, directory, onCancel, onMove }: { projectId: string; path: string; directory: boolean; onCancel: () => void; onMove: (parent: string) => Promise<void> }) {
   const [parent, setParent] = useState('')
@@ -175,6 +176,11 @@ export function RightPanel({
   const [moving, setMoving] = useState<{ projectId: string; path: string; dir: boolean } | null>(null)
   const [renameFocus, setRenameFocus] = useState<{ projectId: string; path: string } | null>(null)
   const [dropTarget, setDropTarget] = useState<string | null>(null)
+  const transferList = useRef<HTMLElement>(null)
+  const latestTransferId = transfers.at(-1)?.id
+  useLayoutEffect(() => {
+    if (transferList.current) transferList.current.scrollTop = transferList.current.scrollHeight
+  }, [project.id, latestTransferId])
   useEffect(() => {
     if (createRequest?.projectId !== project.id) return
     setCreating({ projectId: project.id, parent: '', directory: createRequest.directory })
@@ -470,15 +476,16 @@ export function RightPanel({
       </div>
       {body}
       {moving ? <MoveEntryDialog projectId={moving.projectId} path={moving.path} directory={moving.dir} onCancel={() => setMoving(null)} onMove={async (parent) => { await onMove(moving.projectId, moving.path, parent, moving.dir); setMoving(null) }} /> : null}
-      {transfers.length ? <section className="transfer-list" aria-label="传输任务">{transfers.map((task) => <div className="transfer-task" key={task.id}>
+      {transfers.length ? <section ref={transferList} className="transfer-list" aria-label="传输任务">{transfers.map((task) => <div className="transfer-task" key={task.id}>
         <strong>{task.state === 'running' ? (task.direction === 'download' ? '正在下载' : task.direction === 'upload' ? '正在上传' : '正在导入') : task.state === 'conflicts' ? '请选择同名项目的处理方式' : task.state === 'cancelled' ? '已取消' : (task.direction === 'download' ? '下载结束' : task.direction === 'upload' ? '上传结束' : '导入结束')}</strong>
-        <span title={task.current}>{task.current || task.destination}</span>
-        {task.state === 'running' && task.total ? <progress max={task.total} value={task.bytes} aria-label="当前文件进度" /> : null}
+        <span title={task.current}>{transferPath(task.current || task.destination)}</span>
+        <TransferProgress task={task} />
+        {task.warnings?.map((message) => <small key={message} role="alert" title={message}>{message}</small>)}
         {task.state === 'running' && !task.total && task.direction === 'download' ? <span>已下载 {task.bytes} 字节</span> : null}
         {task.items.map((item) => <small key={`${item.source}:${item.destination}`} title={item.destination}>{item.status === 'done' ? '完成' : item.status === 'conflict' ? '同名冲突' : '失败'} · {transferPath(item.destination)}{item.error ? ` · ${item.error}` : ''}</small>)}
         {task.state === 'conflicts' ? <label className="transfer-batch"><input type="checkbox" checked={!!conflictBatch[task.id]} onChange={(event) => setConflictBatch((current) => ({ ...current, [task.id]: event.target.checked }))} />应用到本批次同类冲突</label> : null}
         {task.state === 'conflicts' && task.pendingConflicts ? <span>待处理 {task.pendingConflicts} 项冲突</span> : null}
-        {task.state === 'running' ? <button className="btn sm" onClick={() => void window.awb.transferCancel(task.id)}>取消传输</button> : task.state === 'conflicts' ? <div>{([['skip', '跳过冲突项'], ['keep', '冲突项保留两者'], ...(task.items.length && task.items.every((item) => item.replaceable) ? [['overwrite', '覆盖冲突文件'] as const] : []), ...(task.items.some((item) => item.mergeable) ? [['merge', '合并同名目录'] as const] : []), ['cancel', '取消传输']] as const).map(([choice, label]) => <button className="btn sm" key={choice} onClick={() => { void window.awb.transferDecide(task.id, choice, !!conflictBatch[task.id]).catch((error: unknown) => setTreeError(error instanceof Error ? error.message : '处理冲突失败')) }}>{label}</button>)}</div> : <div>{task.items.some((item) => item.status === 'conflict') ? <button className="btn sm" onClick={() => { void window.awb.transferKeepBoth(task.id).catch((error: unknown) => setTreeError(error instanceof Error ? error.message : '处理冲突失败')) }}>冲突项保留两者</button> : null}{task.retryable !== false && task.items.some((item) => item.status === 'failed' && item.source && item.error !== '部分内容未能复制' && item.error !== '部分内容未能上传') ? <button className="btn sm" onClick={() => { void window.awb.transferRetry(task.id).catch((error: unknown) => setTreeError(error instanceof Error ? error.message : '重试失败')) }}>重试失败项</button> : null}<button className="btn sm" onClick={() => onDismissTransfer(task.id)}>关闭</button></div>}
+        {task.state === 'running' ? <button className="btn sm" disabled={task.phase === 'publishing'} title={task.phase === 'publishing' ? '正在完成替换，请稍候' : undefined} onClick={() => void window.awb.transferCancel(task.id)}>取消传输</button> : task.state === 'conflicts' ? <div>{([['skip', '跳过冲突项'], ['keep', '冲突项保留两者'], ...(task.items.length && task.items.every((item) => item.replaceable) ? [['overwrite', '覆盖冲突文件'] as const] : []), ...(task.items.some((item) => item.mergeable) ? [['merge', '合并同名目录'] as const] : []), ['cancel', '取消传输']] as const).map(([choice, label]) => <button className="btn sm" key={choice} onClick={() => { void window.awb.transferDecide(task.id, choice, !!conflictBatch[task.id]).catch((error: unknown) => setTreeError(error instanceof Error ? error.message : '处理冲突失败')) }}>{label}</button>)}</div> : <div>{task.items.some((item) => item.status === 'conflict') ? <button className="btn sm" onClick={() => { void window.awb.transferKeepBoth(task.id).catch((error: unknown) => setTreeError(error instanceof Error ? error.message : '处理冲突失败')) }}>冲突项保留两者</button> : null}{task.retryable !== false && task.items.some((item) => item.status === 'failed' && item.source && item.error !== '部分内容未能复制' && item.error !== '部分内容未能上传') ? <button className="btn sm" onClick={() => { void window.awb.transferRetry(task.id).catch((error: unknown) => setTreeError(error instanceof Error ? error.message : '重试失败')) }}>重试失败项</button> : null}<button className="btn sm" onClick={() => onDismissTransfer(task.id)}>关闭</button></div>}
       </div>)}</section> : null}
       {referencePath !== null ? <ReferenceDialog projectId={project.id} path={referencePath} terms={referenceTerms} onCancel={() => setReferencePath(null)} onConfirm={(id, value) => { onReference(id, value); setReferencePath(null) }} /> : null}
       {creating ? <CreateEntryDialog parent={creating.parent} directory={creating.directory} windows={host.platform === 'windows'} existing={(creating.parent ? treeChildren[`${creating.projectId}:${creating.parent}`] || [] : tree).map((node) => node.name)} onCancel={() => setCreating(null)} onCreate={async (name) => {

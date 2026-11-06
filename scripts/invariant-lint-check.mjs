@@ -41,7 +41,8 @@ const cases = [
   ['AWB032', 'src/main/ssh.ts', "stream.setEncoding('utf8')", "stream.setEncoding('ascii')"],
   ['AWB034', 'src/renderer/Workspace.tsx', 'sessionOf(tab) === sessionId', 'true'],
   ['AWB035', 'src/renderer/styles/extra.css', 'animation:terminal-spin .85s linear infinite', 'animation:none'],
-  ['AWB036', 'src/main/pty.ts', 'this.programStatus.push(chunk)', '{ text: chunk, queries: 0, states: [] }']
+  ['AWB036', 'src/main/pty.ts', 'this.programStatus.push(chunk)', '{ text: chunk, queries: 0, states: [] }'],
+  ['AWB037', 'src/main/index.ts', 'automatic: !keepBoth', 'automatic: false']
 ]
 for (const [id, file, before, after] of cases) {
   const mutated = new Map(files)

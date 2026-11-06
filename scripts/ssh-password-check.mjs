@@ -25,6 +25,7 @@ let remoteTerminals = 0
 let windowChanges = 0
 let delayUiWrite = false
 let uiWriteStarted = false
+let beforeBinaryUpload
 const clients = new Set()
 function createServer(hostKey) {
   return new Server({ hostKeys: [hostKey] }, (connection) => {
@@ -51,6 +52,7 @@ function createServer(hostKey) {
         const stream = accept()
         const encoded = /-EncodedCommand\s+['"]?([A-Za-z0-9+/=]+)/i.exec(info.command)
         const decoded = encoded ? Buffer.from(encoded[1], 'base64').toString('utf16le') : info.command
+        if (beforeBinaryUpload && decoded.includes('传输未确认')) { const action = beforeBinaryUpload; beforeBinaryUpload = undefined; action() }
         const delayed = delayUiWrite && decoded.includes('AWB_CONFLICT')
         if (delayed) uiWriteStarted = true
         const file = isWin ? (process.env.ComSpec || 'cmd.exe') : 'bash'
@@ -290,17 +292,14 @@ try {
   assert.deepEqual(fs.readFileSync(path.join(projectDir, "上传 data's.bin")), binaryData)
   assert.deepEqual(fs.readFileSync(uploadSource), binaryData)
   const conflictId = await page.evaluate((source) => window.awb.transferDrop('remote-project', '', [source]), uploadSource)
-  await page.waitForFunction((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'conflicts'), conflictId, { timeout: 30000 })
-  await page.evaluate((id) => window.awb.transferDecide(id, 'skip'), conflictId)
   await page.waitForFunction((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'completed'), conflictId, { timeout: 30000 })
   const uploadConflict = await page.evaluate((id) => window.__downloadStates.filter((item) => item.id === id).at(-1), conflictId)
-  assert.ok(uploadConflict.items.some((item) => item.status === 'conflict'))
+  assert.ok(uploadConflict.items.every((item) => item.status === 'done'), JSON.stringify(uploadConflict))
+  assert.equal(await page.evaluate((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'conflicts'), conflictId), false)
   assert.deepEqual(fs.readFileSync(path.join(projectDir, "上传 data's.bin")), binaryData)
   for (const race of [true, false]) {
+    if (race) beforeBinaryUpload = () => fs.writeFileSync(path.join(projectDir, "上传 data's.bin"), 'external binary change')
     const overwriteId = await page.evaluate((source) => window.awb.transferDrop('remote-project', '', [source]), uploadSource)
-    await page.waitForFunction((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'conflicts'), overwriteId, { timeout: 30000 })
-    if (race) fs.writeFileSync(path.join(projectDir, "上传 data's.bin"), 'external binary change')
-    await page.evaluate((id) => window.awb.transferDecide(id, 'overwrite'), overwriteId)
     await page.waitForFunction((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'completed'), overwriteId, { timeout: 30000 })
     const outcome = await page.evaluate((id) => window.__downloadStates.filter((item) => item.id === id).at(-1), overwriteId)
     if (race) {
@@ -319,11 +318,11 @@ try {
     await page.click('[data-a=rmode][data-id=files]')
     await page.getByRole('group', { name: '文件树', exact: true }).dispatchEvent('contextmenu')
     const task = page.locator('.transfer-task').last()
-    await task.getByRole('button', { name: '冲突项保留两者', exact: true }).click()
     await task.getByText('上传结束', { exact: true }).waitFor({ timeout: 30000 })
-    assert.deepEqual(fs.readFileSync(path.join(projectDir, "上传 data's (1).bin")), binaryData)
+    assert.equal(await task.getByRole('button', { name: '冲突项保留两者', exact: true }).count(), 0)
+    assert.equal(await task.getByRole('progressbar', { name: '上传总进度', exact: true }).getAttribute('value'), String(binaryData.length))
     assert.deepEqual(fs.readFileSync(path.join(projectDir, "上传 data's.bin")), binaryData)
-    console.log('PASS remote upload menu shows a conflict and keep-both completes through the visible task controls')
+    console.log('PASS remote upload menu automatically overwrites and shows completed aggregate progress')
   } finally { await app.evaluate(({ dialog }) => { dialog.showOpenDialog = globalThis.__conflictOpenDialog }) }
   const uploadFolder = path.join(data, '上传 目录')
   fs.mkdirSync(path.join(uploadFolder, 'deep', 'empty'), { recursive: true })
@@ -334,28 +333,18 @@ try {
   assert.ok(folderOutcome.items.every((item) => item.status === 'done'), JSON.stringify(folderOutcome))
   assert.deepEqual(fs.readFileSync(path.join(projectDir, '上传 目录', 'deep', 'data.bin')), binaryData)
   assert.ok(fs.statSync(path.join(projectDir, '上传 目录', 'deep', 'empty')).isDirectory())
-  fs.writeFileSync(path.join(uploadFolder, 'deep', 'data.bin'), 'do not replace remote binary')
+  fs.writeFileSync(path.join(uploadFolder, 'deep', 'data.bin'), 'replacement content')
   fs.writeFileSync(path.join(uploadFolder, 'deep', 'fresh.txt'), 'fresh child')
+  fs.writeFileSync(path.join(projectDir, '上传 目录', 'old-only.txt'), 'remove with whole-directory replacement')
   const mergeUploadId = await page.evaluate((source) => window.awb.transferDrop('remote-project', '', [source]), uploadFolder)
-  let previousUploadConflict = '', uploadDecisions = 0
-  for (;;) {
-    await page.waitForFunction(({ id, previous }) => {
-      const state = window.__downloadStates.filter((item) => item.id === id).at(-1)
-      return state && (state.state === 'completed' || (state.state === 'conflicts' && state.items.at(-1)?.destination !== previous))
-    }, { id: mergeUploadId, previous: previousUploadConflict }, { timeout: 30000 })
-    const state = await page.evaluate((id) => window.__downloadStates.filter((item) => item.id === id).at(-1), mergeUploadId)
-    if (state.state === 'completed') break
-    const conflict = state.items.at(-1)
-    previousUploadConflict = conflict.destination
-    assert.equal(fs.existsSync(path.join(projectDir, '上传 目录', 'deep', 'fresh.txt')), false)
-    await page.evaluate(({ id, choice }) => window.awb.transferDecide(id, choice), { id: mergeUploadId, choice: conflict.mergeable ? 'merge' : 'skip' })
-    assert.ok(++uploadDecisions < 10)
-  }
-  assert.ok(uploadDecisions >= 3)
-  assert.deepEqual(fs.readFileSync(path.join(projectDir, '上传 目录', 'deep', 'data.bin')), binaryData)
+  await page.waitForFunction((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'completed'), mergeUploadId, { timeout: 60000 })
+  const directoryReplacement = await page.evaluate((id) => window.__downloadStates.filter((item) => item.id === id).at(-1), mergeUploadId)
+  assert.ok(directoryReplacement.items.every((item) => item.status === 'done'), JSON.stringify(directoryReplacement))
+  assert.equal(await page.evaluate((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'conflicts'), mergeUploadId), false)
+  assert.equal(fs.readFileSync(path.join(projectDir, '上传 目录', 'deep', 'data.bin'), 'utf8'), 'replacement content')
+  assert.equal(fs.existsSync(path.join(projectDir, '上传 目录', 'old-only.txt')), false)
   assert.equal(fs.readFileSync(path.join(projectDir, '上传 目录', 'deep', 'fresh.txt'), 'utf8'), 'fresh child')
-  console.log('PASS remote Windows directory merge preflights nested decisions and preserves skipped binaries')
-  console.log('PASS remote upload streams files and directories without replacing existing files')
+  console.log('PASS remote Windows uploads replace entire same-name directories after staging, including removal of old-only files')
   const downloadDirectory = path.join(projectDir, '远程 下载目录')
   fs.mkdirSync(path.join(downloadDirectory, '深层 目录', '空目录'), { recursive: true })
   fs.writeFileSync(path.join(downloadDirectory, '深层 目录', 'data.bin'), binaryData)
@@ -384,7 +373,6 @@ try {
   for (const allow of [false, true]) {
     await page.evaluate((source) => window.awb.transferDrop('remote-project', '', [source]), overwriteSource)
     const task = page.locator('.transfer-task').last()
-    await task.getByRole('button', { name: '覆盖冲突文件', exact: true }).click()
     const confirm = page.getByRole('dialog', { name: '覆盖未保存的文件？', exact: true })
     await confirm.waitFor()
     const version = (await page.evaluate(() => window.awb.gitRead('remote-project', 'README.md'))).version
