@@ -14,6 +14,7 @@ import { codeFont, uiFont } from '../shared/fonts'
 import { themeVariables, workbenchTheme } from '../shared/themes'
 import { AUTO_SAVE_DELAY, documentKey, editableText, fileText, isDirty, recordChange, undoDocument, type DocumentDraft } from './documents'
 import type { TransferSnapshot } from '../shared/types'
+import { UPLOAD_SUCCESS_DURATION, uploadSucceeded } from './UploadStatus'
 
 type Modal =
   | { type: 'project' }
@@ -92,10 +93,27 @@ export function App() {
   const autoSaveTimers = useRef(new Map<string, { draft: string; timer: ReturnType<typeof setTimeout> }>())
   const [gitTick, setGitTick] = useState(0)
   const [transferStates, setTransferStates] = useState<Record<string, TransferSnapshot>>({})
-  useEffect(() => window.awb.onTransfer((snapshot) => {
-    setTransferStates((current) => ({ ...current, [snapshot.id]: snapshot }))
-    if (snapshot.state === 'completed' || snapshot.state === 'cancelled') setGitTick((tick) => tick + 1)
-  }), [])
+  const uploadDismissTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>())
+  const dismissTransfer = useCallback((id: string) => {
+    clearTimeout(uploadDismissTimers.current.get(id))
+    uploadDismissTimers.current.delete(id)
+    setTransferStates((current) => { const next = { ...current }; delete next[id]; return next })
+    void window.awb.transferDismiss(id).catch((error: unknown) => console.error('清理传输记录失败', error))
+  }, [])
+  useEffect(() => {
+    const timers = uploadDismissTimers.current
+    const unsubscribe = window.awb.onTransfer((snapshot) => {
+      if (snapshot.state === 'completed' || snapshot.state === 'cancelled') setGitTick((tick) => tick + 1)
+      if (snapshot.direction === 'upload' && snapshot.state === 'cancelled' && !snapshot.warnings?.length && !snapshot.items.some((item) => item.error?.includes('保留于'))) { dismissTransfer(snapshot.id); return }
+      setTransferStates((current) => ({ ...current, [snapshot.id]: snapshot }))
+      if (uploadSucceeded(snapshot)) {
+        if (!timers.has(snapshot.id)) timers.set(snapshot.id, setTimeout(() => dismissTransfer(snapshot.id), UPLOAD_SUCCESS_DURATION))
+      } else {
+        clearTimeout(timers.get(snapshot.id)); timers.delete(snapshot.id)
+      }
+    })
+    return () => { unsubscribe(); for (const timer of timers.values()) clearTimeout(timer); timers.clear() }
+  }, [dismissTransfer])
   const booted = useRef(false)
   const restoring = useRef(false)
   const closingTerms = useRef(new Set<string>())
@@ -1208,7 +1226,7 @@ export function App() {
                     onRename={renameTree}
                     onMove={moveTree}
                     transfers={Object.values(transferStates).filter((item) => item.projectId === project.id)}
-                    onDismissTransfer={(id) => { void window.awb.transferDismiss(id); setTransferStates((current) => { const next = { ...current }; delete next[id]; return next }) }}
+                    onDismissTransfer={dismissTransfer}
                     onCollapse={() => setRight(false)}
                     onRescan={async () => { const id = project.id; try { const panel = await window.awb.gitStatus(id, true); if (projectIdRef.current === id) setGit(panel) } catch { toast('无法重新扫描仓库，请检查连接和目录权限', true) } }}
                   />

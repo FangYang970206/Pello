@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Icon } from './icons'
 import type { TermTab } from './Workspace'
 import { FileOperationDialog } from './FileOperationDialog'
-import { TransferProgress } from './TransferProgress'
+import { UploadStatus } from './UploadStatus'
 
 function MoveEntryDialog({ projectId, path, directory, onCancel, onMove }: { projectId: string; path: string; directory: boolean; onCancel: () => void; onMove: (parent: string) => Promise<void> }) {
   const [parent, setParent] = useState('')
@@ -417,7 +417,7 @@ export function RightPanel({
       <>
         {treeError ? <p role="alert" className="repository-help bad">{treeError}</p> : null}
         <label className="repository-filter"><span className="vh">搜索文件</span><input className="sel" aria-label="搜索文件" placeholder="搜索文件名或路径" value={query} onChange={(event) => setQueries((current) => ({ ...current, [project.id]: event.target.value }))} /></label>
-        {dropTarget !== null ? <div className="tree-drop-hint" role="status">{host.id === 'local' ? '复制到' : '上传到'} · {project.path}{dropTarget ? `${host.platform === 'windows' ? '\\' : '/'}${dropTarget.replaceAll('/', host.platform === 'windows' ? '\\' : '/')}` : ''}</div> : null}
+        {dropTarget !== null ? <div className="tree-drop-hint" role="status">{host.id !== 'local' ? '松开以上传' : <>复制到 · {project.path}{dropTarget ? `${host.platform === 'windows' ? '\\' : '/'}${dropTarget.replaceAll('/', host.platform === 'windows' ? '\\' : '/')}` : ''}</>}</div> : null}
         {query.trim() ? <div className="rlist" role="group" aria-label="文件搜索结果" tabIndex={0} {...dropHandlers} onContextMenu={treeBackgroundContext} onKeyDown={treeBackgroundKey}>
           {search.projectId === project.id && search.query === query ? <>
             {search.items.map((node) => <button className="row" data-a="search-file" onContextMenu={(event) => { event.preventDefault(); void treeMenu(node.path, false) }} onKeyDown={(event) => menuKey(event, node.path, false)} data-id={node.path} key={node.path} title={node.path} onClick={() => {
@@ -476,10 +476,10 @@ export function RightPanel({
       </div>
       {body}
       {moving ? <MoveEntryDialog projectId={moving.projectId} path={moving.path} directory={moving.dir} onCancel={() => setMoving(null)} onMove={async (parent) => { await onMove(moving.projectId, moving.path, parent, moving.dir); setMoving(null) }} /> : null}
-      {transfers.length ? <section ref={transferList} className="transfer-list" aria-label="传输任务">{transfers.map((task) => <div className="transfer-task" key={task.id}>
-        <strong>{task.state === 'running' ? (task.direction === 'download' ? '正在下载' : task.direction === 'upload' ? '正在上传' : '正在导入') : task.state === 'conflicts' ? '请选择同名项目的处理方式' : task.state === 'cancelled' ? '已取消' : (task.direction === 'download' ? '下载结束' : task.direction === 'upload' ? '上传结束' : '导入结束')}</strong>
+      {transfers.length ? <section ref={transferList} className="transfer-list" aria-label="传输任务">{transfers.map((task) => task.direction === 'upload' ? <UploadStatus key={task.id} task={task} onDismiss={onDismissTransfer} /> : <div className="transfer-task" key={task.id}>
+        <strong>{task.state === 'running' ? (task.direction === 'download' ? '正在下载' : '正在导入') : task.state === 'conflicts' ? '请选择同名项目的处理方式' : task.state === 'cancelled' ? '已取消' : (task.direction === 'download' ? '下载结束' : '导入结束')}</strong>
         <span title={task.current}>{transferPath(task.current || task.destination)}</span>
-        <TransferProgress task={task} />
+        {task.state === 'running' && task.total ? <progress max={task.total} value={task.bytes} aria-label="当前文件进度" /> : null}
         {task.warnings?.map((message) => <small key={message} role="alert" title={message}>{message}</small>)}
         {task.state === 'running' && !task.total && task.direction === 'download' ? <span>已下载 {task.bytes} 字节</span> : null}
         {task.items.map((item) => <small key={`${item.source}:${item.destination}`} title={item.destination}>{item.status === 'done' ? '完成' : item.status === 'conflict' ? '同名冲突' : '失败'} · {transferPath(item.destination)}{item.error ? ` · ${item.error}` : ''}</small>)}

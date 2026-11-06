@@ -317,12 +317,14 @@ try {
   try {
     await page.click('[data-a=rmode][data-id=files]')
     await page.getByRole('group', { name: '文件树', exact: true }).dispatchEvent('contextmenu')
-    const task = page.locator('.transfer-task').last()
-    await task.getByText('上传结束', { exact: true }).waitFor({ timeout: 30000 })
+    const task = page.locator('.upload-status').last()
+    await task.getByText('上传成功', { exact: true }).waitFor({ timeout: 30000 })
+    const taskId = await task.getAttribute('data-transfer-id')
     assert.equal(await task.getByRole('button', { name: '冲突项保留两者', exact: true }).count(), 0)
-    assert.equal(await task.getByRole('progressbar', { name: '上传总进度', exact: true }).getAttribute('value'), String(binaryData.length))
+    assert.equal(await task.getByRole('progressbar').count(), 0)
     assert.deepEqual(fs.readFileSync(path.join(projectDir, "上传 data's.bin")), binaryData)
-    console.log('PASS remote upload menu automatically overwrites and shows completed aggregate progress')
+    await page.locator(`.upload-status[data-transfer-id="${taskId}"]`).waitFor({ state: 'detached', timeout: 3500 })
+    console.log('PASS remote upload menu automatically overwrites and clears compact success status')
   } finally { await app.evaluate(({ dialog }) => { dialog.showOpenDialog = globalThis.__conflictOpenDialog }) }
   const uploadFolder = path.join(data, '上传 目录')
   fs.mkdirSync(path.join(uploadFolder, 'deep', 'empty'), { recursive: true })
@@ -372,13 +374,14 @@ try {
   await remoteEditor.fill('remote draft must survive cancellation')
   for (const allow of [false, true]) {
     await page.evaluate((source) => window.awb.transferDrop('remote-project', '', [source]), overwriteSource)
-    const task = page.locator('.transfer-task').last()
     const confirm = page.getByRole('dialog', { name: '覆盖未保存的文件？', exact: true })
     await confirm.waitFor()
+    const taskId = await page.locator('.upload-status').last().getAttribute('data-transfer-id')
+    const task = page.locator(`.upload-status[data-transfer-id="${taskId}"]`)
     const version = (await page.evaluate(() => window.awb.gitRead('remote-project', 'README.md'))).version
     await assert.rejects(page.evaluate((version) => window.awb.gitWrite('remote-project', 'README.md', 'blocked during replacement', version), version))
     await confirm.getByRole('button', { name: allow ? '放弃草稿并覆盖' : '取消', exact: true }).click()
-    await task.getByText('上传结束', { exact: true }).waitFor({ timeout: 30000 })
+    await task.getByText(allow ? '上传成功' : '上传失败', { exact: true }).waitFor({ timeout: 30000 })
     try {
       await page.waitForFunction((expected) => document.querySelector('textarea[aria-label="文件内容"]')?.value === expected, allow ? 'remote replacement text' : 'remote draft must survive cancellation', { timeout: 5000 })
     } catch (error) {

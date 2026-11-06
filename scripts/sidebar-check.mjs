@@ -193,9 +193,11 @@ try {
   assert.ok((await session('session:p2').textContent()).includes('原有会话'))
   // Session deletion supports cancellation and preserves other session terminals.
   const sessionMenu = page.locator(`[data-a=side-session][data-id="${newGroup.id}"]`).locator('..').getByRole('button', { name: '会话菜单 ' + newGroup.name, exact: true })
-  await session(newGroup.id).locator('..').hover(); await sessionMenu.click(); await page.getByRole('menuitem', { name: '删除会话', exact: true }).click()
-  await page.getByRole('button', { name: '取消', exact: true }).click(); await session(newGroup.id).waitFor()
-  await session(newGroup.id).locator('..').hover(); await sessionMenu.click(); await page.getByRole('menuitem', { name: '删除会话', exact: true }).click(); await page.click('[data-a=confirm]')
+  await session(newGroup.id).focus(); await sessionMenu.click(); await page.getByRole('menuitem', { name: '删除会话', exact: true }).click()
+  await page.getByRole('button', { name: '取消', exact: true }).click()
+  await page.getByRole('dialog', { name: '删除会话？', exact: true }).waitFor({ state: 'detached' })
+  await session(newGroup.id).waitFor()
+  await session(newGroup.id).focus(); await sessionMenu.click(); await page.getByRole('menuitem', { name: '删除会话', exact: true }).click(); await page.click('[data-a=confirm]')
   await session(newGroup.id).waitFor({ state: 'detached' }); await select('ready').waitFor()
   if (process.platform === 'win32') {
     const result = execFileSync('powershell.exe', ['-NoProfile', '-Command', `@(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -like '*${sessionPidFile.replaceAll("'", "''")}*' }).Count`], { encoding: 'utf8', windowsHide: true })

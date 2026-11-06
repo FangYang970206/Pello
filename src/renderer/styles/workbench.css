@@ -165,7 +165,11 @@ kbd{font:11px var(--mono);color:var(--faint);padding:0 4px;border-radius:4px;bor
 .transfer-task progress{accent-color:var(--accent);height:6px;border:0;border-radius:var(--r1);overflow:hidden}
 .transfer-task progress::-webkit-progress-bar{background:var(--line2)}
 .transfer-task progress::-webkit-progress-value{background:var(--accent)}
-.transfer-progress-label{color:var(--text);font-variant-numeric:tabular-nums}
+.upload-status{font-size:calc(var(--ui-size,13px) - 1px);color:var(--text)}
+.upload-status-row{display:flex;align-items:center;gap:8px;min-height:32px}
+.upload-spinner{color:var(--muted);animation:upload-spin 1.2s linear infinite}
+.upload-error{color:var(--red);overflow-wrap:anywhere;padding:0 0 8px 22px}
+@keyframes upload-spin{to{transform:rotate(360deg)}}
 .tree-drop-hint{padding:6px 12px;color:var(--text);font-size:calc(var(--ui-size,13px) - 1px);overflow-wrap:anywhere}
 .right .drop-target{outline:2px solid var(--accent);outline-offset:-2px}
 .chev{transition:transform var(--t)}.chev.open{transform:rotate(90deg)}

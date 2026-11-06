@@ -42,7 +42,11 @@ const cases = [
   ['AWB034', 'src/renderer/Workspace.tsx', 'sessionOf(tab) === sessionId', 'true'],
   ['AWB035', 'src/renderer/styles/extra.css', 'animation:terminal-spin .85s linear infinite', 'animation:none'],
   ['AWB036', 'src/main/pty.ts', 'this.programStatus.push(chunk)', '{ text: chunk, queries: 0, states: [] }'],
-  ['AWB037', 'src/main/index.ts', 'automatic: !keepBoth', 'automatic: false']
+  ['AWB037', 'src/main/index.ts', 'automatic: !keepBoth', 'automatic: false'],
+  ['AWB038', 'src/renderer/UploadStatus.tsx', '{message}</span>', '{message}{task.destination}</span>'],
+  ['AWB038', 'src/renderer/UploadStatus.tsx', 'UPLOAD_SUCCESS_DURATION = 2000', 'UPLOAD_SUCCESS_DURATION = 10000'],
+  ['AWB038', 'src/renderer/UploadStatus.tsx', '!task.warnings?.length', 'true'],
+  ['AWB038', 'src/renderer/App.tsx', '), UPLOAD_SUCCESS_DURATION)', '), 20000)']
 ]
 for (const [id, file, before, after] of cases) {
   const mutated = new Map(files)
