@@ -13,9 +13,9 @@
   <a href="https://github.com/FangYang970206/Pello/issues">反馈问题</a>
 </p>
 
-![Pello 实际界面，左侧切换项目与会话，中间审阅代码差异，右侧定位变更文件](assets/screenshots/workspace-dark.png)
+![Pello 中实际运行的 Pi、Codex 与 OpenCode 终端，上方同时保留 README.md 和 notes.txt 文件标签](assets/screenshots/codeagents-running.png)
 
-<p align="center"><sub>一个示例项目，两组会话。从终端操作到代码审阅，不必离开工作区。</sub></p>
+<p align="center"><sub>Pi 与 OpenCode 正在处理示例任务，Codex 等待输入。多个 Agent 终端与普通文件，共用一个工作区。</sub></p>
 
 | 你的工作 | 在 Pello 里 |
 | --- | --- |
@@ -28,16 +28,20 @@
 <details>
 <summary>看 10 秒日常工作流</summary>
 
-切换会话 → 预览文件 → 审阅变更 → 回到原终端。以下演示来自实际应用，使用独立示例项目。
+查看 OpenCode → 切到 Pi → 打开普通文件 → 回到 Agent。以下演示来自实际应用，使用独立示例项目。
 
-![Pello 日常工作流，五步演示会话切换、文件预览和代码差异](assets/demos/daily-workflow.gif)
+![Pello 中多个 Code Agent 与普通文件标签的实际切换](assets/demos/codeagents-workflow.gif)
 
-[查看静态界面](assets/screenshots/workspace-dark.png)
+[查看 OpenCode 运行图](assets/screenshots/codeagents-running.png) · [查看 Pi 运行图](assets/screenshots/codeagents-pi.png)
 
 </details>
 
 <details>
-<summary>更多界面：浅色编辑器与 MCP 管理</summary>
+<summary>更多界面：普通文件、Markdown 与 MCP</summary>
+
+**打开普通文件，Agent 终端仍保留在标签栏**
+
+![打开 notes.txt 的同时，顶部保留 Pi、Codex 和 OpenCode 标签](assets/screenshots/codeagents-file.png)
 
 **在工作区编辑 Markdown**
 
