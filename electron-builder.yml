@@ -1,12 +1,10 @@
-# Windows NSIS packaging for Agent Workbench.
+# Windows NSIS packaging for Pello.
 # The version is read from package.json and is not repeated here.
 #
-# productName is the name already shown in the window ("Agent Workbench").
-# It lives only in this file. package.json "name" stays "agent-workbench",
-# which is what Electron uses for userData (%APPDATA%\agent-workbench).
+# Keep the existing profile path explicitly in main/index.ts for upgrade compatibility.
 
-appId: com.agentworkbench.app
-productName: Agent Workbench
+appId: com.pello.app
+productName: Pello
 
 # No update feed and no upload target.
 publish: null
@@ -87,8 +85,8 @@ win:
     - target: zip
       arch:
         - x64
-  executableName: agent-workbench
-  artifactName: Agent-Workbench-${version}-win-${arch}.${ext}
+  executableName: Pello
+  artifactName: Pello-${version}-win-${arch}.${ext}
   # Code signing is intentionally not configured.
   # electron-builder signs the executable and the installer only when both
   # of these environment variables are set. Never commit the certificate
@@ -106,12 +104,12 @@ win:
 nsis:
   installerIcon: assets/icon.ico
   uninstallerIcon: assets/icon.ico
-  artifactName: Agent-Workbench-${version}-win-${arch}-setup.${ext}
+  artifactName: Pello-${version}-win-${arch}-setup.${ext}
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: Agent Workbench
+  shortcutName: Pello
   # Documented as one-click-only; the default is false. Set explicitly so
   # uninstall removes the app, shortcuts, and registry keys, and leaves
   # %APPDATA%\agent-workbench (userData / workbench.json) in place.

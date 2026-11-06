@@ -1,5 +1,4 @@
-# Keep design references and local evidence out of source release archives.
-/design export-ignore
+# Keep local evidence out of source release archives.
 /output export-ignore
 /.cache export-ignore
 /.codex-remote-attachments export-ignore

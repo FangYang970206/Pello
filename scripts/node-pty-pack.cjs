@@ -2,7 +2,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 
-const STASH_MANIFEST = path.join(os.tmpdir(), 'agent-workbench-node-pty-stash.json')
+const STASH_MANIFEST = path.join(os.tmpdir(), 'pello-node-pty-stash.json')
 
 const MODULES = ['conpty.node', 'pty.node', 'conpty_console_list.node']
 

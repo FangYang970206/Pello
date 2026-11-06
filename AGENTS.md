@@ -1,4 +1,4 @@
-# Agent Workbench 约定
+# Pello 约定
 
 改动前阅读相关实现；修复先复现。提交或发布前执行 `npm run verify`（依次运行 `npm run lint`、`npm run typecheck`、`npm run build`、`npm run check`）。lint 检查结构约束，check 验证实际行为，两者不能互相替代。
 

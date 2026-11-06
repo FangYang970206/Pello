@@ -36,10 +36,12 @@ import { ConflictPolicy } from '../shared/file-conflicts'
 import { discoverLocalShells } from './local-shells'
 
 const execFileP = promisify(execFile)
-const windowsAppId = app.isPackaged ? 'com.agentworkbench.app' : 'com.agentworkbench.app.dev'
+const windowsAppId = app.isPackaged ? 'com.pello.app' : 'com.pello.app.dev'
 if (process.platform === 'win32') app.setAppUserModelId(windowsAppId)
 
-if (process.env.AWB_USER_DATA) app.setPath('userData', process.env.AWB_USER_DATA)
+// Keep the existing profile, including encrypted SSH credentials, across the rename.
+app.setName('Pello')
+app.setPath('userData', process.env.AWB_USER_DATA || path.join(app.getPath('appData'), 'agent-workbench'))
 if (process.env.AWB_CAPTURE) {
   app.commandLine.appendSwitch('force-device-scale-factor', '1')
   app.disableHardwareAcceleration()
@@ -294,7 +296,7 @@ function createWindow(): void {
       appIconPath: windowsIconPath,
       appIconIndex: 0,
       relaunchCommand: app.isPackaged ? `"${process.execPath}"` : `"${process.execPath}" "${app.getAppPath()}"`,
-      relaunchDisplayName: 'Agent Workbench'
+      relaunchDisplayName: 'Pello'
     })
   }
   win.once('ready-to-show', () => win?.show())

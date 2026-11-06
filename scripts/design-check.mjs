@@ -14,7 +14,7 @@ fs.mkdirSync(folder, { recursive: true })
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'awb-design-'))
 const project = path.join(data, 'workspace')
 fs.mkdirSync(path.join(project, 'src'), { recursive: true })
-fs.writeFileSync(path.join(project, 'README.md'), '# 工作台使用指南\n\n在同一个工作区管理终端、项目文件与远程机器。\n\n## 保持专注\n\n- **终端**保留当前任务和会话。\n- 编辑文件后自动保存，支持撤销和重做。\n\n| 状态 | 含义 |\n| --- | --- |\n| 黄色 | 正在运行 |\n| 绿色 | 可以继续输入 |\n\n```ts\nconst workspace = "Agent Workbench"\n```\n')
+fs.writeFileSync(path.join(project, 'README.md'), '# 工作台使用指南\n\n在同一个工作区管理终端、项目文件与远程机器。\n\n## 保持专注\n\n- **终端**保留当前任务和会话。\n- 编辑文件后自动保存，支持撤销和重做。\n\n| 状态 | 含义 |\n| --- | --- |\n| 黄色 | 正在运行 |\n| 绿色 | 可以继续输入 |\n\n```ts\nconst workspace = "Pello"\n```\n')
 fs.writeFileSync(path.join(project, 'src/app.ts'), 'export const ready = false\n')
 execFileSync('git', ['init', '-b', 'main'], { cwd: project })
 execFileSync('git', ['add', '.'], { cwd: project })
@@ -30,7 +30,7 @@ fs.writeFileSync(path.join(skillFolder, 'SKILL.md'), '---\nname: project-convent
 delete env.ELECTRON_RUN_AS_NODE
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({
   settings: { layout: 'balanced', theme: 'dark', fontSize: 13, defShell: process.platform === 'win32' ? 'pwsh' : 'bash', defAgent: 'shell', restore: false, confirmKill: false },
-  projects: [{ id: 'p', name: 'Agent Workbench', host: 'local', path: project, agent: 'shell' },
+  projects: [{ id: 'p', name: 'Pello', host: 'local', path: project, agent: 'shell' },
     { id: 'long', name: '跨团队协作与远程项目名称很长时的显示检查', host: 'local', path: project, agent: 'shell' }],
   custom: [{ id: 'custom', name: '项目专用 Agent', cmd: 'custom-agent', args: '--interactive --workspace current-project', shell: 'pwsh', color: '#7fb2ff', letter: 'A', env: [] }]
 }))
@@ -166,7 +166,7 @@ try {
         assert.ok(await secondProject.evaluate((node) => node.matches(':focus-visible')), 'Project selection must keep visible keyboard focus')
         await page.getByRole('heading', { name: '还没有终端', exact: true }).waitFor()
         await shot('empty-project', theme, size)
-        await page.getByRole('button', { name: '打开项目 Agent Workbench', exact: true }).press('Enter')
+        await page.getByRole('button', { name: '打开项目 Pello', exact: true }).press('Enter')
         await page.locator('.xterm:visible').waitFor()
       }
       console.log(`PASS visual surfaces ${theme} ${width}x${height}`)

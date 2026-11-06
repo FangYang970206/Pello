@@ -1,5 +1,5 @@
 ---
-name: Agent Workbench
+name: Pello
 description: 本地 Code Agent 桌面工作台的界面约定
 typography:
   compact:

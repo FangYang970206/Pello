@@ -1,107 +1,51 @@
-<p><img src="assets/icon.png" width="96" height="96" alt="Agent Workbench 图标"></p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-horizontal-dark.svg">
+    <img src="assets/logo-horizontal.svg" width="280" alt="Pello">
+  </picture>
+</p>
 
-# Agent Workbench
+<p align="center">让 Code Agent、终端与项目文件待在同一个工作区。</p>
+<p align="center">
+  <a href="https://github.com/FangYang970206/Pello/releases/latest">下载 Windows 版</a> ·
+  <a href="https://github.com/FangYang970206/Pello/wiki">使用指南</a> ·
+  <a href="CHANGELOG.md">更新记录</a> ·
+  <a href="https://github.com/FangYang970206/Pello/issues">反馈问题</a>
+</p>
 
-在本机运行的桌面工作台。每个项目绑定一台机器（本机或 SSH 远程主机）和一个目录，项目下可建立多个会话，每个会话保留自己的多终端标签，用来启动 code agent CLI。没有账号，没有后端，没有云服务。
+![Pello 深色界面：项目会话、终端与文件面板](assets/screenshots/workspace-dark.png)
 
-界面使用共享设计令牌，提供深浅主题、Nord、Dracula、Catppuccin Mocha 和 Solarized Light，可在设置中切换。
+## Pello 能做什么
 
-## Windows 上安装
+- **集中管理 Agent**：Claude Code、OpenCode、Codex、Pi、Oh My Pi、自定义执行器及纯 Shell。
+- **按项目组织工作**：多个会话、多个终端，本机与 SSH 远程环境随时切换。
+- **就地处理文件**：文件树、Git 差异、Markdown 编辑、HTML 预览与远程传输。
+- **统一管理资源**：发现、导入和分发各 Agent 的 MCP 与 Skill，支持主题和字体设置。
 
-普通使用可直接从 [GitHub Releases](https://github.com/FangYang970206/agent-workbench/releases/latest) 下载安装包或便携 ZIP，无需 Node.js、Python 或 C++ 构建工具。Agent CLI、Git 和 SSH 按需自行安装。
+应用在本机运行，无需 Pello 账号或后端服务。Agent CLI 及其认证由你自行配置。
 
-从源码开发需要：
+<details>
+<summary>查看浅色界面</summary>
 
-- Node.js 20.19+ 或 22.13+
-- 终端进程依赖 `node-pty`。安装时会按当前 Electron 版本编译原生模块，需要：
-  - [Visual Studio Build Tools 2022](https://visualstudio.microsoft.com/visual-cpp-build-tools/)，勾选「使用 C++ 的桌面开发」
-  - Python 3（`node-gyp` 会用到）
+![Pello 浅色界面](assets/screenshots/workspace-light.png)
+
+</details>
+
+## 安装
+
+从 [Releases](https://github.com/FangYang970206/Pello/releases/latest) 下载 Windows x64 安装包或 ZIP，安装或解压后运行。使用发行版无需 Node.js；Agent CLI、Git 与 SSH 按需安装。
+
+添加项目，选择本机或远程目录，再通过项目旁的 **＋** 选择执行器开始工作。更多操作见 [Wiki](https://github.com/FangYang970206/Pello/wiki)。
+
+## 开发
+
+需要 Node.js 20.19+ 或 22.13+。Windows 原生终端模块编译需要 Python 3 和 Visual Studio Build Tools 2022（C++ 桌面开发）。
 
 ```powershell
+git clone https://github.com/FangYang970206/Pello.git
+cd Pello
 npm install
 npm run dev
 ```
 
-`npm install` 结束时会执行 `electron-rebuild`，把 `node-pty` 编到 Electron 上。如果这一步失败，先确认上面的 C++ 构建工具和 Python 已装好，再重新执行 `npm install`。
-
-生产构建（不打包、不签名）：
-
-```powershell
-npm run build
-npm start
-```
-
-`npm start` 运行 `out/` 里的构建结果。打出 NSIS 安装包见 [BUILD-WINDOWS.md](BUILD-WINDOWS.md)。
-
-## 数据放在哪里
-
-项目、主机、自定义执行器和设置写在 Electron `userData` 目录的 `workbench.json`：
-
-- Windows：`%APPDATA%\agent-workbench\workbench.json`
-- 同目录下的 `shell/` 是启动 PowerShell / bash 时用的初始化脚本
-
-没有数据库。
-
-## 终端和 Git
-
-- Windows 上，新建终端可选检测到的 PowerShell（优先 `pwsh.exe`，否则 `powershell.exe`）、CMD 和 Git Bash／本机 Bash。设置中可选择默认 Shell，已存在的终端保留原实例。远程终端通过 SSH 使用目标机器的 Shell：Windows 为 PowerShell，Linux / macOS 为 bash 或 zsh。本应用在 Linux 上启动 bash。
-- 内置 Agent 为 Claude Code、OpenCode、Codex CLI、Pi 和 Oh My Pi，也可以添加自定义执行器。
-- 运行状态来自 Shell 提示符钩子和 Agent 的原生 OSC 7501 / OSC 9;4 状态报告，不通过输出静默时间推断完成。未提供原生状态信号的执行器按命令生命周期判断状态。
-- 项目行使用紧凑的彩色文件夹、名称、菜单和加号。双击项目名称收起或展开会话，键盘左右键提供相同操作。环境颜色在添加或编辑机器时设置，默认推荐未使用的颜色，重复颜色会显示提醒。
-- 项目行的加号先选择执行器，再创建会话并启动首个终端；会话内标签旁的加号只增加当前会话的终端。会话不显示运行状态，执行中的终端显示黄色旋转点，等待指令时静止；失败保留红点及退出码提示。快捷键可在「设置 → 快捷键」查看。
-- 侧栏 Agents 默认折叠，展开后平铺运行中和等待指令的终端；三个点菜单可多选状态进行筛选，点击条目直接定位到对应项目、会话和终端。项目、会话和终端可重命名，旧终端记录自动迁移为项目下的一个会话。
-- 关闭终端会结束对应会话和整棵进程树，退出应用时也会等待进程清理完成。运行中的终端是否需要关闭确认，由「结束进程前确认」设置控制。
-- 终端在切换文件页或项目时保持原实例，保留全屏 TUI、滚动位置与鼠标模式。普通与二进制鼠标事件都转发给终端程序，尺寸按内容区域计算，避免底部状态栏被截断。
-- 文件树按展开的目录逐层读取，不限制目录深度；拖动文件面板左边缘可以调整宽度。单击文件预览，双击固定标签；变更模式打开差异视图。支持递归搜索，搜索和展开状态按项目保留，忽略目录规则位于「设置 → 通用 → 文件搜索设置」。
-- 文件树右键支持新建、重命名、移动、删除、复制路径、打开方式和向终端引用文件；空白处右键或 `Shift+F10` 可操作项目根目录。支持本机导入、SSH 上传、下载及另存为，传输显示逐项结果并支持取消与失败重试。下载、另存为和移动的完整冲突处理等剩余范围见 [文件管理进度](docs/plans/file-management-progress.md)。
-- 远程上传同名文件直接覆盖，同名文件夹整体替换，旧目录独有内容会移除；先完成临时上传、复核版本再发布，保留来源文件和未保存草稿确认。目录覆盖同时保护后代文件及别名项目的草稿。上传显示整批和当前文件进度条、百分比与字节量，并自动显示当前任务。本机导入保留原有同名选择。
-- Markdown 默认使用所见即所得编辑器，支持标题、列表、表格、代码块、公式和图片，可切换源码编辑；打开文件不会自动改写原文，文档属性单独保留。其他 UTF-8 文本支持行号和 Tab 缩进。
-- 停止输入 2 分钟后按文件自动保存，成功时提示 2 秒；也可通过右键菜单保存或按 `Ctrl+S`。`Ctrl+Z` 撤销，`Ctrl+Shift+Z` 或 `Ctrl+Y` 重做；保存、切换标签和编辑模式后仍保留历史。中文组合输入期间暂停自动保存。右键菜单支持源码 / 渲染模式、剪贴板、格式、段落、表格和重新读取等操作，文档区不显示操作栏。
-- 保存保留原有 BOM 和换行格式，并检查磁盘版本。发生冲突时保留草稿并暂停自动保存，避免覆盖外部修改；关闭未保存文件可保存或放弃。超过 2 MB、二进制和非 UTF-8 文件保持只读。远程文件使用相同编辑流程。
-- HTML 默认在应用内隔离预览，右键可切换源码。预览通过受限本机回环服务加载相对 CSS、JS 和图片，草稿预览不隐式保存；文档脚本无法访问工作台 API 或顶层页面。远程项目资源通过现有 SSH 认证读取。
-- 右栏「变更」调用本机或 `ssh` 上的 `git`。丢弃已跟踪文件用 `git restore`；未跟踪文件 `git restore` 删不掉，这时用 `git clean -f`。
-- 远程机器支持 SSH 密钥、SSH Agent 和用户密码认证。密钥模式使用系统 `ssh`；密码模式通过 SSH 协议连接，连接测试、终端、目录、文件和 Git 操作共用认证配置。密码使用系统加密能力单独保存在 `credentials.json`，不写入普通配置；系统加密不可用时仅在本次应用运行期间保留。首次成功认证的主机指纹保存在 `ssh-host-keys.json`，密钥改变时拒绝连接。
-- 新建 SSH 机器必须通过连接验证后才能保存。连接失败保留输入并提示错误；在项目弹窗或远程机器设置中可编辑、移除已有机器，移除前需要确认。
-- 终端使用 WebGL 渲染线条和块字符，行高为 1，中文回退到微软雅黑或 Noto Sans Mono CJK；显卡不支持 WebGL 时使用 DOM 渲染。
-
-## MCP 与 Skill
-
-设置中的 MCP 和 Skill 为同级入口，按 Claude Code、Codex CLI、OpenCode、Pi、Oh My Pi 和自定义执行器分别展示，可搜索并按每页 12 项浏览。本版本管理本机用户配置与 Skill 兼容目录。列表仅显示名称，右侧通过眼睛查看详情、通过开关启停；新增在独立模态窗口中填写，并可勾选多个分发目标。Skill 支持文件夹 / ZIP 递归发现、预览和批量导入，MCP 支持从 JSON / JSONC / TOML / YAML 配置提取后分发。
-
-| Agent | MCP 配置 | Skill 分发目录 |
-| --- | --- | --- |
-| Claude Code | `~/.claude.json` 的 `mcpServers` | `~/.claude/skills` |
-| Codex CLI | `~/.codex/config.toml` 的 `mcp_servers` | `~/.agents/skills` |
-| OpenCode | `~/.config/opencode/opencode.json` / `.jsonc` 的 `mcp` | `~/.config/opencode/skills` |
-| Pi | `~/.pi/agent/mcp.json` 的 `mcpServers` | `~/.pi/agent/skills` |
-| Oh My Pi | `~/.omp/agent/mcp.json` 的 `mcpServers` | `~/.omp/agent/skills` |
-
-添加 MCP 时填写名称和单个服务器 JSON 对象，再勾选目标 Agent。例如 stdio 使用 `{"command":"node","args":["C:/tools/server.mjs"],"env":{}}`，HTTP 使用 `{"url":"https://example.com/mcp","headers":{}}`。工作台转换各 Agent 的格式，保留其他配置和注释，写入前备份到 `.awb-backup`；同名服务器不覆盖。配置添加不会自动执行服务器，连接授权和 OAuth 由对应 Agent 完成。添加后重新加载 Agent 或启动新会话。
-
-Skill 可从文件夹或 ZIP 导入，也可打包多个 Skill。每个 Skill 目录须包含带 `name`、`description` 的 `SKILL.md`；附属文件一并分发，同名目录不覆盖。支持按需勾选 Agent，分别显示成功或失败；共享目录（如 `.agents/skills`）中的资源可能被多个 Agent 自动发现。导入限制为 32 MB、10000 个文件，拒绝路径穿越和文件夹内的符号链接，不执行导入脚本。
-
-自定义执行器在「高级属性」中设置 Skill 目录、MCP 配置文件及格式、Skill 管理方式和可选配置文件，之后可参与相同的分发流程。兼容原有资源路径映射。原有演示插件已移除。
-
-开关修改实际发现配置并保留原文件。Codex、OpenCode、Pi 使用其原生 enabled、技能覆盖、权限或排除配置；Claude Code 的个人 MCP 开关将条目暂存于原配置的 `awbDisabledMcp` 区域，启用时恢复到 `mcpServers`，遇到同名新配置不覆盖。Claude Skill 使用 `skillOverrides`。自定义执行器可选择相应 Skill 适配方式；通用文件开关在独立 Skill 目录中可逆地切换 `SKILL.md` / `SKILL.md.awb-disabled`，不会执行或删除 Skill 内容。已有会话可能需重新加载配置。
-
-「外观」支持 Cascadia Mono、随包分发的 JetBrains Mono、Consolas 等终端字体，以及 10–24px 终端和源码字号；界面字体及 12–16px 字号独立设置。切换字体后保留终端实例，等待字体加载再计算尺寸。
-
-格式依据 [Claude Code MCP](https://code.claude.com/docs/en/mcp)、[Codex MCP](https://developers.openai.com/codex/mcp)、[OpenCode MCP](https://opencode.ai/docs/mcp-servers/)、[Pi MCP](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md) 及各 Agent 的 Skill 文档。
-
-在 Linux 或 macOS 上开发时，本机 shell 会退回 bash，Windows 的 PowerShell / CMD 启动代码仍然保留。
-
-## 核对界面
-
-设计稿截图是 1440×900。在带显示器的环境里可以用下面的方式把同样尺寸的界面截下来（应用会自己走一遍主要流程并退出）：
-
-```bash
-AWB_CAPTURE=1 AWB_SHOTS=./shots AWB_USER_DATA=/tmp/awb-userdata npm start
-```
-
-开发约定见 [AGENTS.md](AGENTS.md)。`npm run lint` 包含 ESLint、项目约束及 39 条反例检查。提交前运行 `npm run verify`，依次完成 lint、类型检查、构建和 Electron 行为回归。
-
-界面约定见 [DESIGN.md](DESIGN.md)。`scripts/design-check.mjs` 覆盖深浅主题、1440×900 / 1024×680 两档窗口的 104 个界面状态，检查菜单边界、对话框布局、文字色对比度及键盘项目切换。菜单支持方向键、Home / End 与 Esc，截图位于 `output/playwright/design-after/`。
-
-行为回归覆盖标签布局、状态颜色、深浅主题、弹窗焦点、会话恢复、进程树清理、密码认证、SSH 机器管理、远程保存、鼠标事件、终端尺寸、深层目录、面板拖宽、Markdown 所见即所得、自动保存与撤销、编辑冲突、内嵌 HTML 隔离预览、MCP / Skill 原生格式与界面分发，以及 100% / 125% / 150% / 200% 缩放下的边线像素连续性。精确自动保存时序使用浏览器虚拟时钟验证。SSH 检查启动绑定本机回环地址的临时测试服务器。截图写入 `output/playwright/`。
-
-窗口最小宽度是 1024。
+提交前运行 `npm run verify`；Windows 打包运行 `npm run dist:win`。详见 [开发指南](https://github.com/FangYang970206/Pello/wiki/Development) 和 [打包指南](https://github.com/FangYang970206/Pello/wiki/Windows-Build)。

@@ -1092,7 +1092,7 @@ export function App() {
         <header className="title">
           <div className="brand">
             <img className="logo" src={appIcon} width="18" height="18" alt="" aria-hidden="true" />
-            Agent Workbench
+            Pello
           </div>
           <span className="grow" />
           <div className="wc">
