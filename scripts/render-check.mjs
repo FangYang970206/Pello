@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
+import { installDocumentHarness } from './fixtures/document-harness.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const shots = path.join(root, 'output/playwright')
@@ -61,6 +62,29 @@ for (const fontFamily of requestedFonts.length ? requestedFonts : ['Cascadia Mon
       `Broken vertical glyph at ${scale}x: ${JSON.stringify(pixels)}`)
     assert.equal(await page.locator('[data-renderer=webgl]').count(), 1)
     console.log(`PASS ${fontFamily} ${scale * 100}% DPI: plus offset ${alignment}px, continuous vertical line ${pixels.uninterrupted}px`)
+    await installDocumentHarness(app, page, false)
+    const split = async (id, direction, count) => {
+      await app.evaluate((_electron, command) => { globalThis.__documentMenuCommand = command }, `split-${direction}`)
+      await page.locator(`[data-a=pane][data-id="${id}"]`).dispatchEvent('contextmenu')
+      await page.waitForFunction((count) => document.querySelectorAll('.pane:not([hidden])').length === count, count)
+      return page.locator('.tab.on [data-a=tab]').getAttribute('data-id')
+    }
+    await page.evaluate(() => { window.__renderOriginal = document.querySelector('[data-term=glyphs] .xterm') })
+    const right = await split('glyphs', 'right', 2)
+    await split('glyphs', 'down', 3)
+    await split(right, 'down', 4)
+    await page.waitForFunction(() => [...document.querySelectorAll('.pane:not([hidden])')].every((node) => window.__awbBuffer(node.dataset.id).includes('终端边线测试')))
+    await page.getByRole('separator', { name: '调整项目侧栏宽度', exact: true }).press('ArrowRight')
+    await page.waitForTimeout(150)
+    assert.equal(await page.evaluate(() => window.__renderOriginal === document.querySelector('[data-term=glyphs] .xterm')), true)
+    const fitAll = await page.locator('.pane:not([hidden])').evaluateAll((nodes) => nodes.every((node) => {
+      const frame = node.querySelector('.termframe').getBoundingClientRect(), screen = node.querySelector('.xterm-screen').getBoundingClientRect()
+      return screen.width > 50 && screen.height > 50 && screen.right <= frame.right + 1 && screen.bottom <= frame.bottom + 1
+    }))
+    assert.equal(fitAll, true, `Four split panes must fit after sidebar resizing at ${scale}x`)
+    assert.equal(await page.locator('[data-renderer=webgl]').count(), 4)
+    await page.screenshot({ path: path.join(shots, `terminal-split-${scale * 100}.png`) })
+    console.log(`PASS ${scale * 100}% DPI: four split terminals retain content, renderers and pixel bounds after sidebar resizing`)
     const closed = app.waitForEvent('close')
     await page.getByRole('button', { name: '关闭窗口', exact: true }).click()
     await closed

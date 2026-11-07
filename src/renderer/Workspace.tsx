@@ -8,6 +8,8 @@ import { FilePane } from './FilePane'
 import type { DocumentDraft } from './documents'
 import { terminalStatus } from './terminal-state'
 import { sessionOf } from '../shared/work-sessions'
+import { NameEditor } from './ProjectSidebar'
+import { loadTerminalLayouts, splitTile, type SplitDirection } from './terminal-layout'
 
 export type TermTab = {
   id: string
@@ -22,13 +24,15 @@ export type TermTab = {
   inputReady: boolean
   name?: string
   hasRun?: boolean
+  agentKind?: string | null
 }
 export type DiffTab = { id: string; type: 'diff'; projectId: string; path: string }
-export type FileTab = { id: string; type: 'file'; projectId: string; path: string; pinned?: boolean; dirty?: boolean }
+export type FileTab = { id: string; type: 'file'; projectId: string; path: string; dirty?: boolean; anchor?: string }
 export type Tab = TermTab | DiffTab | FileTab
 
 export function Workspace({
   project,
+  workspaceVisible,
   sessionId,
   tabs,
   active,
@@ -42,6 +46,9 @@ export function Workspace({
   diff,
   preview,
   onSelect,
+  onRenameTerm,
+  onSplitTerm,
+  onNavigateFile,
   onClose,
   onNewTerm,
   onNewProject,
@@ -51,7 +58,6 @@ export function Workspace({
   onDmode,
   onDiscard,
   onAppKey,
-  onPinFile,
   onEditFile,
   onSaveFile,
   onReloadFile,
@@ -61,6 +67,7 @@ export function Workspace({
   untracked
 }: {
   project: Project | null
+  workspaceVisible: boolean
   sessionId?: string
   tabs: Tab[]
   active?: Tab
@@ -74,6 +81,9 @@ export function Workspace({
   diff: FileDiff | null
   preview: DocumentDraft | null
   onSelect: (id: string) => void
+  onRenameTerm: (id: string, name: string) => Promise<void>
+  onSplitTerm: (id: string) => Promise<string>
+  onNavigateFile: (path: string, anchor?: string) => void
   onClose: (id: string) => void
   onNewTerm: () => void
   onNewProject: () => void
@@ -83,7 +93,6 @@ export function Workspace({
   onDmode: (mode: 'unified' | 'split') => void
   onDiscard: () => void
   onAppKey: (key: string) => void
-  onPinFile: (id: string) => void
   onEditFile: (id: string, text: string) => void
   onSaveFile: (id: string) => void
   onReloadFile: (id: string) => void
@@ -96,9 +105,36 @@ export function Workspace({
   const [overflow, setOverflow] = useState(false)
   const [fade, setFade] = useState<'none' | 'left' | 'right' | 'both'>('none')
   const [menu, setMenu] = useState(false)
+  const [renaming, setRenaming] = useState<string | null>(null)
+  const [layouts, setLayouts] = useState(loadTerminalLayouts)
+  const [splitting, setSplitting] = useState(false)
+  const [layoutError, setLayoutError] = useState('')
   const mine = project ? tabs.filter((tab) => tab.projectId === project.id && (tab.type !== 'term' || sessionOf(tab) === sessionId)) : []
   const shown = mine.find((tab) => tab.id === active?.id) ?? mine[0]
   const terms = tabs.filter((tab): tab is TermTab => tab.type === 'term')
+  const layoutKey = `${project?.id}:${sessionId}`
+  const savedTiles = layouts[layoutKey]
+  const tiles = savedTiles?.every((tile) => mine.some((tab) => tab.id === tile.id)) && savedTiles.some((tile) => tile.id === shown?.id) ? savedTiles : null
+
+  useEffect(() => { localStorage.setItem('awb:terminalLayouts', JSON.stringify(layouts)) }, [layouts])
+
+  async function terminalMenu(id: string) {
+    if (splitting) return
+    const current = tiles?.some((tile) => tile.id === id) ? tiles : [{ id, x: 0, y: 0, width: 2, height: 2 }]
+    const tile = current.find((item) => item.id === id)!
+    const command = await window.awb.terminalMenu({ horizontal: current.length < 4 && tile.width === 2, vertical: current.length < 4 && tile.height === 2, merge: current.length > 1 })
+    if (command === 'rename') { setRenaming(id); return }
+    if (command === 'merge') { setLayouts((value) => { const next = { ...value }; delete next[layoutKey]; return next }); onSelect(id); return }
+    if (!command?.startsWith('split-')) return
+    setSplitting(true); setLayoutError('')
+    try {
+      const direction = command.slice(6) as SplitDirection
+      splitTile(current, id, '__validate__', direction)
+      const nextId = await onSplitTerm(id)
+      setLayouts((value) => ({ ...value, [layoutKey]: splitTile(current, id, nextId, direction) }))
+    } catch (error) { setLayoutError(String(error)) }
+    finally { setSplitting(false) }
+  }
 
   useEffect(() => {
     const el = scroller.current
@@ -178,18 +214,14 @@ export function Workspace({
                 const on = tab.id === shown?.id
                 if (tab.type !== 'term') {
                   const label = tab.path.split('/').pop() || tab.path
-                  const preview = tab.type === 'file' && !tab.pinned
                   return (
-                    <div key={tab.id} className={`tab ${on ? 'on' : ''} ${preview ? 'preview' : ''}`} role="tab" aria-selected={on}>
+                    <div key={tab.id} className={`tab ${on ? 'on' : ''}`} role="tab" aria-selected={on}>
                       <button
                         className="grow"
                         style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}
                         data-a="tab"
                         data-id={tab.id}
                         onClick={() => onSelect(tab.id)}
-                        onDoubleClick={() => {
-                          if (tab.type === 'file') onPinFile(tab.id)
-                        }}
                       >
                         <Icon name="file" className="s" />
                         <span className="lbl" title={tab.path}>{label}</span>
@@ -207,12 +239,12 @@ export function Workspace({
                 const color = tab.kind === 'shell' ? '#8fa3cc' : agent.color
                 const status = terminalStatus(tab)
                 return (
-                  <div key={tab.id} className={`tab ${on ? 'on' : ''}`} role="tab" aria-selected={on}>
-                    <button style={{ display: 'flex', alignItems: 'center', gap: 8 }} data-a="tab" data-id={tab.id} data-state={tab.state} title={`${name} · ${status.label}`} onClick={() => onSelect(tab.id)}>
+                  <div key={tab.id} className={`tab ${on ? 'on' : ''}`} role="tab" aria-selected={on} onContextMenu={(event) => { event.preventDefault(); void terminalMenu(tab.id) }}>
+                    {renaming === tab.id ? <NameEditor initial={name} onCancel={() => setRenaming(null)} onSave={async (name) => { await onRenameTerm(tab.id, name); setRenaming(null) }} /> : <button style={{ display: 'flex', alignItems: 'center', gap: 8 }} data-a="tab" data-id={tab.id} data-state={tab.state} title={`${name} · ${status.label}`} onClick={() => onSelect(tab.id)} onDoubleClick={() => setRenaming(tab.id)} onKeyDown={(event) => { if (event.key === 'F2') { event.preventDefault(); setRenaming(tab.id) } else if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) { event.preventDefault(); void terminalMenu(tab.id) } }}>
                       <Mark letter={letter} color={color} />
                       <span className="lbl">{name}</span>
                       <span className={`dot terminal-status ${status.color}${status.spinning ? ' spinning' : ''}`} role="img" aria-label={status.label} />
-                    </button>
+                    </button>}
                     <button className="x" data-a="close" data-id={tab.id} aria-label={`关闭 ${name}`} onClick={() => onClose(tab.id)}>
                       <Icon name="x" className="s" />
                     </button>
@@ -281,6 +313,8 @@ export function Workspace({
             <FilePane
               key={`${shown.projectId}:${shown.path}`}
               path={shown.path}
+              anchor={shown.anchor}
+              onNavigate={onNavigateFile}
               document={preview?.path === shown.path ? preview : null}
               onEdit={(text) => onEditFile(shown.id, text)}
               onSave={() => onSaveFile(shown.id)}
@@ -294,10 +328,12 @@ export function Workspace({
           ) : null}
         </>
       )}
-            <div className="panes" hidden={!project || shown?.type !== 'term'}>
+            {layoutError ? <div role="alert" className="file-error">{layoutError}<button className="ib" aria-label="关闭错误" onClick={() => setLayoutError('')}><Icon name="x" className="s" /></button></div> : null}
+            <div className="panes" data-split={!!tiles} hidden={!project || shown?.type !== 'term'} aria-busy={splitting || undefined}>
               {terms.map((tab) => {
-                const visible = tab.projectId === project?.id && tab.id === shown?.id && shown?.type === 'term'
-                const focus = visible
+                const tile = tiles?.find((item) => item.id === tab.id)
+                const visible = tab.projectId === project?.id && (!!tile || tab.id === shown?.id) && shown?.type === 'term'
+                const focus = visible && tab.id === shown?.id
                 return (
                   <div
                     key={tab.id}
@@ -306,11 +342,13 @@ export function Workspace({
                     data-id={tab.id}
                     data-state={tab.state}
                     hidden={!visible}
+                    style={tile ? { gridColumn: `${tile.x + 1} / span ${tile.width}`, gridRow: `${tile.y + 1} / span ${tile.height}` } : undefined}
+                    onContextMenu={(event) => { event.preventDefault(); void terminalMenu(tab.id) }}
                     onMouseDown={() => {
                       if (!focus) onSelect(tab.id)
                     }}
                   >
-                    <TerminalPane id={tab.id} fontSize={fontSize} fontFamily={fontFamily} theme={theme} shell={tab.shell} visible={visible} onInterrupt={onInterrupt} onAppKey={onAppKey} />
+                    <TerminalPane id={tab.id} fontSize={fontSize} fontFamily={fontFamily} theme={theme} shell={tab.shell} visible={workspaceVisible && visible} focused={workspaceVisible && focus} onInterrupt={onInterrupt} onAppKey={onAppKey} />
                   </div>
                 )
               })}

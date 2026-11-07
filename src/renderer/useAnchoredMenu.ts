@@ -1,8 +1,9 @@
 import { useLayoutEffect, useRef } from 'react'
 
 /** Native top-layer positioning keeps menus out of scrolling/clipped panels. */
-export function useAnchoredMenu(open: boolean, close: () => void, config: { minWidth?: number; itemRole?: 'option' | 'menuitem' } = {}) {
+export function useAnchoredMenu(open: boolean, close: () => void, config: { minWidth?: number; itemRole?: 'option' | 'menuitem'; alignTo?: string } = {}) {
   const minWidth = config.minWidth || 0, itemRole = config.itemRole || 'option'
+  const alignTo = config.alignTo
   const ref = useRef<HTMLDivElement>(null)
   const dismiss = useRef(close)
   dismiss.current = close
@@ -13,12 +14,13 @@ export function useAnchoredMenu(open: boolean, close: () => void, config: { minW
     menu.showPopover()
     const position = () => {
       const box = anchor.getBoundingClientRect()
+      const left = alignTo ? anchor.closest(alignTo)?.getBoundingClientRect().left ?? box.left : box.left
       const width = Math.min(Math.max(box.width, minWidth), innerWidth - 24)
       menu.style.width = `${width}px`
       const below = innerHeight - box.bottom - 12, above = box.top - 12
       const height = Math.min(Math.ceil(menu.scrollHeight + menu.offsetHeight - menu.clientHeight), 240, Math.max(below, above))
       Object.assign(menu.style, {
-        left: `${Math.max(12, Math.min(box.left, innerWidth - width - 12))}px`,
+        left: `${Math.max(12, Math.min(left, innerWidth - width - 12))}px`,
         top: `${below >= height ? box.bottom + 4 : Math.max(12, box.top - height - 4)}px`,
         width: `${width}px`, maxHeight: `${height}px`
       })
@@ -54,6 +56,6 @@ export function useAnchoredMenu(open: boolean, close: () => void, config: { minW
       document.removeEventListener('keydown', key, true)
       document.removeEventListener('pointerdown', outside, true)
     }
-  }, [open, minWidth, itemRole])
+  }, [open, minWidth, itemRole, alignTo])
   return ref
 }

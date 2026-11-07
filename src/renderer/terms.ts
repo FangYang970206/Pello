@@ -47,7 +47,10 @@ if (typeof window !== 'undefined') {
   window.__awbBuffer = termPlain
   window.__awbGeometry = (id) => {
     const term = terms.get(id)
-    return term ? { cols: term.cols, rows: term.rows, viewportY: term.buffer.active.viewportY, buffer: term.buffer.active.type, mouse: term.modes.mouseTrackingMode } : null
+    if (!term) return null
+    const buffer = term.buffer.active
+    const visibleText = Array.from({ length: term.rows }, (_, row) => buffer.getLine(buffer.viewportY + row)?.translateToString(true) || '').join('\n')
+    return { cols: term.cols, rows: term.rows, viewportY: buffer.viewportY, baseY: buffer.baseY, cursorY: buffer.cursorY, visibleText, buffer: buffer.type, mouse: term.modes.mouseTrackingMode }
   }
 }
 

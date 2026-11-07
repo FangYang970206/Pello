@@ -92,8 +92,13 @@ let app
 const start = async () => {
   app = await electron.launch({ args: [root], cwd: root, env })
   const page = await app.firstWindow()
+  page.on('pageerror', (error) => console.error('SSH renderer:', error.stack || error.message))
   await installDocumentHarness(app, page)
-  await page.waitForSelector('[data-a=newproj]')
+  await page.waitForSelector('[data-a=newproj]').catch(async (error) => {
+    console.error('SSH startup state:', await page.evaluate(() => ({ url: location.href, ready: document.readyState, body: document.body?.innerText?.slice(0, 1600) })).catch(() => 'Renderer unavailable'))
+    await page.screenshot({ path: path.join(root, 'output/playwright/ssh-startup-failure.png') }).catch(() => {})
+    throw error
+  })
   return page
 }
 const close = async (page) => {

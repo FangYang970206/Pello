@@ -29,7 +29,7 @@ delete env.ELECTRON_RUN_AS_NODE
 const app = await electron.launch({ args: ['.'], env })
 try {
   const page = await app.firstWindow()
-  await page.waitForFunction(() => window.__awbBuffer('tui').includes('TERM_HEADER'))
+  await page.waitForFunction(() => window.__awbBuffer?.('tui')?.includes('TERM_HEADER'))
   await page.evaluate(() => { window.__appearanceNode = document.querySelector('.termhost .xterm') })
   const mouse = await page.evaluate(() => window.__awbGeometry('tui').mouse)
   const shots = path.resolve('.cache/goal-upgrade/appearance')

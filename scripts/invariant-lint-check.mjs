@@ -46,7 +46,17 @@ const cases = [
   ['AWB038', 'src/renderer/UploadStatus.tsx', '{message}</span>', '{message}{task.destination}</span>'],
   ['AWB038', 'src/renderer/UploadStatus.tsx', 'UPLOAD_SUCCESS_DURATION = 2000', 'UPLOAD_SUCCESS_DURATION = 10000'],
   ['AWB038', 'src/renderer/UploadStatus.tsx', '!task.warnings?.length', 'true'],
-  ['AWB038', 'src/renderer/App.tsx', '), UPLOAD_SUCCESS_DURATION)', '), 20000)']
+  ['AWB038', 'src/renderer/App.tsx', '), UPLOAD_SUCCESS_DURATION)', '), 20000)'],
+  ['AWB039', 'src/main/pty.ts', "report.protocol === 'progress' && this.nativeStatus", 'false'],
+  ['AWB039', 'src/main/pty.ts', "PI_PROGRAM_STATUS: '1'", "PI_PROGRAM_STATUS: '0'"],
+  ['AWB040', 'src/renderer/terminal-layout.ts', 'tiles.length >= 4', 'tiles.length >= 8'],
+  ['AWB040', 'src/renderer/ProjectSidebar.tsx', 'activeAgentKind(term)', 'true'],
+  ['AWB041', 'src/main/temporary-sessions.ts', 'path.isAbsolute(configured)', 'true'],
+  ['AWB042', 'src/renderer/Workspace.tsx', 'visible={workspaceVisible && visible}', 'visible={visible}'],
+  ['AWB042', 'src/renderer/TerminalPane.tsx', 'scrollToLine(saved.viewport)', 'scrollToBottom()'],
+  ['AWB043', 'src/renderer/App.tsx', 'function openFile(rel: string, anchor?: string) {', 'function openFile(rel: string, anchor?: string) { const pinned = false;'],
+  ['AWB044', 'src/renderer/styles/markdown.css', '.markdown-outline{position:absolute;', '.markdown-outline{position:sticky;'],
+  ['AWB044', 'src/renderer/ProjectSidebar.tsx', "onProjectAction(project.id, 'reveal')", 'onCreateEntry(project.id, false)']
 ]
 for (const [id, file, before, after] of cases) {
   const mutated = new Map(files)

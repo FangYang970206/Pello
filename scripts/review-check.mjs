@@ -169,6 +169,10 @@ try {
   await page.locator('.settings .back').focus()
   await page.keyboard.press('Escape')
   await page.waitForSelector('.settings', { state: 'detached' })
+  await page.evaluate(async () => {
+    await document.fonts.ready
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+  })
   const settingsBack = await page.evaluate(() => {
     const opener = document.querySelector('[data-a=settings]')
     return { ok: document.activeElement === opener, active: document.activeElement?.textContent?.trim()?.slice(0, 24) || '' }

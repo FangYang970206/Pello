@@ -72,6 +72,7 @@ export interface Project {
   path: string
   branch: string
   agent: string
+  temporary?: boolean
 }
 
 export interface SavedTerm {
@@ -208,6 +209,7 @@ export interface PtyStateEvent {
   exitCode: number | null
   startedAt: number | null
   inputReady: boolean
+  agentKind?: string | null
   announce: boolean
   reason?: 'exit' | 'kill' | 'ctrlc'
 }

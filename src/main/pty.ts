@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { promisify } from 'node:util'
 import { app } from 'electron'
 import * as pty from 'node-pty'
@@ -11,9 +12,12 @@ import { discoverLocalShells } from './local-shells'
 import { OscStrip } from './osc'
 import { ProgramStatus } from './program-status'
 import { replyProgramStatus } from './windows-status'
+import { claudeLifecycle, nativeAgent, submittedAgent } from './agent-lifecycle'
 import { passwordTerminal, remoteCommand, type TerminalProcess } from './ssh'
 import {
   bashRc,
+  bashQuote,
+  psQuote,
   ompInstallDirectory,
   pwshProfile,
   remoteBootstrap,
@@ -33,6 +37,7 @@ export interface SessionInfo {
   inputReady: boolean
   shell: ShellKind
   kind: string
+  agentKind: string | null
 }
 
 type Send = (event: { type: 'data'; id: string; data: string } | PtyStateEvent) => void
@@ -127,6 +132,11 @@ class Session {
   private osc = new OscStrip()
   private programStatus = new ProgramStatus()
   private programWaiting = false
+  private activeAgent: string | null = null
+  private nativeStatus = false
+  private shellInput = ''
+  private lifecycle: Awaited<ReturnType<typeof claudeLifecycle>> | null = null
+  private lifecycleFile = ''
   private outputQueue: Promise<void> = Promise.resolve()
   private statusAbort = new AbortController()
   private phase: 'starting' | 'armed' | 'command' | 'prompt' | 'dead' = 'starting'
@@ -152,7 +162,7 @@ class Session {
     this.shell = opts.shell
     this.cwd = opts.cwd
     this.command = opts.command
-    this.env = { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor', AWB_CWD: opts.cwd }
+    this.env = { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor', AWB_CWD: opts.cwd, PI_PROGRAM_STATUS: '1' }
     const ompDirectory = ompInstallDirectory()
     if (fs.existsSync(ompDirectory)) {
       const pathKey = Object.keys(this.env).find((key) => key.toLowerCase() === 'path') || 'PATH'
@@ -167,7 +177,7 @@ class Session {
   hostId: string
 
   info(): SessionInfo {
-    return { id: this.id, state: this.state, exitCode: this.exitCode, startedAt: this.startedAt, inputReady: this.phase === 'prompt' || this.programWaiting, shell: this.shell, kind: this.kind }
+    return { id: this.id, state: this.state, exitCode: this.exitCode, startedAt: this.startedAt, inputReady: this.phase === 'prompt' || this.programWaiting, shell: this.shell, kind: this.kind, agentKind: this.activeAgent }
   }
 
   async spawn(): Promise<void> {
@@ -180,9 +190,25 @@ class Session {
     this.osc = new OscStrip()
     this.programStatus = new ProgramStatus()
     this.programWaiting = false
+    this.activeAgent = null
+    this.nativeStatus = false
+    this.shellInput = ''
     this.statusAbort = new AbortController()
     let proc: TerminalProcess
     if (!host || host.id === 'local') {
+      if (!this.lifecycle && ['claude', 'shell'].includes(this.kind)) {
+        const lifecycle = await claudeLifecycle((state) => {
+          if (this.disposed || this.phase !== 'command' || this.activeAgent !== 'claude') return
+          if (state === 'clear') this.activeAgent = null
+          this.nativeStatus = state !== 'clear'
+          this.programWaiting = state === 'waiting'
+          this.emit(false)
+        })
+        if (this.disposed) { lifecycle.dispose(); return }
+        this.lifecycle = lifecycle
+        this.lifecycleFile = path.join(app.getPath('userData'), `claude-status-${randomUUID()}.json`)
+        fs.writeFileSync(this.lifecycleFile, JSON.stringify(this.lifecycle.settings))
+      }
       await discoverLocalShells()
       if (this.disposed) return
       const rc = this.shell === 'pwsh' ? files.pwsh : this.shell === 'zsh' ? files.zsh : files.bash
@@ -244,8 +270,13 @@ class Session {
 
   write(data: string, binary = false): void {
     if (!this.proc || this.phase === 'dead') return
-    if (!binary && /[\r\n]/.test(data) && this.programWaiting) { this.programWaiting = false; this.emit(false) }
     if (!binary && (data.includes('\r') || data.includes('\n')) && this.phase === 'prompt' && this.state !== 'running') {
+      const command = this.shellInput + data.split(/[\r\n]/)[0]
+      this.activeAgent = submittedAgent(command) || null
+      this.nativeStatus = false
+      if (this.activeAgent === 'claude' && this.lifecycleFile && !command.includes('--settings')) data = data.replace(/[\r\n]/, (enter) => ` --settings ${this.quoteLifecycleFile()}${enter}`)
+      this.shellInput = ''
+      this.programWaiting = !!this.activeAgent
       this.phase = 'command'
       this.state = 'running'
       this.startedAt = Date.now()
@@ -253,6 +284,12 @@ class Session {
       this.exitAnnounced = false
       this.commandSentAt = Date.now()
       this.emit(false)
+    } else if (!binary && this.phase === 'prompt') {
+      for (const char of data) {
+        if (char === '\x7f' || char === '\b') this.shellInput = this.shellInput.slice(0, -1)
+        else if (char === '\x03' || char === '\x15') this.shellInput = ''
+        else if (char >= ' ' && this.shellInput.length < 8192) this.shellInput += char
+      }
     }
     this.proc.write(binary ? Buffer.from(data, 'latin1') : data)
   }
@@ -343,6 +380,9 @@ class Session {
     const alreadyExited = this.procExited
     this.disposed = true
     this.statusAbort.abort()
+    this.lifecycle?.dispose()
+    this.lifecycle = null
+    if (this.lifecycleFile) { try { fs.unlinkSync(this.lifecycleFile) } catch { /* Already removed. */ } }
     this.phase = 'dead'
     this.restartPending = false
     this.override = null
@@ -388,14 +428,23 @@ class Session {
   }
 
   private launchLine(): string {
-    if (this.shell === 'cmd' && this.command) return `${this.command} & echo AWB_EC:!ERRORLEVEL!`
-    return this.command
+    const command = this.command + (this.kind === 'claude' && this.lifecycleFile ? ` --settings ${this.quoteLifecycleFile()}` : '')
+    if (this.shell === 'cmd' && command) return `${command} & echo AWB_EC:!ERRORLEVEL!`
+    return command
+  }
+
+  private quoteLifecycleFile(): string {
+    if (this.shell === 'pwsh') return psQuote(this.lifecycleFile)
+    if (this.shell === 'cmd') return `"${this.lifecycleFile.replaceAll('%', '%%')}"`
+    return bashQuote(process.platform === 'win32' ? this.lifecycleFile.replaceAll('\\', '/') : this.lifecycleFile)
   }
 
   private beginCommand(): void {
     if (!this.proc || this.phase === 'dead') return
     this.phase = 'command'
-    this.programWaiting = false
+    this.activeAgent = this.kind === 'shell' ? null : this.kind
+    this.nativeStatus = false
+    this.programWaiting = !!nativeAgent(this.kind)
     this.state = 'running'
     this.startedAt = Date.now()
     this.exitCode = null
@@ -440,8 +489,21 @@ class Session {
       } catch (error) { if (!this.disposed && !this.procExited) console.error('Native status capability reply unavailable', error) }
     }
     if (this.disposed) return
-    for (const state of activity.states) {
-      this.programWaiting = state === 'waiting'
+    for (const report of activity.reports) {
+      if (report.protocol === 'progress' && this.nativeStatus) continue
+      if (report.protocol === 'program') this.nativeStatus = true
+      const agent = nativeAgent(report.app)
+      if (agent && report.state !== 'clear') {
+        this.activeAgent = agent
+        // Native identity is authoritative even if a user starts the CLI while
+        // the shell's initial prompt/arming transaction is still completing.
+        this.phase = 'command'
+        this.state = 'running'
+        this.startedAt ??= Date.now()
+        this.exitCode = null
+      }
+      if (report.state === 'clear') { this.activeAgent = null; this.nativeStatus = false }
+      this.programWaiting = report.state === 'waiting'
       this.emit(false)
     }
     const parsed = this.osc.push(activity.text)
@@ -452,6 +514,8 @@ class Session {
     // The shell writes that prompt in the same chunk, after the marker.
     const announceThenPrompt = (state: ProcState, exitCode: number, reason: PtyStateEvent['reason']) => {
       this.phase = 'prompt'
+      this.activeAgent = null
+      this.nativeStatus = false
       this.emitData(head)
       this.apply(state, exitCode, true, reason)
       this.emitData(tail)
@@ -493,6 +557,8 @@ class Session {
     }
     if (this.kind === 'shell') {
       this.phase = 'prompt'
+      this.activeAgent = null
+      this.shellInput = ''
       this.state = 'idle'
       this.exitCode = null
       this.startedAt = null
@@ -519,6 +585,7 @@ class Session {
       exitCode: this.exitCode,
       startedAt: this.startedAt,
       inputReady: this.phase === 'prompt' || this.programWaiting,
+      agentKind: this.activeAgent,
       announce,
       reason
     })

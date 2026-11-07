@@ -1,10 +1,35 @@
-.markdown-editor{flex:1;min-height:0;overflow:auto;background:var(--panel);color:var(--text)}
+.markdown-view{--outline-width:184px;position:relative;display:flex;flex:1;min-width:0;min-height:0;overflow:hidden;background:var(--panel)}
+.markdown-view[data-compact=true]{--outline-width:clamp(112px,32%,160px)}
+.markdown-editor{flex:1;min-width:0;min-height:0;overflow:auto;background:var(--panel);color:var(--text)}
+.markdown-view[data-has-outline=true] .markdown-editor{margin-left:40px}
+.markdown-view[data-outline-open=true] .markdown-editor{margin-left:calc(var(--outline-width) + 24px)}
 .markdown-editor .milkdown{--crepe-color-background:var(--panel);--crepe-color-on-background:var(--text);--crepe-color-surface:var(--elev2);--crepe-color-surface-low:var(--elev);--crepe-color-on-surface:var(--text);--crepe-color-on-surface-variant:var(--muted);--crepe-color-outline:var(--faint);--crepe-color-primary:var(--accent);--crepe-color-secondary:var(--accent-soft);--crepe-color-on-secondary:var(--text);--crepe-color-inverse:var(--text);--crepe-color-on-inverse:var(--bg);--crepe-color-inline-code:var(--magenta);--crepe-color-error:var(--red);--crepe-color-hover:var(--hover);--crepe-color-selected:var(--sel);--crepe-color-inline-area:var(--elev2);--crepe-font-title:var(--ui);--crepe-font-default:var(--ui);--crepe-font-code:var(--mono);--crepe-base-font-size:15px}
 .markdown-editor .milkdown .ProseMirror{max-width:860px;margin:auto;padding:32px 56px 120px;line-height:1.85;min-height:100%;overflow-wrap:anywhere}
 .markdown-editor .milkdown .ProseMirror h1{font-size:2em;margin:24px 0 16px;font-weight:650}
 .markdown-editor .milkdown .ProseMirror h2{font-size:1.55em;margin:24px 0 12px;font-weight:620}
 .markdown-editor .milkdown .ProseMirror h3{font-size:1.25em;margin:20px 0 10px;font-weight:600}
 .markdown-editor .milkdown .ProseMirror p{margin:10px 0}
+.markdown-editor .milkdown .milkdown-list-item-block>.list-item{gap:8px;align-items:flex-start}
+.markdown-editor .milkdown .ProseMirror .milkdown-list-item-block p{margin:0;padding:0;line-height:1.85}
+.markdown-editor .milkdown .milkdown-list-item-block{margin:6px 0}
+.markdown-editor .milkdown .milkdown-list-item-block li .label-wrapper{height:1.85em;min-height:0}
+.markdown-editor .milkdown .milkdown-list-item-block li .label-wrapper .label{height:1.85em;padding:0;line-height:1.85}
+.markdown-editor .milkdown .cm-editor,.markdown-editor .milkdown .cm-scroller{color:var(--text);background:var(--elev2)}
+.markdown-editor .milkdown .cm-gutters,.markdown-editor .milkdown .cm-activeLineGutter{background:var(--elev2)!important;color:var(--muted);border:0}
+.markdown-editor .milkdown .cm-activeLine{background:var(--hover)}
+.markdown-outline{position:absolute;left:12px;top:24px;z-index:3;display:flex;flex-direction:column;width:32px;max-height:calc(100% - 48px);background:var(--panel);border:1px solid var(--line);border-radius:var(--r2);font-size:12px;box-shadow:0 4px 18px #0000000d}
+.markdown-view[data-outline-open=true] .markdown-outline{width:var(--outline-width);max-width:calc(100% - 24px)}
+.markdown-outline-toggle{display:flex;align-items:center;gap:8px;flex:none;min-height:32px;width:100%;padding:8px;color:var(--muted);border-radius:var(--r1)}
+.markdown-outline-toggle span{flex:1;text-align:left}
+.markdown-view[data-outline-open=true] .markdown-outline-toggle{border-bottom:1px solid var(--line);border-bottom-left-radius:0;border-bottom-right-radius:0}
+.markdown-outline nav{min-height:0;overflow:auto;overscroll-behavior:contain;padding:6px}
+.markdown-outline nav button{display:block;width:100%;text-align:left;padding:6px 12px;line-height:1.5;color:var(--muted);border-radius:var(--r1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.markdown-outline nav button:hover{background:var(--hover)}
+.markdown-outline nav button[aria-current=location]{background:var(--hover);color:var(--text);font-weight:600}
+.markdown-editor [id]{scroll-margin-top:24px}
+.diagram-preview{padding:16px;background:#fff;color:#1a1b1e;border-radius:var(--r1);overflow:auto;text-align:center}
+.diagram-preview img{max-width:100%;height:auto;display:block;margin:auto}
+.diagram-preview figcaption{font:12px/1.5 var(--ui);overflow-wrap:anywhere}
 .markdown-editor .milkdown .ProseMirror a{color:var(--blue);text-underline-offset:3px}
 .markdown-editor .milkdown .ProseMirror blockquote{border-left:1px solid var(--ctl);padding-left:16px;color:var(--muted)}
 .markdown-editor .milkdown .ProseMirror img{max-width:100%;height:auto}

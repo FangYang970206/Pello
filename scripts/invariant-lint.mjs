@@ -146,6 +146,13 @@ export function checkInvariants(files) {
   require(files.get(workspaceFile)?.includes('sessionOf(tab) === sessionId'), 'AWB034', workspaceFile, '标签按当前会话过滤，终端实例仍须全部常驻')
   require(files.get('src/renderer/styles/extra.css')?.includes('animation:terminal-spin .85s linear infinite') && files.get('src/renderer/terminal-state.ts')?.includes("tab.state === 'running' && !tab.inputReady"), 'AWB035', 'src/renderer/styles/extra.css', '只有执行中的终端旋转，等待输入时停止')
   require(files.get(ptyFile)?.includes('this.programStatus.push(chunk)') && files.get(ptyFile)?.includes("this.phase === 'prompt' || this.programWaiting"), 'AWB036', ptyFile, 'Agent 状态接入原生协议，不能只根据 CLI 进程存在或输出静默推断运行')
+  require(!named(pty, 'write')?.getText().includes('this.programWaiting = false') && files.get(ptyFile)?.includes("report.protocol === 'progress' && this.nativeStatus") && files.get(ptyFile)?.includes("PI_PROGRAM_STATUS: '1'"), 'AWB039', ptyFile, '回车不能伪造请求状态，原生程序状态优先于任务栏进度，Pi 显式开启原生报告')
+  require(files.get('src/renderer/terminal-layout.ts')?.includes('tiles.length >= 4') && files.get('src/renderer/terminal-layout.ts')?.includes('tile.x + tile.width > 2') && files.get('src/renderer/ProjectSidebar.tsx')?.includes("term.state === 'running'") && files.get('src/renderer/ProjectSidebar.tsx')?.includes('activeAgentKind(term)'), 'AWB040', workspaceFile, '终端最多显示四个象限，Agents 排除纯 Shell 和已退出进程')
+  require(files.get('src/main/temporary-sessions.ts')?.includes('path.isAbsolute(configured)') && files.get('src/main/temporary-sessions.ts')?.includes('const id = randomUUID()') && files.get('src/main/temporary-sessions.ts')?.includes("path.join(directory, 'AGENTS.md')") && files.get('src/main/temporary-sessions.ts')?.includes("flag: 'wx'"), 'AWB041', 'src/main/temporary-sessions.ts', '临时目录必须绝对化，在随机 UUID 目录独占创建 AGENTS.md')
+  require(files.get(workspaceFile)?.includes('visible={workspaceVisible && visible}') && files.get('src/renderer/App.tsx')?.includes("workspaceVisible={route === 'work'}") && files.get(terminalFile)?.includes('scrollToLine(saved.viewport)') && called(source(terminalFile), 'useLayoutEffect').length, 'AWB042', terminalFile, '设置/文件隐藏终端前保存视口，恢复时区分底部跟随和用户历史滚动，不重建实例')
+  const openFile = named(app, 'openFile')
+  require(openFile && called(openFile, 'uid').length && !called(openFile, 'setDocuments').length && !openFile.getText().includes('pinned') && !files.get(workspaceFile)?.includes('tab.preview'), 'AWB043', 'src/renderer/App.tsx', '单击文件创建或定位独立标签，不能复用预览标签或删除其他文件的草稿')
+  require(files.get('src/renderer/styles/markdown.css')?.includes('.markdown-outline{position:absolute;') && files.get('src/renderer/MarkdownEditor.tsx')?.includes('data-compact={compact}') && !files.get('src/renderer/ProjectSidebar.tsx')?.includes('onCreateEntry') && files.get('src/renderer/ProjectSidebar.tsx')?.includes("onProjectAction(project.id, 'reveal')"), 'AWB044', 'src/renderer/MarkdownEditor.tsx', '目录悬浮正文左侧且适配窄内容区；项目菜单仅提供项目操作，文件创建留在文件树')
   const declarations = (selector) => {
     const values = new Map()
     for (const file of cssFiles) postcss.parse(files.get(file) || '').walkRules((rule) => {
@@ -173,6 +180,7 @@ export function checkInvariants(files) {
     'AWB018', 'package.json', '保留已有行为回归入口，不能删检查来绕过失败')
   require(files.get('AGENTS.md')?.includes('npm run lint') && files.get('AGENTS.md')?.includes('npm run check'), 'AWB019', 'AGENTS.md', '项目规则必须注明静态与行为验证入口')
   require(scripts['check:files']?.includes('scripts/upload-replace-check.mjs') && scripts['check:files']?.includes('scripts/upload-status-check.mjs'), 'AWB018', 'package.json', '保留上传整体替换、草稿和简洁状态的实际行为回归')
+  require(scripts.check?.includes('scripts/reading-workspace-check.mjs') && scripts.check?.includes('scripts/terminal-layout-check.mjs'), 'AWB018', 'package.json', '保留文档高亮、导航、图表与临时会话、分栏、状态和侧栏行为回归')
   return errors
 }
 

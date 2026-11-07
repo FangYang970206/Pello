@@ -187,7 +187,7 @@ export async function runTour(): Promise<void> {
     const readme = $('[data-a=preview][data-id="src/query/Executor.java"]') || $('[data-a=preview]')
     if (readme) {
       readme.click()
-      await until(() => !!document.querySelector('.tab.preview'))
+      await until(() => document.querySelector('.tab.on [data-a=tab] .lbl')?.textContent === readme.dataset.id?.split('/').pop())
       await sleep(200)
       await shot('v4_19_preview')
     }

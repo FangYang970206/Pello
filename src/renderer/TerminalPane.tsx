@@ -1,6 +1,6 @@
 import { codeFont } from '../shared/fonts'
 import { workbenchTheme } from '../shared/themes'
-import { useEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
@@ -22,6 +22,7 @@ export function TerminalPane({
   fontFamily,
   theme,
   visible,
+  focused = visible,
   onInterrupt,
   onAppKey
 }: {
@@ -31,6 +32,7 @@ export function TerminalPane({
   theme: ThemeName
   shell: ShellKind
   visible: boolean
+  focused?: boolean
   onInterrupt: (id: string) => void
   onAppKey: (key: string) => void
 }) {
@@ -39,6 +41,7 @@ export function TerminalPane({
   const scheduleFit = useRef<() => void>(() => {})
   const interruptRef = useRef(onInterrupt)
   const keyRef = useRef(onAppKey)
+  const hiddenScroll = useRef<{ following: boolean; viewport: number; buffer: string } | null>(null)
   interruptRef.current = onInterrupt
   keyRef.current = onAppKey
 
@@ -105,13 +108,27 @@ export function TerminalPane({
     term.onBinary((data) => window.awb.ptyWrite(id, data, true))
     term.onResize(({ cols, rows }) => window.awb.ptyResize(id, cols, rows))
     termRef.current = term
+    if (!visible) hiddenScroll.current = { following: true, viewport: 0, buffer: 'normal' }
     bindTerm(id, term)
+    if (visible && focused) term.focus()
     let frame = 0
     const redraw = () => {
       cancelAnimationFrame(frame)
       frame = requestAnimationFrame(() => {
         if (!host.clientWidth || !host.clientHeight || termRef.current !== term) return
+        const buffer = term.buffer.active
+        const followingOutput = buffer.type === 'normal' && buffer.viewportY >= buffer.baseY
         fit.fit()
+        // Shrinking a pane can add scrollback while retaining the old viewport.
+        // Keep live output at the bottom, but preserve deliberate scrollback.
+        const saved = hiddenScroll.current
+        hiddenScroll.current = null
+        if (term.buffer.active.type === 'normal') {
+          if (saved?.buffer === 'normal') {
+            if (saved.following) term.scrollToBottom()
+            else term.scrollToLine(saved.viewport)
+          } else if (followingOutput) term.scrollToBottom()
+        }
         if (term.rows > 0) term.refresh(0, term.rows - 1)
       })
     }
@@ -137,6 +154,15 @@ export function TerminalPane({
     // The terminal instance is created once per tab id.
   }, [id])
 
+  useLayoutEffect(() => {
+    const term = termRef.current
+    if (!term) return
+    if (!visible) {
+      const buffer = term.buffer.active
+      hiddenScroll.current = { following: buffer.viewportY >= buffer.baseY, viewport: buffer.viewportY, buffer: buffer.type }
+    } else scheduleFit.current()
+  }, [visible, id])
+
   useEffect(() => {
     const term = termRef.current
     const host = hostRef.current
@@ -154,13 +180,16 @@ export function TerminalPane({
       if (term.rows > 0) term.refresh(0, term.rows - 1)
       if (!visible || !host || host.offsetWidth < 2) return
       scheduleFit.current()
-      term.focus()
     }
     const font = `${fontSize}px "${fontFamily || 'Cascadia Mono'}"`
     if (document.fonts.check(font)) applyFont()
     else void document.fonts.load(font).then(applyFont, applyFont)
     return () => { stopped = true }
   }, [fontSize, fontFamily, theme, visible, id])
+
+  // Parent modal/settings restoration runs after this layout effect. Font loads
+  // only redraw; they must not take focus back from the restored control.
+  useLayoutEffect(() => { if (visible && focused) termRef.current?.focus() }, [visible, focused, id])
 
   return <div className="termhost" data-term={id}><div className="termframe" ref={hostRef} /></div>
 }

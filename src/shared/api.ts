@@ -51,6 +51,9 @@ export interface WorkbenchApi {
   saveBranch(projectId: string, branch: string): Promise<Database>
   setUnsavedChanges(dirty: boolean): void
   pickDirectory(): Promise<string | null>
+  temporaryDirectory(): Promise<string | null>
+  configureTemporaryDirectory(root: string): Promise<string>
+  createTemporarySession(root?: string): Promise<{ database: Database; projectId: string }>
   checkPath(hostId: string, input: string): Promise<PathCheck>
   listDir(hostId: string, input: string): Promise<DirListing>
   gitStatus(projectId: string, rescan?: boolean): Promise<GitPanel & { untracked: Record<string, boolean> }>
@@ -86,8 +89,10 @@ export interface WorkbenchApi {
   treeAction(projectId: string, rel: string, directory: boolean, action: string): Promise<void>
   treeReference(projectId: string, rel: string, kind: string, shell: ShellKind): Promise<string>
   documentMenu(options: { markdown: boolean; visual: boolean; undo: boolean; redo: boolean; editable: boolean }): Promise<string | null>
+  documentLink(projectId: string, source: string, href: string): Promise<{ path: string; anchor?: string } | null>
+  terminalMenu(options: { horizontal: boolean; vertical: boolean; merge: boolean }): Promise<string | null>
   onPreviewSource(cb: () => void): () => void
-  ptyCreate(req: PtyCreateRequest): Promise<{ id: string; state: string; exitCode: number | null; startedAt: number | null; inputReady: boolean; shell: ShellKind; kind: string }>
+  ptyCreate(req: PtyCreateRequest): Promise<{ id: string; state: string; exitCode: number | null; startedAt: number | null; inputReady: boolean; shell: ShellKind; kind: string; agentKind?: string | null }>
   ptyWrite(id: string, data: string, binary?: boolean): void
   ptyResize(id: string, cols: number, rows: number): void
   ptyInterrupt(id: string): Promise<'hint' | 'exit' | 'signal'>

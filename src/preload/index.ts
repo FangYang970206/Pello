@@ -25,6 +25,9 @@ const api: WorkbenchApi = {
   saveBranch: (projectId, branch) => ipcRenderer.invoke('db:branch', projectId, branch),
   setUnsavedChanges: (dirty) => ipcRenderer.send('files:dirty', dirty),
   pickDirectory: () => ipcRenderer.invoke('dialog:directory'),
+  temporaryDirectory: () => ipcRenderer.invoke('temporary:directory'),
+  configureTemporaryDirectory: (root) => ipcRenderer.invoke('temporary:configure', root),
+  createTemporarySession: (root) => ipcRenderer.invoke('temporary:create', root),
   checkPath: (hostId, input) => ipcRenderer.invoke('path:check', hostId, input),
   listDir: (hostId, input) => ipcRenderer.invoke('path:list', hostId, input),
   gitStatus: (projectId, rescan) => ipcRenderer.invoke('git:status', projectId, rescan),
@@ -68,6 +71,8 @@ const api: WorkbenchApi = {
   treeAction: (projectId, rel, directory, action) => ipcRenderer.invoke('tree:action', projectId, rel, directory, action),
   treeReference: (projectId, rel, kind, shell) => ipcRenderer.invoke('tree:reference', projectId, rel, kind, shell),
   documentMenu: (options) => ipcRenderer.invoke('file:menu', options),
+  documentLink: (projectId, source, href) => ipcRenderer.invoke('file:link', projectId, source, href),
+  terminalMenu: (options) => ipcRenderer.invoke('terminal:menu', options),
   onPreviewSource: (cb) => {
     const listener = () => cb()
     ipcRenderer.on('file:preview-source', listener)

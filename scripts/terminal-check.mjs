@@ -91,13 +91,13 @@ try {
   await check('toolbar and shortcut badges are absent', async () => {
     assert.equal(await page.locator('[data-a=ctrlc], [data-a=kill], [data-a=restart], [data-a=split], .pstate, .side kbd, .empty kbd').count(), 0)
   })
-  await check('running terminal spins yellow; waiting and inactive terminals stay still', async () => {
+  await check('running agent spins yellow; exited and shell terminals stay gray and still', async () => {
     const colors = await page.evaluate(() => {
       const css = getComputedStyle(document.documentElement)
       return ['busy', 'ready', 'shell'].map((id, i) => {
         const dot = document.querySelector(`[data-a=tab][data-id=${id}] .dot`)
         const probe = document.createElement('span')
-        probe.style.color = css.getPropertyValue(['--amber', '--green', '--faint'][i])
+        probe.style.color = css.getPropertyValue(['--amber', '--faint', '--faint'][i])
         document.body.append(probe)
         const expected = getComputedStyle(probe).color
         probe.remove()
@@ -174,9 +174,9 @@ try {
   await page.click('[data-a=theme][data-id=light]')
   await page.click('[data-a=back]')
   await page.screenshot({ path: path.join(shots, 'terminal-light.png') })
-  await check('light theme keeps completed task green', async () => {
+  await check('light theme keeps exited terminals gray', async () => {
     const color = await page.locator('[data-a=tab][data-id=ready] .dot').evaluate((dot) => getComputedStyle(dot).backgroundColor)
-    assert.equal(color, 'rgb(24, 122, 66)')
+    assert.equal(color, 'rgb(96, 102, 114)')
   })
   await page.evaluate((shell) => window.awb.ptyCreate({ id: 'shutdown', projectId: 'p1', kind: 'busy', shell }), shell)
   await until(() => pids().length === 6, 'Shutdown process tree did not start')

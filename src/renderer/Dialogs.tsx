@@ -37,7 +37,7 @@ function baseName(value: string): string {
   return parts[parts.length - 1] || value
 }
 
-function Frame({
+export function Frame({
   title,
   sub,
   subClass,

@@ -72,7 +72,6 @@ kbd{font:11px var(--mono);color:var(--faint);padding:0 4px;border-radius:4px;bor
 .tab:hover{background:var(--hover);color:var(--text)}
 .tab.on{background:var(--panel);color:var(--text);z-index:1}
 .tab.on::after{content:'';position:absolute;left:0;right:0;bottom:-1px;height:1px;background:var(--panel)}
-.tab.preview .lbl{display:inline-block;font-style:italic;font-synthesis:style;transform:skewX(-12deg);transform-origin:left center}
 .tab .lbl{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tab .x{width:24px;height:24px;display:grid;place-items:center;border-radius:4px;opacity:0;transition:opacity var(--t),background var(--t)}
 .tab:hover .x,.tab.on .x,.tab:focus-within .x{opacity:.8}.tab .x:hover{background:var(--press);opacity:1}
@@ -130,7 +129,8 @@ kbd{font:11px var(--mono);color:var(--faint);padding:0 4px;border-radius:4px;bor
 /* right panel */
 .right{position:relative;background:var(--side);display:flex;flex-direction:column;min-height:0;min-width:0;border-top:1px solid var(--line)}
 .right-resize{position:absolute;left:-3px;top:0;bottom:0;width:6px;cursor:col-resize;touch-action:none;z-index:5;-webkit-app-region:no-drag}
-.right-resize:hover,.right-resize:focus-visible{background:var(--accent);opacity:.6}
+.right-resize:hover{background:transparent}
+.right-resize:focus-visible{outline:1px solid var(--ctl);outline-offset:-2px}
 .tree-loading{font-size:11px;color:var(--faint);padding-block:4px}
 .rh{display:flex;align-items:center;gap:4px;height:40px;padding:0 8px 0 12px;border-bottom:1px solid var(--line);flex:none}
 .seg{display:inline-flex;padding:2px;border-radius:var(--r2);background:var(--elev2);gap:2px;border:1px solid var(--line)}

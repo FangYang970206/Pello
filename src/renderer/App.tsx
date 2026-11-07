@@ -9,6 +9,8 @@ import { SettingsView } from './SettingsView'
 import { ConfirmDialog, ExecDialog, HostDialog, NewProjectDialog, NewTermDialog, dialogOpener, focusableIn } from './Dialogs'
 import { RightPanel } from './RightPanel'
 import { ProjectSidebar } from './ProjectSidebar'
+import { SidebarResize } from './SidebarResize'
+import { TemporarySessionDialog } from './TemporarySessionDialog'
 import { Workspace, type FileTab, type Tab, type TermTab } from './Workspace'
 import { codeFont, uiFont } from '../shared/fonts'
 import { themeVariables, workbenchTheme } from '../shared/themes'
@@ -18,6 +20,8 @@ import { UPLOAD_SUCCESS_DURATION, uploadSucceeded } from './UploadStatus'
 
 type Modal =
   | { type: 'project' }
+  | { type: 'temporary' }
+  | { type: 'temporary-term'; root: string }
   | { type: 'term'; newSession?: boolean }
   | { type: 'exec'; id?: string }
   | { type: 'host'; id?: string }
@@ -58,9 +62,12 @@ export function App() {
     for (const [project, id] of Object.entries(activeMap)) if (tabs.some((tab) => tab.id === id && tab.type === 'term')) lastTerminal.current[project] = id!
   }, [activeMap, tabs])
   const [menuId, setMenuId] = useState<string | null>(null)
-  const [createRequest, setCreateRequest] = useState<{ projectId: string; directory: boolean } | null>(null)
   const [right, setRight] = useState(false)
   const [rightWidth, setRightWidth] = useState(() => Number(localStorage.getItem('awb:rightWidth')) || 296)
+  const [sidebarWidth, setSidebarWidth] = useState(() => Math.max(180, Math.min(480, Number(localStorage.getItem('awb:sidebarWidth')) || (innerWidth <= 1180 ? 216 : 240))))
+  const [temporaryBusy, setTemporaryBusy] = useState(false)
+  const temporaryPending = useRef<Database['projects'][number] | null>(null)
+  const temporaryStarting = useRef(false)
   const [rmode, setRmode] = useState<'files' | 'changes'>('changes')
   const [dmode, setDmode] = useState<'unified' | 'split'>('unified')
   const [openDirs, setOpenDirs] = useState<Record<string, boolean>>({})
@@ -175,17 +182,22 @@ export function App() {
   modalRef.current = modal
 
   function resizeRight(width: number) {
-    const sideWidth = window.innerWidth <= 1180 ? 216 : 240
-    const next = Math.max(220, Math.min(width, window.innerWidth - sideWidth - 320, 800))
+    const next = Math.max(220, Math.min(width, window.innerWidth - sidebarWidth - 320, 800))
     setRightWidth(next)
     localStorage.setItem('awb:rightWidth', String(next))
   }
 
+  function resizeSidebar(width: number) {
+    const next = Math.max(180, Math.min(480, width, innerWidth - (right ? rightWidth : 0) - 320))
+    setSidebarWidth(next)
+    localStorage.setItem('awb:sidebarWidth', String(next))
+  }
+
   useEffect(() => {
-    const onResize = () => setRightWidth((width) => Math.max(220, Math.min(width, window.innerWidth - (window.innerWidth <= 1180 ? 216 : 240) - 320, 800)))
+    const onResize = () => setRightWidth((width) => Math.max(220, Math.min(width, window.innerWidth - sidebarWidth - 320, 800)))
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
-  }, [])
+  }, [sidebarWidth])
 
   async function toggleDirectory(rel: string) {
     if (!project) return
@@ -323,7 +335,8 @@ export function App() {
       exitCode: null,
       inputReady: false,
       name: existingName,
-      hasRun: kind !== 'shell'
+      hasRun: kind !== 'shell',
+      agentKind: kind === 'shell' ? null : kind
     }
     setTabs((list) => (list.some((item) => item.id === id) ? list : [...list, tab]))
     if (activate) setActiveMap((map) => ({ ...map, [target.id]: id }))
@@ -333,7 +346,7 @@ export function App() {
       setTabs((list) => {
         const next = list.map((item) =>
           item.id === id && item.type === 'term'
-            ? { ...item, shell: info.shell, state: info.state as TermTab['state'], startedAt: info.startedAt, exitCode: info.exitCode, inputReady: info.inputReady }
+            ? { ...item, shell: info.shell, state: info.state as TermTab['state'], startedAt: info.startedAt, exitCode: info.exitCode, inputReady: info.inputReady, agentKind: info.agentKind }
             : item
         )
         const ids = activate ? { ...activeMapRef.current, [target.id]: id } : activeMapRef.current
@@ -421,7 +434,7 @@ export function App() {
       setTabs((list) =>
         list.map((tab) =>
           tab.id === event.id && tab.type === 'term'
-            ? { ...tab, hasRun: tab.hasRun || event.state === 'running', state: event.state, exitCode: event.exitCode, startedAt: event.startedAt, inputReady: event.inputReady }
+            ? { ...tab, hasRun: tab.hasRun || event.state === 'running', state: event.state, exitCode: event.exitCode, startedAt: event.startedAt, inputReady: event.inputReady, agentKind: event.agentKind }
             : tab
         )
       )
@@ -527,7 +540,7 @@ export function App() {
     if (doc.replacing) return
     const next = update(doc)
     putDocument(key, next)
-    setTabs((list) => list.map((item) => item.id === id ? { ...item, pinned: true, dirty: isDirty(next) } : item))
+    setTabs((list) => list.map((item) => item.id === id ? { ...item, dirty: isDirty(next) } : item))
   }
 
   function editFile(id: string, draft: string) { updateFileDraft(id, (doc) => recordChange(doc, draft)) }
@@ -770,6 +783,31 @@ export function App() {
     }
   }
 
+  async function createTemporary(kind: string, shell: ShellKind) {
+    let target = temporaryPending.current
+    if (!target) {
+      const result = await window.awb.createTemporarySession()
+      setDb(result.database)
+      target = result.database.projects.find((item) => item.id === result.projectId)!
+      temporaryPending.current = target
+    }
+    setProjectId(target.id); setRoute('work')
+    if (!await openTerm(target, kind, shell, true)) throw new Error('临时终端启动失败，请重试')
+    temporaryPending.current = null; setModal(null)
+  }
+
+  async function newTemporary() {
+    if (temporaryStarting.current) return
+    temporaryStarting.current = true; setTemporaryBusy(true)
+    temporaryPending.current = null
+    try {
+      const root = await window.awb.temporaryDirectory()
+      if (root) setModal({ type: 'temporary-term', root })
+      else setModal({ type: 'temporary' })
+    } catch (error) { toast(String(error), true) }
+    finally { temporaryStarting.current = false; setTemporaryBusy(false) }
+  }
+
   async function renameProject(id: string, name: string) {
     if (!db) return
     const projects = db.projects.map((item) => item.id === id ? { ...item, name } : item)
@@ -838,29 +876,14 @@ export function App() {
     setActiveMap((map) => ({ ...map, [project.id]: id }))
   }
 
-  function openFile(rel: string, pin = false) {
+  function openFile(rel: string, anchor?: string) {
     if (!project) return
     const opened = tabs.find((tab) => tab.type === 'file' && tab.projectId === project.id && tab.path === rel)
-    if (opened) { if (pin) pinFile(opened.id); selectTab(opened.id); return }
+    if (opened) { setTabs((list) => list.map((tab) => tab.id === opened.id ? { ...tab, anchor } : tab)); selectTab(opened.id); return }
     if (replacementAt(project.id, rel)) { toast('此目录正在替换，完成后可打开文件'); return }
-    const existing = tabs.find((tab) => tab.type === 'file' && tab.projectId === project.id && !tab.pinned)
-    if (existing && existing.type === 'file') {
-      setDocuments((map) => {
-        const next = { ...map }
-        delete next[documentKey(existing.projectId, existing.path)]
-        return next
-      })
-      setTabs((list) => list.map((tab) => (tab.id === existing.id && tab.type === 'file' ? { ...tab, path: rel, pinned: pin } : tab)))
-      setActiveMap((map) => ({ ...map, [project.id]: existing.id }))
-      return
-    }
     const id = uid('f')
-    setTabs((list) => [...list, { id, type: 'file', projectId: project.id, path: rel, pinned: pin }])
+    setTabs((list) => [...list, { id, type: 'file', projectId: project.id, path: rel, anchor }])
     setActiveMap((map) => ({ ...map, [project.id]: id }))
-  }
-
-  function pinFile(id: string) {
-    setTabs((list) => list.map((tab) => (tab.id === id && tab.type === 'file' ? { ...tab, pinned: true } : tab)))
   }
 
   async function renameTree(projectId: string, rel: string, name: string, directory: boolean): Promise<void> {
@@ -1106,7 +1129,7 @@ export function App() {
 
   return (
     <>
-      <div id="app" className={withRight ? 'with-right' : ''} data-panel-side={db?.settings.panelSide || 'right'} style={{ '--right-width': `${rightWidth}px` } as CSSProperties}>
+      <div id="app" className={withRight ? 'with-right' : ''} data-panel-side={db?.settings.panelSide || 'right'} style={{ '--right-width': `${rightWidth}px`, '--sidebar-width': `${sidebarWidth}px` } as CSSProperties}>
         <header className="title">
           <div className="brand">
             <img className="logo" src={appIcon} width="18" height="18" alt="" aria-hidden="true" />
@@ -1128,16 +1151,18 @@ export function App() {
         <div className="body">
           <div id="workspace" style={{ display: route === 'settings' ? 'none' : 'contents' }} inert={workspaceLocked ? true : undefined} aria-hidden={workspaceLocked ? true : undefined}>
               <aside className="side" aria-label="项目">
+                <SidebarResize width={sidebarWidth} onResize={resizeSidebar} />
                 <button className="newp" data-a="newproj" onClick={() => setModal({ type: 'project' })}>
                   <Icon name="plus" />
                   新建项目
                 </button>
+                <button className="newp" data-a="temporary-session" disabled={temporaryBusy} onClick={() => void newTemporary()}><Icon name="terminal" />临时会话</button>
                 <nav className="plist" aria-label="项目">
                   <ProjectSidebar projects={db?.projects || []} hosts={db?.hosts || []} terms={tabs.filter((tab): tab is TermTab => tab.type === 'term')} agents={agents}
                     sessions={workSessions} selectedSession={sessionId} onSession={selectSession} onRenameSession={renameSession} onRemoveSession={removeSession}
                     projectId={projectId} activeId={active?.id} menuId={menuId} onMenu={setMenuId} onProject={selectProject} onTerm={selectTab}
                     onRenameProject={renameProject} onRenameTerm={renameTerm} onRemoveProject={askRemove} onCloseTerm={requestClose}
-                    onCreateEntry={(id, directory) => { selectProject(id); setRight(true); setRmode('files'); setCreateRequest({ projectId: id, directory }) }}
+                    onProjectAction={(id, action) => { void window.awb.treeAction(id, '', true, action).catch((error) => toast(String(error))) }}
                     onNewSession={(id) => { selectProject(id); setModal({ type: 'term', newSession: true }) }} />
                 </nav>
                 <div className="sfoot">
@@ -1150,6 +1175,7 @@ export function App() {
               <div id="mainwrap" style={{ display: 'contents' }}>
                 <Workspace
                   project={project}
+                  workspaceVisible={route === 'work'}
                   sessionId={sessionId}
                   tabs={tabs}
                   active={active}
@@ -1163,6 +1189,16 @@ export function App() {
                   diff={diff}
                   preview={preview}
                   onSelect={selectTab}
+                  onRenameTerm={renameTerm}
+                  onNavigateFile={openFile}
+                  onSplitTerm={async (id) => {
+                    const term = tabs.find((tab): tab is TermTab => tab.id === id && tab.type === 'term')
+                    const target = db?.projects.find((item) => item.id === term?.projectId)
+                    if (!term || !target) throw new Error('终端已关闭')
+                    const result = await openTerm(target, term.kind, term.shell, true, undefined, undefined, sessionOf(term))
+                    if (!result) throw new Error('分栏终端启动失败')
+                    return result
+                  }}
                   onClose={requestClose}
                   onNewTerm={() => (project ? setModal({ type: 'term' }) : setModal({ type: 'project' }))}
                   onNewProject={() => setModal({ type: 'project' })}
@@ -1179,7 +1215,6 @@ export function App() {
                   onDmode={setDmode}
                   onDiscard={askDiscard}
                   onAppKey={onAppKey}
-                  onPinFile={pinFile}
                   onEditFile={editFile}
                   onSaveFile={(id) => { const tab = tabs.find((item): item is FileTab => item.id === id && item.type === 'file'); if (tab) void saveFile(tab) }}
                   onReloadFile={reloadFile}
@@ -1218,8 +1253,6 @@ export function App() {
                     onOpenFile={openFile}
                     onRevealFile={revealFile}
                     onTreeRulesChanged={() => setGitTick((tick) => tick + 1)}
-                    createRequest={createRequest}
-                    onCreateRequestHandled={() => setCreateRequest(null)}
                     referenceTerms={tabs.filter((tab): tab is TermTab => tab.type === 'term' && tab.projectId === project.id && tab.state !== 'exited' && tab.state !== 'failed').sort((a, b) => Number(b.id === lastTerminal.current[project.id]) - Number(a.id === lastTerminal.current[project.id]))}
                     onReference={(id, text) => { const term = tabs.find((tab): tab is TermTab => tab.id === id && tab.type === 'term' && tab.projectId === project.id && tab.state !== 'exited' && tab.state !== 'failed'); if (!term) { toast('目标终端已关闭', true); return }; window.awb.ptyWrite(id, text); selectTab(id) }}
                     onTrash={askTrash}
@@ -1262,6 +1295,8 @@ export function App() {
       </div>
       <div id="modal">
         {modal?.type === 'confirm' ? <ConfirmDialog title={modal.title} body={modal.body} ok={modal.ok} onOk={modal.run} onSave={modal.save} onClose={() => setModal(null)} /> : null}
+        {modal?.type === 'temporary' ? <TemporarySessionDialog onCreate={async (root) => { const directory = await window.awb.configureTemporaryDirectory(root); setModal({ type: 'temporary-term', root: directory }) }} onClose={() => setModal(null)} /> : null}
+        {modal?.type === 'temporary-term' && db ? <NewTermDialog newSession host={db.hosts.find((item) => item.id === 'local')!} cwd={modal.root} initialKind={db.settings.defAgent} initialShell={db.settings.defShell} agents={agents} onClose={() => setModal(null)} onManage={() => { setModal(null); openSettings('agents') }} onOpen={createTemporary} /> : null}
         {modal?.type === 'project' && db ? (
           <NewProjectDialog
             hosts={db.hosts}

@@ -1,7 +1,7 @@
 // Interactive CLI stand-in: native reports, persistent process, no model calls.
 process.stdin.setRawMode?.(true)
 process.stdin.setEncoding('utf8')
-const report = (state) => process.stdout.write(`\x1b]7501;state=${state}:app=fixture\x1b\\`)
+const report = (state) => process.stdout.write(`\x1b]7501;state=${state}:app=${process.argv[2] || 'fixture'}\x1b\\`)
 let input = '', negotiated = false
 process.stdout.write('\x1b]7501;?\x1b\\')
 process.stdin.on('data', (data) => {
@@ -20,6 +20,8 @@ process.stdin.on('data', (data) => {
     if (command === 'idle') report('idle')
     if (command === 'done') report('done')
     if (command === 'blocked') report('blocked')
+    if (command === 'progresswork') process.stdout.write('\x1b]9;4;3\x07')
+    if (command === 'progressidle') process.stdout.write('\x1b]9;4;0\x07')
     process.stdout.write(`STATUS_COMMAND_${command}\r\n`)
   }
 })

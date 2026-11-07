@@ -157,8 +157,13 @@ try {
     await page.locator('[data-a=tog][data-id="src"]').press('ArrowLeft')
     await field.fill('internal/Main.java')
     await page.getByRole('button', { name: `${deep}/Main.java` }).click()
+    assert.equal(await field.inputValue(), 'internal/Main.java')
+    await page.locator(`[data-a=search-file][data-id="${deep}/Main.java"]`).waitFor()
+    assert.equal(await page.getByRole('textbox', { name: '文件内容', exact: true }).inputValue(), 'class Main {}\n')
+    assert.equal(await page.locator('[data-a=tog][data-id="src"]').getAttribute('aria-expanded'), 'false', 'Search selection must not expand the tree')
+    await field.fill('')
+    await page.locator('[data-a=tog][data-id="src"]').press('ArrowRight')
     await page.locator(`[data-a=preview][data-id="${deep}/Main.java"]`).waitFor()
-    assert.equal(await field.inputValue(), '')
     assert.equal(await page.locator(`[data-a=preview][data-id="${deep}/Main.java"]`).getAttribute('aria-pressed'), 'true')
   })
   await check('directory ignore rules can include previously ignored search results', async () => {
@@ -176,7 +181,9 @@ try {
     await page.getByText('规则已保存', { exact: true }).waitFor()
     await page.click('[data-a=back]')
     await page.getByRole('button', { name: 'node_modules/search-fixture/hidden.txt' }).click()
-    await page.locator('[data-a=preview][data-id="node_modules/search-fixture/hidden.txt"]').waitFor()
+    await page.locator('[data-a=search-file][data-id="node_modules/search-fixture/hidden.txt"]').waitFor()
+    assert.equal(await page.getByRole('textbox', { name: '文件内容', exact: true }).inputValue(), 'fixture')
+    assert.equal(await field.inputValue(), 'search-fixture/hidden.txt')
     await page.click('[data-a=settings]')
     await page.click('[data-a=sec][data-id=general]')
     await page.getByText('文件搜索设置', { exact: true }).click()
@@ -184,12 +191,18 @@ try {
     await page.getByRole('button', { name: '应用规则' }).click()
     await page.getByText('规则已保存', { exact: true }).waitFor()
     await page.click('[data-a=back]')
+    await field.fill('')
   })
-  await check('double clicking a file pins its preview tab', async () => {
-    await page.locator('[data-a=preview][data-id="note.txt"]').dblclick()
-    assert.equal(await page.locator('.tab.on.preview').count(), 0)
+  await check('single clicking files keeps separate tabs with their actual contents', async () => {
+    await page.locator('[data-a=preview][data-id="note.txt"]').click()
+    const note = await page.locator('.tab.on [data-a=tab]').getAttribute('data-id')
     await page.click(`[data-a=preview][data-id="${deep}/Main.java"]`)
-    assert.equal(await page.locator('.tab:not(.preview)').filter({ hasText: 'note.txt' }).count(), 1)
+    const java = await page.locator('.tab.on [data-a=tab]').getAttribute('data-id')
+    assert.notEqual(note, java)
+    await page.locator(`[data-a=tab][data-id="${note}"]`).click()
+    assert.equal(await page.getByRole('textbox', { name: '文件内容', exact: true }).inputValue(), fs.readFileSync(path.join(projectDir, 'note.txt'), 'utf8').replaceAll('\r\n', '\n'))
+    await page.locator(`[data-a=tab][data-id="${java}"]`).click()
+    assert.equal(await page.getByRole('textbox', { name: '文件内容', exact: true }).inputValue(), fs.readFileSync(path.join(projectDir, deep, 'Main.java'), 'utf8'))
   })
   await check('tree path actions copy validated paths and reject traversal', async () => {
     await page.evaluate(() => window.awb.treeAction('p', 'note.txt', false, 'copy-full'))
@@ -619,14 +632,11 @@ try {
       await page.evaluate(() => { window.__autosaveDelay = 800 })
     }
   })
-  await check('project menu creates a folder in that project without altering its record', async () => {
+  await check('project menu copies that project path without creating entries or altering its record', async () => {
     await page.locator('[data-a=proj-more][data-id=p2]').click()
-    await page.getByRole('menuitem', { name: '新建文件夹' }).click()
-    const dialog = page.getByRole('dialog', { name: '新建文件夹' })
-    await dialog.getByLabel('名称').fill('project-menu-folder')
-    await dialog.getByRole('button', { name: '创建', exact: true }).click()
-    await dialog.waitFor({ state: 'detached' })
-    assert.equal(fs.statSync(path.join(projectDir, 'project-menu-folder')).isDirectory(), true)
+    assert.equal(await page.getByRole('menuitem', { name: '新建文件夹' }).count(), 0)
+    await page.getByRole('menuitem', { name: '复制路径', exact: true }).click()
+    assert.equal(await app.evaluate(({ clipboard }) => clipboard.readText()), projectDir)
     assert.equal(JSON.parse(fs.readFileSync(path.join(data, 'workbench.json'), 'utf8')).projects.find((item) => item.id === 'p2').path, projectDir)
     await page.locator('[data-a=proj][data-id=p]').click()
   })
@@ -708,8 +718,13 @@ try {
         const screen = document.querySelector('.pane:not([hidden]) .xterm-screen').getBoundingClientRect()
         return screen.bottom <= pane.bottom - 15 && screen.right <= pane.right - 15
       })
-      await page.waitForFunction(() => (window.__awbBuffer('ui').match(/TERM_HEADER/g) || []).length === 1)
-      assert.equal(await page.evaluate(() => (window.__awbBuffer('ui').match(/TERM_HEADER/g) || []).length), 1)
+      // ConPTY can split a fixture redraw across packets. Capture one complete
+      // frame for the current geometry instead of sampling again mid-redraw.
+      const frame = await page.waitForFunction(() => {
+        const text = window.__awbBuffer('ui'), geometry = window.__awbGeometry('ui')
+        return (text.match(/TERM_HEADER/g) || []).length === 1 && text.includes(`FOOTER_VISIBLE rows=${geometry.rows}`) ? text : false
+      })
+      assert.equal(((await frame.jsonValue()).match(/TERM_HEADER/g) || []).length, 1)
     }
   })
   await check('file writes reject traversal and symbolic links outside the project', async () => {

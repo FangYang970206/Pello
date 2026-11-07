@@ -107,8 +107,6 @@ export function RightPanel({
   onOpenFile,
   onRevealFile,
   onTreeRulesChanged,
-  createRequest,
-  onCreateRequestHandled,
   referenceTerms,
   onReference,
   onTrash,
@@ -144,11 +142,9 @@ export function RightPanel({
   onMode: (mode: 'files' | 'changes') => void
   onToggleDir: (path: string) => void
   onOpenDiff: (path: string) => void
-  onOpenFile: (path: string, pin?: boolean) => void
+  onOpenFile: (path: string) => void
   onRevealFile: (projectId: string, path: string) => Promise<boolean>
   onTreeRulesChanged: () => void
-  createRequest: { projectId: string; directory: boolean } | null
-  onCreateRequestHandled: () => void
   referenceTerms: TermTab[]
   onReference: (id: string, text: string) => void
   onTrash: (projectId: string, path: string, directory: boolean) => void
@@ -181,11 +177,6 @@ export function RightPanel({
   useLayoutEffect(() => {
     if (transferList.current) transferList.current.scrollTop = transferList.current.scrollHeight
   }, [project.id, latestTransferId])
-  useEffect(() => {
-    if (createRequest?.projectId !== project.id) return
-    setCreating({ projectId: project.id, parent: '', directory: createRequest.directory })
-    onCreateRequestHandled()
-  }, [createRequest, project.id, onCreateRequestHandled])
   const query = queries[project.id] || ''
   const [search, setSearch] = useState<{ projectId: string; query: string; items: TreeNode[]; loading: boolean; error: string }>({ projectId: '', query: '', items: [], loading: false, error: '' })
   useEffect(() => {
@@ -256,12 +247,6 @@ export function RightPanel({
       scrollRestore.current = null
     }
   })
-  const [reveal, setReveal] = useState<{ projectId: string; path: string } | null>(null)
-  useEffect(() => {
-    if (!reveal || reveal.projectId !== project.id || query.trim()) return
-    const row = [...(treeList.current?.querySelectorAll<HTMLButtonElement>('[data-a="preview"]') || [])].find((item) => item.dataset.id === reveal.path)
-    if (row) { row.scrollIntoView({ block: 'nearest' }); row.focus(); setReveal(null) }
-  }, [reveal, project.id, query, treeChildren, openDirs])
   function selectNode(node: TreeNode) {
     setSelections((current) => ({ ...current, [project.id]: { path: node.path, dir: node.dir } }))
   }
@@ -270,7 +255,7 @@ export function RightPanel({
     setTreeError('')
     try {
       const action = await window.awb.treeMenu(project.id, path, dir)
-      if (action === 'open' || action === 'pin') onOpenFile(path, action === 'pin')
+      if (action === 'open') onOpenFile(path)
       else if (action === 'reference') setReferencePath(path)
       else if (action === 'trash') onTrash(project.id, path, dir)
       else if (action === 'rename') setRenaming({ projectId: project.id, path, dir })
@@ -341,7 +326,6 @@ export function RightPanel({
           data-id={node.path}
           aria-pressed={!!selection && !selection.dir && selection.path === node.path}
           onClick={() => { selectNode(node); onOpenFile(node.path) }}
-          onDoubleClick={() => onOpenFile(node.path, true)}
           onContextMenu={(event) => { event.preventDefault(); void treeMenu(node.path, false) }}
           onKeyDown={(event) => { menuKey(event, node.path, false); if (event.key === 'F2') { event.preventDefault(); selectNode(node); setRenaming({ projectId: project.id, path: node.path, dir: false }) } }}
           title={node.path}
@@ -421,14 +405,8 @@ export function RightPanel({
         {query.trim() ? <div className="rlist" role="group" aria-label="文件搜索结果" tabIndex={0} {...dropHandlers} onContextMenu={treeBackgroundContext} onKeyDown={treeBackgroundKey}>
           {search.projectId === project.id && search.query === query ? <>
             {search.items.map((node) => <button className="row" data-a="search-file" onContextMenu={(event) => { event.preventDefault(); void treeMenu(node.path, false) }} onKeyDown={(event) => menuKey(event, node.path, false)} data-id={node.path} key={node.path} title={node.path} onClick={() => {
-              const projectId = project.id
-              void onRevealFile(projectId, node.path).then((visible) => {
-                if (!visible) return
-                selectNode(node)
-                setQueries((current) => ({ ...current, [projectId]: '' }))
-                setReveal({ projectId, path: node.path })
-                onOpenFile(node.path)
-              }).catch((error: unknown) => setTreeError(error instanceof Error ? error.message : '无法定位文件'))
+              selectNode(node)
+              onOpenFile(node.path)
             }}><Icon name="file" className="s" /><span className="nm">{node.path}</span></button>)}
             {search.loading ? <p role="status" className="repository-help">正在搜索…</p> : null}
             {search.error ? <p role="alert" className="repository-help bad">{search.error}</p> : null}

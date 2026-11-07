@@ -21,3 +21,26 @@ const oversized = '\x1b]7501;' + 'x'.repeat(17000)
 assert.equal(parser.push(oversized).text, oversized)
 assert.deepEqual(parser.push('no output means nothing about state').states, [])
 console.log('PASS native CLI status protocols, all packet splits, capability query, child-report isolation, unrelated escapes and bounded buffering')
+
+const lifecycleSource = fs.readFileSync(new URL('../src/main/agent-lifecycle.ts', import.meta.url), 'utf8')
+const { claudeLifecycle, submittedAgent, nativeAgent } = await import(`data:text/javascript;base64,${Buffer.from(ts.transpile(lifecycleSource, { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext })).toString('base64')}`)
+assert.equal(submittedAgent('& "D:\\工具\\claude.exe" --continue'), 'claude')
+assert.equal(submittedAgent('opencode'), 'opencode')
+assert.equal(submittedAgent('echo claude'), undefined)
+assert.equal(submittedAgent('node agent.js | claude'), undefined)
+assert.equal(nativeAgent('pi'), 'pi')
+const states = []
+const lifecycle = await claudeLifecycle((state) => states.push(state))
+try {
+  for (const event of ['SessionStart', 'UserPromptSubmit', 'PermissionRequest', 'PreToolUse', 'Stop', 'SessionEnd']) {
+    const response = await fetch(lifecycle.settings.hooks[event][0].hooks[0].url, { method: 'POST', body: '{}' })
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), {})
+  }
+  assert.deepEqual(states, ['waiting', 'working', 'waiting', 'working', 'waiting', 'clear'])
+  const url = lifecycle.settings.hooks.Stop[0].hooks[0].url
+  assert.equal((await fetch(url)).status, 404)
+  lifecycle.dispose()
+  assert.equal((await fetch(url, { method: 'POST' })).status, 404)
+} finally { lifecycle.dispose() }
+console.log('PASS native Claude lifecycle hooks, scoped loopback tokens, disposal, and manually launched Agent identities')

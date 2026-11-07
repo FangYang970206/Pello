@@ -1,10 +1,13 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import type { DocumentDraft } from './documents'
+import { SourceHighlight } from './SourceHighlight'
 
 const MarkdownEditor = lazy(() => import('./MarkdownEditor'))
 
-export function FilePane({ path, document, onEdit, onSave, onReload, onHistory, onCompose, onToggleRight }: {
+export function FilePane({ path, anchor, onNavigate, document, onEdit, onSave, onReload, onHistory, onCompose, onToggleRight }: {
   path: string
+  anchor?: string
+  onNavigate: (path: string, anchor?: string) => void
   document: DocumentDraft | null
   rightOpen: boolean
   onEdit: (text: string) => void
@@ -16,6 +19,7 @@ export function FilePane({ path, document, onEdit, onSave, onReload, onHistory, 
   onToggleRight: () => void
 }) {
   const gutter = useRef<HTMLDivElement>(null)
+  const highlight = useRef<HTMLPreElement>(null)
   const format = useRef<((command: string) => void) | null>(null)
   const [visual, setVisual] = useState(true)
   const [preview, setPreview] = useState<{ url?: string; error?: string; content?: string; replacementId?: string }>({})
@@ -62,12 +66,14 @@ export function FilePane({ path, document, onEdit, onSave, onReload, onHistory, 
         : html && visual ? preview.error ? <p className="file-error" role="alert">{preview.error}</p> : preview.url && preview.content === document.draft && preview.replacementId === document.replacementId ?
           <iframe key={preview.url} className="html-preview" title="HTML 预览" sandbox="allow-scripts" src={preview.url} /> : <p className="rmeta">正在加载预览…</p>
         : markdown && visual ? <Suspense fallback={<div className="rmeta">正在加载 Markdown 编辑器…</div>}>
-          <MarkdownEditor value={document.draft} projectId={document.projectId} path={path} onChange={onEdit} formatRef={format} />
+          <MarkdownEditor value={document.draft} projectId={document.projectId} path={path} anchor={anchor} onNavigate={onNavigate} onChange={onEdit} formatRef={format} />
         </Suspense> : <div className="file-editor">
           <div className="editor-gutter" ref={gutter} aria-hidden="true">{document.draft.split('\n').map((_, i) => <div key={i}>{i + 1}</div>)}</div>
+          <div className="source-editor">
+          <pre ref={highlight} className="source-highlight" aria-hidden="true"><SourceHighlight value={document.draft} path={path} /></pre>
           <textarea aria-label="文件内容" value={document.draft} wrap="off" spellCheck={false} autoCorrect="off" autoCapitalize="off"
             onChange={(event) => onEdit(event.target.value)}
-            onScroll={(event) => { if (gutter.current) gutter.current.scrollTop = event.currentTarget.scrollTop }}
+            onScroll={(event) => { if (gutter.current) gutter.current.scrollTop = event.currentTarget.scrollTop; if (highlight.current) { highlight.current.scrollTop = event.currentTarget.scrollTop; highlight.current.scrollLeft = event.currentTarget.scrollLeft } }}
             onKeyDown={(event) => {
               if (event.key !== 'Tab' || event.ctrlKey || event.altKey || event.metaKey) return
               event.preventDefault()
@@ -76,6 +82,7 @@ export function FilePane({ path, document, onEdit, onSave, onReload, onHistory, 
               onEdit(field.value.slice(0, start) + '  ' + field.value.slice(end))
               requestAnimationFrame(() => field.setSelectionRange(start + 2, start + 2))
             }} />
+          </div>
         </div>}
     </div>
   </>

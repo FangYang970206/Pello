@@ -30,6 +30,7 @@ import { TransferManager } from './transfer'
 import { uploadRemoteSources, type UploadChoice, type UploadConflict } from './remote-file'
 import { DownloadManager } from './downloads'
 import { installedEditors, launchEditor } from './external-editors'
+import { configureTemporaryDirectory, createTemporarySession, temporaryDirectory } from './temporary-sessions'
 import { randomUUID } from 'node:crypto'
 import type { TransferSnapshot, ReplacementEvent } from '../shared/types'
 import { ConflictPolicy } from '../shared/file-conflicts'
@@ -366,6 +367,15 @@ async function testHostConnection(host: Host): Promise<import('../shared/types')
 }
 
 function registerIpc(): void {
+  ipcMain.handle('temporary:directory', () => temporaryDirectory())
+  ipcMain.handle('temporary:configure', (_event, root: string) => {
+    if (typeof root !== 'string') throw new Error('临时目录无效')
+    return configureTemporaryDirectory(root)
+  })
+  ipcMain.handle('temporary:create', (_event, root?: string) => {
+    if (root !== undefined && typeof root !== 'string') throw new Error('临时目录无效')
+    return createTemporarySession(root)
+  })
   ipcMain.on('files:dirty', (_event, dirty: boolean) => { hasUnsavedChanges = !!dirty })
   ipcMain.handle('db:get', async () => ({ db: db(), installed: await installedMap() }))
   ipcMain.handle('shells:local', () => discoverLocalShells())
@@ -652,7 +662,7 @@ function registerIpc(): void {
       template.push(action(host.id === 'local' ? '导入文件…' : '上传文件…', 'import-files'), action(host.id === 'local' ? '导入文件夹…' : '上传文件夹…', 'import-directory'))
       template.push({ type: 'separator' })
     }
-    if (!directory) template.push(action('打开', 'open'), action('固定标签', 'pin'), action('引用到当前终端', 'reference'), { type: 'separator' })
+    if (!directory) template.push(action('打开', 'open'), action('引用到当前终端', 'reference'), { type: 'separator' })
     if (resolved.relative !== '.') template.push(action('重命名', 'rename'), action('移动到…', 'move'))
     if (resolved.relative !== '.') template.push(action('删除', 'trash'))
     template.push({ label: '复制路径', submenu: [action('复制完整路径', 'copy-full'), action('复制项目相对路径', 'copy-relative')] })
@@ -717,6 +727,22 @@ function registerIpc(): void {
     if (termShell === 'bash' || termShell === 'zsh') return bashQuote(host.id === 'local' && target.platform === 'windows' ? resolved.full.replaceAll('\\', '/') : resolved.full)
     throw new Error('不支持此终端')
   })
+  ipcMain.handle('file:link', async (_event, projectId: string, source: string, href: string) => {
+    if (typeof href !== 'string' || href.length > 8192) throw new Error('无效的链接')
+    if (/^[a-z][a-z\d+.-]*:/i.test(href) || href.startsWith('//')) {
+      const url = new URL(href.startsWith('//') ? `https:${href}` : href)
+      if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) throw new Error('仅支持网页链接和项目内文件链接')
+      await shell.openExternal(url.href)
+      return null
+    }
+    const { target } = projectTarget(projectId)
+    const from = treePath(target, source).relative
+    const hash = href.indexOf('#')
+    const link = decodeURIComponent((hash < 0 ? href : href.slice(0, hash)).split('?')[0])
+    const anchor = hash < 0 ? undefined : decodeURIComponent(href.slice(hash + 1))
+    const relative = !link ? from : path.posix.normalize(link.startsWith('/') ? link.slice(1) : path.posix.join(path.posix.dirname(from), link))
+    return { path: treePath(target, relative).relative, anchor }
+  })
   ipcMain.handle('file:menu', (_e, options: { markdown: boolean; visual: boolean; undo: boolean; redo: boolean; editable: boolean }) => new Promise<string | null>((resolve) => {
     const action = (label: string, id: string, enabled = true): MenuItemConstructorOptions => ({ id, label, enabled, click: () => resolve(id) })
     const template: MenuItemConstructorOptions[] = [
@@ -731,6 +757,11 @@ function registerIpc(): void {
       { label: '段落', submenu: [action('一级标题', 'heading'), action('引用', 'quote'), action('无序列表', 'bullet'), action('有序列表', 'ordered'), action('代码块', 'codeblock'), action('插入表格', 'table')] })
     template.push({ type: 'separator' }, action('保存', 'save', options.editable), action('重新读取', 'reload'), action('切换文件面板', 'panel'))
     Menu.buildFromTemplate(template).popup({ window: win!, callback: () => resolve(null) })
+  }))
+
+  ipcMain.handle('terminal:menu', (_e, options: { horizontal: boolean; vertical: boolean; merge: boolean }) => new Promise<string | null>((resolve) => {
+    const action = (label: string, id: string, enabled = true): MenuItemConstructorOptions => ({ id, label, enabled, click: () => resolve(id) })
+    Menu.buildFromTemplate([action('重命名终端', 'rename'), { type: 'separator' }, action('向左分栏', 'split-left', options.horizontal), action('向右分栏', 'split-right', options.horizontal), action('向上分栏', 'split-up', options.vertical), action('向下分栏', 'split-down', options.vertical), { type: 'separator' }, action('撤销分栏（合并）', 'merge', options.merge)]).popup({ window: win!, callback: () => resolve(null) })
   }))
 
   ipcMain.handle('pty:create', (_e, req: { id: string; projectId: string; kind: string; shell: ShellKind }) => {
