@@ -37,7 +37,10 @@ kbd {
   min-height: 0;
   min-width: 0;
   position: relative;
-  overflow: hidden;
+  /* IME preedit may extend beyond the rightmost terminal cell. Unlike hidden,
+     clip cannot be scrolled by Chromium when it reveals the native caret.
+     Terminal scrollback remains in xterm's own viewport. */
+  overflow: clip;
 }
 
 .termframe {

@@ -32,6 +32,7 @@ import { DownloadManager } from './downloads'
 import { installedEditors, launchEditor } from './external-editors'
 import { configureTemporaryDirectory, createTemporarySession, temporaryDirectory } from './temporary-sessions'
 import { randomUUID } from 'node:crypto'
+import { windowsTaskbarIcon } from './app-icon'
 import type { TransferSnapshot, ReplacementEvent } from '../shared/types'
 import { ConflictPolicy } from '../shared/file-conflicts'
 import { discoverLocalShells } from './local-shells'
@@ -269,9 +270,10 @@ function broadcastTheme(theme: Settings['theme']): void {
 function createWindow(): void {
   const theme = db().settings.theme
   const iconDirectory = app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'assets')
-  const windowsIconPath = path.join(iconDirectory, 'icon.ico')
+  const windowsIconPath = process.platform === 'win32'
+    ? windowsTaskbarIcon(path.join(iconDirectory, 'pello-rounded.ico'), app.getPath('userData')) : ''
   win = new BrowserWindow({
-    icon: process.platform === 'win32' ? windowsIconPath : path.join(iconDirectory, 'icon.png'),
+    icon: process.platform === 'win32' ? windowsIconPath : path.join(iconDirectory, 'pello-rounded.png'),
     width: 1440,
     height: 900,
     minWidth: 1024,

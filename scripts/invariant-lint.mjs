@@ -164,6 +164,9 @@ export function checkInvariants(files) {
     return values
   }
   const host = declarations('.termhost'), frame = declarations('.termframe')
+  require(host.get('overflow') === 'clip', 'AWB047', cssFiles[1], '终端外框禁止程序滚动，防止中文输入法显示光标时横移裁掉内容')
+  require(files.get(ptyFile)?.includes("PI_HARDWARE_CURSOR: '1'"), 'AWB048', ptyFile, 'Windows 使用 Pi 原生硬件光标定位输入法，不能让拼音固定在最右侧')
+  require(called(main, 'windowsTaskbarIcon').length && files.get('src/main/app-icon.ts')?.includes("createHash('sha256')"), 'AWB049', mainFile, 'Windows 原生窗口与任务栏使用内容寻址的图标路径，避免旧路径缓存')
   require(![...host].some(([key, value]) => key.startsWith('padding') && !/^0(?:px)?$/.test(value)) && frame.get('position') === 'absolute' && !frame.has('padding'),
     'AWB015', cssFiles[1], 'fit 父节点无 padding，终端边距由外框 inset 提供')
   require(declarations('.tabs').get('flex')?.startsWith('0 ') && declarations('.tabtools').get('align-self') === 'flex-end',
@@ -185,6 +188,7 @@ export function checkInvariants(files) {
   require(scripts['check:files']?.includes('scripts/upload-replace-check.mjs') && scripts['check:files']?.includes('scripts/upload-status-check.mjs'), 'AWB018', 'package.json', '保留上传整体替换、草稿和简洁状态的实际行为回归')
   require(scripts.check?.includes('scripts/reading-workspace-check.mjs') && scripts.check?.includes('scripts/terminal-layout-check.mjs'), 'AWB018', 'package.json', '保留文档高亮、导航、图表与临时会话、分栏、状态和侧栏行为回归')
   require(scripts.check?.includes('scripts/document-performance-check.mjs'), 'AWB018', 'package.json', '保留大文档编辑、目录跳转、代码虚拟化高度和图表进程隔离回归')
+  require(scripts.check?.includes('scripts/terminal-input-check.mjs'), 'AWB018', 'package.json', '保留输入法组合、确认、取消和终端几何稳定性回归')
   return errors
 }
 

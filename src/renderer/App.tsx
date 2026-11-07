@@ -3,7 +3,7 @@ import type { AgentInfo, Database, FileDiff, GitPanel, Host, SettingsSection, Sh
 import { legacySessionId, sessionOf } from '../shared/work-sessions'
 import { PRESETS, SHELL_AGENT, cmdline, resolveAgent, shellLabel, uid } from '../shared/types'
 import { Icon } from './icons'
-import appIcon from '../../assets/icon-small.svg'
+import appIcon from '../../assets/pello-rounded-small.svg'
 import { dropTerm, paint, syncTermSize, writeNotice, writeTerm } from './terms'
 import { SettingsView } from './SettingsView'
 import { ConfirmDialog, ExecDialog, HostDialog, NewProjectDialog, NewTermDialog, dialogOpener, focusableIn } from './Dialogs'

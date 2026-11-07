@@ -16,8 +16,8 @@ extraResources:
   - from: assets
     to: .
     filter:
-      - icon.ico
-      - icon.png
+      - pello-rounded.ico
+      - pello-rounded.png
       - licenses/**
 
 # Renderer dependencies are bundled into out/ and listed as devDependencies.
@@ -77,7 +77,7 @@ beforePack: scripts/ensure-win32-node-pty.cjs
 afterPack: scripts/restore-node-pty-build.cjs
 
 win:
-  icon: assets/icon.ico
+  icon: assets/pello-rounded.ico
   target:
     - target: nsis
       arch:
@@ -102,8 +102,8 @@ win:
   # certificatePassword: ${env.CSC_KEY_PASSWORD}
 
 nsis:
-  installerIcon: assets/icon.ico
-  uninstallerIcon: assets/icon.ico
+  installerIcon: assets/pello-rounded.ico
+  uninstallerIcon: assets/pello-rounded.ico
   artifactName: Pello-${version}-win-${arch}-setup.${ext}
   oneClick: false
   allowToChangeInstallationDirectory: true

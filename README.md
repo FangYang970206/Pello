@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-horizontal-dark.svg">
-    <img src="assets/logo-horizontal.svg" width="230" alt="Pello">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/pello-logo-dark.svg">
+    <img src="assets/pello-logo.svg" width="230" alt="Pello">
   </picture>
 </p>
 

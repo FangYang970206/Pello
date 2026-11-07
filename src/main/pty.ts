@@ -162,7 +162,11 @@ class Session {
     this.shell = opts.shell
     this.cwd = opts.cwd
     this.command = opts.command
-    this.env = { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor', AWB_CWD: opts.cwd, PI_PROGRAM_STATUS: '1' }
+    // ConPTY omits the final position of a hidden hardware cursor. Pi's native
+    // cursor mode keeps its IME anchor at the editor caret, including when Pi
+    // is started manually from a Shell terminal. Custom executor env can opt out.
+    this.env = { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor', AWB_CWD: opts.cwd, PI_PROGRAM_STATUS: '1',
+      ...(process.platform === 'win32' ? { PI_HARDWARE_CURSOR: '1' } : {}) }
     const ompDirectory = ompInstallDirectory()
     if (fs.existsSync(ompDirectory)) {
       const pathKey = Object.keys(this.env).find((key) => key.toLowerCase() === 'path') || 'PATH'

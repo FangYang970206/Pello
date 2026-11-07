@@ -66,7 +66,7 @@ spacing:
 
 ## Shapes
 
-控件圆角 6px，设置分组 10px，对话框 12px；胶囊只用于短状态或开关。操作图标统一使用 `icons.tsx` 的描边 SVG；应用品牌使用用户提供的橙色机器人图标，标题栏采用 `assets/icon-small.svg`，保留 18px 尺寸与既有对齐。
+控件圆角 6px，设置分组 10px，对话框 12px；胶囊只用于短状态或开关。操作图标统一使用 `icons.tsx` 的描边 SVG；应用品牌使用用户提供的绿色圆角机器人图标，标题栏采用 `assets/pello-rounded-small.svg`，保留 18px 尺寸与既有对齐。Windows 窗口、任务栏及安装程序共用 `assets/pello-rounded.ico`，窗口与任务栏从用户数据目录中的内容摘要路径加载，避免系统复用旧路径缓存；检查原生大、小 HICON 的实际像素。横版标志保留 Pello 名称，仓库不保留旧图标资源。
 
 ## Components
 

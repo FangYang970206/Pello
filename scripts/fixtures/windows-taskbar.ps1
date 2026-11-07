@@ -1,10 +1,11 @@
-param([Parameter(Mandatory = $true)][long]$WindowHandle)
+param([Parameter(Mandatory = $true)][long]$WindowHandle, [string]$IconPath)
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 # Read the actual Shell property store; do not infer taskbar identity from JS.
-Add-Type -TypeDefinition @'
+Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
+using System.Drawing;
 public static class WorkbenchTaskbar {
   [StructLayout(LayoutKind.Sequential)] public struct Key { public Guid format; public uint id; }
   [StructLayout(LayoutKind.Explicit, Size=24)] public struct Value {
@@ -22,6 +23,24 @@ public static class WorkbenchTaskbar {
   [DllImport("shell32.dll")] static extern int SHGetPropertyStoreForWindow(IntPtr hwnd, ref Guid iid, out Store store);
   [DllImport("ole32.dll")] static extern int PropVariantClear(ref Value value);
   [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr hwnd, uint message, IntPtr wparam, IntPtr lparam);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern IntPtr LoadImage(IntPtr instance, string name, uint type, int width, int height, uint flags);
+  [DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr icon);
+  public static bool IconMatches(long window, int kind, string file) {
+    IntPtr actual = SendMessage(new IntPtr(window), 127, new IntPtr(kind), IntPtr.Zero);
+    if (actual == IntPtr.Zero || String.IsNullOrEmpty(file)) return false;
+    using (Bitmap image = Icon.FromHandle(actual).ToBitmap()) {
+      IntPtr expected = LoadImage(IntPtr.Zero, file, 1, image.Width, image.Height, 0x10);
+      if (expected == IntPtr.Zero) return false;
+      try {
+        using (Bitmap reference = Icon.FromHandle(expected).ToBitmap()) {
+          if (image.Size != reference.Size) return false;
+          for (int y = 0; y < image.Height; y++) for (int x = 0; x < image.Width; x++)
+            if (image.GetPixel(x, y).ToArgb() != reference.GetPixel(x, y).ToArgb()) return false;
+          return true;
+        }
+      } finally { DestroyIcon(expected); }
+    }
+  }
   public static string Read(long window, uint property) {
     Guid iid = typeof(Store).GUID;
     Store store;
@@ -42,4 +61,6 @@ public static class WorkbenchTaskbar {
   relaunchIcon = [WorkbenchTaskbar]::Read($WindowHandle, 3)
   relaunchDisplayName = [WorkbenchTaskbar]::Read($WindowHandle, 4)
   windowIcon = [WorkbenchTaskbar]::SendMessage([IntPtr]$WindowHandle, 127, [IntPtr]1, [IntPtr]::Zero).ToInt64().ToString()
+  windowIconMatches = [WorkbenchTaskbar]::IconMatches($WindowHandle, 1, $IconPath)
+  smallIconMatches = [WorkbenchTaskbar]::IconMatches($WindowHandle, 0, $IconPath)
 } | ConvertTo-Json -Compress
