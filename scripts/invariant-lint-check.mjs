@@ -56,7 +56,14 @@ const cases = [
   ['AWB042', 'src/renderer/TerminalPane.tsx', 'scrollToLine(saved.viewport)', 'scrollToBottom()'],
   ['AWB043', 'src/renderer/App.tsx', 'function openFile(rel: string, anchor?: string) {', 'function openFile(rel: string, anchor?: string) { const pinned = false;'],
   ['AWB044', 'src/renderer/styles/markdown.css', '.markdown-outline{position:absolute;', '.markdown-outline{position:sticky;'],
-  ['AWB044', 'src/renderer/ProjectSidebar.tsx', "onProjectAction(project.id, 'reveal')", 'onCreateEntry(project.id, false)']
+  ['AWB044', 'src/renderer/ProjectSidebar.tsx', "onProjectAction(project.id, 'reveal')", 'onCreateEntry(project.id, false)'],
+  ['AWB045', 'src/renderer/MarkdownEditor.tsx', 'view.nodeDOM(position)', "root.querySelector('h1')"],
+  ['AWB045', 'src/renderer/styles/markdown.css', 'height:var(--pello-code-height,auto)', 'height:auto'],
+  ['AWB045', 'src/renderer/styles/markdown.css', '.cm-activeLine{background:transparent}', '.cm-activeLine{background:var(--hover)}'],
+  ['AWB046', 'src/main/diagram-renderer.ts', 'show: false', 'show: true'],
+  ['AWB046', 'src/main/diagram-renderer.ts', 'nodeIntegration: false', 'nodeIntegration: true'],
+  ['AWB046', 'src/main/diagram-renderer.ts', 'source.length > 100_000', 'false'],
+  ['AWB046', 'src/renderer/diagram-renderer.ts', "securityLevel: 'strict'", "securityLevel: 'loose'"]
 ]
 for (const [id, file, before, after] of cases) {
   const mutated = new Map(files)

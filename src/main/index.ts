@@ -35,6 +35,7 @@ import { randomUUID } from 'node:crypto'
 import type { TransferSnapshot, ReplacementEvent } from '../shared/types'
 import { ConflictPolicy } from '../shared/file-conflicts'
 import { discoverLocalShells } from './local-shells'
+import { cancelDiagramRenderer, DiagramCancelled, disposeDiagramRenderer, renderMermaid } from './diagram-renderer'
 
 const execFileP = promisify(execFile)
 const windowsAppId = app.isPackaged ? 'com.pello.app' : 'com.pello.app.dev'
@@ -336,6 +337,7 @@ function createWindow(): void {
     })
   })
   win.on('closed', () => {
+    disposeDiagramRenderer()
     win = null
   })
   win.webContents.on('will-prevent-unload', (event) => {
@@ -367,6 +369,14 @@ async function testHostConnection(host: Host): Promise<import('../shared/types')
 }
 
 function registerIpc(): void {
+  ipcMain.handle('diagram:mermaid', (event, source: string) => {
+    if (!win || win.isDestroyed() || closingWindow) throw new Error('工作台正在关闭')
+    if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error('不允许此图表请求')
+    return renderMermaid(win, source).catch((error) => { if (error instanceof DiagramCancelled) return ''; throw error })
+  })
+  ipcMain.handle('diagram:cancel', (event) => {
+    if (event.sender === win?.webContents && event.senderFrame === win?.webContents.mainFrame) cancelDiagramRenderer()
+  })
   ipcMain.handle('temporary:directory', () => temporaryDirectory())
   ipcMain.handle('temporary:configure', (_event, root: string) => {
     if (typeof root !== 'string') throw new Error('临时目录无效')

@@ -13,6 +13,7 @@ export default defineConfig({
     }
   },
   renderer: {
+    build: { rollupOptions: { input: { index: resolve('src/renderer/index.html'), diagram: resolve('src/renderer/diagram-renderer.html') } } },
     resolve: {
       alias: { '@shared': resolve('src/shared') }
     },

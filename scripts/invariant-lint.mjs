@@ -153,6 +153,9 @@ export function checkInvariants(files) {
   const openFile = named(app, 'openFile')
   require(openFile && called(openFile, 'uid').length && !called(openFile, 'setDocuments').length && !openFile.getText().includes('pinned') && !files.get(workspaceFile)?.includes('tab.preview'), 'AWB043', 'src/renderer/App.tsx', '单击文件创建或定位独立标签，不能复用预览标签或删除其他文件的草稿')
   require(files.get('src/renderer/styles/markdown.css')?.includes('.markdown-outline{position:absolute;') && files.get('src/renderer/MarkdownEditor.tsx')?.includes('data-compact={compact}') && !files.get('src/renderer/ProjectSidebar.tsx')?.includes('onCreateEntry') && files.get('src/renderer/ProjectSidebar.tsx')?.includes("onProjectAction(project.id, 'reveal')"), 'AWB044', 'src/renderer/MarkdownEditor.tsx', '目录悬浮正文左侧且适配窄内容区；项目菜单仅提供项目操作，文件创建留在文件树')
+  require(markdown.getText().includes('view.nodeDOM(position)') && !/\bnode\.id\s*=/.test(markdown.getText()) && files.get('src/renderer/markdown-code-layout.ts')?.includes("'--pello-code-height'") && files.get('src/renderer/styles/markdown.css')?.includes('height:var(--pello-code-height,auto)') && files.get('src/renderer/styles/markdown.css')?.includes('.cm-activeLine{background:transparent}'), 'AWB045', 'src/renderer/MarkdownEditor.tsx', '目录从编辑器模型定位，不能改写 DOM ID；代码虚拟化保留高度，代码行底色一致')
+  const diagramRenderer = files.get('src/main/diagram-renderer.ts') || ''
+  require(diagramRenderer.includes('show: false') && diagramRenderer.includes('sandbox: true') && diagramRenderer.includes('nodeIntegration: false') && diagramRenderer.includes('source.length > 100_000') && diagramRenderer.includes('cancelDiagramRenderer') && files.get('src/renderer/diagram-renderer.ts')?.includes("securityLevel: 'strict'") && !files.get('src/renderer/diagram-preview.ts')?.includes("import('mermaid')") && files.get('src/main/index.ts')?.includes('disposeDiagramRenderer()'), 'AWB046', 'src/main/diagram-renderer.ts', 'Mermaid 在独立隐藏沙箱渲染，限制输入与缓存，关闭时清理；不得阻塞工作台渲染线程')
   const declarations = (selector) => {
     const values = new Map()
     for (const file of cssFiles) postcss.parse(files.get(file) || '').walkRules((rule) => {
@@ -181,6 +184,7 @@ export function checkInvariants(files) {
   require(files.get('AGENTS.md')?.includes('npm run lint') && files.get('AGENTS.md')?.includes('npm run check'), 'AWB019', 'AGENTS.md', '项目规则必须注明静态与行为验证入口')
   require(scripts['check:files']?.includes('scripts/upload-replace-check.mjs') && scripts['check:files']?.includes('scripts/upload-status-check.mjs'), 'AWB018', 'package.json', '保留上传整体替换、草稿和简洁状态的实际行为回归')
   require(scripts.check?.includes('scripts/reading-workspace-check.mjs') && scripts.check?.includes('scripts/terminal-layout-check.mjs'), 'AWB018', 'package.json', '保留文档高亮、导航、图表与临时会话、分栏、状态和侧栏行为回归')
+  require(scripts.check?.includes('scripts/document-performance-check.mjs'), 'AWB018', 'package.json', '保留大文档编辑、目录跳转、代码虚拟化高度和图表进程隔离回归')
   return errors
 }
 

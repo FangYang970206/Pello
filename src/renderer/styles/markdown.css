@@ -16,7 +16,10 @@
 .markdown-editor .milkdown .milkdown-list-item-block li .label-wrapper .label{height:1.85em;padding:0;line-height:1.85}
 .markdown-editor .milkdown .cm-editor,.markdown-editor .milkdown .cm-scroller{color:var(--text);background:var(--elev2)}
 .markdown-editor .milkdown .cm-gutters,.markdown-editor .milkdown .cm-activeLineGutter{background:var(--elev2)!important;color:var(--muted);border:0}
-.markdown-editor .milkdown .cm-activeLine{background:var(--hover)}
+.markdown-editor .milkdown .cm-activeLine{background:transparent}
+.markdown-editor .milkdown .milkdown-code-block:has(>.milkdown-code-block-placeholder){height:var(--pello-code-height,auto)}
+.markdown-editor .milkdown .milkdown-code-block-placeholder{max-height:100%;overflow:hidden}
+.markdown-editor .milkdown .milkdown-code-block:has(.diagram-preview[data-loading=true]){min-height:var(--pello-code-height,0px)}
 .markdown-outline{position:absolute;left:12px;top:24px;z-index:3;display:flex;flex-direction:column;width:32px;max-height:calc(100% - 48px);background:var(--panel);border:1px solid var(--line);border-radius:var(--r2);font-size:12px;box-shadow:0 4px 18px #0000000d}
 .markdown-view[data-outline-open=true] .markdown-outline{width:var(--outline-width);max-width:calc(100% - 24px)}
 .markdown-outline-toggle{display:flex;align-items:center;gap:8px;flex:none;min-height:32px;width:100%;padding:8px;color:var(--muted);border-radius:var(--r1)}

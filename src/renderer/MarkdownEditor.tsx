@@ -4,12 +4,14 @@ import { editorViewCtx, serializerCtx } from '@milkdown/kit/core'
 import { toggleStrongCommand, toggleEmphasisCommand, toggleInlineCodeCommand, wrapInHeadingCommand, wrapInBlockquoteCommand, wrapInBulletListCommand, wrapInOrderedListCommand, createCodeBlockCommand } from '@milkdown/kit/preset/commonmark'
 import { insertTableCommand } from '@milkdown/kit/preset/gfm'
 import { Plugin } from '@milkdown/kit/prose/state'
+import type { EditorView as ProseMirrorView } from '@milkdown/kit/prose/view'
 import { $prose, callCommand, replaceAll } from '@milkdown/kit/utils'
 import { languages } from '@codemirror/language-data'
 import { EditorView } from '@codemirror/view'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { tags } from '@lezer/highlight'
 import { diagramPreview } from './diagram-preview'
+import { preserveCodeLayout } from './markdown-code-layout'
 import { Icon } from './icons'
 import '@milkdown/crepe/theme/common/style.css'
 import '@milkdown/crepe/theme/frame.css'
@@ -29,6 +31,9 @@ function imageSource(source: string, base: string): string {
   const target = new URL(source.startsWith('/') ? scope + source.slice(1) : source, root)
   return target.origin === root.origin && target.pathname.startsWith(scope) ? target.href : ''
 }
+
+type Heading = { text: string; level: number; id: string }
+type HeadingTarget = Heading & { nativeId: string; position: number; element: HTMLElement | null }
 
 export default function MarkdownEditor({ value, projectId, path, anchor, onNavigate, onChange, formatRef }: {
   value: string; projectId: string; path: string; onChange: (markdown: string) => void
@@ -53,15 +58,17 @@ export default function MarkdownEditor({ value, projectId, path, anchor, onNavig
   const [error, setError] = useState('')
   const [linkError, setLinkError] = useState('')
   const requestedAnchor = useRef(anchor)
+  const headingTargets = useRef<HeadingTarget[]>([])
   requestedAnchor.current = anchor
   const scrollTo = (id: string) => {
-    const target = host.current?.querySelector<HTMLElement>(`[id="${CSS.escape(id)}"]`)
+    const entry = headingTargets.current.find((heading) => heading.id === id || heading.nativeId === id)
+    const target = entry?.element
     const scroller = host.current?.closest<HTMLElement>('.markdown-editor')
     if (!target || !scroller) return
     scroller.scrollTop += target.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 24
     setActiveHeading(id)
   }
-  const [headings, setHeadings] = useState<{ text: string; level: number; id: string }[]>([])
+  const [headings, setHeadings] = useState<Heading[]>([])
   current.current = value
   change.current = onChange
   const parts = metadata(value)
@@ -89,12 +96,15 @@ export default function MarkdownEditor({ value, projectId, path, anchor, onNavig
       cancelAnimationFrame(pending)
       pending = requestAnimationFrame(() => {
         const top = scroller.getBoundingClientRect().top + 48
-        let current = headings[0].id
-        for (const heading of headings) {
-          const node = host.current?.querySelector<HTMLElement>(`[id="${CSS.escape(heading.id)}"]`)
-          if (node && node.getBoundingClientRect().top <= top) current = heading.id
+        const entries = headingTargets.current
+        let low = 0, high = entries.length - 1, active = 0
+        while (low <= high) {
+          const middle = (low + high) >>> 1
+          const node = entries[middle].element
+          if (node && node.getBoundingClientRect().top <= top) { active = middle; low = middle + 1 }
+          else high = middle - 1
         }
-        setActiveHeading(current)
+        if (entries[active]) setActiveHeading(entries[active].id)
       })
     }
     scroller.addEventListener('scroll', update, { passive: true })
@@ -106,6 +116,8 @@ export default function MarkdownEditor({ value, projectId, path, anchor, onNavig
     const root = host.current
     if (!root) return
     let disposed = false
+    let started = false
+    let releaseCodeLayout = () => {}
     const initial = metadata(current.current)
     const crepe = new Crepe({ root, defaultValue: initial.body,
       features: { [Crepe.Feature.AI]: false },
@@ -133,20 +145,25 @@ export default function MarkdownEditor({ value, projectId, path, anchor, onNavig
     })
     // A synchronous document transaction listener avoids losing the last edit
     // when a file tab closes before a library's debounced change event fires.
-    const syncHeadings = () => {
+    const syncHeadings = (view: ProseMirrorView) => {
       const seen = new Map<string, number>()
-      const entries = [...root.querySelectorAll<HTMLElement>('.ProseMirror h1,.ProseMirror h2,.ProseMirror h3,.ProseMirror h4,.ProseMirror h5,.ProseMirror h6')].map((node) => {
+      const entries: HeadingTarget[] = []
+      view.state.doc.descendants((node, position) => {
+        if (node.type.name !== 'heading') return
         const text = node.textContent || ''
-        const slug = text.trim().toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, '').replace(/\s/g, '-')
+        const slug = text.trim().toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, '').replace(/\s/g, '-') || 'section'
         const count = seen.get(slug) || 0
         seen.set(slug, count + 1)
-        node.id = count ? `${slug}-${count}` : slug
-        return { text, level: Number(node.tagName.slice(1)), id: node.id }
+        const element = view.nodeDOM(position)
+        entries.push({ text, level: node.attrs.level, id: count ? `${slug}-${count}` : slug, nativeId: node.attrs.id, position, element: element instanceof HTMLElement ? element : null })
       })
-      setHeadings(entries)
+      // Milkdown owns heading IDs in its document model. Writing DOM IDs here
+      // fights its synchronizer, reparses the document and invalidates anchors.
+      headingTargets.current = entries
+      setHeadings((previous) => previous.length === entries.length && previous.every((entry, index) => entry.id === entries[index].id && entry.text === entries[index].text && entry.level === entries[index].level) ? previous : entries)
     }
     crepe.editor.use($prose((ctx) => new Plugin({ view: () => ({ update: (view, previous) => {
-      if (!view.state.doc.eq(previous.doc)) queueMicrotask(() => { if (!disposed) syncHeadings() })
+      if (!view.state.doc.eq(previous.doc)) queueMicrotask(() => { if (!disposed) syncHeadings(view) })
       if (!ready.current || applying.current || !interacted.current || view.state.doc.eq(previous.doc)) return
       const markdown = ctx.get(serializerCtx)(view.state.doc)
       if (markdown === serialized.current) return
@@ -156,13 +173,14 @@ export default function MarkdownEditor({ value, projectId, path, anchor, onNavig
     editor.current = crepe
     const created = window.awb.previewUrl(projectId, path).then((base) => {
       assetBase.current = base
-    }).catch(() => {}).then(() => crepe.create()).then(() => {
+    }).catch(() => {}).then(() => { if (disposed) return; started = true; return crepe.create() }).then(() => {
       if (disposed) return
       // Undo or a source edit may arrive while remote assets/editor setup load.
       const latest = metadata(current.current).body
       if (latest !== initial.body) crepe.editor.action(replaceAll(latest))
       ready.current = true
-      syncHeadings()
+      releaseCodeLayout = preserveCodeLayout(root)
+      crepe.editor.action((ctx) => syncHeadings(ctx.get(editorViewCtx)))
       if (requestedAnchor.current) requestAnimationFrame(() => { if (!disposed) scrollTo(requestedAnchor.current!) })
       serialized.current = crepe.getMarkdown()
       formatRef.current = (command) => {
@@ -181,10 +199,12 @@ export default function MarkdownEditor({ value, projectId, path, anchor, onNavig
     }).catch((reason) => { if (!disposed) setError(String(reason)) })
     return () => {
       disposed = true
+      releaseCodeLayout()
+      void window.awb.cancelDiagrams().catch(() => {})
       ready.current = false
       editor.current = null
       formatRef.current = null
-      void created.then(() => crepe.destroy()).catch(() => {})
+      void created.then(() => { if (started) return crepe.destroy() }).catch(() => {})
     }
   }, [projectId, path])
 

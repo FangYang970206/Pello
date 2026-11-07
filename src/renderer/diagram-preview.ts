@@ -11,6 +11,7 @@ export function diagramPreview(language: string, content: string, applyPreview: 
   figure.dataset.language = kind
   const id = `pello-diagram-${++sequence}`
   figure.dataset.diagramId = id
+  figure.dataset.loading = 'true'
   const publish = () => {
     // Milkdown sanitizes/clones previews. Publish a fresh value, and do not let
     // an earlier asynchronous render replace a newly edited fence.
@@ -23,8 +24,8 @@ export function diagramPreview(language: string, content: string, applyPreview: 
   const image = document.createElement('img')
   image.alt = kind === 'mermaid' ? 'Mermaid 图表' : 'PlantUML 在线图表'
   image.referrerPolicy = 'no-referrer'
-  image.onload = () => { status.textContent = kind === 'mermaid' ? '' : 'PlantUML · plantuml.com 在线渲染'; publish() }
-  image.onerror = () => { status.textContent = '图表加载失败，请检查语法或网络后重新编辑重试'; status.setAttribute('role', 'alert'); publish() }
+  image.onload = () => { figure.dataset.loading = 'false'; status.textContent = kind === 'mermaid' ? '' : 'PlantUML · plantuml.com 在线渲染'; publish() }
+  image.onerror = () => { figure.dataset.loading = 'false'; status.textContent = '图表加载失败，请检查语法或网络后重新编辑重试'; status.setAttribute('role', 'alert'); publish() }
   figure.append(image)
   applyPreview(figure)
   if (kind !== 'mermaid') {
@@ -32,10 +33,9 @@ export function diagramPreview(language: string, content: string, applyPreview: 
     publish()
     return
   }
-  void import('mermaid').then(async ({ default: mermaid }) => {
-    mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'neutral', suppressErrorRendering: true, maxTextSize: 100_000 })
-    const { svg } = await mermaid.render(id, content)
+  void window.awb.renderMermaid(content).then((svg) => {
+    if (!svg) return
     image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
     publish()
-  }).catch((error) => { image.remove(); status.textContent = `Mermaid 渲染失败：${String(error).slice(0, 240)}`; status.setAttribute('role', 'alert'); publish() })
+  }).catch((error) => { figure.dataset.loading = 'false'; image.remove(); status.textContent = `Mermaid 渲染失败：${String(error).slice(0, 240)}`; status.setAttribute('role', 'alert'); publish() })
 }

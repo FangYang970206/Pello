@@ -84,6 +84,8 @@ export interface WorkbenchApi {
   gitRead(projectId: string, rel: string): Promise<FileContent>
   gitWrite(projectId: string, rel: string, text: string, version: string): Promise<FileContent>
   previewUrl(projectId: string, rel: string, draft?: string): Promise<string>
+  renderMermaid(source: string): Promise<string>
+  cancelDiagrams(): Promise<void>
   openHtmlPreview(projectId: string, rel: string): Promise<string>
   treeMenu(projectId: string, rel: string, directory: boolean): Promise<string | null>
   treeAction(projectId: string, rel: string, directory: boolean, action: string): Promise<void>
