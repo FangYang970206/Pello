@@ -55,6 +55,7 @@ for (let run = 0; run < runs; run++) {
     await page.evaluate((shell) => window.awb.ptyCreate({ id: 'agent', projectId: 'p', kind: 'tree', shell }), shell)
     await until(() => live().length === 3, 'Fixture process tree did not start')
     const exited = app.waitForEvent('close', { timeout: Math.max(30000, (count + 1) * 4000) })
+    const closeStarted = Date.now()
     await page.getByRole('button', { name: '关闭窗口', exact: true }).click()
     const lateCreation = await page.evaluate(async (shell) => {
       try {
@@ -65,13 +66,15 @@ for (let run = 0; run < runs; run++) {
     }, shell)
     assert.equal(lateCreation, true, 'Shutdown must reject new terminals outside its cleanup snapshot')
     await exited; closed = true
+    const closeMs = Date.now() - closeStarted
     await until(() => applicationProcess.exitCode !== null || applicationProcess.signalCode !== null, 'Electron did not finish exiting')
     assert.equal(applicationProcess.exitCode, 0, `Electron crashed while closing ${count + 1} terminals (run ${run + 1})`)
     const events = fs.readFileSync(lifecycle, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
     const quit = events.findIndex((event) => event.type === 'quit')
     assert.equal(events.slice(0, quit).filter((event) => event.type === 'exit').length, count + 1, 'Application quit before all native PTY exit callbacks completed')
     await until(() => live().length === 0, 'Agent descendants survived shutdown')
-    console.log(`PASS shutdown run ${run + 1}: ${count} idle terminals, detached Agent descendants, normal process exit`)
+    assert.ok(closeMs < Math.max(8000, (count + 1) * 1000), `Shutdown took ${closeMs}ms for ${count + 1} terminals`)
+    console.log(`PASS shutdown run ${run + 1}: ${count} idle terminals, detached Agent descendants, ${closeMs}ms close, normal process exit`)
   } catch (error) { console.error(`Shutdown fixture ${data}, exit=${applicationProcess.exitCode}: ${error.message}`); throw error } finally {
     if (!closed) await app.close().catch(() => {})
     for (const pid of live()) {

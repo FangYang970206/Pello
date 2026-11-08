@@ -73,6 +73,7 @@ export interface Project {
   branch: string
   agent: string
   temporary?: boolean
+  pinned?: boolean
 }
 
 export interface SavedTerm {

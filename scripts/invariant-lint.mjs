@@ -63,11 +63,11 @@ export function checkInvariants(files) {
     require(!text.includes('dangerouslySetInnerHTML'), 'AWB005', file, '文档 HTML 不得在 renderer 执行')
   }
 
-  const ptyFile = 'src/main/pty.ts', pty = source(ptyFile), dispose = named(pty, 'dispose'), close = named(pty, 'closeSession')
+  const ptyFile = 'src/main/pty.ts', pty = source(ptyFile), dispose = named(pty, 'dispose'), finishDispose = named(pty, 'finishDispose'), stopTree = named(pty, 'stopProcessTree'), close = named(pty, 'closeSession')
   const awaited = close && nodes(close, (node) => ts.isAwaitExpression(node) && called(node, 'dispose').length)[0]
-  require(dispose && hasString(dispose, 'taskkill') && hasString(dispose, '/T') && hasString(dispose, '/F') && awaited &&
+  require(dispose && stopTree && hasString(stopTree, 'taskkill') && hasString(stopTree, '/T') && hasString(stopTree, '/F') && awaited &&
     called(close, 'delete').some((call) => call.pos > awaited.end), 'AWB006', ptyFile, '关闭必须等待进程树清理完成后再删除会话')
-  require(dispose && called(dispose, 'then').some((call) => call.expression.getText() === 'this.processExit!.then'),
+  require(finishDispose && called(finishDispose, 'then').some((call) => call.expression.getText() === 'this.processExit!.then'),
     'AWB006', ptyFile, 'Windows 关闭必须等待原生 PTY 退出回调，不能只等待 taskkill')
   require(hasString(named(pty, 'write'), 'latin1'), 'AWB007', ptyFile, '二进制鼠标输入必须保留字节，不转换为 UTF-8 文本')
   const mainFile = 'src/main/index.ts', main = source(mainFile)
@@ -154,6 +154,18 @@ export function checkInvariants(files) {
   require(openFile && called(openFile, 'uid').length && !called(openFile, 'setDocuments').length && !openFile.getText().includes('pinned') && !files.get(workspaceFile)?.includes('tab.preview'), 'AWB043', 'src/renderer/App.tsx', '单击文件创建或定位独立标签，不能复用预览标签或删除其他文件的草稿')
   require(files.get('src/renderer/styles/markdown.css')?.includes('.markdown-outline{position:absolute;') && files.get('src/renderer/MarkdownEditor.tsx')?.includes('data-compact={compact}') && !files.get('src/renderer/ProjectSidebar.tsx')?.includes('onCreateEntry') && files.get('src/renderer/ProjectSidebar.tsx')?.includes("onProjectAction(project.id, 'reveal')"), 'AWB044', 'src/renderer/MarkdownEditor.tsx', '目录悬浮正文左侧且适配窄内容区；项目菜单仅提供项目操作，文件创建留在文件树')
   require(markdown.getText().includes('view.nodeDOM(position)') && !/\bnode\.id\s*=/.test(markdown.getText()) && files.get('src/renderer/markdown-code-layout.ts')?.includes("'--pello-code-height'") && files.get('src/renderer/styles/markdown.css')?.includes('height:var(--pello-code-height,auto)') && files.get('src/renderer/styles/markdown.css')?.includes('.cm-activeLine{background:transparent}'), 'AWB045', 'src/renderer/MarkdownEditor.tsx', '目录从编辑器模型定位，不能改写 DOM ID；代码虚拟化保留高度，代码行底色一致')
+  require(files.get('src/renderer/App.tsx')?.includes('restoreHistoryText(entry.text)') && files.get('src/renderer/App.tsx')?.includes('if (existingId)') && files.get('src/renderer/App.tsx')?.includes('无法恢复会话') && files.get('src/renderer/App.tsx')?.includes('window.awb.terminalHistory(id)'),
+    'AWB050', 'src/renderer/App.tsx', '启动恢复须回放终端历史；本机或远程恢复失败保留会话、提示错误并提供重新连接')
+  require(files.get('src/main/terminal-history.ts')?.includes('export function saveTerminalHistory') && files.get('src/renderer/terms.ts')?.includes('window.awb.saveTerminalHistory(id, text)') && files.get('src/main/index.ts')?.includes('pruneTerminalHistory(Object.values(db().sessions)') && files.get('src/main/index.ts')?.includes('deleteTerminalHistory(id)'),
+    'AWB051', 'src/main/terminal-history.ts', '终端输出按会话持久化，启动清理失效记录，显式关闭标签时删除对应历史')
+  require(files.get('src/main/index.ts')?.includes("if (!node.name.startsWith('.')) search.pending.push(node.path)") && files.get('src/renderer/FileSearchSettings.tsx')?.includes('以 . 开头的文件夹始终跳过'),
+    'AWB052', 'src/main/index.ts', '文件搜索始终跳过以点开头的目录，并在设置中说明')
+  require(files.get('src/renderer/RightPanel.tsx')?.includes('seg plain-seg') && files.get('src/renderer/RightPanel.tsx')?.includes('mode-cluster') && files.get('src/renderer/RightPanel.tsx')?.includes('data-a="file-search"') && files.get('src/renderer/RightPanel.tsx')?.includes('<Icon name="search"') && !/>\s*文件\s*<\/button>/.test(files.get('src/renderer/RightPanel.tsx') || '') && !files.get('src/renderer/RightPanel.tsx')?.includes("{mode === 'files' ? <button") && !files.get('src/renderer/RightPanel.tsx')?.includes('files.length ? <span className="c">') && files.get('src/renderer/icons.tsx')?.includes('changes: \'M15 18a3 3 0 1 0 6 0'),
+    'AWB053', 'src/renderer/RightPanel.tsx', '文件、变更和搜索使用无边框图标入口且搜索紧邻变更；变更为 Git 变更图标且不显示数量；搜索框默认收起并可再次关闭')
+  require(files.get('src/renderer/ProjectSidebar.tsx')?.includes('Number(!!b.project.pinned) - Number(!!a.project.pinned)') && files.get('src/renderer/ProjectSidebar.tsx')?.includes("project.pinned ? '取消置顶' : '置顶项目'") && files.get('src/main/store.ts')?.includes('project.pinned === true'),
+    'AWB054', 'src/renderer/ProjectSidebar.tsx', '置顶项目排在最前、可从项目菜单切换并在重启后保留')
+  require(files.get('src/main/pty.ts')?.includes('windowsDescendants(roots)') && files.get('src/main/pty.ts')?.includes('session.disposeRoot()') && files.get('src/main/pty.ts')?.includes('proc.kill()'),
+    'AWB055', 'src/main/pty.ts', '退出时先按进程快照叶子优先结束子孙，再串行结束根进程并等待原生退出，避免 taskkill 与 ConPTY 并发析构')
   const diagramRenderer = files.get('src/main/diagram-renderer.ts') || ''
   require(diagramRenderer.includes('show: false') && diagramRenderer.includes('sandbox: true') && diagramRenderer.includes('nodeIntegration: false') && diagramRenderer.includes('source.length > 100_000') && diagramRenderer.includes('cancelDiagramRenderer') && files.get('src/renderer/diagram-renderer.ts')?.includes("securityLevel: 'strict'") && !files.get('src/renderer/diagram-preview.ts')?.includes("import('mermaid')") && files.get('src/main/index.ts')?.includes('disposeDiagramRenderer()'), 'AWB046', 'src/main/diagram-renderer.ts', 'Mermaid 在独立隐藏沙箱渲染，限制输入与缓存，关闭时清理；不得阻塞工作台渲染线程')
   const declarations = (selector) => {
@@ -182,7 +194,7 @@ export function checkInvariants(files) {
     nodes(upload, (node) => ts.isVariableDeclaration(node) && node.name.getText() === 'UPLOAD_SUCCESS_DURATION' && node.initializer?.getText() === '2000').length &&
     called(app, 'setTimeout').some((call) => call.arguments[1]?.getText() === 'UPLOAD_SUCCESS_DURATION') && named(upload, 'uploadSucceeded')?.getText().includes('!task.warnings?.length') && called(named(upload, 'uploadSucceeded'), 'every').length,
   'AWB038', uploadFile, '上传只显示状态与取消，全部成功且无警告才在 2 秒后移除，不能恢复路径或进度明细')
-  require(['review', 'windows-icon', 'shell-profile', 'terminal', 'terminal-shutdown', 'ssh-password', 'remote-terminal', 'render', 'workspace', 'multi-repo', 'program-status', 'sidebar', 'editor', 'design', 'appearance', 'resources', 'resource-import', 'resource-import-ui', 'opencode-mcp', 'host-management', 'directory-browser', 'autosave', 'resources-ui', 'resource-dialog', 'html-preview'].every((name) => scripts.check?.includes(`scripts/${name}-check.mjs`)) && scripts.check?.includes('npm run check:shells') && scripts['check:shells']?.includes('scripts/local-shells-check.mjs'),
+  require(['review', 'windows-icon', 'shell-profile', 'terminal', 'terminal-shutdown', 'session-restore', 'ssh-password', 'remote-terminal', 'render', 'workspace', 'multi-repo', 'program-status', 'sidebar', 'editor', 'design', 'appearance', 'resources', 'resource-import', 'resource-import-ui', 'opencode-mcp', 'host-management', 'directory-browser', 'autosave', 'resources-ui', 'resource-dialog', 'html-preview'].every((name) => scripts.check?.includes(`scripts/${name}-check.mjs`)) && scripts.check?.includes('npm run check:shells') && scripts['check:shells']?.includes('scripts/local-shells-check.mjs'),
     'AWB018', 'package.json', '保留已有行为回归入口，不能删检查来绕过失败')
   require(files.get('AGENTS.md')?.includes('npm run lint') && files.get('AGENTS.md')?.includes('npm run check'), 'AWB019', 'AGENTS.md', '项目规则必须注明静态与行为验证入口')
   require(scripts['check:files']?.includes('scripts/upload-replace-check.mjs') && scripts['check:files']?.includes('scripts/upload-status-check.mjs'), 'AWB018', 'package.json', '保留上传整体替换、草稿和简洁状态的实际行为回归')

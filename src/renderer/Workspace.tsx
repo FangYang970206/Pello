@@ -54,6 +54,8 @@ export function Workspace({
   onNewProject,
   onQuick,
   onInterrupt,
+  onReconnect,
+  onTermVisible,
   onToggleRight,
   onDmode,
   onDiscard,
@@ -89,6 +91,8 @@ export function Workspace({
   onNewProject: () => void
   onQuick: () => void
   onInterrupt: (id: string) => void
+  onReconnect: (id: string) => void
+  onTermVisible: (id: string) => void
   onToggleRight: () => void
   onDmode: (mode: 'unified' | 'split') => void
   onDiscard: () => void
@@ -122,7 +126,9 @@ export function Workspace({
     if (splitting) return
     const current = tiles?.some((tile) => tile.id === id) ? tiles : [{ id, x: 0, y: 0, width: 2, height: 2 }]
     const tile = current.find((item) => item.id === id)!
-    const command = await window.awb.terminalMenu({ horizontal: current.length < 4 && tile.width === 2, vertical: current.length < 4 && tile.height === 2, merge: current.length > 1 })
+    const tab = mine.find((item): item is TermTab => item.id === id && item.type === 'term')
+    const command = await window.awb.terminalMenu({ horizontal: current.length < 4 && tile.width === 2, vertical: current.length < 4 && tile.height === 2, merge: current.length > 1, reconnect: tab?.state === 'failed' })
+    if (command === 'reconnect') { onReconnect(id); return }
     if (command === 'rename') { setRenaming(id); return }
     if (command === 'merge') { setLayouts((value) => { const next = { ...value }; delete next[layoutKey]; return next }); onSelect(id); return }
     if (!command?.startsWith('split-')) return
@@ -348,7 +354,7 @@ export function Workspace({
                       if (!focus) onSelect(tab.id)
                     }}
                   >
-                    <TerminalPane id={tab.id} fontSize={fontSize} fontFamily={fontFamily} theme={theme} shell={tab.shell} visible={workspaceVisible && visible} focused={workspaceVisible && focus} onInterrupt={onInterrupt} onAppKey={onAppKey} />
+                    <TerminalPane id={tab.id} fontSize={fontSize} fontFamily={fontFamily} theme={theme} shell={tab.shell} visible={workspaceVisible && visible} focused={workspaceVisible && focus} onInterrupt={onInterrupt} onAppKey={onAppKey} onVisible={onTermVisible} />
                   </div>
                 )
               })}

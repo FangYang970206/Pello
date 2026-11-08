@@ -67,7 +67,13 @@ const cases = [
   ['AWB046', 'src/main/diagram-renderer.ts', 'show: false', 'show: true'],
   ['AWB046', 'src/main/diagram-renderer.ts', 'nodeIntegration: false', 'nodeIntegration: true'],
   ['AWB046', 'src/main/diagram-renderer.ts', 'source.length > 100_000', 'false'],
-  ['AWB046', 'src/renderer/diagram-renderer.ts', "securityLevel: 'strict'", "securityLevel: 'loose'"]
+  ['AWB046', 'src/renderer/diagram-renderer.ts', "securityLevel: 'strict'", "securityLevel: 'loose'"],
+  ['AWB050', 'src/renderer/App.tsx', 'restoreHistoryText(entry.text)', "restoreHistoryText('')"],
+  ['AWB051', 'src/renderer/terms.ts', 'window.awb.saveTerminalHistory(id, text)', 'void 0'],
+  ['AWB052', 'src/main/index.ts', "!node.name.startsWith('.')", 'true'],
+  ['AWB053', 'src/renderer/RightPanel.tsx', 'data-a="file-search"', 'data-a="search-hidden"'],
+  ['AWB054', 'src/renderer/ProjectSidebar.tsx', 'Number(!!b.project.pinned) - Number(!!a.project.pinned)', '0'],
+  ['AWB055', 'src/main/pty.ts', 'session.disposeRoot()', 'session.dispose()']
 ]
 for (const [id, file, before, after] of cases) {
   const mutated = new Map(files)

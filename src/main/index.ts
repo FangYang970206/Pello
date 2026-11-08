@@ -37,6 +37,7 @@ import type { TransferSnapshot, ReplacementEvent } from '../shared/types'
 import { ConflictPolicy } from '../shared/file-conflicts'
 import { discoverLocalShells } from './local-shells'
 import { cancelDiagramRenderer, DiagramCancelled, disposeDiagramRenderer, renderMermaid } from './diagram-renderer'
+import { deleteTerminalHistory, loadTerminalHistory, pruneTerminalHistory, saveTerminalHistory } from './terminal-history'
 
 const execFileP = promisify(execFile)
 const windowsAppId = app.isPackaged ? 'com.pello.app' : 'com.pello.app.dev'
@@ -331,6 +332,7 @@ function createWindow(): void {
     allowWindowClose = true
     closingWindow = true
     const closing = win
+    if (closing) closing.webContents.send('terminal:history-flush')
     // Preserve the PTY parent processes until their complete trees are killed.
     void Promise.all([closeAllSessions(), closeTransfers()]).catch((error) => console.error('Failed to close workbench tasks', error)).finally(() => {
       sessionsClosed = true
@@ -640,7 +642,8 @@ function registerIpc(): void {
         const nodes = await fileTree(target, search.pending.shift()!, search.ignored)
         if (search.cancelled) break
         for (const node of nodes) {
-          if (node.dir) search.pending.push(node.path)
+          // Hidden tooling and cache folders are never useful search targets.
+          if (node.dir) { if (!node.name.startsWith('.')) search.pending.push(node.path) }
           else if (node.path.toLocaleLowerCase().includes(search.query)) items.push(node)
         }
       }
@@ -771,14 +774,18 @@ function registerIpc(): void {
     Menu.buildFromTemplate(template).popup({ window: win!, callback: () => resolve(null) })
   }))
 
-  ipcMain.handle('terminal:menu', (_e, options: { horizontal: boolean; vertical: boolean; merge: boolean }) => new Promise<string | null>((resolve) => {
+  ipcMain.handle('terminal:menu', (_e, options: { horizontal: boolean; vertical: boolean; merge: boolean; reconnect?: boolean }) => new Promise<string | null>((resolve) => {
     const action = (label: string, id: string, enabled = true): MenuItemConstructorOptions => ({ id, label, enabled, click: () => resolve(id) })
-    Menu.buildFromTemplate([action('重命名终端', 'rename'), { type: 'separator' }, action('向左分栏', 'split-left', options.horizontal), action('向右分栏', 'split-right', options.horizontal), action('向上分栏', 'split-up', options.vertical), action('向下分栏', 'split-down', options.vertical), { type: 'separator' }, action('撤销分栏（合并）', 'merge', options.merge)]).popup({ window: win!, callback: () => resolve(null) })
+    Menu.buildFromTemplate([...(options.reconnect ? [action('重新连接会话', 'reconnect'), { type: 'separator' as const }] : []), action('重命名终端', 'rename'), { type: 'separator' }, action('向左分栏', 'split-left', options.horizontal), action('向右分栏', 'split-right', options.horizontal), action('向上分栏', 'split-up', options.vertical), action('向下分栏', 'split-down', options.vertical), { type: 'separator' }, action('撤销分栏（合并）', 'merge', options.merge)]).popup({ window: win!, callback: () => resolve(null) })
   }))
 
   ipcMain.handle('pty:create', (_e, req: { id: string; projectId: string; kind: string; shell: ShellKind }) => {
     if (closingWindow || quitting) throw new Error('工作台正在关闭')
     return createSession(send, req)
+  })
+  ipcMain.handle('terminal:history', (_e, id: string) => typeof id === 'string' && id ? loadTerminalHistory(id) : '')
+  ipcMain.on('terminal:history-save', (_e, id: string, text: string) => {
+    if (typeof id === 'string' && id && typeof text === 'string' && text.length <= 2_000_000) saveTerminalHistory(id, text)
   })
   ipcMain.on('pty:write', (_e, id: string, data: string, binary = false) => { if (!closingWindow && !quitting) writeSession(id, String(data), !!binary) })
   ipcMain.on('pty:resize', (_e, id: string, cols: number, rows: number) => { if (!closingWindow && !quitting) resizeSession(id, cols, rows) })
@@ -788,7 +795,11 @@ function registerIpc(): void {
     if (closingWindow || quitting) throw new Error('工作台正在关闭')
     return restartSession(id)
   })
-  ipcMain.handle('pty:close', (_e, id: string) => closingWindow || quitting ? closeAllSessions() : closeSession(id))
+  ipcMain.handle('pty:close', async (_e, id: string) => {
+    if (closingWindow || quitting) return closeAllSessions()
+    await closeSession(id)
+    deleteTerminalHistory(id)
+  })
 
   ipcMain.handle('exec:test', async (_e, req: { cmd: string; args: string; shell: ShellKind; env: { k: string; v: string; secret: boolean }[]; cwd?: string }) => {
     if (closingWindow || quitting) throw new Error('工作台正在关闭')
@@ -834,6 +845,7 @@ function registerIpc(): void {
 
 app.whenReady().then(() => {
   registerIpc()
+  pruneTerminalHistory(Object.values(db().sessions).flat().map((term) => term.id))
   createWindow()
   broadcastTheme(db().settings.theme)
 })

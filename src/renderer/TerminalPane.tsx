@@ -24,7 +24,8 @@ export function TerminalPane({
   visible,
   focused = visible,
   onInterrupt,
-  onAppKey
+  onAppKey,
+  onVisible
 }: {
   id: string
   fontSize: number
@@ -35,6 +36,7 @@ export function TerminalPane({
   focused?: boolean
   onInterrupt: (id: string) => void
   onAppKey: (key: string) => void
+  onVisible?: (id: string) => void
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -162,6 +164,8 @@ export function TerminalPane({
       hiddenScroll.current = { following: buffer.viewportY >= buffer.baseY, viewport: buffer.viewportY, buffer: buffer.type }
     } else scheduleFit.current()
   }, [visible, id])
+
+  useLayoutEffect(() => { if (visible) onVisible?.(id) }, [visible, id, onVisible])
 
   useEffect(() => {
     const term = termRef.current

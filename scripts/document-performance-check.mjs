@@ -59,6 +59,7 @@ try {
     }, true)
   }, { markdown, html })
   await page.click('[data-a=rmode][data-id=files]')
+  await page.locator('[data-a=file-search]').click()
   const open = async (rel) => {
     const query = page.getByLabel('搜索文件', { exact: true })
     await query.fill(path.basename(rel))

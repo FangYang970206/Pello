@@ -107,14 +107,18 @@ export function splitColumns(lines: DiffLine[]): { left: SideRow[]; right: SideR
   const left: SideRow[] = []
   const right: SideRow[] = []
   const pad = (): SideRow => ({ kind: 'pad' })
+  let delIndex = 0
+  let addIndex = 0
   for (const [kind, text, i, j] of lines) {
     if (kind === '') {
       left.push({ kind: '', text, n: (i ?? 0) + 1 })
       right.push({ kind: '', text, n: (j ?? 0) + 1 })
     } else if (kind === 'del') {
-      left.push({ kind: 'del', text, n: (i ?? 0) + 1, peers: adds })
+      left.push({ kind: 'del', text, n: (i ?? 0) + 1, peers: adds.slice(Math.max(0, addIndex - 8), addIndex + 8) })
+      delIndex++
     } else {
-      right.push({ kind: 'add', text, n: (j ?? 0) + 1, peers: dels })
+      right.push({ kind: 'add', text, n: (j ?? 0) + 1, peers: dels.slice(Math.max(0, delIndex - 8), delIndex + 8) })
+      addIndex++
     }
     while (kind === '' && left.length !== right.length) {
       ;(left.length < right.length ? left : right).splice(-1, 0, pad())

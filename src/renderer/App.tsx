@@ -4,7 +4,7 @@ import { legacySessionId, sessionOf } from '../shared/work-sessions'
 import { PRESETS, SHELL_AGENT, cmdline, resolveAgent, shellLabel, uid } from '../shared/types'
 import { Icon } from './icons'
 import appIcon from '../../assets/pello-rounded-small.svg'
-import { dropTerm, paint, syncTermSize, writeNotice, writeTerm } from './terms'
+import { dropTerm, holdTermHistory, paint, queueSnapshot, releaseTermHistory, restoreHistoryText, setTerminalHistoryEnabled, snapshotTerms, syncTermSize, writeNotice, writeTerm } from './terms'
 import { SettingsView } from './SettingsView'
 import { ConfirmDialog, ExecDialog, HostDialog, NewProjectDialog, NewTermDialog, dialogOpener, focusableIn } from './Dialogs'
 import { RightPanel } from './RightPanel'
@@ -45,6 +45,8 @@ export function App() {
   const projectIdRef = useRef(projectId)
   projectIdRef.current = projectId
   const [tabs, setTabs] = useState<Tab[]>([])
+  const restoredHistory = useRef<Record<string, { text: string; kind: string; ready: boolean; visible: boolean }>>({})
+  const historyTimers = useRef<Record<string, ReturnType<typeof setTimeout> | undefined>>({})
   const [workSessions, setWorkSessions] = useState<Record<string, WorkSession[]>>({})
   const sessionsRef = useRef(workSessions)
   const [selectedSessions, setSelectedSessions] = useState<Record<string, string>>({})
@@ -265,7 +267,22 @@ export function App() {
     document.documentElement.style.setProperty('--ui', uiFont(db.settings.uiFontFamily))
     document.documentElement.style.setProperty('--ui-size', `${db.settings.uiFontSize || 13}px`)
     document.documentElement.style.setProperty('--editor-size', `${db.settings.editorFontSize || 14}px`)
+    setTerminalHistoryEnabled(db.settings.restore !== false)
   }, [db])
+
+  useEffect(() => {
+    const flush = () => snapshotTerms()
+    window.addEventListener('beforeunload', flush)
+    const off = window.awb.onFlushTerminalHistory(flush)
+    return () => {
+      window.removeEventListener('beforeunload', flush)
+      off()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (projectId) localStorage.setItem('awb:lastProject', projectId)
+  }, [projectId])
 
   useEffect(() => {
     const layout = db?.settings.layout || 'focus'
@@ -311,7 +328,51 @@ export function App() {
     }
   }, [db, toast])
 
-  const openTerm = useCallback(async (target: NonNullable<typeof project>, kind: string, shell: ShellKind, activate = true, existingId?: string, existingName?: string, targetSession?: string) => {
+  const flushRestoredHistory = useCallback((id: string, live: boolean, showAgent = false) => {
+    const entry = restoredHistory.current[id]
+    if (!entry) return
+    const timer = historyTimers.current[id]
+    if (timer) clearTimeout(timer)
+    delete historyTimers.current[id]
+    delete restoredHistory.current[id]
+    releaseTermHistory(id)
+    if (entry.kind !== 'shell' && !showAgent) return
+    writeTerm(id, `\r\n${restoreHistoryText(entry.text)}`)
+    if (live && entry.kind === 'shell') window.awb.ptyWrite(id, '\r')
+  }, [])
+
+  const scheduleRestoredHistory = useCallback((id: string) => {
+    const entry = restoredHistory.current[id]
+    if (!entry?.ready || !entry.visible || historyTimers.current[id]) return
+    historyTimers.current[id] = setTimeout(() => {
+      delete historyTimers.current[id]
+      flushRestoredHistory(id, true)
+    }, 1200)
+  }, [flushRestoredHistory])
+
+  const markHistoryReady = useCallback((id: string) => {
+    const entry = restoredHistory.current[id]
+    if (!entry) return
+    entry.ready = true
+    scheduleRestoredHistory(id)
+  }, [scheduleRestoredHistory])
+
+  const markHistoryVisible = useCallback((id: string) => {
+    const entry = restoredHistory.current[id]
+    if (!entry) return
+    entry.visible = true
+    scheduleRestoredHistory(id)
+  }, [scheduleRestoredHistory])
+
+  const forgetTermHistory = useCallback((id: string) => {
+    const timer = historyTimers.current[id]
+    if (timer) clearTimeout(timer)
+    delete historyTimers.current[id]
+    delete restoredHistory.current[id]
+    releaseTermHistory(id)
+  }, [])
+
+  const openTerm = useCallback(async (target: NonNullable<typeof project>, kind: string, shell: ShellKind, activate = true, existingId?: string, existingName?: string, targetSession?: string, restoreHistory = false) => {
     const id = existingId || uid('t')
     const groupId = targetSession || selectedSessionsRef.current[target.id] || sessionsRef.current[target.id]?.[0]?.id || legacySessionId(target.id)
     if (!sessionsRef.current[target.id]?.some((session) => session.id === groupId)) {
@@ -341,7 +402,15 @@ export function App() {
     setTabs((list) => (list.some((item) => item.id === id) ? list : [...list, tab]))
     if (activate) setActiveMap((map) => ({ ...map, [target.id]: id }))
     try {
+      if (restoreHistory && existingId) {
+        const history = await window.awb.terminalHistory(id).catch(() => '')
+        if (history) {
+          restoredHistory.current[id] = { text: history, kind, ready: false, visible: false }
+          holdTermHistory(id)
+        }
+      }
       const info = await window.awb.ptyCreate({ id, projectId: target.id, kind, shell })
+      if (info.inputReady) markHistoryReady(id)
       syncTermSize(id)
       setTabs((list) => {
         const next = list.map((item) =>
@@ -355,6 +424,14 @@ export function App() {
       })
       return id
     } catch (err) {
+      if (existingId) {
+        const message = err instanceof Error ? err.message : '无法启动终端'
+        flushRestoredHistory(id, false, true)
+        writeNotice(id, db?.settings.theme || 'dark', 'red', `[无法恢复会话：${message}。右键终端可选择重新连接。]`)
+        setTabs((list) => list.map((item) => item.id === id && item.type === 'term' ? { ...item, state: 'failed', startedAt: null, exitCode: null, inputReady: false } : item))
+        toast(`会话 ${existingName || id} 未能恢复：${message}`, true)
+        return null
+      }
       setTabs((list) => {
         const next = list.filter((item) => item.id !== id)
         const mine = next.filter((item) => item.projectId === target.id && (item.type !== 'term' || sessionOf(item) === selectedSessionsRef.current[target.id]))
@@ -368,7 +445,7 @@ export function App() {
       toast(err instanceof Error ? err.message : '无法启动终端', true)
       return null
     }
-  }, [persist, toast])
+  }, [db?.settings.theme, flushRestoredHistory, markHistoryReady, persist, toast])
 
   useEffect(() => {
     if (!db || touring.current) return
@@ -382,7 +459,8 @@ export function App() {
   useEffect(() => {
     if (!db || booted.current) return
     booted.current = true
-    const first = db.projects[0]?.id ?? null
+    const last = localStorage.getItem('awb:lastProject')
+    const first = db.projects.find((item) => item.id === last)?.id ?? db.projects[0]?.id ?? null
     setProjectId(first)
     if (!db.settings.restore) return
     restoring.current = true
@@ -393,7 +471,7 @@ export function App() {
       if (!saved.length) continue
       const wanted = db.activeTab?.[item.id]
       seeded[item.id] = saved.some((term) => term.id === wanted) ? wanted : saved[0].id
-      for (const term of saved) pending.push(openTerm(item, term.kind, term.shell, false, term.id, term.name, term.sessionId))
+      for (const term of saved) pending.push(openTerm(item, term.kind, term.shell, false, term.id, term.name, term.sessionId, true))
     }
     activeMapRef.current = seeded
     setActiveMap(seeded)
@@ -431,6 +509,7 @@ export function App() {
         writeTerm(event.id, event.data)
         return
       }
+      queueSnapshot(event.id)
       setTabs((list) =>
         list.map((tab) =>
           tab.id === event.id && tab.type === 'term'
@@ -438,12 +517,15 @@ export function App() {
             : tab
         )
       )
+      if (event.inputReady) {
+        markHistoryReady(event.id)
+      }
       if (!event.announce) return
       const mode = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark'
       if (event.reason === 'kill') writeNotice(event.id, mode, 'red', '[进程已被强制结束]')
       writeNotice(event.id, mode, 'faint', `[进程已退出，退出码 ${event.exitCode ?? 0}]`)
     })
-  }, [])
+  }, [markHistoryReady])
 
   useEffect(() => {
     if (!project || route !== 'work') return
@@ -631,6 +713,7 @@ export function App() {
         return
       }
       dropTerm(id)
+      forgetTermHistory(id)
     }
     if (tab.type === 'file') setDocuments((map) => {
       const next = { ...map }
@@ -737,7 +820,7 @@ export function App() {
       for (const term of terms) closingTerms.current.add(term.id)
       try { await Promise.all(terms.map((term) => window.awb.ptyClose(term.id))) }
       catch (error) { for (const term of terms) closingTerms.current.delete(term.id); toast(String(error), true); return }
-      for (const term of terms) dropTerm(term.id)
+      for (const term of terms) { dropTerm(term.id); forgetTermHistory(term.id) }
       const groups = (sessionsRef.current[project] || []).filter((item) => item.id !== id)
       putSessions({ ...sessionsRef.current, [project]: groups })
       if (selectedSessionsRef.current[project] === id) pickSession(project, groups[0]?.id || '')
@@ -812,6 +895,15 @@ export function App() {
     if (!db) return
     const projects = db.projects.map((item) => item.id === id ? { ...item, name } : item)
     setDb(await window.awb.saveProjects(projects))
+  }
+
+  async function togglePin(id: string) {
+    if (!db) return
+    const target = db.projects.find((item) => item.id === id)
+    if (!target) return
+    const projects = db.projects.map((item) => item.id === id ? { ...item, pinned: !item.pinned } : item)
+    setDb(await window.awb.saveProjects(projects))
+    toast(target.pinned ? `已取消置顶 ${target.name}` : `已置顶 ${target.name}`)
   }
 
   async function renameTerm(id: string, name: string) {
@@ -1012,7 +1104,7 @@ export function App() {
           toast(error instanceof Error ? error.message : '无法关闭项目终端', true)
           return
         }
-        for (const tab of terms) dropTerm(tab.id)
+        for (const tab of terms) { dropTerm(tab.id); forgetTermHistory(tab.id) }
         const projects = db.projects.filter((projectItem) => projectItem.id !== id)
         setTabs((list) => list.filter((tab) => tab.projectId !== id))
         setDocuments((map) => Object.fromEntries(Object.entries(map).filter(([, doc]) => doc.projectId !== id)))
@@ -1143,7 +1235,7 @@ export function App() {
             <button aria-label="最大化" onClick={() => void window.awb.winMax()}>
               <Icon name="square" className="s" />
             </button>
-            <button className="close" aria-label="关闭窗口" onClick={() => void window.awb.winClose()}>
+            <button className="close" aria-label="关闭窗口" onClick={() => { snapshotTerms(); void window.awb.winClose() }}>
               <Icon name="x" className="s" />
             </button>
           </div>
@@ -1162,6 +1254,7 @@ export function App() {
                     sessions={workSessions} selectedSession={sessionId} onSession={selectSession} onRenameSession={renameSession} onRemoveSession={removeSession}
                     projectId={projectId} activeId={active?.id} menuId={menuId} onMenu={setMenuId} onProject={selectProject} onTerm={selectTab}
                     onRenameProject={renameProject} onRenameTerm={renameTerm} onRemoveProject={askRemove} onCloseTerm={requestClose}
+                    onTogglePin={togglePin}
                     onProjectAction={(id, action) => { void window.awb.treeAction(id, '', true, action).catch((error) => toast(String(error))) }}
                     onNewSession={(id) => { selectProject(id); setModal({ type: 'term', newSession: true }) }} />
                 </nav>
@@ -1211,6 +1304,12 @@ export function App() {
                       if (action === 'hint') writeTerm(id, paint(theme, 'amber', '再次按 Ctrl+C 退出'))
                     })
                   }}
+                  onReconnect={(id) => {
+                    const term = tabs.find((tab): tab is TermTab => tab.id === id && tab.type === 'term')
+                    const target = db?.projects.find((item) => item.id === term?.projectId)
+                    if (term && target) void openTerm(target, term.kind, term.shell, true, term.id, term.name, sessionOf(term))
+                  }}
+                  onTermVisible={markHistoryVisible}
                   onToggleRight={() => setRight((value) => !value)}
                   onDmode={setDmode}
                   onDiscard={askDiscard}

@@ -159,6 +159,8 @@ export function RightPanel({
   const [repositoryFilter, setRepositoryFilter] = useState('')
   const [rescanning, setRescanning] = useState(false)
   const [treeError, setTreeError] = useState('')
+  const [searchOpen, setSearchOpen] = useState(false)
+  const searchInput = useRef<HTMLInputElement>(null)
   const [conflictBatch, setConflictBatch] = useState<Record<string, boolean>>({})
   function transferPath(destination: string): string {
     const value = destination.replaceAll('\\', '/')
@@ -178,6 +180,24 @@ export function RightPanel({
     if (transferList.current) transferList.current.scrollTop = transferList.current.scrollHeight
   }, [project.id, latestTransferId])
   const query = queries[project.id] || ''
+  const searchVisible = searchOpen || !!query.trim()
+  const searchActive = mode === 'files' && searchVisible
+  const searching = useRef(false)
+  useEffect(() => { if (searchOpen && mode === 'files') searchInput.current?.focus() }, [searchOpen, mode, project.id])
+  function toggleSearch() {
+    if (searchVisible) {
+      setSearchOpen(false)
+      if (query) setQueries((current) => ({ ...current, [project.id]: '' }))
+    } else setSearchOpen(true)
+  }
+  function searchAction() {
+    if (mode !== 'files') {
+      onMode('files')
+      setSearchOpen(true)
+      return
+    }
+    toggleSearch()
+  }
   const [search, setSearch] = useState<{ projectId: string; query: string; items: TreeNode[]; loading: boolean; error: string }>({ projectId: '', query: '', items: [], loading: false, error: '' })
   useEffect(() => {
     if (!query.trim()) return
@@ -228,6 +248,34 @@ export function RightPanel({
   }
   const dropHandlers = { onDragOver: onTreeDragOver, onDrop: onTreeDrop, onDragLeave: (event: React.DragEvent<HTMLDivElement>) => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDropTarget(null) } }
   const treeList = useRef<HTMLDivElement>(null)
+  const searchProject = useRef(project.id)
+  const previousQuery = useRef(query)
+  const clearRestore = useRef<number | null>(null)
+  const restoreFrame = useRef(0)
+  function restoreTreeScroll(top: number) {
+    clearRestore.current = top
+    restoreFrame.current = 0
+    const step = () => {
+      const list = treeList.current
+      if (!list || clearRestore.current === null) return
+      if (list.scrollTop !== top) list.scrollTop = top
+      if (++restoreFrame.current < 30) requestAnimationFrame(step)
+      else clearRestore.current = null
+    }
+    requestAnimationFrame(step)
+  }
+  useLayoutEffect(() => {
+    const active = !!query.trim()
+    if (searchProject.current !== project.id) {
+      clearRestore.current = null
+      restoreFrame.current = 0
+    }
+    if (searchProject.current === project.id && previousQuery.current.trim() && !active) {
+      restoreTreeScroll(scrollPositions.current[project.id] || 0)
+    }
+    searchProject.current = project.id
+    previousQuery.current = query
+  }, [query, project.id, treeLoaded])
   useLayoutEffect(() => {
     if (!renameFocus || renameFocus.projectId !== project.id || renaming) return
     const row = [...(treeList.current?.querySelectorAll<HTMLButtonElement>('[data-a="preview"], [data-a="tog"]') || [])].find((item) => item.dataset.id === renameFocus.path)
@@ -400,7 +448,13 @@ export function RightPanel({
     body = (
       <>
         {treeError ? <p role="alert" className="repository-help bad">{treeError}</p> : null}
-        <label className="repository-filter"><span className="vh">搜索文件</span><input className="sel" aria-label="搜索文件" placeholder="搜索文件名或路径" value={query} onChange={(event) => setQueries((current) => ({ ...current, [project.id]: event.target.value }))} /></label>
+        {searchVisible ? <label className="repository-filter"><span className="vh">搜索文件</span><input ref={searchInput} className="sel" aria-label="搜索文件" placeholder="搜索文件名或路径" value={query} onChange={(event) => {
+          const value = event.target.value
+          if (value.trim() && !searching.current && treeList.current) scrollPositions.current[project.id] = treeList.current.scrollTop
+          if (value.trim()) clearRestore.current = null
+          searching.current = !!value.trim()
+          setQueries((current) => ({ ...current, [project.id]: value }))
+        }} /></label> : null}
         {dropTarget !== null ? <div className="tree-drop-hint" role="status">{host.id !== 'local' ? '松开以上传' : <>复制到 · {project.path}{dropTarget ? `${host.platform === 'windows' ? '\\' : '/'}${dropTarget.replaceAll('/', host.platform === 'windows' ? '\\' : '/')}` : ''}</>}</div> : null}
         {query.trim() ? <div className="rlist" role="group" aria-label="文件搜索结果" tabIndex={0} {...dropHandlers} onContextMenu={treeBackgroundContext} onKeyDown={treeBackgroundKey}>
           {search.projectId === project.id && search.query === query ? <>
@@ -413,7 +467,7 @@ export function RightPanel({
             {!search.loading && !search.error && !search.items.length ? <p className="repository-help">没有匹配的文件</p> : null}
           </> : <p role="status" className="repository-help">正在搜索…</p>}
         </div> : null}
-        <div ref={treeList} role="group" aria-label="文件树" aria-busy={!treeLoaded} data-project={project.id} tabIndex={0} onContextMenu={treeBackgroundContext} onKeyDown={treeBackgroundKey} className={`rlist ${dropTarget === '' ? 'drop-target' : ''}`} {...dropHandlers} onScroll={(event) => { if (!scrollRestore.current) scrollPositions.current[project.id] = event.currentTarget.scrollTop }} onWheel={() => { scrollRestore.current = null }} onPointerDown={() => { scrollRestore.current = null }} style={query.trim() ? { display: 'none' } : undefined}>{!treeLoaded ? <p role="status" className="repository-help">正在读取文件树…</p> : tree.length ? renderTree(tree, 0) : <p style={{ fontSize: 12, color: 'var(--faint)', padding: '4px 8px' }}>目录是空的</p>}</div>
+        <div ref={treeList} role="group" aria-label="文件树" aria-busy={!treeLoaded} data-project={project.id} tabIndex={0} onContextMenu={treeBackgroundContext} onKeyDown={treeBackgroundKey} className={`rlist ${dropTarget === '' ? 'drop-target' : ''} ${query.trim() ? 'tree-searching' : ''}`} {...dropHandlers} onScroll={(event) => { if (!scrollRestore.current && !searching.current && clearRestore.current === null) scrollPositions.current[project.id] = event.currentTarget.scrollTop }} onWheel={() => { scrollRestore.current = null; clearRestore.current = null }} onPointerDown={() => { scrollRestore.current = null; clearRestore.current = null }}>{!treeLoaded ? <p role="status" className="repository-help">正在读取文件树…</p> : tree.length ? renderTree(tree, 0) : <p style={{ fontSize: 12, color: 'var(--faint)', padding: '4px 8px' }}>目录是空的</p>}</div>
       </>
     )
   }
@@ -439,13 +493,16 @@ export function RightPanel({
           }
         }} />
       <div className="rh">
-        <div className="seg" role="radiogroup" aria-label="文件面板模式">
-          <button className={mode === 'files' ? 'on' : ''} role="radio" aria-checked={mode === 'files'} data-a="rmode" data-id="files" onClick={() => onMode('files')}>
-            文件
-          </button>
-          <button className={mode === 'changes' ? 'on' : ''} role="radio" aria-checked={mode === 'changes'} data-a="rmode" data-id="changes" onClick={() => onMode('changes')}>
-            变更{files.length ? <span className="c">{files.length}</span> : null}
-          </button>
+        <div className="mode-cluster">
+          <div className="seg plain-seg" role="radiogroup" aria-label="文件面板模式">
+            <button className={mode === 'files' ? 'on' : ''} role="radio" aria-checked={mode === 'files'} aria-label="文件" title="文件" data-a="rmode" data-id="files" onClick={() => onMode('files')}>
+              <Icon name="file" className="s" />
+            </button>
+            <button className={mode === 'changes' ? 'on' : ''} role="radio" aria-checked={mode === 'changes'} aria-label="变更" title="变更" data-a="rmode" data-id="changes" onClick={() => onMode('changes')}>
+              <Icon name="changes" className="s" />
+            </button>
+          </div>
+          <button className={`ib ${searchActive ? 'on' : ''}`} data-a="file-search" aria-label={searchActive ? '关闭文件搜索' : '显示文件搜索'} aria-pressed={searchActive} title={searchActive ? '关闭文件搜索' : '搜索文件'} onClick={searchAction}><Icon name="search" /></button>
         </div>
         <span className="grow" />
         <button className="ib" data-a="right" title="收起面板" aria-label="收起文件面板" onClick={onCollapse}>

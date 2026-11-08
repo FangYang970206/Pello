@@ -50,6 +50,17 @@ try {
   const linkedDiff = await page.evaluate(() => window.awb.gitDiff('multi', 'linked-worktree/shared.txt', false))
   assert.equal(linkedDiff.before, 'alpha original\n')
   assert.equal(linkedDiff.after, 'linked changed\n')
+  fs.writeFileSync(path.join(workspace, 'repo-a/large.md'), Array.from({ length: 700 }, (_, index) => `## Heading ${index + 1}\n\nOriginal paragraph ${index + 1} with enough text to exercise diff similarity.\n`).join(''))
+  git(path.join(workspace, 'repo-a'), 'add', 'large.md')
+  git(path.join(workspace, 'repo-a'), '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'large fixture')
+  fs.writeFileSync(path.join(workspace, 'repo-a/large.md'), Array.from({ length: 701 }, (_, index) => `## Heading ${index + 1}\n\nRevised paragraph ${index + 1} with enough text to exercise diff similarity.\n`).join(''))
+  const largeDiffStart = Date.now()
+  await page.locator('[data-a=diff][data-id="repo-a/large.md"]').click()
+  await page.locator('.diffbar .path').waitFor()
+  await page.locator('.diff .cl').first().waitFor()
+  const largeDiffMs = Date.now() - largeDiffStart
+  assert.ok((await page.locator('.diff .cl').count()) > 1000, 'The large diff must render its rows')
+  assert.ok(largeDiffMs < 5000, `A 700-line diff must not freeze the changes view: ${largeDiffMs}ms`)
   for (const [rel, marker] of [['repo-a', 'alpha'], ['group/深层/repo-b', 'beta']]) {
     const diff = await page.evaluate((rel) => window.awb.gitDiff('multi', rel + '/shared.txt', false), rel)
     assert.equal(diff.before, marker + ' original\n')

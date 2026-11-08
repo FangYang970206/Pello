@@ -36,7 +36,7 @@ try {
     await app.evaluate((_electron, action) => { globalThis.__documentMenuCommand = action }, action)
     await page.locator(`[data-a=pane][data-id="${id}"]`).dispatchEvent('contextmenu')
   }
-  await page.waitForFunction(() => window.__awbBuffer('n').includes('STATUS_PROBE_OK'))
+  await page.waitForFunction(() => window.__awbBuffer?.('n')?.includes('STATUS_PROBE_OK'))
   await page.waitForFunction(() => document.activeElement?.closest('[data-term]')?.getAttribute('data-term') === 'n')
   await page.click('[data-a=agents-toggle]')
   assert.equal(await page.locator('[data-a=side-term][data-id=s]').count(), 0)

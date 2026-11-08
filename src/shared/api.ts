@@ -92,7 +92,7 @@ export interface WorkbenchApi {
   treeReference(projectId: string, rel: string, kind: string, shell: ShellKind): Promise<string>
   documentMenu(options: { markdown: boolean; visual: boolean; undo: boolean; redo: boolean; editable: boolean }): Promise<string | null>
   documentLink(projectId: string, source: string, href: string): Promise<{ path: string; anchor?: string } | null>
-  terminalMenu(options: { horizontal: boolean; vertical: boolean; merge: boolean }): Promise<string | null>
+  terminalMenu(options: { horizontal: boolean; vertical: boolean; merge: boolean; reconnect?: boolean }): Promise<string | null>
   onPreviewSource(cb: () => void): () => void
   ptyCreate(req: PtyCreateRequest): Promise<{ id: string; state: string; exitCode: number | null; startedAt: number | null; inputReady: boolean; shell: ShellKind; kind: string; agentKind?: string | null }>
   ptyWrite(id: string, data: string, binary?: boolean): void
@@ -101,6 +101,9 @@ export interface WorkbenchApi {
   ptyKill(id: string): Promise<void>
   ptyRestart(id: string): Promise<void>
   ptyClose(id: string): Promise<void>
+  terminalHistory(id: string): Promise<string>
+  saveTerminalHistory(id: string, text: string): void
+  onFlushTerminalHistory(cb: () => void): () => void
   onPty(cb: (event: PtyEvent) => void): () => void
   testExec(req: TestExecRequest): Promise<{ text: string; code: number | null }>
   testHost(host: Host): Promise<HostTest>

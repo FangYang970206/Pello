@@ -36,6 +36,7 @@ type Props = {
   onSession: (project: string, id: string) => void
   onRenameProject: (id: string, name: string) => Promise<void>; onRenameTerm: (id: string, name: string) => Promise<void>
   onRenameSession: (project: string, id: string, name: string) => Promise<void>
+  onTogglePin: (id: string) => void
   onRemoveSession: (project: string, id: string) => void
   onRemoveProject: (id: string) => void; onCloseTerm: (id: string) => void; onNewSession: (id: string) => void
   onProjectAction: (id: string, action: 'reveal' | 'copy-full') => void
@@ -43,7 +44,7 @@ type Props = {
 const FILTERS = [{ id: 'running', name: '运行中' }, { id: 'waiting', name: '空闲中' }]
 
 export function ProjectSidebar(props: Props) {
-  const { projects, hosts, terms, agents, sessions, selectedSession, projectId, activeId, menuId, onMenu, onProject, onTerm, onSession, onRenameProject, onRenameTerm, onRenameSession, onRemoveSession, onRemoveProject, onCloseTerm, onNewSession, onProjectAction } = props
+  const { projects, hosts, terms, agents, sessions, selectedSession, projectId, activeId, menuId, onMenu, onProject, onTerm, onSession, onRenameProject, onRenameTerm, onRenameSession, onTogglePin, onRemoveSession, onRemoveProject, onCloseTerm, onNewSession, onProjectAction } = props
   const [editing, setEditing] = useState<{ kind: 'project' | 'session' | 'term'; id: string } | null>(null)
   const pendingFocus = useRef<{ action: string; id: string } | null>(null)
   useLayoutEffect(() => {
@@ -66,9 +67,10 @@ export function ProjectSidebar(props: Props) {
   const toggle = (id: string) => setCollapsed((value) => ({ ...value, [id]: !value[id] }))
   const termName = (term: TermTab) => term.name || agents.find((agent) => agent.id === term.agentKind)?.name || (term.kind === 'shell' ? shellLabel(term.shell) : agents.find((agent) => agent.id === term.kind)?.name || term.kind)
   const visible = terms.filter((term) => activeAgentKind(term) && term.state === 'running' && filters.includes(terminalStatus(term).activity))
+  const ordered = projects.map((project, index) => ({ project, index })).sort((a, b) => Number(!!b.project.pinned) - Number(!!a.project.pinned) || a.index - b.index).map((item) => item.project)
   return <>
     <div className="sidebar-section-heading"><button data-a="projects-toggle" aria-expanded={projectsOpen} onClick={() => setProjectsOpen(!projectsOpen)}><Icon name="chev" className={`s chev${projectsOpen ? ' open' : ''}`} />项目</button></div>
-    {projectsOpen ? <div className="sidebar-projects">{projects.map((project) => {
+    {projectsOpen ? <div className="sidebar-projects">{ordered.map((project) => {
       const host = hosts.find((item) => item.id === project.host)
       const on = projectId === project.id, open = menuId === project.id
       return <section className="project-group" key={project.id} aria-label={project.name}>
@@ -77,9 +79,9 @@ export function ProjectSidebar(props: Props) {
             <button className="project-open" data-a="proj" data-id={project.id} aria-label={`打开项目 ${project.name}`} aria-current={on ? 'true' : undefined} aria-expanded={!collapsed[project.id]} title={`${project.name}\n${project.path}\n双击收起或展开会话`} onClick={() => onProject(project.id)} onDoubleClick={() => toggle(project.id)} onKeyDown={(event) => {
               if (event.key === 'F2') { event.preventDefault(); beginRename('project', project.id) }
               if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); setCollapsed((value) => ({ ...value, [project.id]: event.key === 'ArrowLeft' })) }
-            }}><span className="project-folder" data-color={hostColor(host?.color)}><Icon name="folder" /></span><span className="n grow">{project.name}</span></button>
+            }}>{project.pinned ? <span className="project-pin" title="已置顶" aria-hidden="true"><Icon name="pin" className="s" /></span> : null}<span className="project-folder" data-color={hostColor(host?.color)}><Icon name="folder" /></span><span className="n grow">{project.name}</span></button>
             <button className="more" data-a="proj-more" data-id={project.id} aria-label={`项目菜单 ${project.name}`} aria-haspopup="menu" aria-expanded={open} onClick={() => onMenu(open ? null : project.id)}><Icon name="more" className="s" /></button>
-            {open ? <SidebarMenu onClose={() => onMenu(null)}>{host?.id === 'local' ? <button role="menuitem" onClick={() => { onMenu(null); onProjectAction(project.id, 'reveal') }}>在资源管理器中打开</button> : null}<button role="menuitem" onClick={() => { onMenu(null); onProjectAction(project.id, 'copy-full') }}>复制路径</button><button role="menuitem" onClick={() => beginRename('project', project.id)}>重命名项目</button><button role="menuitem" data-a="proj-remove" onClick={() => { onMenu(null); onRemoveProject(project.id) }}>移除项目</button></SidebarMenu> : null}
+            {open ? <SidebarMenu onClose={() => onMenu(null)}>{host?.id === 'local' ? <button role="menuitem" onClick={() => { onMenu(null); onProjectAction(project.id, 'reveal') }}>在资源管理器中打开</button> : null}<button role="menuitem" onClick={() => { onMenu(null); onProjectAction(project.id, 'copy-full') }}>复制路径</button><button role="menuitem" onClick={() => { onMenu(null); onTogglePin(project.id) }}>{project.pinned ? '取消置顶' : '置顶项目'}</button><button role="menuitem" onClick={() => beginRename('project', project.id)}>重命名项目</button><button role="menuitem" data-a="proj-remove" onClick={() => { onMenu(null); onRemoveProject(project.id) }}>移除项目</button></SidebarMenu> : null}
             <button className="project-add" data-a="new-session" data-id={project.id} aria-label={`为 ${project.name} 新建会话`} onClick={() => { setCollapsed((value) => ({ ...value, [project.id]: false })); onNewSession(project.id) }}><Icon name="plus" className="s" /></button>
           </>}
         </div>

@@ -1,6 +1,7 @@
 import type { FileDiff } from '../shared/types'
 import { lcs, lineStats, segments, splitColumns, splitLines, type Seg, type SideRow } from '../shared/diff'
 import { Icon } from './icons'
+import { useMemo } from 'react'
 
 function Rich({ text, peers }: { text: string; peers?: string[] }) {
   const segs: Seg[] = segments(text, peers)
@@ -43,6 +44,16 @@ function Line({ row }: { row: SideRow }) {
   )
 }
 
+interface DiffData {
+  before: string[]
+  after: string[]
+  rows: ReturnType<typeof lcs>
+  adds: number
+  dels: number
+  deleted: string[]
+  added: string[]
+}
+
 export function DiffPane({
   diff,
   mode,
@@ -60,6 +71,17 @@ export function DiffPane({
   onToggleRight: () => void
   untracked?: boolean
 }) {
+  const computed: DiffData | null = useMemo(() => {
+    if (!diff || diff.binary || diff.tooBig) return null
+    const before = splitLines(diff.before)
+    const after = splitLines(diff.after)
+    const rows = lcs(before, after)
+    const [adds, dels] = lineStats(rows)
+    const deleted = rows.filter((row) => row[0] === 'del').map((row) => row[1])
+    const added = rows.filter((row) => row[0] === 'add').map((row) => row[1])
+    return { before, after, rows, adds, dels, deleted, added }
+  }, [diff])
+
   if (!diff) {
     return (
       <div className="empty">
@@ -79,30 +101,38 @@ export function DiffPane({
       </div>
     )
   }
-  const before = splitLines(diff.before)
-  const after = splitLines(diff.after)
-  const rows = lcs(before, after)
-  const [adds, dels] = lineStats(rows)
+  const data = computed
+  if (!data) return null
+  const { before, after, rows, adds, dels, deleted, added } = data
   let body
   if (mode === 'unified') {
-    const deleted = rows.filter((row) => row[0] === 'del').map((row) => row[1])
-    const added = rows.filter((row) => row[0] === 'add').map((row) => row[1])
+    let delIndex = 0
+    let addIndex = 0
     body = (
       <>
         <div className="hunk">
           @@ -1,{before.length} +1,{after.length} @@
         </div>
-        {rows.map((row, index) => (
-          <Line
-            key={index}
-            row={{
-              kind: row[0] || '',
-              text: row[1],
-              n: (row[0] === 'del' ? row[2] : row[3])! + 1,
-              peers: row[0] === 'add' ? deleted : row[0] === 'del' ? added : undefined
-            }}
-          />
-        ))}
+        {rows.map((row, index) => {
+          const peers = row[0] === 'add'
+            ? deleted.slice(Math.max(0, delIndex - 8), delIndex + 8)
+            : row[0] === 'del'
+              ? added.slice(Math.max(0, addIndex - 8), addIndex + 8)
+              : undefined
+          if (row[0] === 'del') delIndex++
+          if (row[0] === 'add') addIndex++
+          return (
+            <Line
+              key={index}
+              row={{
+                kind: row[0] || '',
+                text: row[1],
+                n: (row[0] === 'del' ? row[2] : row[3])! + 1,
+                peers
+              }}
+            />
+          )
+        })}
       </>
     )
   } else {

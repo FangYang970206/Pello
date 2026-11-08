@@ -138,6 +138,7 @@ try {
     await page.locator('[data-a=proj][data-id=p]').click()
     await expectScroll('project-return')
     assert.equal(await page.locator('[data-a=tog][data-id="src"]').getAttribute('aria-pressed'), 'true')
+    await page.locator('[data-a=file-search]').click()
     await page.getByLabel('搜索文件').fill('scroll-fixture-42')
     await page.getByRole('button', { name: 'scroll-fixture-42.txt' }).waitFor()
     await page.click('[data-a=settings]')
@@ -147,6 +148,7 @@ try {
     await expectScroll('search-clear')
   })
   await check('search finds deep paths and clearing restores the expanded tree', async () => {
+    await page.locator('[data-a=file-search]').click()
     const field = page.getByLabel('搜索文件')
     await field.fill('internal/Main.java')
     await page.getByRole('button', { name: `${deep}/Main.java` }).waitFor()

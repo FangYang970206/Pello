@@ -147,6 +147,7 @@ try {
     await page.click(`[data-a=preview][data-id="${file}"]`)
     await check(`${file} has language tokens`, async () => assert.ok(await page.locator(`.source-highlight .hljs-${token}`).count()))
   }
+  await page.locator('[data-a=file-search]').click()
   await page.getByLabel('搜索文件', { exact: true }).fill('guide')
   await page.locator('[data-a=search-file][data-id="guide.md"]').waitFor()
   await page.locator('[data-a=search-file][data-id="guide.md"]').click()

@@ -27,7 +27,10 @@ const PATHS = {
   sliders: 'M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0M16 4v4M10 10v4M18 16v4',
   eye: 'M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
   trash: 'M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3',
-  open: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v1H7l-4 9z'
+  open: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v1H7l-4 9z',
+  search: 'M10 17a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM15 15l6 6',
+  changes: 'M15 18a3 3 0 1 0 6 0 3 3 0 0 0-6 0zM3 6a3 3 0 1 0 6 0 3 3 0 0 0-6 0zM13 6h3a2 2 0 0 1 2 2v7M11 18H8a2 2 0 0 1-2-2V9',
+  pin: 'M9 4h6l-1 6 3 3v2h-4v5l-1 1-1-1v-5H6v-2l3-3z'
 } as const
 
 export type IconName = keyof typeof PATHS

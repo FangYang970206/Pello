@@ -29,6 +29,16 @@ import {
 
 const execFileP = promisify(execFile)
 
+function waitFor<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms)
+    void promise.then(
+      (value) => { clearTimeout(timer); resolve(value) },
+      (error) => { clearTimeout(timer); reject(error) }
+    )
+  })
+}
+
 export interface SessionInfo {
   id: string
   state: ProcState
@@ -87,6 +97,42 @@ async function killChildren(pid: number | null): Promise<boolean> {
   }
   await Promise.all(kids.map((k) => killOne(k)))
   return true
+}
+
+/**
+ * Snapshot the process table once and return every descendant of the given
+ * PTY roots, leaves before parents. `taskkill /T` can lose children when the
+ * root exits first, especially while many trees are terminated together.
+ */
+async function windowsDescendants(roots: number[]): Promise<number[]> {
+  if (!roots.length) return []
+  const { stdout } = await execFileP(
+    'powershell.exe',
+    ['-NoProfile', '-Command', "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress"],
+    { timeout: 8000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }
+  )
+  const parsed = JSON.parse(stdout || '[]')
+  const rows: { ProcessId?: number; ParentProcessId?: number }[] = Array.isArray(parsed) ? parsed : [parsed]
+  const children = new Map<number, number[]>()
+  for (const row of rows) {
+    const pid = Number(row.ProcessId)
+    const parent = Number(row.ParentProcessId)
+    if (!(pid > 0) || !(parent > 0)) continue
+    const list = children.get(parent)
+    if (list) list.push(pid)
+    else children.set(parent, [pid])
+  }
+  const rootSet = new Set(roots)
+  const result: number[] = []
+  const visit = (pid: number) => {
+    for (const child of children.get(pid) || []) {
+      if (rootSet.has(child)) continue
+      visit(child)
+      result.push(child)
+    }
+  }
+  for (const root of roots) visit(root)
+  return result
 }
 
 function shellFiles(): { bash: string; pwsh: string; zsh: string } {
@@ -150,6 +196,8 @@ class Session {
   private procExited = false
   private processExit: Promise<void> | null = null
   private disposal: Promise<void> | null = null
+  private treeKill: Promise<boolean> | null = null
+  private disposeStarted = false
   private env: NodeJS.ProcessEnv
 
   constructor(
@@ -379,9 +427,9 @@ class Session {
     }, 450)
   }
 
-  dispose(): Promise<void> {
-    if (this.disposal) return this.disposal
-    const alreadyExited = this.procExited
+  private beginDispose(killTree = true): void {
+    if (this.disposeStarted) return
+    this.disposeStarted = true
     this.disposed = true
     this.statusAbort.abort()
     this.lifecycle?.dispose()
@@ -390,38 +438,94 @@ class Session {
     this.phase = 'dead'
     this.restartPending = false
     this.override = null
+    if (!this.proc) this.remoteAbort?.abort()
+    this.treeKill = killTree ? this.stopProcessTree() : Promise.resolve(false)
+  }
+
+  private async stopProcessTree(): Promise<boolean> {
     const proc = this.proc
-    if (!proc) this.remoteAbort?.abort()
+    if (!proc || this.procExited || proc.pid === null) return false
+    const pid = proc.pid
+    // ConPTY only knows processes attached to its console. Kill the tree
+    // before closing that console, while parent IDs still identify children.
+    if (process.platform === 'win32') {
+      await execFileP('taskkill', ['/F', '/T', '/PID', String(pid)], { timeout: 10000, windowsHide: true }).catch((error) => {
+        try { process.kill(pid, 0) } catch { return }
+        throw error
+      })
+      return true
+    }
+    await killChildren(pid)
+    return false
+  }
+
+  /** Release the native PTY after its tree has stopped. */
+  finishDispose(): Promise<void> {
+    if (this.disposal) return this.disposal
+    this.beginDispose()
+    const proc = this.proc
     this.disposal = (async () => {
       if (!proc) return
       let windowsTreeStopped = false
+      let treeError: unknown = null
       try {
-        const pid = alreadyExited ? null : proc.pid
-        // ConPTY only knows processes attached to its console. Kill the tree
-        // before closing that console, while parent IDs still identify children.
-        if (pid !== null && process.platform === 'win32') {
-          await execFileP('taskkill', ['/F', '/T', '/PID', String(pid)], { timeout: 10000, windowsHide: true }).catch((error) => {
-            try { process.kill(pid, 0) } catch { return }
-            throw error
-          })
-          windowsTreeStopped = true
-        } else if (pid !== null) {
-          await killChildren(pid)
-        }
-      } finally {
+        windowsTreeStopped = (await this.treeKill) ?? false
+      } catch (error) {
+        treeError = error
+      }
+      try {
         // Windows tree termination already triggers node-pty's exit cleanup.
         // Killing that ConPTY again can end Electron before other trees finish.
         if (!this.procExited && !windowsTreeStopped) {
           try { proc.kill() } catch { /* already exited */ }
         }
+      } finally {
+        if (proc.pid !== null && this.processExit && !this.procExited) {
+          // taskkill completion precedes ConPTY's asynchronous output/exit cleanup.
+          // Keep Electron alive until the native exit callback has released this PTY.
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error('等待终端退出超时')), 10000)
+            void this.processExit!.then(() => { clearTimeout(timer); resolve() })
+          })
+        }
+        this.proc = null
       }
-      if (proc.pid !== null && this.processExit && !this.procExited) {
-        // taskkill completion precedes ConPTY's asynchronous output/exit cleanup.
-        // Keep Electron alive until the native exit callback has released this PTY.
-        await new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error('等待终端退出超时')), 10000)
-          void this.processExit!.then(() => { clearTimeout(timer); resolve() })
-        })
+      if (treeError) throw treeError
+    })().catch((error) => {
+      this.disposal = null
+      throw error
+    })
+    return this.disposal
+  }
+
+  dispose(): Promise<void> {
+    const disposal = this.finishDispose()
+    return disposal
+  }
+
+  /**
+   * Shutdown-only fast path. Callers must already have terminated every
+   * descendant; this kills only the root and waits for node-pty to release it,
+   * avoiding one taskkill process per terminal.
+   */
+  disposeRoot(): Promise<void> {
+    this.beginDispose(false)
+    if (this.disposal) return this.disposal
+    const proc = this.proc
+    this.disposal = (async () => {
+      if (!proc) return
+      if (!this.procExited) {
+        try { proc.kill() } catch { /* already exited */ }
+      }
+      if (this.processExit && !this.procExited) {
+        try {
+          await waitFor(this.processExit, 1500, '等待终端退出超时')
+        } catch {
+          if (!this.procExited && proc.pid !== null) {
+            await execFileP('taskkill', ['/F', '/T', '/PID', String(proc.pid)], { timeout: 4000, windowsHide: true }).catch(() => undefined)
+          }
+          await waitFor(this.processExit, 8000, '等待终端退出超时')
+        }
       }
       this.proc = null
     })().catch((error) => {
@@ -429,6 +533,10 @@ class Session {
       throw error
     })
     return this.disposal
+  }
+
+  rootPid(): number | null {
+    return this.proc && !this.procExited ? this.proc.pid : null
   }
 
   private launchLine(): string {
@@ -668,9 +776,30 @@ export async function closeSession(id: string): Promise<void> {
 export async function closeAllSessions(): Promise<void> {
   const results: PromiseSettledResult<void>[] = []
   if (process.platform === 'win32') {
-    // The bundled ConPTY addon mutates its native handle list from exit threads.
-    // Complete each close before starting the next native teardown.
-    for (const id of [...sessions.keys()]) results.push(...await Promise.allSettled([closeSession(id)]))
+    const closing = [...sessions.entries()]
+    const roots = closing.map(([, session]) => session.rootPid()).filter((pid): pid is number => pid !== null)
+    let descendantsCleared = true
+    if (roots.length) {
+      // Kill descendants before their roots so taskkill cannot lose a
+      // reparented Agent subtree while the root console is going away.
+      await windowsDescendants(roots).then((pids) => {
+        for (const pid of pids) {
+          try { process.kill(pid) } catch { /* already exited */ }
+        }
+      }).catch((error) => {
+        descendantsCleared = false
+        console.error('Failed to snapshot shutdown process tree', error)
+      })
+    }
+    for (const [id, session] of closing) {
+      // The bundled ConPTY addon mutates native handles from exit threads;
+      // keep root termination and native teardown strictly sequential. The
+      // descendant cleanup above removed the process trees, so killing only
+      // the root is enough and avoids a slow taskkill process per terminal.
+      // If the snapshot failed, fall back to taskkill /T so no child escapes.
+      results.push(...await Promise.allSettled([descendantsCleared ? session.disposeRoot() : session.dispose()]))
+      if (sessions.get(id) === session) sessions.delete(id)
+    }
   } else results.push(...await Promise.allSettled([...sessions.keys()].map(closeSession)))
   const errors = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
   if (errors.length) throw new AggregateError(errors.map((result) => result.reason), 'Failed to close terminal sessions')

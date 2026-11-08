@@ -85,7 +85,7 @@ function sanitize(raw: Partial<Database> | null): Database {
     }
     base.hosts = hosts
   }
-  if (Array.isArray(raw.projects)) base.projects = raw.projects.filter(isProject)
+  if (Array.isArray(raw.projects)) base.projects = raw.projects.filter(isProject).map((project) => ({ ...project, pinned: project.pinned === true ? true : undefined }))
   if (raw.treeIgnores && typeof raw.treeIgnores === 'object' && !Array.isArray(raw.treeIgnores)) {
     base.treeIgnores = {}
     for (const project of base.projects) {
