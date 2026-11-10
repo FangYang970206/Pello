@@ -319,7 +319,7 @@ export function App() {
     for (const item of db.projects) {
       const terms = next
         .filter((tab): tab is TermTab => tab.type === 'term' && tab.projectId === item.id)
-        .map((tab) => ({ id: tab.id, kind: tab.kind, shell: tab.shell, name: tab.name, sessionId: sessionOf(tab) }))
+        .map((tab) => ({ id: tab.id, kind: tab.kind, shell: tab.shell, name: tab.name, sessionId: sessionOf(tab), agentSessionId: tab.agentSessionId }))
       const wanted = map[item.id]
       const activeId = terms.some((term) => term.id === wanted) ? wanted : terms[0]?.id ?? null
       const groups = (sessionsRef.current[item.id] || []).map((session) => ({ ...session, activeTab: terms.find((term) => term.id === wanted && term.sessionId === session.id)?.id || session.activeTab }))
@@ -328,7 +328,12 @@ export function App() {
     }
   }, [db, toast])
 
-  const flushRestoredHistory = useCallback((id: string, live: boolean, showAgent = false) => {
+  useEffect(() => {
+    if (!db) return
+    if (tabs.some((tab) => tab.type === 'term' && tab.agentSessionId)) persist(tabs)
+  }, [db, persist, tabs])
+
+  const flushRestoredHistory = useCallback((id: string, live: boolean) => {
     const entry = restoredHistory.current[id]
     if (!entry) return
     const timer = historyTimers.current[id]
@@ -336,7 +341,6 @@ export function App() {
     delete historyTimers.current[id]
     delete restoredHistory.current[id]
     releaseTermHistory(id)
-    if (entry.kind !== 'shell' && !showAgent) return
     writeTerm(id, `\r\n${restoreHistoryText(entry.text)}`)
     if (live && entry.kind === 'shell') window.awb.ptyWrite(id, '\r')
   }, [])
@@ -372,7 +376,7 @@ export function App() {
     releaseTermHistory(id)
   }, [])
 
-  const openTerm = useCallback(async (target: NonNullable<typeof project>, kind: string, shell: ShellKind, activate = true, existingId?: string, existingName?: string, targetSession?: string, restoreHistory = false) => {
+  const openTerm = useCallback(async (target: NonNullable<typeof project>, kind: string, shell: ShellKind, activate = true, existingId?: string, existingName?: string, targetSession?: string, restoreHistory = false, existingAgentSessionId?: string) => {
     const id = existingId || uid('t')
     const groupId = targetSession || selectedSessionsRef.current[target.id] || sessionsRef.current[target.id]?.[0]?.id || legacySessionId(target.id)
     if (!sessionsRef.current[target.id]?.some((session) => session.id === groupId)) {
@@ -397,7 +401,8 @@ export function App() {
       inputReady: false,
       name: existingName,
       hasRun: kind !== 'shell',
-      agentKind: kind === 'shell' ? null : kind
+      agentKind: kind === 'shell' ? null : kind,
+      agentSessionId: existingAgentSessionId
     }
     setTabs((list) => (list.some((item) => item.id === id) ? list : [...list, tab]))
     if (activate) setActiveMap((map) => ({ ...map, [target.id]: id }))
@@ -405,17 +410,17 @@ export function App() {
       if (restoreHistory && existingId) {
         const history = await window.awb.terminalHistory(id).catch(() => '')
         if (history) {
-          restoredHistory.current[id] = { text: history, kind, ready: false, visible: false }
+          restoredHistory.current[id] = { text: history, kind, ready: false, visible: restoreHistory }
           holdTermHistory(id)
         }
       }
-      const info = await window.awb.ptyCreate({ id, projectId: target.id, kind, shell })
-      if (info.inputReady) markHistoryReady(id)
+      const info = await window.awb.ptyCreate({ id, projectId: target.id, kind, shell, agentSessionId: existingAgentSessionId })
+      markHistoryReady(id)
       syncTermSize(id)
       setTabs((list) => {
         const next = list.map((item) =>
           item.id === id && item.type === 'term'
-            ? { ...item, shell: info.shell, state: info.state as TermTab['state'], startedAt: info.startedAt, exitCode: info.exitCode, inputReady: info.inputReady, agentKind: info.agentKind }
+            ? { ...item, shell: info.shell, state: info.state as TermTab['state'], startedAt: info.startedAt, exitCode: info.exitCode, inputReady: info.inputReady, agentKind: info.agentKind, agentSessionId: info.agentSessionId ?? item.agentSessionId }
             : item
         )
         const ids = activate ? { ...activeMapRef.current, [target.id]: id } : activeMapRef.current
@@ -426,7 +431,7 @@ export function App() {
     } catch (err) {
       if (existingId) {
         const message = err instanceof Error ? err.message : '无法启动终端'
-        flushRestoredHistory(id, false, true)
+        flushRestoredHistory(id, false)
         writeNotice(id, db?.settings.theme || 'dark', 'red', `[无法恢复会话：${message}。右键终端可选择重新连接。]`)
         setTabs((list) => list.map((item) => item.id === id && item.type === 'term' ? { ...item, state: 'failed', startedAt: null, exitCode: null, inputReady: false } : item))
         toast(`会话 ${existingName || id} 未能恢复：${message}`, true)
@@ -471,7 +476,7 @@ export function App() {
       if (!saved.length) continue
       const wanted = db.activeTab?.[item.id]
       seeded[item.id] = saved.some((term) => term.id === wanted) ? wanted : saved[0].id
-      for (const term of saved) pending.push(openTerm(item, term.kind, term.shell, false, term.id, term.name, term.sessionId, true))
+      for (const term of saved) pending.push(openTerm(item, term.kind, term.shell, false, term.id, term.name, term.sessionId, true, term.agentSessionId))
     }
     activeMapRef.current = seeded
     setActiveMap(seeded)
@@ -513,7 +518,7 @@ export function App() {
       setTabs((list) =>
         list.map((tab) =>
           tab.id === event.id && tab.type === 'term'
-            ? { ...tab, hasRun: tab.hasRun || event.state === 'running', state: event.state, exitCode: event.exitCode, startedAt: event.startedAt, inputReady: event.inputReady, agentKind: event.agentKind }
+            ? { ...tab, hasRun: tab.hasRun || event.state === 'running', state: event.state, exitCode: event.exitCode, startedAt: event.startedAt, inputReady: event.inputReady, agentKind: event.agentKind, agentSessionId: event.agentSessionId ?? tab.agentSessionId }
             : tab
         )
       )
@@ -775,7 +780,13 @@ export function App() {
     setProjectId(id)
     const wantedSession = selectedSessionsRef.current[id] || sessionsRef.current[id]?.[0]?.id
     const mine = tabs.filter((tab) => tab.projectId === id && (tab.type !== 'term' || sessionOf(tab) === wantedSession))
-    if (mine.length && !mine.some((tab) => tab.id === activeMap[id])) {
+    const saved = db?.activeTab?.[id]
+    const wanted = mine.find((tab) => tab.id === saved)
+    if (wanted) {
+      const activeIds = { ...activeMap, [id]: wanted.id }
+      setActiveMap(activeIds)
+      if (restoring.current) return
+    } else if (mine.length && !mine.some((tab) => tab.id === activeMap[id])) {
       const activeIds = { ...activeMap, [id]: mine[0].id }
       setActiveMap(activeIds)
       persist(tabs, activeIds)
@@ -1307,7 +1318,7 @@ export function App() {
                   onReconnect={(id) => {
                     const term = tabs.find((tab): tab is TermTab => tab.id === id && tab.type === 'term')
                     const target = db?.projects.find((item) => item.id === term?.projectId)
-                    if (term && target) void openTerm(target, term.kind, term.shell, true, term.id, term.name, sessionOf(term))
+                    if (term && target) void openTerm(target, term.kind, term.shell, true, term.id, term.name, sessionOf(term), true, term.agentSessionId)
                   }}
                   onTermVisible={markHistoryVisible}
                   onToggleRight={() => setRight((value) => !value)}

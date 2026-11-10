@@ -779,7 +779,7 @@ function registerIpc(): void {
     Menu.buildFromTemplate([...(options.reconnect ? [action('重新连接会话', 'reconnect'), { type: 'separator' as const }] : []), action('重命名终端', 'rename'), { type: 'separator' }, action('向左分栏', 'split-left', options.horizontal), action('向右分栏', 'split-right', options.horizontal), action('向上分栏', 'split-up', options.vertical), action('向下分栏', 'split-down', options.vertical), { type: 'separator' }, action('撤销分栏（合并）', 'merge', options.merge)]).popup({ window: win!, callback: () => resolve(null) })
   }))
 
-  ipcMain.handle('pty:create', (_e, req: { id: string; projectId: string; kind: string; shell: ShellKind }) => {
+  ipcMain.handle('pty:create', (_e, req: { id: string; projectId: string; kind: string; shell: ShellKind; agentSessionId?: string }) => {
     if (closingWindow || quitting) throw new Error('工作台正在关闭')
     return createSession(send, req)
   })

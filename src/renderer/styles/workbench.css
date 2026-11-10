@@ -68,7 +68,8 @@ kbd{font:11px var(--mono);color:var(--faint);padding:0 4px;border-radius:4px;bor
 .tabs.fade-l{-webkit-mask-image:linear-gradient(90deg,transparent 0,#000 16px);mask-image:linear-gradient(90deg,transparent 0,#000 16px)}
 .tabs.fade-r{-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 16px),transparent);mask-image:linear-gradient(90deg,#000 calc(100% - 16px),transparent)}
 .tabs.fade-l.fade-r{-webkit-mask-image:linear-gradient(90deg,transparent 0,#000 16px,#000 calc(100% - 16px),transparent);mask-image:linear-gradient(90deg,transparent 0,#000 16px,#000 calc(100% - 16px),transparent)}
-.tabtools{display:flex;flex:none;align-self:flex-end;align-items:center;height:32px;gap:2px}
+.tabtools{display:flex;flex:none;align-self:flex-end;align-items:center;height:32px;gap:2px;margin-bottom:5px}
+.tabbar > .ib{align-self:flex-end;margin-bottom:5px}
 .tab{flex:none;display:flex;align-items:center;gap:8px;height:32px;padding:0 6px 0 10px;border-radius:6px 6px 0 0;color:var(--muted);font-size:calc(var(--ui-size,13px) - 1px);max-width:220px;transition:background var(--t),color var(--t);position:relative;z-index:0}
 .tab:hover{background:var(--hover);color:var(--text)}
 .tab.on{background:var(--panel);color:var(--text);z-index:1}
@@ -185,8 +186,11 @@ kbd{font:11px var(--mono);color:var(--faint);padding:0 4px;border-radius:4px;bor
 /* diff */
 .diffbar{display:flex;align-items:center;gap:8px;min-height:44px;padding:6px 12px;border-bottom:1px solid var(--line);background:var(--panel);flex:none;font-size:calc(var(--ui-size,13px) - 1px);flex-wrap:wrap}
 .diffbar .path{font-family:var(--mono);color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.diff{flex:1;overflow:auto;background:var(--panel);font:12px/1.7 var(--mono);padding:8px 0 24px}
-.dgrid{display:grid;grid-template-columns:1fr 1fr}.dgrid>div+div{border-left:1px solid var(--line)}
+.diff{flex:1;display:grid;grid-template-rows:minmax(0,1fr);background:var(--panel);font:12px/1.7 var(--mono);overflow:hidden}
+.diff>*{min-width:0;min-height:0}
+.dgrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);min-height:0;height:100%}
+.dgrid>div{min-width:0;overflow:auto;overscroll-behavior:contain}
+.dgrid>div+div{border-left:1px solid var(--line)}
 .cl{display:grid;grid-template-columns:48px 20px 1fr;white-space:pre}
 .cl .ln{color:var(--faint);text-align:right;padding-right:8px;user-select:none;opacity:.8}
 .cl .sg{color:var(--faint);user-select:none}

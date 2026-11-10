@@ -94,7 +94,7 @@ export interface WorkbenchApi {
   documentLink(projectId: string, source: string, href: string): Promise<{ path: string; anchor?: string } | null>
   terminalMenu(options: { horizontal: boolean; vertical: boolean; merge: boolean; reconnect?: boolean }): Promise<string | null>
   onPreviewSource(cb: () => void): () => void
-  ptyCreate(req: PtyCreateRequest): Promise<{ id: string; state: string; exitCode: number | null; startedAt: number | null; inputReady: boolean; shell: ShellKind; kind: string; agentKind?: string | null }>
+  ptyCreate(req: PtyCreateRequest): Promise<{ id: string; state: string; exitCode: number | null; startedAt: number | null; inputReady: boolean; shell: ShellKind; kind: string; agentKind?: string | null; agentSessionId?: string | null }>
   ptyWrite(id: string, data: string, binary?: boolean): void
   ptyResize(id: string, cols: number, rows: number): void
   ptyInterrupt(id: string): Promise<'hint' | 'exit' | 'signal'>

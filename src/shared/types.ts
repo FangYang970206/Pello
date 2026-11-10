@@ -82,6 +82,7 @@ export interface SavedTerm {
   shell: ShellKind
   name?: string
   sessionId?: string
+  agentSessionId?: string
 }
 
 export interface WorkSession { id: string; name: string; activeTab?: string }
@@ -211,6 +212,7 @@ export interface PtyStateEvent {
   startedAt: number | null
   inputReady: boolean
   agentKind?: string | null
+  agentSessionId?: string | null
   announce: boolean
   reason?: 'exit' | 'kill' | 'ctrlc'
 }
@@ -228,6 +230,7 @@ export interface PtyCreateRequest {
   projectId: string
   kind: string
   shell: ShellKind
+  agentSessionId?: string
 }
 
 export interface TestExecRequest {

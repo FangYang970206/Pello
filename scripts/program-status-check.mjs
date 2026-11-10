@@ -29,15 +29,17 @@ assert.equal(submittedAgent('opencode'), 'opencode')
 assert.equal(submittedAgent('echo claude'), undefined)
 assert.equal(submittedAgent('node agent.js | claude'), undefined)
 assert.equal(nativeAgent('pi'), 'pi')
-const states = []
-const lifecycle = await claudeLifecycle((state) => states.push(state))
+const reports = []
+const lifecycle = await claudeLifecycle((report) => reports.push(report))
 try {
   for (const event of ['SessionStart', 'UserPromptSubmit', 'PermissionRequest', 'PreToolUse', 'Stop', 'SessionEnd']) {
-    const response = await fetch(lifecycle.settings.hooks[event][0].hooks[0].url, { method: 'POST', body: '{}' })
+    const response = await fetch(lifecycle.settings.hooks[event][0].hooks[0].url, { method: 'POST', body: event === 'SessionStart' ? '{"session_id":"session-42"}' : '{}' })
     assert.equal(response.status, 200)
     assert.deepEqual(await response.json(), {})
   }
-  assert.deepEqual(states, ['waiting', 'working', 'waiting', 'working', 'waiting', 'clear'])
+  assert.deepEqual(reports, [
+    { state: 'waiting', sessionId: 'session-42' }, { state: 'working' }, { state: 'waiting' }, { state: 'working' }, { state: 'waiting' }, { state: 'clear' }
+  ])
   const url = lifecycle.settings.hooks.Stop[0].hooks[0].url
   assert.equal((await fetch(url)).status, 404)
   lifecycle.dispose()

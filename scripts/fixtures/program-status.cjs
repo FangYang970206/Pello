@@ -1,7 +1,8 @@
 // Interactive CLI stand-in: native reports, persistent process, no model calls.
 process.stdin.setRawMode?.(true)
 process.stdin.setEncoding('utf8')
-const report = (state) => process.stdout.write(`\x1b]7501;state=${state}:app=${process.argv[2] || 'fixture'}\x1b\\`)
+const session = process.argv[3] || ''
+const report = (state) => process.stdout.write(`\x1b]7501;state=${state}:app=${process.argv[2] || 'fixture'}${session ? `:session=${session}` : ''}\x1b\\`)
 let input = '', negotiated = false
 process.stdout.write('\x1b]7501;?\x1b\\')
 process.stdin.on('data', (data) => {

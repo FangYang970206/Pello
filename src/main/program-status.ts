@@ -2,11 +2,11 @@
 export class ProgramStatus {
   private pending = ''
 
-  push(chunk: string): { text: string; states: ('working' | 'waiting' | 'clear')[]; reports: { state: 'working' | 'waiting' | 'clear'; app?: string; protocol: 'program' | 'progress' }[]; queries: number } {
+  push(chunk: string): { text: string; states: ('working' | 'waiting' | 'clear')[]; reports: { state: 'working' | 'waiting' | 'clear'; app?: string; sessionId?: string; protocol: 'program' | 'progress' }[]; queries: number } {
     this.pending += chunk
     let text = '', queries = 0
     const states: ('working' | 'waiting' | 'clear')[] = []
-    const reports: { state: 'working' | 'waiting' | 'clear'; app?: string; protocol: 'program' | 'progress' }[] = []
+    const reports: { state: 'working' | 'waiting' | 'clear'; app?: string; sessionId?: string; protocol: 'program' | 'progress' }[] = []
     const prefixes = ['\x1b]7501;', '\x1b]9;4;']
     while (this.pending) {
       const at = this.pending.indexOf('\x1b]')
@@ -37,7 +37,7 @@ export class ProgramStatus {
         // Child-agent reports must not replace the foreground agent's state.
         if (fields.id || fields.parent) continue
         const state = fields.state === 'working' ? 'working' : ['idle', 'blocked', 'done', 'error'].includes(fields.state) ? 'waiting' : fields.state === 'clear' ? 'clear' : undefined
-        if (state) { states.push(state); reports.push({ state, app: fields.app, protocol: 'program' }) }
+        if (state) { states.push(state); reports.push({ state, app: fields.app, sessionId: fields.session, protocol: 'program' }) }
       } else {
         const state = sequence.slice(prefixes[1].length).split(';')[0]
         if (['1', '3'].includes(state)) { states.push('working'); reports.push({ state: 'working', protocol: 'progress' }) }

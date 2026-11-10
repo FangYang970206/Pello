@@ -48,6 +48,7 @@ export interface SessionInfo {
   shell: ShellKind
   kind: string
   agentKind: string | null
+  agentSessionId: string | null
 }
 
 type Send = (event: { type: 'data'; id: string; data: string } | PtyStateEvent) => void
@@ -161,6 +162,22 @@ function agentCommand(kind: string): { command: string; env: EnvVar[] } {
   return { command: '', env: [] }
 }
 
+function resumeAgentSession(kind: string, command: string, agentSessionId?: string): string {
+  if (typeof agentSessionId !== 'string' || !/^[\w:./@+-]{1,512}$/.test(agentSessionId)) return command
+  const suffix = {
+    claude: ` --resume ${JSON.stringify(agentSessionId)}`,
+    codex: ` resume ${JSON.stringify(agentSessionId)}`,
+    opencode: ` --session ${JSON.stringify(agentSessionId)}`,
+    pi: ` --continue`,
+    omp: ` --continue`
+  }[kind]
+  return suffix ? command + suffix : command
+}
+
+function agentSessionId(value: string | null | undefined): string | null {
+  return typeof value === 'string' && /^[\w:./@+-]{1,512}$/.test(value) ? value : null
+}
+
 class Session {
   readonly id: string
   readonly projectId: string
@@ -179,6 +196,8 @@ class Session {
   private programStatus = new ProgramStatus()
   private programWaiting = false
   private activeAgent: string | null = null
+  private agentSessionId: string | null = null
+  private readonly savedAgentSessionId: string | null
   private nativeStatus = false
   private shellInput = ''
   private lifecycle: Awaited<ReturnType<typeof claudeLifecycle>> | null = null
@@ -202,7 +221,7 @@ class Session {
 
   constructor(
     private send: Send,
-    opts: { id: string; projectId: string; kind: string; shell: ShellKind; cwd: string; command: string; env: EnvVar[]; hostId: string }
+    opts: { id: string; projectId: string; kind: string; shell: ShellKind; cwd: string; command: string; env: EnvVar[]; hostId: string; agentSessionId?: string }
   ) {
     this.id = opts.id
     this.projectId = opts.projectId
@@ -210,6 +229,7 @@ class Session {
     this.shell = opts.shell
     this.cwd = opts.cwd
     this.command = opts.command
+    this.agentSessionId = agentSessionId(opts.agentSessionId)
     // ConPTY omits the final position of a hidden hardware cursor. Pi's native
     // cursor mode keeps its IME anchor at the editor caret, including when Pi
     // is started manually from a Shell terminal. Custom executor env can opt out.
@@ -224,12 +244,13 @@ class Session {
       if (item.k) this.env[item.k] = item.v
     }
     this.hostId = opts.hostId
+    this.savedAgentSessionId = this.agentSessionId
   }
 
   hostId: string
 
   info(): SessionInfo {
-    return { id: this.id, state: this.state, exitCode: this.exitCode, startedAt: this.startedAt, inputReady: this.phase === 'prompt' || this.programWaiting, shell: this.shell, kind: this.kind, agentKind: this.activeAgent }
+    return { id: this.id, state: this.state, exitCode: this.exitCode, startedAt: this.startedAt, inputReady: this.phase === 'prompt' || this.programWaiting, shell: this.shell, kind: this.kind, agentKind: this.activeAgent, agentSessionId: this.agentSessionId }
   }
 
   async spawn(): Promise<void> {
@@ -243,17 +264,19 @@ class Session {
     this.programStatus = new ProgramStatus()
     this.programWaiting = false
     this.activeAgent = null
+    this.agentSessionId = agentSessionId(this.savedAgentSessionId)
     this.nativeStatus = false
     this.shellInput = ''
     this.statusAbort = new AbortController()
     let proc: TerminalProcess
     if (!host || host.id === 'local') {
       if (!this.lifecycle && ['claude', 'shell'].includes(this.kind)) {
-        const lifecycle = await claudeLifecycle((state) => {
+        const lifecycle = await claudeLifecycle((report) => {
           if (this.disposed || this.phase !== 'command' || this.activeAgent !== 'claude') return
-          if (state === 'clear') this.activeAgent = null
-          this.nativeStatus = state !== 'clear'
-          this.programWaiting = state === 'waiting'
+          if (report.state === 'clear') this.activeAgent = null
+          if (report.sessionId && !this.agentSessionId) this.agentSessionId = report.sessionId
+          this.nativeStatus = report.state !== 'clear'
+          this.programWaiting = report.state === 'waiting'
           this.emit(false)
         })
         if (this.disposed) { lifecycle.dispose(); return }
@@ -607,6 +630,7 @@ class Session {
       const agent = nativeAgent(report.app)
       if (agent && report.state !== 'clear') {
         this.activeAgent = agent
+        if (report.sessionId) this.agentSessionId = report.sessionId
         // Native identity is authoritative even if a user starts the CLI while
         // the shell's initial prompt/arming transaction is still completing.
         this.phase = 'command'
@@ -627,6 +651,7 @@ class Session {
     const announceThenPrompt = (state: ProcState, exitCode: number, reason: PtyStateEvent['reason']) => {
       this.phase = 'prompt'
       this.activeAgent = null
+      this.agentSessionId = null
       this.nativeStatus = false
       this.emitData(head)
       this.apply(state, exitCode, true, reason)
@@ -670,6 +695,7 @@ class Session {
     if (this.kind === 'shell') {
       this.phase = 'prompt'
       this.activeAgent = null
+      this.agentSessionId = null
       this.shellInput = ''
       this.state = 'idle'
       this.exitCode = null
@@ -698,6 +724,7 @@ class Session {
       startedAt: this.startedAt,
       inputReady: this.phase === 'prompt' || this.programWaiting,
       agentKind: this.activeAgent,
+      agentSessionId: this.agentSessionId,
       announce,
       reason
     })
@@ -708,7 +735,7 @@ const sessions = new Map<string, Session>()
 
 export async function createSession(
   send: Send,
-  opts: { id: string; projectId: string; kind: string; shell: ShellKind }
+  opts: { id: string; projectId: string; kind: string; shell: ShellKind; agentSessionId?: string }
 ): Promise<SessionInfo> {
   const draft = db()
   const project = draft.projects.find((p) => p.id === opts.projectId)
@@ -725,9 +752,10 @@ export async function createSession(
     kind: opts.kind,
     shell,
     cwd: project.path,
-    command: agent.command,
+    command: resumeAgentSession(opts.kind, agent.command, opts.agentSessionId),
     env: agent.env,
-    hostId: project.host
+    hostId: project.host,
+    agentSessionId: opts.agentSessionId
   })
   sessions.set(opts.id, session)
   try {

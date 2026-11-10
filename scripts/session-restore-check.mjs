@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { _electron as electron } from 'playwright'
 
 const root = path.resolve('.')
@@ -13,8 +14,24 @@ fs.writeFileSync(path.join(project, 'visible.txt'), 'visible fixture')
 fs.writeFileSync(path.join(project, 'restored.txt'), 'restored fixture')
 const shell = process.platform === 'win32' ? 'pwsh' : 'bash'
 const marker = `AWB_SESSION_MARKER_${Date.now()}`
+const longLine = 'x'.repeat(500)
+const quote = (value) => process.platform === 'win32' ? JSON.stringify(value) : `'${value.replaceAll("'", `'\\''`)}'`
+const node = process.platform === 'win32' ? `& ${quote(process.execPath)}` : quote(process.execPath)
+const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', windowsHide: true })
+git(project, 'init', '-q')
+git(project, 'config', 'user.name', 'Fixture')
+git(project, 'config', 'user.email', 'fixture@example.invalid')
+fs.writeFileSync(path.join(project, 'long-diff.txt'), `${longLine} original\n`)
+git(project, 'add', 'long-diff.txt')
+git(project, 'commit', '-qm', 'fixture')
+fs.writeFileSync(path.join(project, 'long-diff.txt'), `${longLine} changed\n`)
+  fs.writeFileSync(path.join(project, 'diff-depth.txt'), `${Array.from({ length: 80 }, (_, index) => `line ${index + 1}`).join('\n')}\n`)
+  git(project, 'add', 'diff-depth.txt')
+  git(project, 'commit', '-qm', 'depth fixture')
+  fs.writeFileSync(path.join(project, 'diff-depth.txt'), `${Array.from({ length: 80 }, (_, index) => `changed ${index + 1}`).join('\n')}\n`)
 const db = {
   settings: { layout: 'balanced', theme: 'dark', restore: true, defShell: shell, defAgent: 'shell', confirmKill: false },
+  custom: [{ id: 'native', name: 'Native fixture', cmd: node, args: `${quote(path.join(root, 'scripts/fixtures/program-status.cjs'))} claude session-42`, shell, letter: 'N', color: '#a9c3df', env: [] }],
   hosts: [
     { id: 'local', name: '本机', addr: '', user: '', os: 'Local', on: true, port: 22, platform: process.platform === 'win32' ? 'windows' : 'linux', auth: 'key', color: 'blue' },
     { id: 'remote', name: '离线机器', addr: 'example.invalid', user: 'test', os: 'Linux', on: false, port: 22, platform: 'linux', auth: 'key', color: 'purple' }
@@ -24,8 +41,19 @@ const db = {
     { id: 'p2', name: '置顶项目', host: 'local', path: project, agent: 'shell', branch: '' },
     { id: 'p3', name: '远程项目', host: 'remote', path: '/srv/remote', agent: 'shell', branch: '' }
   ],
-  sessions: { p3: [{ id: 'remote-term', kind: 'shell', shell: 'bash' }] },
-  activeTab: { p3: 'remote-term' }
+  workSessions: {
+    p1: [{ id: 'session:p1', name: '会话一', activeTab: 'shell-check' }],
+    p3: [{ id: 'session:p3', name: '会话一', activeTab: 'remote-term' }]
+  },
+  activeSession: { p1: 'session:p1', p3: 'session:p3' },
+  sessions: {
+    p1: [
+      { id: 'agent-term', kind: 'native', shell, sessionId: 'session:p1', agentSessionId: 'session-42' },
+      { id: 'shell-check', kind: 'shell', shell, sessionId: 'session:p1' }
+    ],
+    p3: [{ id: 'remote-term', kind: 'shell', shell: 'bash' }]
+  },
+  activeTab: { p1: 'shell-check', p3: 'remote-term' }
 }
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify(db, null, 2))
 const env = { ...process.env, AWB_USER_DATA: data }
@@ -42,16 +70,22 @@ const launch = async () => {
 let { app, page } = await launch()
 try {
   await page.locator('.plist [data-a=proj][data-id=p1]').waitFor()
-  await page.locator('[data-a=quick]').click()
-  await page.locator('.tab.on [data-a=tab][data-state=idle]').waitFor()
-  const term = await page.locator('.tab.on [data-a=tab]').getAttribute('data-id')
-  assert.ok(term)
+  await page.locator('.tab [data-a=tab][data-id=agent-term][data-state=running]').waitFor()
+  await page.waitForFunction(() => window.__awbBuffer('agent-term')?.includes('STATUS_PROBE_OK'))
+  const liveAgent = (await page.evaluate(() => window.awb.getState())).db.sessions.p1.find((term) => term.id === 'agent-term')
+  assert.equal(liveAgent.agentSessionId, 'session-42', 'Agent restore must retain the persisted native session ID')
+  const term = 'shell-check'
+  await page.locator('.tab [data-a=tab][data-id=shell-check][data-state=idle]').waitFor()
   await page.locator('.pane:not([hidden]) .xterm').click()
   await page.keyboard.type(`echo ${marker}`)
   await page.keyboard.press('Enter')
   await page.waitForFunction(({ id, marker }) => window.__awbBuffer(id).includes(marker), { id: term, marker })
   await page.waitForTimeout(4000)
   assert.ok((await page.evaluate((id) => window.awb.terminalHistory(id), term)).includes(marker), 'persisted terminal history missing marker')
+
+  // A saved Agent session ID must survive normalization and be reused on launch.
+  const normalized = (await page.evaluate(() => window.awb.getState())).db
+  assert.equal(normalized.sessions.p1[0].agentSessionId, 'session-42')
 
   // Pin lives in the project menu and orders the sidebar immediately.
   const pinMenu = page.getByLabel('项目菜单 置顶项目', { exact: true })
@@ -87,6 +121,30 @@ try {
   await page.locator('[data-a=file-search]').click()
   assert.equal(await page.getByLabel('搜索文件', { exact: true }).count(), 0)
 
+  // Split diff stays two equal panes and can scroll independently.
+  await page.locator('[data-a=rmode][data-id=changes]').click()
+  await page.locator('[data-a=diff][data-id="diff-depth.txt"]').click()
+  await page.locator('[data-a=dmode][data-id=split]').click()
+  await page.locator('.dgrid .cl').first().waitFor()
+  const diffBoxes = await page.evaluate(() => ({
+    panes: Array.from(document.querySelectorAll('.dgrid > div')).map((node) => node.getBoundingClientRect().width),
+    total: document.querySelector('.diff').clientWidth
+  }))
+  assert.equal(diffBoxes.panes.length, 2)
+  assert.ok(Math.abs(diffBoxes.panes[0] - diffBoxes.panes[1]) <= 1, `Split diff panes must be equal: ${diffBoxes.panes.join(',')}`)
+  assert.ok(Math.abs(diffBoxes.panes[0] - diffBoxes.total / 2) <= 2, 'Split diff must not be expanded by long lines')
+  const beforeScroll = await page.evaluate(() => Array.from(document.querySelectorAll('.dgrid > div')).map((node) => node.scrollTop))
+  await page.evaluate(() => document.querySelector('.dgrid > div').scrollBy({ top: 1000 }))
+  const afterScroll = await page.evaluate(() => Array.from(document.querySelectorAll('.dgrid > div')).map((node) => node.scrollTop))
+  assert.ok(afterScroll[0] > beforeScroll[0] && afterScroll[1] === beforeScroll[1], 'Split diff panes must scroll independently')
+
+  // The only show-panel button is the tab-bar one; its baseline follows tabs.
+  const collapseBox = await page.getByRole('button', { name: '收起文件面板', exact: true }).boundingBox()
+  await page.getByRole('button', { name: '收起文件面板', exact: true }).click()
+  assert.equal(await page.getByRole('button', { name: '显示文件面板', exact: true }).count(), 1)
+  const showBox = await page.getByRole('button', { name: '显示文件面板', exact: true }).boundingBox()
+  assert.ok(collapseBox && showBox && Math.abs(showBox.y + showBox.height - (collapseBox.y + collapseBox.height)) <= 2, `Show-panel button must align with the collapse control: ${JSON.stringify({ collapseBox, showBox })}`)
+
   // A remote host that is offline must not erase its saved session.
   await page.locator('[data-a=proj][data-id=p3]').click()
   await page.locator('.tab [data-a=tab][data-id=remote-term][data-state=failed]').waitFor()
@@ -95,10 +153,14 @@ try {
   const saved = (await page.evaluate(() => window.awb.getState())).db
   assert.ok(saved.sessions.p3.some((item) => item.id === 'remote-term'), 'Failed remote restore must keep the saved terminal')
   assert.equal(saved.workSessions.p3.length, 1)
+  await page.locator('[data-a=proj][data-id=p1]').click()
 
   // Let the periodic terminal snapshot run before quitting.
   await page.waitForTimeout(3500)
 } finally {
+  const exited = app.waitForEvent('close', { timeout: 30000 })
+  await page.getByRole('button', { name: '关闭窗口', exact: true }).click()
+  await exited
   await app.close()
 }
 
@@ -108,12 +170,11 @@ try {
   assert.equal(await page.locator('.sidebar-projects .proj').first().getAttribute('data-id'), 'p2', 'Pinned project must stay first after restart')
   await page.locator('[data-a=proj][data-id=p1]').click()
   await page.locator('.tab.on [data-a=tab]').waitFor()
-  await page.waitForFunction((marker) => {
-    const id = document.querySelector('.tabs .tab.on [data-a=tab]')?.getAttribute('data-id')
-    return !!id && window.__awbBuffer(id).includes('上次会话记录') && window.__awbBuffer(id).includes(marker)
-  }, marker)
+  await page.waitForFunction((marker) => window.__awbBuffer('shell-check').includes('上次会话记录') && window.__awbBuffer('shell-check').includes(marker), marker)
   const restoredTabs = await page.locator('.tabs [data-a=tab]').count()
-  assert.equal(restoredTabs, 1, 'The local shell session must reopen')
+  assert.equal(restoredTabs, 2, 'The project session must reopen its shell and Agent terminals')
+  assert.equal((await page.evaluate(() => window.awb.getState())).db.sessions.p1[0].agentSessionId, 'session-42')
+  assert.ok((await page.evaluate(() => window.__awbBuffer('agent-term'))).includes('上次会话记录'), 'Agent restore must replay its previous visible history')
 
   // Search never enters dot folders, including after a restart.
   await page.locator('[data-a=rmode][data-id=files]').click()

@@ -1,6 +1,5 @@
 import type { FileDiff } from '../shared/types'
 import { lcs, lineStats, segments, splitColumns, splitLines, type Seg, type SideRow } from '../shared/diff'
-import { Icon } from './icons'
 import { useMemo } from 'react'
 
 function Rich({ text, peers }: { text: string; peers?: string[] }) {
@@ -57,18 +56,14 @@ interface DiffData {
 export function DiffPane({
   diff,
   mode,
-  rightOpen,
   onMode,
   onDiscard,
-  onToggleRight,
   untracked
 }: {
   diff: FileDiff | null
   mode: 'unified' | 'split'
-  rightOpen: boolean
   onMode: (mode: 'unified' | 'split') => void
   onDiscard: () => void
-  onToggleRight: () => void
   untracked?: boolean
 }) {
   const computed: DiffData | null = useMemo(() => {
@@ -173,11 +168,6 @@ export function DiffPane({
         <button className="btn sm dangero" data-a="discard" onClick={onDiscard}>
           {untracked ? '删除文件' : '放弃更改'}
         </button>
-        {rightOpen ? null : (
-          <button className="ib" data-a="right" aria-label="显示文件面板" onClick={onToggleRight}>
-            <Icon name="panel" />
-          </button>
-        )}
       </div>
       <div className="diff">{body}</div>
     </>

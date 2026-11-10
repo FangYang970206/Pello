@@ -25,6 +25,7 @@ export type TermTab = {
   name?: string
   hasRun?: boolean
   agentKind?: string | null
+  agentSessionId?: string
 }
 export type DiffTab = { id: string; type: 'diff'; projectId: string; path: string }
 export type FileTab = { id: string; type: 'file'; projectId: string; path: string; dirty?: boolean; anchor?: string }
@@ -314,7 +315,7 @@ export function Workspace({
               </div>
             </div>
           ) : shown.type === 'diff' ? (
-            <DiffPane diff={diff && diff.path === shown.path ? diff : null} mode={dmode} rightOpen={rightOpen} onMode={onDmode} onDiscard={onDiscard} onToggleRight={onToggleRight} untracked={untracked} />
+            <DiffPane diff={diff && diff.path === shown.path ? diff : null} mode={dmode} onMode={onDmode} onDiscard={onDiscard} untracked={untracked} />
           ) : shown.type === 'file' ? (
             <FilePane
               key={`${shown.projectId}:${shown.path}`}

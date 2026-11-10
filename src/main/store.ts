@@ -141,7 +141,7 @@ function normalizeTerms(list: unknown[]): SavedTerm[] {
     let id = typeof item.id === 'string' ? item.id : ''
     if (!id || seen.has(id)) id = uid('t')
     seen.add(id)
-    terms.push({ id, kind: item.kind, shell: item.shell, ...(typeof item.sessionId === 'string' && item.sessionId ? { sessionId: item.sessionId.slice(0, 160) } : {}), ...(typeof item.name === 'string' && item.name.trim() ? { name: [...item.name.trim()].filter((char) => char.codePointAt(0)! >= 32).join('').slice(0, 80) } : {}) })
+    terms.push({ id, kind: item.kind, shell: item.shell, ...(typeof item.sessionId === 'string' && item.sessionId ? { sessionId: item.sessionId.slice(0, 160) } : {}), ...(typeof item.agentSessionId === 'string' && item.agentSessionId ? { agentSessionId: item.agentSessionId.slice(0, 512) } : {}), ...(typeof item.name === 'string' && item.name.trim() ? { name: [...item.name.trim()].filter((char) => char.codePointAt(0)! >= 32).join('').slice(0, 80) } : {}) })
   }
   return terms
 }
@@ -189,7 +189,7 @@ function isProject(v: unknown): v is Project {
   return !!p && typeof p.id === 'string' && typeof p.name === 'string' && typeof p.path === 'string'
 }
 
-function isSaved(v: unknown): v is { id?: string; kind: string; shell: ShellKind; name?: unknown; sessionId?: unknown } {
+function isSaved(v: unknown): v is { id?: string; kind: string; shell: ShellKind; name?: unknown; sessionId?: unknown; agentSessionId?: unknown } {
   const s = v as { id?: string; kind?: unknown; shell?: unknown }
   return !!s && typeof s.kind === 'string' && (s.shell === 'pwsh' || s.shell === 'cmd' || s.shell === 'bash' || s.shell === 'zsh')
 }

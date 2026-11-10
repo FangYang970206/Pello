@@ -2,7 +2,8 @@ import { createServer } from 'node:http'
 import { randomBytes } from 'node:crypto'
 
 type Activity = 'working' | 'waiting' | 'clear'
-const listeners = new Map<string, (state: Activity) => void>()
+type LifecycleReport = { state: Activity; sessionId?: string }
+const listeners = new Map<string, (report: LifecycleReport) => void>()
 let endpoint: Promise<number> | undefined
 
 function listen(): Promise<number> {
@@ -12,9 +13,22 @@ function listen(): Promise<number> {
       const callback = match && listeners.get(match[1])
       if (request.method !== 'POST' || !callback) { response.writeHead(404).end(); return }
       // Hook bodies can contain prompts. Discard them without retaining or logging.
-      request.resume()
-      callback(match![2] as Activity)
-      response.writeHead(200, { 'Content-Type': 'application/json' }).end('{}')
+      let body = ''
+      request.setEncoding('utf8')
+      request.on('data', (chunk: string) => {
+        if (body.length < 1024) body += chunk
+      })
+      request.on('end', () => {
+        let sessionId: string | undefined
+        try {
+          const parsed = JSON.parse(body) as { session_id?: unknown }
+          if (typeof parsed.session_id === 'string' && parsed.session_id) sessionId = parsed.session_id
+        } catch {
+          // Hooks may send an empty body.
+        }
+        callback(sessionId ? { state: match![2] as Activity, sessionId } : { state: match![2] as Activity })
+        response.writeHead(200, { 'Content-Type': 'application/json' }).end('{}')
+      })
     })
     server.requestTimeout = 5000
     server.keepAliveTimeout = 1000
@@ -25,7 +39,7 @@ function listen(): Promise<number> {
 }
 
 /** Per-launch hooks supplement native OSC without changing the user's Claude settings. */
-export async function claudeLifecycle(callback: (state: Activity) => void) {
+export async function claudeLifecycle(callback: (report: LifecycleReport) => void) {
   const port = await listen(), token = randomBytes(24).toString('hex')
   listeners.set(token, callback)
   const hook = (state: Activity) => [{ hooks: [{ type: 'http', url: `http://127.0.0.1:${port}/${token}/${state}`, timeout: 2 }] }]
