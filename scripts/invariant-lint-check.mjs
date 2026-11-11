@@ -25,6 +25,7 @@ const cases = [
   ['AWB049', 'src/main/app-icon.ts', "createHash('sha256')", "createHash('md5')"],
   ['AWB018', 'package.json', 'node scripts/terminal-input-check.mjs', 'echo skipped'],
   ['AWB016', 'src/renderer/styles/workbench.css', 'flex:0 1 auto', 'flex:1 1 auto'],
+  ['AWB016', 'src/renderer/styles/workbench.css', 'height:32px;gap:2px;margin-bottom:0', 'height:32px;gap:2px;margin-bottom:5px'],
   ['AWB017', 'src/renderer/styles/workbench.css', '.dot.terminal-status.busy{background:var(--amber)}', '.dot.terminal-status.busy{background:var(--green)}'],
   ['AWB018', 'package.json', 'node scripts/workspace-check.mjs', 'echo skipped'],
   ['AWB019', 'AGENTS.md', 'npm run check', 'npx skipped'],
@@ -68,12 +69,17 @@ const cases = [
   ['AWB046', 'src/main/diagram-renderer.ts', 'nodeIntegration: false', 'nodeIntegration: true'],
   ['AWB046', 'src/main/diagram-renderer.ts', 'source.length > 100_000', 'false'],
   ['AWB046', 'src/renderer/diagram-renderer.ts', "securityLevel: 'strict'", "securityLevel: 'loose'"],
-  ['AWB050', 'src/renderer/App.tsx', 'restoreHistoryText(entry.text)', "restoreHistoryText('')"],
+  ['AWB050', 'src/renderer/App.tsx', 'prependTermHistory(id, entry.text)', "prependTermHistory(id, '')"],
   ['AWB051', 'src/renderer/terms.ts', 'window.awb.saveTerminalHistory(id, text)', 'void 0'],
   ['AWB052', 'src/main/index.ts', "!node.name.startsWith('.')", 'true'],
   ['AWB053', 'src/renderer/RightPanel.tsx', 'data-a="file-search"', 'data-a="search-hidden"'],
   ['AWB054', 'src/renderer/ProjectSidebar.tsx', 'Number(!!b.project.pinned) - Number(!!a.project.pinned)', '0'],
-  ['AWB055', 'src/main/pty.ts', 'session.disposeRoot()', 'session.dispose()']
+  ['AWB055', 'src/main/pty.ts', 'session.disposeRoot()', 'session.dispose()'],
+  ['AWB056', 'src/renderer/SplitDiffEditor.tsx', 'target.scrollDOM.scrollLeft = source.scrollDOM.scrollLeft', 'void target'],
+  ['AWB056', 'src/renderer/SplitDiffEditor.tsx', "revertControls: 'a-to-b'", "revertControls: undefined"],
+  ['AWB057', 'src/main/agent-resume.ts', '--session-dir ${directory} --continue', '--continue'],
+  ['AWB058', 'src/renderer/terms.ts', 'serializer.serialize({ scrollback: 0 })', "''"],
+  ['AWB059', 'src/main/legacy-agent-session.ts', 'size === 1', 'size > 0']
 ]
 for (const [id, file, before, after] of cases) {
   const mutated = new Map(files)

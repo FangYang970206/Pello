@@ -73,21 +73,28 @@ try {
   await until(() => pids().length === 3, 'Agent process tree did not start')
   await page.waitForSelector('[data-a=tab][data-id=ready][data-state=exited]')
 
-  for (const width of [1440, 1024]) {
-    await page.evaluate((width) => window.awb.winResize(width, 800), width)
-    await page.waitForFunction((width) => window.innerWidth === width, width)
-    await check(`plus follows tabs at ${width}px`, async () => {
-      const layout = await page.evaluate(() => {
-        const last = document.querySelector('.tabs .tab:last-child').getBoundingClientRect()
-        const plus = document.querySelector('.addtab[data-a=newterm]').getBoundingClientRect()
-        const tabs = document.querySelector('.tabs')
-        const view = tabs.getBoundingClientRect()
-        return { gap: plus.left - last.right, overflow: tabs.scrollWidth > tabs.clientWidth + 1, accessible: plus.left >= view.right - 1 }
+  const checkTabbar = async (theme) => {
+    for (const [width, height] of [[1440, 900], [1024, 680]]) {
+      await page.evaluate(([width, height]) => window.awb.winResize(width, height), [width, height])
+      await page.waitForFunction((width) => window.innerWidth === width, width)
+      await page.locator('[data-a=newterm]').waitFor({ state: 'visible' })
+      await check(`plus follows tabs on the same horizontal line: ${theme} ${width}px`, async () => {
+        const layout = await page.evaluate(() => {
+          const last = document.querySelector('.tabs .tab:last-child').getBoundingClientRect()
+          const plus = document.querySelector('.addtab[data-a=newterm]').getBoundingClientRect()
+          const tabs = document.querySelector('.tabs')
+          const view = tabs.getBoundingClientRect()
+          return { gap: plus.left - last.right, top: plus.top - last.top, bottom: plus.bottom - last.bottom, height: plus.height,
+            overflow: tabs.scrollWidth > tabs.clientWidth + 1, accessible: plus.left >= view.right - 1 }
+        })
+        assert.ok(Math.abs(layout.top) <= 1 && Math.abs(layout.bottom) <= 1 && layout.height === 32, `tab and plus must share the same 32px row: ${JSON.stringify(layout)}`)
+        if (layout.overflow) assert.ok(layout.accessible, JSON.stringify(layout))
+        else assert.ok(layout.gap >= 0 && layout.gap <= 4, `gap is ${layout.gap}px`)
       })
-      if (layout.overflow) assert.ok(layout.accessible, JSON.stringify(layout))
-      else assert.ok(layout.gap >= 0 && layout.gap <= 8, `gap is ${layout.gap}px`)
-    })
+      await page.locator('.tabbar').screenshot({ path: path.join(shots, `terminal-tabbar-${theme}-${width}.png`) })
+    }
   }
+  await checkTabbar('dark')
   await check('toolbar and shortcut badges are absent', async () => {
     assert.equal(await page.locator('[data-a=ctrlc], [data-a=kill], [data-a=restart], [data-a=split], .pstate, .side kbd, .empty kbd').count(), 0)
   })
@@ -174,6 +181,7 @@ try {
   await page.click('[data-a=theme][data-id=light]')
   await page.click('[data-a=back]')
   await page.screenshot({ path: path.join(shots, 'terminal-light.png') })
+  await checkTabbar('light')
   await check('light theme keeps exited terminals gray', async () => {
     const color = await page.locator('[data-a=tab][data-id=ready] .dot').evaluate((dot) => getComputedStyle(dot).backgroundColor)
     assert.equal(color, 'rgb(96, 102, 114)')

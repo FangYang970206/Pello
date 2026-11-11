@@ -7,7 +7,7 @@ import { ResourceManager, validateResourcePaths } from './resources'
 import { db, mutate, validTreeIgnores, writeSessions } from './store'
 import { bashQuote, commandExists, osLabel, psQuote } from './platform'
 import { workbenchTheme } from '../shared/themes'
-import { checkPath, createTreeEntry, fileTree, gitDiff, gitDiscard, gitStatus, listDir, moveTreeEntry, readFile, removeRemoteEntry, renameTreeEntry, targetFor, treePath, TREE_DEFAULT_IGNORE, writeFile } from './git'
+import { checkPath, createTreeEntry, fileTree, gitDiff, gitDiscard, gitStatus, listDir, moveTreeEntry, readFile, removeRemoteEntry, renameTreeEntry, targetFor, treePath, TREE_DEFAULT_IGNORE, validateEntryName, writeFile } from './git'
 import {
   closeAllSessions,
   closeSession,
@@ -37,7 +37,7 @@ import type { TransferSnapshot, ReplacementEvent } from '../shared/types'
 import { ConflictPolicy } from '../shared/file-conflicts'
 import { discoverLocalShells } from './local-shells'
 import { cancelDiagramRenderer, DiagramCancelled, disposeDiagramRenderer, renderMermaid } from './diagram-renderer'
-import { deleteTerminalHistory, loadTerminalHistory, pruneTerminalHistory, saveTerminalHistory } from './terminal-history'
+import { deleteTerminalHistory, loadTerminalHistory, pruneTerminalHistory, saveTerminalHistory, terminalRecording } from './terminal-history'
 
 const execFileP = promisify(execFile)
 const windowsAppId = app.isPackaged ? 'com.pello.app' : 'com.pello.app.dev'
@@ -72,8 +72,14 @@ let closingWindow = false
 const treeSearches = new Map<string, { projectId: string; query: string; pending: string[]; cancelled: boolean; ignored: Set<string> }>()
 const treeIgnored = (projectId: string) => new Set(db().treeIgnores?.[projectId] ?? TREE_DEFAULT_IGNORE)
 
-function fileWriteKey(target: ReturnType<typeof targetFor>, relative: string): string {
-  const full = treePath(target, relative).full
+function fileWriteKey(target: ReturnType<typeof targetFor>, relative: string, missing = false): string {
+  let full: string
+  if (missing) {
+    const parts = relative.replaceAll('\\', '/').split('/'), name = parts.pop()!
+    validateEntryName(name, target.platform)
+    const parent = treePath(target, parts.join('/')).full
+    full = (target.platform === 'windows' ? path.win32 : path.posix).join(parent, name)
+  } else full = treePath(target, relative).full
   const normalized = target.platform === 'windows' ? full.toLowerCase() : full
   return target.host && target.host.id !== 'local'
     ? JSON.stringify([target.host.addr, target.host.port, target.host.user, normalized])
@@ -147,6 +153,17 @@ function confirmUnsavedClose(): boolean {
 
 function send(event: unknown): void {
   if (win && !win.isDestroyed()) win.webContents.send('pty:event', event)
+}
+
+function flushRendererHistory(window: BrowserWindow | null): Promise<void> {
+  if (!window || window.isDestroyed()) return Promise.resolve()
+  return new Promise((resolve) => {
+    const finish = () => { clearTimeout(timer); ipcMain.removeListener('terminal:history-flushed', listener); resolve() }
+    const listener = (event: Electron.IpcMainEvent) => { if (event.sender === window.webContents) finish() }
+    const timer = setTimeout(finish, 3000)
+    ipcMain.on('terminal:history-flushed', listener)
+    window.webContents.send('terminal:history-flush')
+  })
 }
 
 async function installedMap(): Promise<Record<string, boolean>> {
@@ -332,9 +349,8 @@ function createWindow(): void {
     allowWindowClose = true
     closingWindow = true
     const closing = win
-    if (closing) closing.webContents.send('terminal:history-flush')
     // Preserve the PTY parent processes until their complete trees are killed.
-    void Promise.all([closeAllSessions(), closeTransfers()]).catch((error) => console.error('Failed to close workbench tasks', error)).finally(() => {
+    void flushRendererHistory(closing).then(() => Promise.all([closeAllSessions(), closeTransfers()])).catch((error) => console.error('Failed to close workbench tasks', error)).finally(() => {
       sessionsClosed = true
       if (closing && !closing.isDestroyed()) closing.destroy()
       app.quit()
@@ -656,9 +672,9 @@ function registerIpc(): void {
     const { target } = projectTarget(projectId)
     return readFile(target, rel)
   })
-  ipcMain.handle('git:write', async (_e, projectId: string, rel: string, text: string, version: string) => {
+  ipcMain.handle('git:write', async (_e, projectId: string, rel: string, text: string, version: string | null) => {
     const { target } = projectTarget(projectId)
-    const key = fileWriteKey(target, rel)
+    const key = fileWriteKey(target, rel, version === null)
     if (replacementBlocked(key) || activeFileWrites.has(key)) throw new Error('文件正在进行其他写入操作')
     activeFileWrites.add(key)
     try { return await writeFile(target, rel, text, version) } finally { activeFileWrites.delete(key) }
@@ -776,8 +792,15 @@ function registerIpc(): void {
 
   ipcMain.handle('terminal:menu', (_e, options: { horizontal: boolean; vertical: boolean; merge: boolean; reconnect?: boolean }) => new Promise<string | null>((resolve) => {
     const action = (label: string, id: string, enabled = true): MenuItemConstructorOptions => ({ id, label, enabled, click: () => resolve(id) })
-    Menu.buildFromTemplate([...(options.reconnect ? [action('重新连接会话', 'reconnect'), { type: 'separator' as const }] : []), action('重命名终端', 'rename'), { type: 'separator' }, action('向左分栏', 'split-left', options.horizontal), action('向右分栏', 'split-right', options.horizontal), action('向上分栏', 'split-up', options.vertical), action('向下分栏', 'split-down', options.vertical), { type: 'separator' }, action('撤销分栏（合并）', 'merge', options.merge)]).popup({ window: win!, callback: () => resolve(null) })
+    Menu.buildFromTemplate([...(options.reconnect ? [action('重新连接会话', 'reconnect'), { type: 'separator' as const }] : []), action('重命名终端', 'rename'), action('导出完整终端记录', 'export-history'), { type: 'separator' }, action('向左分栏', 'split-left', options.horizontal), action('向右分栏', 'split-right', options.horizontal), action('向上分栏', 'split-up', options.vertical), action('向下分栏', 'split-down', options.vertical), { type: 'separator' }, action('撤销分栏（合并）', 'merge', options.merge)]).popup({ window: win!, callback: () => resolve(null) })
   }))
+  ipcMain.handle('terminal:export', async (_event, id: string) => {
+    if (typeof id !== 'string' || !Object.values(db().sessions).flat().some((term) => term.id === id)) throw new Error('终端不存在')
+    const source = terminalRecording(id)
+    if (!fs.existsSync(source)) throw new Error('此终端尚无完整记录')
+    const choice = await dialog.showSaveDialog(win!, { defaultPath: 'terminal-history.ansi', filters: [{ name: 'ANSI 终端记录', extensions: ['ansi'] }] })
+    if (!choice.canceled && choice.filePath) await fs.promises.copyFile(source, choice.filePath)
+  })
 
   ipcMain.handle('pty:create', (_e, req: { id: string; projectId: string; kind: string; shell: ShellKind; agentSessionId?: string }) => {
     if (closingWindow || quitting) throw new Error('工作台正在关闭')
@@ -785,7 +808,7 @@ function registerIpc(): void {
   })
   ipcMain.handle('terminal:history', (_e, id: string) => typeof id === 'string' && id ? loadTerminalHistory(id) : '')
   ipcMain.on('terminal:history-save', (_e, id: string, text: string) => {
-    if (typeof id === 'string' && id && typeof text === 'string' && text.length <= 2_000_000) saveTerminalHistory(id, text)
+    if (typeof id === 'string' && id && typeof text === 'string') saveTerminalHistory(id, text)
   })
   ipcMain.on('pty:write', (_e, id: string, data: string, binary = false) => { if (!closingWindow && !quitting) writeSession(id, String(data), !!binary) })
   ipcMain.on('pty:resize', (_e, id: string, cols: number, rows: number) => { if (!closingWindow && !quitting) resizeSession(id, cols, rows) })

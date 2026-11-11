@@ -518,11 +518,58 @@ export async function readAsset(target: Target, rel: string): Promise<Buffer> {
   return Buffer.from((await run(target, command)).trim(), 'base64')
 }
 
-export async function writeFile(target: Target, rel: string, text: string, version: string): Promise<FileContent> {
+async function createMissingFile(target: Target, rel: string, bytes: Buffer): Promise<FileContent> {
+  const parts = rel.split('/'), name = parts.pop()!, parent = parts.join('/')
+  validateEntryName(name, target.platform)
+  if (!target.host || target.host.id === 'local') {
+    const base = localPath(target.cwd, parent), destination = path.join(base, name)
+    const temporary = path.join(base, `.awb-${randomUUID()}.tmp`)
+    try {
+      fs.writeFileSync(temporary, bytes, { flag: 'wx' })
+      // Publish only if the missing destination is still absent. rename() can
+      // replace another writer's newly created file on POSIX, link() cannot.
+      fs.linkSync(temporary, destination)
+    } finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary) }
+    return readLocal(target.cwd, rel)
+  }
+  if (target.platform === 'windows') {
+    const command = `$ErrorActionPreference='Stop'
+$root=(Resolve-Path -LiteralPath ${psQuote(target.cwd)} -ErrorAction Stop).Path
+$parent=$root
+${parts.map((part) => `$parent=Join-Path $parent ${psQuote(part)}; $item=Get-Item -LiteralPath $parent -Force -ErrorAction Stop; if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw '不支持链接目录' }`).join('\n')}
+$dest=Join-Path $parent ${psQuote(name)}
+$temp=Join-Path $parent ('.awb-'+[Guid]::NewGuid().ToString('N')+'.tmp')
+try { [IO.File]::WriteAllBytes($temp,[Convert]::FromBase64String([Console]::In.ReadToEnd())); [IO.File]::Move($temp,$dest) }
+finally { if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force } }`
+    await run(target, command, bytes.toString('base64'))
+  } else {
+    const program = `import os,sys,uuid,base64
+root,parent,name=sys.argv[1:]
+fd=os.open(os.path.realpath(root),os.O_RDONLY|os.O_DIRECTORY)
+temp='.awb-'+uuid.uuid4().hex+'.tmp'
+try:
+ for part in filter(None,parent.split('/')):
+  child=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)
+  os.close(fd); fd=child
+ out=os.open(temp,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600,dir_fd=fd)
+ with os.fdopen(out,'wb') as stream: stream.write(base64.b64decode(sys.stdin.buffer.read()))
+ os.link(temp,name,src_dir_fd=fd,dst_dir_fd=fd,follow_symlinks=False)
+finally:
+ try: os.unlink(temp,dir_fd=fd)
+ except FileNotFoundError: pass
+ os.close(fd)
+`
+    await run(target, `python3 -c ${bashQuote(program)} ${bashQuote(target.cwd)} ${bashQuote(parent)} ${bashQuote(name)}`, bytes.toString('base64'))
+  }
+  return readRemote(target, rel)
+}
+
+export async function writeFile(target: Target, rel: string, text: string, version: string | null): Promise<FileContent> {
   rel = cleanRelative(rel)
-  if (!rel || !/^[a-f0-9]{64}$/.test(version)) throw new Error('请先读取文件再保存')
+  if (!rel || (version !== null && !/^[a-f0-9]{64}$/.test(version))) throw new Error('请先读取文件再保存')
   const bytes = Buffer.from(text, 'utf8')
   if (bytes.length > 2_000_000) throw new Error('文件超过 2 MB，无法在内置编辑器中保存')
+  if (version === null) return createMissingFile(target, rel, bytes)
   const conflict = () => new Error('文件已被其他程序修改，请重新读取后合并更改')
   if (!target.host || target.host.id === 'local') {
     const abs = localPath(target.cwd, rel)

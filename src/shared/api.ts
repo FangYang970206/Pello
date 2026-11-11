@@ -82,7 +82,7 @@ export interface WorkbenchApi {
   treeSearchNext(id: string): Promise<{ items: TreeNode[]; done: boolean }>
   treeSearchCancel(id: string): Promise<void>
   gitRead(projectId: string, rel: string): Promise<FileContent>
-  gitWrite(projectId: string, rel: string, text: string, version: string): Promise<FileContent>
+  gitWrite(projectId: string, rel: string, text: string, version: string | null): Promise<FileContent>
   previewUrl(projectId: string, rel: string, draft?: string): Promise<string>
   renderMermaid(source: string): Promise<string>
   cancelDiagrams(): Promise<void>
@@ -102,8 +102,9 @@ export interface WorkbenchApi {
   ptyRestart(id: string): Promise<void>
   ptyClose(id: string): Promise<void>
   terminalHistory(id: string): Promise<string>
+  exportTerminalHistory(id: string): Promise<void>
   saveTerminalHistory(id: string, text: string): void
-  onFlushTerminalHistory(cb: () => void): () => void
+  onFlushTerminalHistory(cb: () => Promise<void>): () => void
   onPty(cb: (event: PtyEvent) => void): () => void
   testExec(req: TestExecRequest): Promise<{ text: string; code: number | null }>
   testHost(host: Host): Promise<HostTest>

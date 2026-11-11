@@ -88,9 +88,10 @@ const api: WorkbenchApi = {
   ptyRestart: (id) => ipcRenderer.invoke('pty:restart', id),
   ptyClose: (id) => ipcRenderer.invoke('pty:close', id),
   terminalHistory: (id) => ipcRenderer.invoke('terminal:history', id),
+  exportTerminalHistory: (id) => ipcRenderer.invoke('terminal:export', id),
   saveTerminalHistory: (id, text) => ipcRenderer.send('terminal:history-save', id, text),
   onFlushTerminalHistory: (cb) => {
-    const listener = () => cb()
+    const listener = () => { void cb().finally(() => ipcRenderer.send('terminal:history-flushed')) }
     ipcRenderer.on('terminal:history-flush', listener)
     return () => ipcRenderer.removeListener('terminal:history-flush', listener)
   },

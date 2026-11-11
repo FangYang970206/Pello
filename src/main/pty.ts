@@ -13,6 +13,10 @@ import { OscStrip } from './osc'
 import { ProgramStatus } from './program-status'
 import { replyProgramStatus } from './windows-status'
 import { claudeLifecycle, nativeAgent, submittedAgent } from './agent-lifecycle'
+import { agentResumeCommand, validAgentSession, terminalSessionKey } from './agent-resume'
+import { createCodexThread } from './codex-session'
+import { loadTerminalHistory, recordTerminalOutput } from './terminal-history'
+import { legacyConversations, matchLegacyConversation } from './legacy-agent-session'
 import { passwordTerminal, remoteCommand, type TerminalProcess } from './ssh'
 import {
   bashRc,
@@ -162,22 +166,6 @@ function agentCommand(kind: string): { command: string; env: EnvVar[] } {
   return { command: '', env: [] }
 }
 
-function resumeAgentSession(kind: string, command: string, agentSessionId?: string): string {
-  if (typeof agentSessionId !== 'string' || !/^[\w:./@+-]{1,512}$/.test(agentSessionId)) return command
-  const suffix = {
-    claude: ` --resume ${JSON.stringify(agentSessionId)}`,
-    codex: ` resume ${JSON.stringify(agentSessionId)}`,
-    opencode: ` --session ${JSON.stringify(agentSessionId)}`,
-    pi: ` --continue`,
-    omp: ` --continue`
-  }[kind]
-  return suffix ? command + suffix : command
-}
-
-function agentSessionId(value: string | null | undefined): string | null {
-  return typeof value === 'string' && /^[\w:./@+-]{1,512}$/.test(value) ? value : null
-}
-
 class Session {
   readonly id: string
   readonly projectId: string
@@ -197,7 +185,8 @@ class Session {
   private programWaiting = false
   private activeAgent: string | null = null
   private agentSessionId: string | null = null
-  private readonly savedAgentSessionId: string | null
+  private savedAgentSessionId: string | null
+  private readonly baseCommand: string
   private nativeStatus = false
   private shellInput = ''
   private lifecycle: Awaited<ReturnType<typeof claudeLifecycle>> | null = null
@@ -229,7 +218,8 @@ class Session {
     this.shell = opts.shell
     this.cwd = opts.cwd
     this.command = opts.command
-    this.agentSessionId = agentSessionId(opts.agentSessionId)
+    this.baseCommand = opts.command
+    this.agentSessionId = validAgentSession(opts.agentSessionId)
     // ConPTY omits the final position of a hidden hardware cursor. Pi's native
     // cursor mode keeps its IME anchor at the editor caret, including when Pi
     // is started manually from a Shell terminal. Custom executor env can opt out.
@@ -264,17 +254,51 @@ class Session {
     this.programStatus = new ProgramStatus()
     this.programWaiting = false
     this.activeAgent = null
-    this.agentSessionId = agentSessionId(this.savedAgentSessionId)
+    this.agentSessionId = validAgentSession(this.savedAgentSessionId)
     this.nativeStatus = false
     this.shellInput = ''
     this.statusAbort = new AbortController()
+    if (!this.agentSessionId && host && host.id !== 'local' && ['claude', 'codex', 'opencode', 'pi', 'omp'].includes(this.kind) && loadTerminalHistory(this.id)) {
+      throw new Error('旧远程 Agent 会话缺少原生 ID，原终端历史已保留；未创建空白对话')
+    }
+    if (!this.agentSessionId && (!host || host.id === 'local') && ['claude', 'codex', 'opencode', 'pi', 'omp'].includes(this.kind)) {
+      const history = loadTerminalHistory(this.id)
+      if (history) {
+        const candidates = await legacyConversations(this.kind, this.cwd, this.env)
+        if (this.disposed) return
+        const match = matchLegacyConversation(history, candidates)
+        if (!match) throw new Error('无法唯一定位旧 Agent 对话，原终端历史已保留；未创建空白对话')
+        if (match) {
+          if (this.kind === 'pi' || this.kind === 'omp') {
+            const directory = path.join(app.getPath('userData'), 'agent-sessions', terminalSessionKey(this.id))
+            fs.mkdirSync(directory, { recursive: true })
+            const destination = path.join(directory, path.basename(match.file))
+            if (!fs.existsSync(destination)) fs.copyFileSync(match.file, destination, fs.constants.COPYFILE_EXCL)
+            this.agentSessionId = 'pello:directory'
+          } else this.agentSessionId = match.id
+        }
+      }
+    }
+    if (this.kind === 'codex' && !this.agentSessionId) {
+      this.agentSessionId = await createCodexThread(this.cwd, host, this.statusAbort.signal)
+      if (this.disposed) return
+    }
+    const quote = (text: string) => this.shell === 'pwsh' ? psQuote(text) : this.shell === 'cmd' ? `"${text.replaceAll('%', '%%')}"` : bashQuote(text.replaceAll('\\', '/'))
+    const key = terminalSessionKey(this.id)
+    const directory = !host || host.id === 'local'
+      ? quote(path.join(app.getPath('userData'), 'agent-sessions', key))
+      : host.platform === 'windows' ? `(Join-Path $HOME '.pello/sessions/${key}')` : `"$HOME/.local/state/pello/sessions/${key}"`
+    const launch = agentResumeCommand(this.kind, this.baseCommand, this.agentSessionId || undefined, directory, quote)
+    this.command = launch.command
+    this.agentSessionId = launch.session || this.agentSessionId
+    this.savedAgentSessionId = this.agentSessionId
     let proc: TerminalProcess
     if (!host || host.id === 'local') {
       if (!this.lifecycle && ['claude', 'shell'].includes(this.kind)) {
         const lifecycle = await claudeLifecycle((report) => {
           if (this.disposed || this.phase !== 'command' || this.activeAgent !== 'claude') return
           if (report.state === 'clear') this.activeAgent = null
-          if (report.sessionId && !this.agentSessionId) this.agentSessionId = report.sessionId
+          if (report.sessionId && validAgentSession(report.sessionId)) this.savedAgentSessionId = this.agentSessionId = report.sessionId
           this.nativeStatus = report.state !== 'clear'
           this.programWaiting = report.state === 'waiting'
           this.emit(false)
@@ -610,7 +634,13 @@ class Session {
   }
 
   private emitData(data: string): void {
-    if (data) this.send({ type: 'data', id: this.id, data })
+    if (data) {
+      if (db().settings.restore) {
+        try { recordTerminalOutput(this.id, data) }
+        catch (error) { console.error('Unable to persist terminal output', error) }
+      }
+      this.send({ type: 'data', id: this.id, data })
+    }
   }
 
   private async onData(chunk: string): Promise<void> {
@@ -630,7 +660,7 @@ class Session {
       const agent = nativeAgent(report.app)
       if (agent && report.state !== 'clear') {
         this.activeAgent = agent
-        if (report.sessionId) this.agentSessionId = report.sessionId
+        if (validAgentSession(report.sessionId)) this.savedAgentSessionId = this.agentSessionId = report.sessionId!
         // Native identity is authoritative even if a user starts the CLI while
         // the shell's initial prompt/arming transaction is still completing.
         this.phase = 'command'
@@ -651,7 +681,7 @@ class Session {
     const announceThenPrompt = (state: ProcState, exitCode: number, reason: PtyStateEvent['reason']) => {
       this.phase = 'prompt'
       this.activeAgent = null
-      this.agentSessionId = null
+      if (this.kind === 'shell') this.agentSessionId = null
       this.nativeStatus = false
       this.emitData(head)
       this.apply(state, exitCode, true, reason)
@@ -740,6 +770,7 @@ export async function createSession(
   const draft = db()
   const project = draft.projects.find((p) => p.id === opts.projectId)
   if (!project) throw new Error('项目不存在')
+  if (opts.agentSessionId && !validAgentSession(opts.agentSessionId)) throw new Error('保存的 Agent 会话 ID 无效，已保留原记录')
   const host = draft.hosts.find((h) => h.id === project.host)
   if (host && host.id !== 'local' && !host.on) throw new Error('这台机器未连接')
   const agent = agentCommand(opts.kind)
@@ -752,7 +783,7 @@ export async function createSession(
     kind: opts.kind,
     shell,
     cwd: project.path,
-    command: resumeAgentSession(opts.kind, agent.command, opts.agentSessionId),
+    command: agent.command,
     env: agent.env,
     hostId: project.host,
     agentSessionId: opts.agentSessionId

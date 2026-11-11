@@ -27,7 +27,7 @@ export type TermTab = {
   agentKind?: string | null
   agentSessionId?: string
 }
-export type DiffTab = { id: string; type: 'diff'; projectId: string; path: string }
+export type DiffTab = { id: string; type: 'diff'; projectId: string; path: string; dirty?: boolean }
 export type FileTab = { id: string; type: 'file'; projectId: string; path: string; dirty?: boolean; anchor?: string }
 export type Tab = TermTab | DiffTab | FileTab
 
@@ -45,6 +45,9 @@ export function Workspace({
   agents,
   installed,
   diff,
+  baseline,
+  onBaseline,
+  onBaselineHistory,
   preview,
   onSelect,
   onRenameTerm,
@@ -56,7 +59,6 @@ export function Workspace({
   onQuick,
   onInterrupt,
   onReconnect,
-  onTermVisible,
   onToggleRight,
   onDmode,
   onDiscard,
@@ -82,6 +84,9 @@ export function Workspace({
   agents: AgentInfo[]
   installed: Record<string, boolean>
   diff: FileDiff | null
+  baseline?: string
+  onBaseline: (text: string) => void
+  onBaselineHistory: (redo: boolean) => void
   preview: DocumentDraft | null
   onSelect: (id: string) => void
   onRenameTerm: (id: string, name: string) => Promise<void>
@@ -93,7 +98,6 @@ export function Workspace({
   onQuick: () => void
   onInterrupt: (id: string) => void
   onReconnect: (id: string) => void
-  onTermVisible: (id: string) => void
   onToggleRight: () => void
   onDmode: (mode: 'unified' | 'split') => void
   onDiscard: () => void
@@ -130,6 +134,10 @@ export function Workspace({
     const tab = mine.find((item): item is TermTab => item.id === id && item.type === 'term')
     const command = await window.awb.terminalMenu({ horizontal: current.length < 4 && tile.width === 2, vertical: current.length < 4 && tile.height === 2, merge: current.length > 1, reconnect: tab?.state === 'failed' })
     if (command === 'reconnect') { onReconnect(id); return }
+    if (command === 'export-history') {
+      try { await window.awb.exportTerminalHistory(id) } catch (error) { setLayoutError(String(error)) }
+      return
+    }
     if (command === 'rename') { setRenaming(id); return }
     if (command === 'merge') { setLayouts((value) => { const next = { ...value }; delete next[layoutKey]; return next }); onSelect(id); return }
     if (!command?.startsWith('split-')) return
@@ -232,7 +240,7 @@ export function Workspace({
                       >
                         <Icon name="file" className="s" />
                         <span className="lbl" title={tab.path}>{label}</span>
-                        {tab.type === 'file' && tab.dirty ? <span className="dot unsaved" role="img" aria-label="有未保存的更改" /> : null}
+                        {tab.dirty ? <span className="dot unsaved" role="img" aria-label="有未保存的更改" /> : null}
                       </button>
                       <button className="x" data-a="close" data-id={tab.id} aria-label="关闭" onClick={() => onClose(tab.id)}>
                         <Icon name="x" className="s" />
@@ -315,7 +323,9 @@ export function Workspace({
               </div>
             </div>
           ) : shown.type === 'diff' ? (
-            <DiffPane diff={diff && diff.path === shown.path ? diff : null} mode={dmode} onMode={onDmode} onDiscard={onDiscard} untracked={untracked} />
+            <DiffPane key={`${shown.projectId}:${shown.path}`} diff={diff && diff.path === shown.path ? diff : null} mode={dmode} onMode={onDmode} onDiscard={onDiscard} untracked={untracked}
+              document={preview?.path === shown.path ? preview : null} baseline={baseline} onBaseline={onBaseline} onBaselineHistory={onBaselineHistory}
+              onEdit={(text) => onEditFile(shown.id, text)} onSave={() => onSaveFile(shown.id)} onReload={() => onReloadFile(shown.id)} onCompose={(value) => onComposeFile(shown.id, value)} onHistory={(redo) => onHistoryFile(shown.id, redo)} />
           ) : shown.type === 'file' ? (
             <FilePane
               key={`${shown.projectId}:${shown.path}`}
@@ -355,7 +365,7 @@ export function Workspace({
                       if (!focus) onSelect(tab.id)
                     }}
                   >
-                    <TerminalPane id={tab.id} fontSize={fontSize} fontFamily={fontFamily} theme={theme} shell={tab.shell} visible={workspaceVisible && visible} focused={workspaceVisible && focus} onInterrupt={onInterrupt} onAppKey={onAppKey} onVisible={onTermVisible} />
+                    <TerminalPane id={tab.id} fontSize={fontSize} fontFamily={fontFamily} theme={theme} shell={tab.shell} visible={workspaceVisible && visible} focused={workspaceVisible && focus} onInterrupt={onInterrupt} onAppKey={onAppKey} />
                   </div>
                 )
               })}

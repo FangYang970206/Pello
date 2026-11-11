@@ -154,7 +154,7 @@ export function checkInvariants(files) {
   require(openFile && called(openFile, 'uid').length && !called(openFile, 'setDocuments').length && !openFile.getText().includes('pinned') && !files.get(workspaceFile)?.includes('tab.preview'), 'AWB043', 'src/renderer/App.tsx', '单击文件创建或定位独立标签，不能复用预览标签或删除其他文件的草稿')
   require(files.get('src/renderer/styles/markdown.css')?.includes('.markdown-outline{position:absolute;') && files.get('src/renderer/MarkdownEditor.tsx')?.includes('data-compact={compact}') && !files.get('src/renderer/ProjectSidebar.tsx')?.includes('onCreateEntry') && files.get('src/renderer/ProjectSidebar.tsx')?.includes("onProjectAction(project.id, 'reveal')"), 'AWB044', 'src/renderer/MarkdownEditor.tsx', '目录悬浮正文左侧且适配窄内容区；项目菜单仅提供项目操作，文件创建留在文件树')
   require(markdown.getText().includes('view.nodeDOM(position)') && !/\bnode\.id\s*=/.test(markdown.getText()) && files.get('src/renderer/markdown-code-layout.ts')?.includes("'--pello-code-height'") && files.get('src/renderer/styles/markdown.css')?.includes('height:var(--pello-code-height,auto)') && files.get('src/renderer/styles/markdown.css')?.includes('.cm-activeLine{background:transparent}'), 'AWB045', 'src/renderer/MarkdownEditor.tsx', '目录从编辑器模型定位，不能改写 DOM ID；代码虚拟化保留高度，代码行底色一致')
-  require(files.get('src/renderer/App.tsx')?.includes('restoreHistoryText(entry.text)') && files.get('src/renderer/App.tsx')?.includes('if (existingId)') && files.get('src/renderer/App.tsx')?.includes('无法恢复会话') && files.get('src/renderer/App.tsx')?.includes('window.awb.terminalHistory(id)'),
+  require(files.get('src/renderer/App.tsx')?.includes('prependTermHistory(id, entry.text)') && files.get('src/renderer/App.tsx')?.includes('if (existingId)') && files.get('src/renderer/App.tsx')?.includes('无法恢复会话') && files.get('src/renderer/App.tsx')?.includes('window.awb.terminalHistory(id)'),
     'AWB050', 'src/renderer/App.tsx', '启动恢复须回放终端历史；本机或远程恢复失败保留会话、提示错误并提供重新连接')
   require(files.get('src/main/terminal-history.ts')?.includes('export function saveTerminalHistory') && files.get('src/renderer/terms.ts')?.includes('window.awb.saveTerminalHistory(id, text)') && files.get('src/main/index.ts')?.includes('pruneTerminalHistory(Object.values(db().sessions)') && files.get('src/main/index.ts')?.includes('deleteTerminalHistory(id)'),
     'AWB051', 'src/main/terminal-history.ts', '终端输出按会话持久化，启动清理失效记录，显式关闭标签时删除对应历史')
@@ -181,7 +181,7 @@ export function checkInvariants(files) {
   require(called(main, 'windowsTaskbarIcon').length && files.get('src/main/app-icon.ts')?.includes("createHash('sha256')"), 'AWB049', mainFile, 'Windows 原生窗口与任务栏使用内容寻址的图标路径，避免旧路径缓存')
   require(![...host].some(([key, value]) => key.startsWith('padding') && !/^0(?:px)?$/.test(value)) && frame.get('position') === 'absolute' && !frame.has('padding'),
     'AWB015', cssFiles[1], 'fit 父节点无 padding，终端边距由外框 inset 提供')
-  require(declarations('.tabs').get('flex')?.startsWith('0 ') && declarations('.tabtools').get('align-self') === 'flex-end',
+  require(declarations('.tabs').get('flex')?.startsWith('0 ') && declarations('.tabtools').get('align-self') === 'flex-end' && declarations('.tabtools').get('margin-bottom') === '0',
     'AWB016', cssFiles[0], '加号紧贴标签并底部对齐')
   require(declarations('.dot.terminal-status.busy').get('background') === 'var(--amber)' && declarations('.dot.terminal-status.ready').get('background') === 'var(--green)',
     'AWB017', cssFiles[0], '运行黄点、可输入绿点，不与连接状态混用')
@@ -201,6 +201,14 @@ export function checkInvariants(files) {
   require(scripts.check?.includes('scripts/reading-workspace-check.mjs') && scripts.check?.includes('scripts/terminal-layout-check.mjs'), 'AWB018', 'package.json', '保留文档高亮、导航、图表与临时会话、分栏、状态和侧栏行为回归')
   require(scripts.check?.includes('scripts/document-performance-check.mjs'), 'AWB018', 'package.json', '保留大文档编辑、目录跳转、代码虚拟化高度和图表进程隔离回归')
   require(scripts.check?.includes('scripts/terminal-input-check.mjs'), 'AWB018', 'package.json', '保留输入法组合、确认、取消和终端几何稳定性回归')
+  require(files.get('src/renderer/SplitDiffEditor.tsx')?.includes("revertControls: 'a-to-b'") && files.get('src/renderer/SplitDiffEditor.tsx')?.includes('target.scrollDOM.scrollTop = source.scrollDOM.scrollTop') && files.get('src/renderer/SplitDiffEditor.tsx')?.includes('target.scrollDOM.scrollLeft = source.scrollDOM.scrollLeft') && files.get('src/renderer/SplitDiffEditor.tsx')?.includes('setPointerCapture(event.pointerId)') && scripts.check?.includes('scripts/diff-editor-check.mjs'),
+    'AWB056', 'src/renderer/SplitDiffEditor.tsx', '并排差异支持双侧编辑、双轴滚动联动、分块还原和可拖动分隔线，保留行为用例')
+  require(files.get('src/main/agent-resume.ts')?.includes('--session-dir ${directory} --continue') && files.get('src/main/pty.ts')?.includes('createCodexThread(this.cwd') && files.get('src/main/terminal-history.ts')?.includes('fs.appendFileSync') && !files.get('src/main/terminal-history.ts')?.includes('MAX_BYTES') && scripts.check?.includes('scripts/agent-resume-check.mjs'),
+    'AWB057', 'src/main/agent-resume.ts', 'Agent 恢复绑定终端原生会话，不回退到项目最近会话；终端记录不静默截断')
+  require(files.get('src/renderer/terms.ts')?.includes('serializer.serialize({ scrollback: 0 })') && files.get('src/main/index.ts')?.includes('flushRendererHistory(closing).then('),
+    'AWB058', 'src/renderer/terms.ts', '历史回放保留当前终端画面和光标；退出等待渲染队列快照落盘')
+  require(files.get('src/main/legacy-agent-session.ts')?.includes('other.candidate.id !== candidate.id') && files.get('src/main/legacy-agent-session.ts')?.includes('size === 1') && files.get('src/main/pty.ts')?.includes('if (!match) throw new Error'),
+    'AWB059', 'src/main/legacy-agent-session.ts', '旧记录只能按独有消息绑定原生对话，不猜测最近会话或静默创建空白对话')
   return errors
 }
 

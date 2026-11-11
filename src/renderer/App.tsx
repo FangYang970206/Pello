@@ -4,14 +4,14 @@ import { legacySessionId, sessionOf } from '../shared/work-sessions'
 import { PRESETS, SHELL_AGENT, cmdline, resolveAgent, shellLabel, uid } from '../shared/types'
 import { Icon } from './icons'
 import appIcon from '../../assets/pello-rounded-small.svg'
-import { dropTerm, holdTermHistory, paint, queueSnapshot, releaseTermHistory, restoreHistoryText, setTerminalHistoryEnabled, snapshotTerms, syncTermSize, writeNotice, writeTerm } from './terms'
+import { dropTerm, holdTermHistory, paint, prependTermHistory, queueSnapshot, releaseTermHistory, retainTermHistory, setTerminalHistoryEnabled, snapshotTerms, syncTermSize, writeNotice, writeTerm } from './terms'
 import { SettingsView } from './SettingsView'
 import { ConfirmDialog, ExecDialog, HostDialog, NewProjectDialog, NewTermDialog, dialogOpener, focusableIn } from './Dialogs'
 import { RightPanel } from './RightPanel'
 import { ProjectSidebar } from './ProjectSidebar'
 import { SidebarResize } from './SidebarResize'
 import { TemporarySessionDialog } from './TemporarySessionDialog'
-import { Workspace, type FileTab, type Tab, type TermTab } from './Workspace'
+import { Workspace, type DiffTab, type FileTab, type Tab, type TermTab } from './Workspace'
 import { codeFont, uiFont } from '../shared/fonts'
 import { themeVariables, workbenchTheme } from '../shared/themes'
 import { AUTO_SAVE_DELAY, documentKey, editableText, fileText, isDirty, recordChange, undoDocument, type DocumentDraft } from './documents'
@@ -45,7 +45,7 @@ export function App() {
   const projectIdRef = useRef(projectId)
   projectIdRef.current = projectId
   const [tabs, setTabs] = useState<Tab[]>([])
-  const restoredHistory = useRef<Record<string, { text: string; kind: string; ready: boolean; visible: boolean }>>({})
+  const restoredHistory = useRef<Record<string, { text: string }>>({})
   const historyTimers = useRef<Record<string, ReturnType<typeof setTimeout> | undefined>>({})
   const [workSessions, setWorkSessions] = useState<Record<string, WorkSession[]>>({})
   const sessionsRef = useRef(workSessions)
@@ -86,6 +86,7 @@ export function App() {
   const [treeChildren, setTreeChildren] = useState<Record<string, TreeNode[]>>({})
   const directoryRequests = useRef(new Set<string>())
   const [diff, setDiff] = useState<FileDiff | null>(null)
+  const [diffBaselines, setDiffBaselines] = useState<Record<string, DocumentDraft>>({})
   const [documents, setDocuments] = useState<Record<string, DocumentDraft>>({})
   const documentsRef = useRef(documents)
   documentsRef.current = documents
@@ -271,16 +272,6 @@ export function App() {
   }, [db])
 
   useEffect(() => {
-    const flush = () => snapshotTerms()
-    window.addEventListener('beforeunload', flush)
-    const off = window.awb.onFlushTerminalHistory(flush)
-    return () => {
-      window.removeEventListener('beforeunload', flush)
-      off()
-    }
-  }, [])
-
-  useEffect(() => {
     if (projectId) localStorage.setItem('awb:lastProject', projectId)
   }, [projectId])
 
@@ -308,7 +299,7 @@ export function App() {
   const sessionId = project ? selectedSessions[project.id] || workSessions[project.id]?.[0]?.id : undefined
   const projectTabs = project ? tabs.filter((tab) => tab.projectId === project.id && (tab.type !== 'term' || sessionOf(tab) === sessionId)) : []
   const active = projectTabs.find((tab) => tab.id === activeMap[project?.id || '']) ?? projectTabs[0]
-  const preview = active?.type === 'file' ? documents[documentKey(active.projectId, active.path)] || null : null
+  const preview = active && active.type !== 'term' ? documents[documentKey(active.projectId, active.path)] || null : null
   const agents: AgentInfo[] = db
     ? [...PRESETS.map((item) => resolveAgent(item.id, db.custom, installed)), ...db.custom.map((item) => resolveAgent(item.id, db.custom, installed)), SHELL_AGENT]
     : []
@@ -319,7 +310,7 @@ export function App() {
     for (const item of db.projects) {
       const terms = next
         .filter((tab): tab is TermTab => tab.type === 'term' && tab.projectId === item.id)
-        .map((tab) => ({ id: tab.id, kind: tab.kind, shell: tab.shell, name: tab.name, sessionId: sessionOf(tab), agentSessionId: tab.agentSessionId }))
+        .map((tab) => ({ id: tab.id, kind: tab.kind === 'shell' && tab.agentKind && tab.agentSessionId ? tab.agentKind : tab.kind, shell: tab.shell, name: tab.name, sessionId: sessionOf(tab), agentSessionId: tab.agentSessionId }))
       const wanted = map[item.id]
       const activeId = terms.some((term) => term.id === wanted) ? wanted : terms[0]?.id ?? null
       const groups = (sessionsRef.current[item.id] || []).map((session) => ({ ...session, activeTab: terms.find((term) => term.id === wanted && term.sessionId === session.id)?.id || session.activeTab }))
@@ -333,48 +324,33 @@ export function App() {
     if (tabs.some((tab) => tab.type === 'term' && tab.agentSessionId)) persist(tabs)
   }, [db, persist, tabs])
 
-  const flushRestoredHistory = useCallback((id: string, live: boolean) => {
+  const flushRestoredHistory = useCallback(async (id: string) => {
     const entry = restoredHistory.current[id]
     if (!entry) return
-    const timer = historyTimers.current[id]
-    if (timer) clearTimeout(timer)
+    if (historyTimers.current[id]) clearTimeout(historyTimers.current[id])
     delete historyTimers.current[id]
     delete restoredHistory.current[id]
-    releaseTermHistory(id)
-    writeTerm(id, `\r\n${restoreHistoryText(entry.text)}`)
-    if (live && entry.kind === 'shell') window.awb.ptyWrite(id, '\r')
+    try { await prependTermHistory(id, entry.text) }
+    finally { releaseTermHistory(id); queueSnapshot(id) }
   }, [])
-
-  const scheduleRestoredHistory = useCallback((id: string) => {
-    const entry = restoredHistory.current[id]
-    if (!entry?.ready || !entry.visible || historyTimers.current[id]) return
-    historyTimers.current[id] = setTimeout(() => {
-      delete historyTimers.current[id]
-      flushRestoredHistory(id, true)
-    }, 1200)
-  }, [flushRestoredHistory])
-
-  const markHistoryReady = useCallback((id: string) => {
-    const entry = restoredHistory.current[id]
-    if (!entry) return
-    entry.ready = true
-    scheduleRestoredHistory(id)
-  }, [scheduleRestoredHistory])
-
-  const markHistoryVisible = useCallback((id: string) => {
-    const entry = restoredHistory.current[id]
-    if (!entry) return
-    entry.visible = true
-    scheduleRestoredHistory(id)
-  }, [scheduleRestoredHistory])
 
   const forgetTermHistory = useCallback((id: string) => {
-    const timer = historyTimers.current[id]
-    if (timer) clearTimeout(timer)
+    if (historyTimers.current[id]) clearTimeout(historyTimers.current[id])
     delete historyTimers.current[id]
     delete restoredHistory.current[id]
     releaseTermHistory(id)
   }, [])
+
+  useEffect(() => {
+    const flush = async () => {
+      await Promise.all(Object.keys(restoredHistory.current).map(flushRestoredHistory))
+      await snapshotTerms()
+    }
+    const unloading = () => { void flush() }
+    window.addEventListener('beforeunload', unloading)
+    const off = window.awb.onFlushTerminalHistory(flush)
+    return () => { window.removeEventListener('beforeunload', unloading); off() }
+  }, [flushRestoredHistory])
 
   const openTerm = useCallback(async (target: NonNullable<typeof project>, kind: string, shell: ShellKind, activate = true, existingId?: string, existingName?: string, targetSession?: string, restoreHistory = false, existingAgentSessionId?: string) => {
     const id = existingId || uid('t')
@@ -410,12 +386,15 @@ export function App() {
       if (restoreHistory && existingId) {
         const history = await window.awb.terminalHistory(id).catch(() => '')
         if (history) {
-          restoredHistory.current[id] = { text: history, kind, ready: false, visible: restoreHistory }
+          retainTermHistory(id, history)
+          restoredHistory.current[id] = { text: history }
           holdTermHistory(id)
         }
       }
       const info = await window.awb.ptyCreate({ id, projectId: target.id, kind, shell, agentSessionId: existingAgentSessionId })
-      markHistoryReady(id)
+      // Replay is a display operation, independent of Agent completion. Keep
+      // startup screen setup out of the historical scrollback transaction.
+      if (restoredHistory.current[id]) historyTimers.current[id] = setTimeout(() => flushRestoredHistory(id), 1200)
       syncTermSize(id)
       setTabs((list) => {
         const next = list.map((item) =>
@@ -431,7 +410,7 @@ export function App() {
     } catch (err) {
       if (existingId) {
         const message = err instanceof Error ? err.message : '无法启动终端'
-        flushRestoredHistory(id, false)
+        flushRestoredHistory(id)
         writeNotice(id, db?.settings.theme || 'dark', 'red', `[无法恢复会话：${message}。右键终端可选择重新连接。]`)
         setTabs((list) => list.map((item) => item.id === id && item.type === 'term' ? { ...item, state: 'failed', startedAt: null, exitCode: null, inputReady: false } : item))
         toast(`会话 ${existingName || id} 未能恢复：${message}`, true)
@@ -450,7 +429,7 @@ export function App() {
       toast(err instanceof Error ? err.message : '无法启动终端', true)
       return null
     }
-  }, [db?.settings.theme, flushRestoredHistory, markHistoryReady, persist, toast])
+  }, [db?.settings.theme, flushRestoredHistory, persist, toast])
 
   useEffect(() => {
     if (!db || touring.current) return
@@ -522,15 +501,12 @@ export function App() {
             : tab
         )
       )
-      if (event.inputReady) {
-        markHistoryReady(event.id)
-      }
       if (!event.announce) return
       const mode = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark'
       if (event.reason === 'kill') writeNotice(event.id, mode, 'red', '[进程已被强制结束]')
       writeNotice(event.id, mode, 'faint', `[进程已退出，退出码 ${event.exitCode ?? 0}]`)
     })
-  }, [markHistoryReady])
+  }, [])
 
   useEffect(() => {
     if (!project || route !== 'work') return
@@ -585,7 +561,7 @@ export function App() {
   }, [project?.id, active?.type === 'diff' ? active.path : '', gitTick])
 
   useEffect(() => {
-    if (!project || active?.type !== 'file') return
+    if (!project || !active || active.type === 'term') return
     const key = documentKey(project.id, active.path)
     if (replacementAt(project.id, active.path)) return
     if (documentsRef.current[key]) return
@@ -596,7 +572,7 @@ export function App() {
     return () => {
       stop = true
     }
-  }, [project?.id, active?.type === 'file' ? active.id + active.path : '', fileReadTick])
+  }, [project?.id, active && active.type !== 'term' ? active.id + active.path : '', fileReadTick])
 
   useEffect(() => {
     window.awb.setUnsavedChanges(Object.values(documents).some(isDirty))
@@ -619,26 +595,26 @@ export function App() {
   }
 
   function updateFileDraft(id: string, update: (doc: DocumentDraft) => DocumentDraft) {
-    const tab = tabs.find((item): item is FileTab => item.id === id && item.type === 'file')
-    if (!tab) return
+    const tab = tabs.find((item) => item.id === id && item.type !== 'term')
+    if (!tab || tab.type === 'term') return
     const key = documentKey(tab.projectId, tab.path)
     const doc = documentsRef.current[key]
     if (!doc) return
     if (doc.replacing) return
     const next = update(doc)
     putDocument(key, next)
-    setTabs((list) => list.map((item) => item.id === id ? { ...item, dirty: isDirty(next) } : item))
+    setTabs((list) => list.map((item) => item.type !== 'term' && item.projectId === tab.projectId && item.path === tab.path ? { ...item, dirty: isDirty(next) } : item))
   }
 
   function editFile(id: string, draft: string) { updateFileDraft(id, (doc) => recordChange(doc, draft)) }
   function historyFile(id: string, redo: boolean) { updateFileDraft(id, (doc) => undoDocument(doc, redo)) }
   function composeFile(id: string, composing: boolean) { updateFileDraft(id, (doc) => ({ ...doc, composing })) }
 
-  async function saveFile(tab: FileTab, automatic = false): Promise<boolean> {
+  async function saveFile(tab: FileTab | DiffTab, automatic = false): Promise<boolean> {
     const key = documentKey(tab.projectId, tab.path)
     const doc = documentsRef.current[key]
     if ([...pathMutations.current.values()].some((operation) => operation.projectId === tab.projectId && (tab.path === operation.path || (operation.directory && tab.path.startsWith(`${operation.path}/`))))) return false
-    if (!doc?.version || doc.binary || doc.missing || doc.tooBig || savingDocuments.current.has(key)) return false
+    if (!doc || doc.binary || doc.tooBig || savingDocuments.current.has(key)) return false
     if (!isDirty(doc)) return true
     savingDocuments.current.add(key)
     putDocument(key, { ...doc, saving: true, error: undefined })
@@ -647,7 +623,7 @@ export function App() {
       const latest = documentsRef.current[key] || doc
       const draft = latest.draft === doc.draft ? editableText(saved.text) : latest.draft
       putDocument(key, { ...latest, ...saved, draft, saving: false, error: undefined })
-      setTabs((list) => list.map((item) => item.id === tab.id ? { ...item, dirty: draft !== editableText(saved.text) } : item))
+      setTabs((list) => list.map((item) => item.type !== 'term' && item.projectId === tab.projectId && item.path === tab.path ? { ...item, dirty: draft !== editableText(saved.text) } : item))
       setGitTick((tick) => tick + 1)
       toast(automatic ? '已自动保存' : '文件已保存')
       return true
@@ -671,9 +647,9 @@ export function App() {
     }
     if (paused) return
     for (const [key, doc] of Object.entries(documents)) {
-      if (!isDirty(doc) || doc.saving || doc.replacing || doc.composing || doc.error || doc.binary || doc.missing || doc.tooBig || timers.has(key)) continue
-      const tab = tabs.find((item): item is FileTab => item.type === 'file' && item.projectId === doc.projectId && item.path === doc.path)
-      if (!tab) continue
+      if (!isDirty(doc) || doc.saving || doc.replacing || doc.composing || doc.error || doc.binary || doc.tooBig || timers.has(key)) continue
+      const tab = tabs.find((item) => item.type !== 'term' && item.projectId === doc.projectId && item.path === doc.path)
+      if (!tab || tab.type === 'term') continue
       const timer = setTimeout(() => { timers.delete(key); void saveFile(tab, true) }, AUTO_SAVE_DELAY)
       timers.set(key, { draft: doc.draft, timer })
     }
@@ -690,14 +666,14 @@ export function App() {
   }
 
   function reloadFile(id: string) {
-    const tab = tabs.find((item): item is FileTab => item.id === id && item.type === 'file')
-    if (!tab) return
+    const tab = tabs.find((item) => item.id === id && item.type !== 'term')
+    if (!tab || tab.type === 'term') return
     const key = documentKey(tab.projectId, tab.path)
     const reload = () => {
       setModal(null)
       void window.awb.gitRead(tab.projectId, tab.path).then((file) => {
-        setDocuments((map) => ({ ...map, [key]: { ...file, projectId: tab.projectId, path: tab.path, draft: editableText(file.text) } }))
-        setTabs((list) => list.map((item) => item.id === tab.id ? { ...item, dirty: false } : item))
+        putDocument(key, { ...file, projectId: tab.projectId, path: tab.path, draft: editableText(file.text) })
+        setTabs((list) => list.map((item) => item.type !== 'term' && item.projectId === tab.projectId && item.path === tab.path ? { ...item, dirty: false } : item))
       }).catch((error) => toast(String(error), true))
     }
     if (documentsRef.current[key] && isDirty(documentsRef.current[key])) {
@@ -720,11 +696,12 @@ export function App() {
       dropTerm(id)
       forgetTermHistory(id)
     }
-    if (tab.type === 'file') setDocuments((map) => {
+    if (tab.type !== 'term' && !tabs.some((item) => item.id !== id && item.type !== 'term' && item.projectId === tab.projectId && item.path === tab.path)) setDocuments((map) => {
       const next = { ...map }
       delete next[documentKey(tab.projectId, tab.path)]
       return next
     })
+    if (tab.type === 'diff') setDiffBaselines((map) => { const next = { ...map }; delete next[documentKey(tab.projectId, tab.path)]; return next })
     setTabs((list) => {
       const next = list.filter((item) => item.id !== id)
       const mine = next.filter((item) => item.projectId === tab.projectId && (item.type !== 'term' || sessionOf(item) === selectedSessionsRef.current[tab.projectId]))
@@ -742,7 +719,7 @@ export function App() {
   function requestClose(id: string) {
     const tab = tabs.find((item) => item.id === id)
     if (!tab || !db) return
-    if (tab.type === 'file') {
+    if (tab.type !== 'term') {
       const doc = documentsRef.current[documentKey(tab.projectId, tab.path)]
       if (doc?.saving) { toast('文件正在保存，请稍候'); return }
       if (doc && isDirty(doc)) {
@@ -968,9 +945,8 @@ export function App() {
 
   function openDiff(rel: string) {
     if (!project) return
-    const existing = tabs.find((tab) => tab.type === 'diff' && tab.projectId === project.id)
+    const existing = tabs.find((tab) => tab.type === 'diff' && tab.projectId === project.id && tab.path === rel)
     if (existing) {
-      setTabs((list) => list.map((tab) => (tab.id === existing.id && tab.type === 'diff' ? { ...tab, path: rel } : tab)))
       setActiveMap((map) => ({ ...map, [project.id]: existing.id }))
       return
     }
@@ -1152,7 +1128,7 @@ export function App() {
     } else if (key === ',') openSettings()
     else if (key === 'b') setRight((value) => !value)
     else if (key === 'w' && active) requestClose(active.id)
-    else if (key === 's' && active?.type === 'file') void saveFile(active)
+    else if (key === 's' && active && active.type !== 'term') void saveFile(active)
   }
 
   useEffect(() => {
@@ -1178,7 +1154,7 @@ export function App() {
       if (field || inTerm || modalRef.current) return
       if (!event.ctrlKey || event.altKey || event.metaKey) return
       const key = event.key.toLowerCase()
-      if (key === 'n' || key === 't' || key === ',' || key === 'b' || key === 'w' || (key === 's' && active?.type === 'file')) {
+      if (key === 'n' || key === 't' || key === ',' || key === 'b' || key === 'w' || (key === 's' && active && active.type !== 'term')) {
         event.preventDefault()
         onAppKey(key)
       }
@@ -1291,6 +1267,17 @@ export function App() {
                   agents={agents}
                   installed={installed}
                   diff={diff}
+                  baseline={active?.type === 'diff' ? diffBaselines[documentKey(active.projectId, active.path)]?.draft : undefined}
+                  onBaseline={(text) => {
+                    if (active?.type !== 'diff' || !diff) return
+                    const key = documentKey(active.projectId, active.path)
+                    setDiffBaselines((map) => ({ ...map, [key]: recordChange(map[key] || { projectId: active.projectId, path: active.path, text: diff.before, draft: editableText(diff.before), binary: false, missing: false, version: null }, text) }))
+                  }}
+                  onBaselineHistory={(redo) => {
+                    if (active?.type !== 'diff') return
+                    const key = documentKey(active.projectId, active.path)
+                    setDiffBaselines((map) => map[key] ? { ...map, [key]: undoDocument(map[key], redo) } : map)
+                  }}
                   preview={preview}
                   onSelect={selectTab}
                   onRenameTerm={renameTerm}
@@ -1320,13 +1307,12 @@ export function App() {
                     const target = db?.projects.find((item) => item.id === term?.projectId)
                     if (term && target) void openTerm(target, term.kind, term.shell, true, term.id, term.name, sessionOf(term), true, term.agentSessionId)
                   }}
-                  onTermVisible={markHistoryVisible}
                   onToggleRight={() => setRight((value) => !value)}
                   onDmode={setDmode}
                   onDiscard={askDiscard}
                   onAppKey={onAppKey}
                   onEditFile={editFile}
-                  onSaveFile={(id) => { const tab = tabs.find((item): item is FileTab => item.id === id && item.type === 'file'); if (tab) void saveFile(tab) }}
+                  onSaveFile={(id) => { const tab = tabs.find((item) => item.id === id && item.type !== 'term'); if (tab && tab.type !== 'term') void saveFile(tab) }}
                   onReloadFile={reloadFile}
                   onHistoryFile={historyFile}
                   onComposeFile={composeFile}

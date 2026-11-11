@@ -68,7 +68,7 @@ kbd{font:11px var(--mono);color:var(--faint);padding:0 4px;border-radius:4px;bor
 .tabs.fade-l{-webkit-mask-image:linear-gradient(90deg,transparent 0,#000 16px);mask-image:linear-gradient(90deg,transparent 0,#000 16px)}
 .tabs.fade-r{-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 16px),transparent);mask-image:linear-gradient(90deg,#000 calc(100% - 16px),transparent)}
 .tabs.fade-l.fade-r{-webkit-mask-image:linear-gradient(90deg,transparent 0,#000 16px,#000 calc(100% - 16px),transparent);mask-image:linear-gradient(90deg,transparent 0,#000 16px,#000 calc(100% - 16px),transparent)}
-.tabtools{display:flex;flex:none;align-self:flex-end;align-items:center;height:32px;gap:2px;margin-bottom:5px}
+.tabtools{display:flex;flex:none;align-self:flex-end;align-items:center;height:32px;gap:2px;margin-bottom:0}
 .tabbar > .ib{align-self:flex-end;margin-bottom:5px}
 .tab{flex:none;display:flex;align-items:center;gap:8px;height:32px;padding:0 6px 0 10px;border-radius:6px 6px 0 0;color:var(--muted);font-size:calc(var(--ui-size,13px) - 1px);max-width:220px;transition:background var(--t),color var(--t);position:relative;z-index:0}
 .tab:hover{background:var(--hover);color:var(--text)}
@@ -188,9 +188,28 @@ kbd{font:11px var(--mono);color:var(--faint);padding:0 4px;border-radius:4px;bor
 .diffbar .path{font-family:var(--mono);color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .diff{flex:1;display:grid;grid-template-rows:minmax(0,1fr);background:var(--panel);font:12px/1.7 var(--mono);overflow:hidden}
 .diff>*{min-width:0;min-height:0}
-.dgrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);min-height:0;height:100%}
-.dgrid>div{min-width:0;overflow:auto;overscroll-behavior:contain}
-.dgrid>div+div{border-left:1px solid var(--line)}
+.diff-unified{display:block;overflow:auto}
+.diff-headings{display:flex;gap:32px;border-bottom:1px solid var(--line);background:var(--panel);color:var(--muted);font-size:12px}
+.diff-headings>span{flex:1;min-width:0;padding:4px 12px}
+.diff-split{position:relative;min-height:0;height:100%;overflow:hidden;--diff-scroll-top:0px}
+.diff-split .cm-mergeView,.diff-split .cm-mergeViewEditors{height:100%;overflow:hidden}
+.diff-split .cm-mergeViewEditor{min-width:0;overflow:hidden}
+.diff-split .cm-mergeViewEditor:first-child{flex:0 0 calc((100% - 32px) * var(--diff-ratio))}
+.diff-split .cm-mergeView .cm-editor{height:100%!important;overflow:hidden!important;background:var(--panel);color:var(--text);font:12px/1.7 var(--mono)}
+.diff-split .cm-mergeView .cm-scroller{height:100%!important;overflow:auto!important;overscroll-behavior:contain;font-family:inherit}
+.diff-split .cm-content{caret-color:var(--text);padding:4px 0}
+.diff-split .cm-gutters{background:var(--panel);color:var(--faint);border-color:var(--line)}
+.diff-split .cm-cursor{border-left-color:var(--text)}
+.diff-split .cm-selectionBackground,.diff-split .cm-focused .cm-selectionBackground{background:var(--accent-soft)!important}
+.diff-split .cm-merge-revert{width:32px;overflow:hidden;border-inline:1px solid var(--line);background:var(--panel)}
+.diff-split .cm-merge-revert button{color:var(--muted);height:22px;display:flex;align-items:center;justify-content:center;transform:translateY(calc(4px - var(--diff-scroll-top)));z-index:4;border-radius:4px}
+.diff-split .cm-merge-revert button:hover{color:var(--text);background:var(--hover)}
+.diff-split .cm-merge-revert button:focus-visible{outline:1px solid var(--accent);outline-offset:-2px}
+.diff-resize{position:absolute;top:0;bottom:0;width:6px;cursor:col-resize;z-index:3;touch-action:none}
+.diff-resize:focus-visible{outline:1px solid var(--muted);outline-offset:-1px}
+.diff-split .cm-merge-a .cm-changedLine{background:var(--del)}
+.diff-split .cm-merge-b .cm-changedLine{background:var(--add)}
+.diff-split .cm-mergeView .cm-editor .cm-changedText{background-image:none}
 .cl{display:grid;grid-template-columns:48px 20px 1fr;white-space:pre}
 .cl .ln{color:var(--faint);text-align:right;padding-right:8px;user-select:none;opacity:.8}
 .cl .sg{color:var(--faint);user-select:none}

@@ -42,14 +42,16 @@ const db = {
     { id: 'p3', name: '远程项目', host: 'remote', path: '/srv/remote', agent: 'shell', branch: '' }
   ],
   workSessions: {
-    p1: [{ id: 'session:p1', name: '会话一', activeTab: 'shell-check' }],
+    p1: [{ id: 'session:p1', name: '会话一', activeTab: 'shell-check' }, { id: 'session:p1:second', name: '会话二', activeTab: 'hidden-agent' }],
     p3: [{ id: 'session:p3', name: '会话一', activeTab: 'remote-term' }]
   },
   activeSession: { p1: 'session:p1', p3: 'session:p3' },
   sessions: {
     p1: [
       { id: 'agent-term', kind: 'native', shell, sessionId: 'session:p1', agentSessionId: 'session-42' },
-      { id: 'shell-check', kind: 'shell', shell, sessionId: 'session:p1' }
+      { id: 'shell-check', kind: 'shell', shell, sessionId: 'session:p1' },
+      { id: 'hidden-agent', kind: 'native', shell, sessionId: 'session:p1:second', agentSessionId: 'session-43' },
+      { id: 'hidden-shell', kind: 'shell', shell, sessionId: 'session:p1:second' }
     ],
     p3: [{ id: 'remote-term', kind: 'shell', shell: 'bash' }]
   },
@@ -82,10 +84,20 @@ try {
   await page.waitForFunction(({ id, marker }) => window.__awbBuffer(id).includes(marker), { id: term, marker })
   await page.waitForTimeout(4000)
   assert.ok((await page.evaluate((id) => window.awb.terminalHistory(id), term)).includes(marker), 'persisted terminal history missing marker')
+  const exported = path.join(data, 'complete-history.ansi')
+  await app.evaluate(({ dialog }, file) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: file }) }, exported)
+  await page.evaluate((id) => window.awb.exportTerminalHistory(id), term)
+  assert.ok(fs.readFileSync(exported, 'utf8').includes(marker), 'full output journal must be exportable')
 
   // A saved Agent session ID must survive normalization and be reused on launch.
   const normalized = (await page.evaluate(() => window.awb.getState())).db
   assert.equal(normalized.sessions.p1[0].agentSessionId, 'session-42')
+  await page.waitForFunction(() => window.__awbBuffer('hidden-agent')?.includes('STATUS_PROBE_OK'))
+  await page.evaluate(({ marker }) => {
+    window.awb.ptyWrite('hidden-agent', 'hidden-conversation-' + marker + '\r')
+    window.awb.ptyWrite('hidden-shell', 'echo hidden-shell-' + marker + '\r')
+  }, { marker })
+  await page.waitForFunction((marker) => window.__awbBuffer('hidden-agent')?.includes('STATUS_COMMAND_hidden-conversation-' + marker) && window.__awbBuffer('hidden-shell')?.includes('hidden-shell-' + marker), marker)
 
   // Pin lives in the project menu and orders the sidebar immediately.
   const pinMenu = page.getByLabel('项目菜单 置顶项目', { exact: true })
@@ -121,22 +133,7 @@ try {
   await page.locator('[data-a=file-search]').click()
   assert.equal(await page.getByLabel('搜索文件', { exact: true }).count(), 0)
 
-  // Split diff stays two equal panes and can scroll independently.
-  await page.locator('[data-a=rmode][data-id=changes]').click()
-  await page.locator('[data-a=diff][data-id="diff-depth.txt"]').click()
-  await page.locator('[data-a=dmode][data-id=split]').click()
-  await page.locator('.dgrid .cl').first().waitFor()
-  const diffBoxes = await page.evaluate(() => ({
-    panes: Array.from(document.querySelectorAll('.dgrid > div')).map((node) => node.getBoundingClientRect().width),
-    total: document.querySelector('.diff').clientWidth
-  }))
-  assert.equal(diffBoxes.panes.length, 2)
-  assert.ok(Math.abs(diffBoxes.panes[0] - diffBoxes.panes[1]) <= 1, `Split diff panes must be equal: ${diffBoxes.panes.join(',')}`)
-  assert.ok(Math.abs(diffBoxes.panes[0] - diffBoxes.total / 2) <= 2, 'Split diff must not be expanded by long lines')
-  const beforeScroll = await page.evaluate(() => Array.from(document.querySelectorAll('.dgrid > div')).map((node) => node.scrollTop))
-  await page.evaluate(() => document.querySelector('.dgrid > div').scrollBy({ top: 1000 }))
-  const afterScroll = await page.evaluate(() => Array.from(document.querySelectorAll('.dgrid > div')).map((node) => node.scrollTop))
-  assert.ok(afterScroll[0] > beforeScroll[0] && afterScroll[1] === beforeScroll[1], 'Split diff panes must scroll independently')
+  // Split diff behavior is covered by diff-editor-check.mjs.
 
   // The only show-panel button is the tab-bar one; its baseline follows tabs.
   const collapseBox = await page.getByRole('button', { name: '收起文件面板', exact: true }).boundingBox()
@@ -175,6 +172,12 @@ try {
   assert.equal(restoredTabs, 2, 'The project session must reopen its shell and Agent terminals')
   assert.equal((await page.evaluate(() => window.awb.getState())).db.sessions.p1[0].agentSessionId, 'session-42')
   assert.ok((await page.evaluate(() => window.__awbBuffer('agent-term'))).includes('上次会话记录'), 'Agent restore must replay its previous visible history')
+  // All groups restore eagerly; the user never needs to select each session to
+  // trigger reconnection or replay. Check real conversation content, not counts.
+  await page.waitForFunction((marker) => window.__awbBuffer('hidden-agent')?.includes('STATUS_COMMAND_hidden-conversation-' + marker) && window.__awbBuffer('hidden-shell')?.includes('hidden-shell-' + marker), marker)
+  const all = (await page.evaluate(() => window.awb.getState())).db
+  assert.equal(all.workSessions.p1.length, 2)
+  assert.equal(all.sessions.p1.length, 4)
 
   // Search never enters dot folders, including after a restart.
   await page.locator('[data-a=rmode][data-id=files]').click()

@@ -1,11 +1,15 @@
 import type { Terminal } from '@xterm/xterm'
 import type { ThemeName } from '../shared/types'
 import { workbenchTheme } from '../shared/themes'
+import { SerializeAddon } from '@xterm/addon-serialize'
 
 const terms = new Map<string, Terminal>()
 const buffers = new Map<string, string>()
 const historyTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const historyHolds = new Set<string>()
+const retainedHistories = new Map<string, string>()
+const replaying = new Map<string, string[]>()
+const replayPromises = new Map<string, Promise<void>>()
 let historyEnabled = true
 
 export function setTerminalHistoryEnabled(enabled: boolean): void {
@@ -39,13 +43,15 @@ export function syncTermSize(id: string): void {
 }
 
 export function writeTerm(id: string, data: string): void {
+  const pending = replaying.get(id)
+  if (pending) { pending.push(data); return }
   const term = terms.get(id)
   if (term) {
     term.write(data)
     scheduleSnapshot(id)
   }
   else {
-    buffers.set(id, ((buffers.get(id) || '') + data).slice(-500_000))
+    buffers.set(id, (buffers.get(id) || '') + data)
   }
 }
 
@@ -53,6 +59,8 @@ export function dropTerm(id: string): void {
   terms.delete(id)
   buffers.delete(id)
   historyHolds.delete(id)
+  retainedHistories.delete(id)
+  replaying.delete(id)
   const timer = historyTimers.get(id)
   if (timer) clearTimeout(timer)
   historyTimers.delete(id)
@@ -72,7 +80,7 @@ function termSnapshot(term: Terminal): string {
   const current = bufferText(active)
   const normal = active.type === 'alternate' ? bufferText(term.buffer.normal) : ''
   const text = [normal, current].filter((part) => part.trim()).join('\n')
-  return text.length > 400_000 ? text.slice(-400_000) : text
+  return text
 }
 
 export function snapshotTerm(id: string): void {
@@ -80,7 +88,11 @@ export function snapshotTerm(id: string): void {
   if (historyHolds.has(id)) return
   const term = terms.get(id)
   if (!term) return
-  const text = termSnapshot(term)
+  const current = termSnapshot(term)
+  const previous = retainedHistories.get(id) || ''
+  // A TUI can clear either screen, and xterm has bounded in-memory scrollback.
+  // Keep the previous launch's history outside that mutable screen buffer.
+  const text = previous && !current.includes('── 上次会话记录 ──') ? `${previous}\n${current}` : current
   if (!text.trim()) return
   window.awb.saveTerminalHistory(id, text)
 }
@@ -90,12 +102,49 @@ export function holdTermHistory(id: string): void {
   historyHolds.add(id)
 }
 
+export function retainTermHistory(id: string, text: string): void {
+  retainedHistories.set(id, text)
+}
+
+/** Insert old output into normal scrollback without changing the live TUI,
+ * cursor, alternate screen, or input modes. Incoming PTY output stays ordered. */
+export function prependTermHistory(id: string, text: string): Promise<void> {
+  const ongoing = replayPromises.get(id)
+  if (ongoing) return ongoing
+  const term = terms.get(id)
+  if (!term) { writeTerm(id, restoreHistoryText(text)); return Promise.resolve() }
+  const pending: string[] = []
+  replaying.set(id, pending)
+  const operation = new Promise<void>((resolve) => term.write('', () => {
+    if (terms.get(id) !== term) { replaying.delete(id); resolve(); return }
+    const serializer = new SerializeAddon()
+    term.loadAddon(serializer)
+    const screen = serializer.serialize({ scrollback: 0 })
+    serializer.dispose()
+    // Leave the alternate screen without clearing it, scroll the history out
+    // of the current viewport, then restore the serialized live screen/cursor.
+    const history = restoreHistoryText(text)
+    term.write(`\x1b[?47l\x1b[H\x1b[2J${history}${'\r\n'.repeat(term.rows)}\x1b[H${screen}`, () => {
+      replaying.delete(id)
+      for (const data of pending) writeTerm(id, data)
+      term.scrollToBottom()
+      resolve()
+    })
+  }))
+  replayPromises.set(id, operation)
+  void operation.finally(() => replayPromises.delete(id))
+  return operation
+}
+
 export function releaseTermHistory(id: string): void {
   historyHolds.delete(id)
 }
 
-export function snapshotTerms(): void {
-  for (const id of terms.keys()) snapshotTerm(id)
+export async function snapshotTerms(): Promise<void> {
+  await Promise.all(replayPromises.values())
+  await Promise.all([...terms].map(([id, term]) => new Promise<void>((resolve) => {
+    term.write('', () => { snapshotTerm(id); resolve() })
+  })))
 }
 
 export function queueSnapshot(id: string): void {
@@ -114,7 +163,7 @@ function scheduleSnapshot(id: string): void {
 export function restoreHistoryText(text: string): string {
   const normalized = text.replaceAll('\r\n', '\n').replaceAll('\r', '\n').trimEnd()
   if (!normalized) return ''
-  const body = (normalized.length > 400_000 ? normalized.slice(-400_000) : normalized).split('\n').join('\r\n')
+  const body = normalized.split('\n').join('\r\n')
   return `\x1b[38;5;244m── 上次会话记录 ──\x1b[0m\r\n${body}\r\n\x1b[38;5;244m── 会话已恢复，下面连接新进程 ──\x1b[0m\r\n`
 }
 
