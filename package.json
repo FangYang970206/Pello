@@ -1,6 +1,6 @@
 {
   "name": "pello",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "description": "Local desktop workbench for code agent CLIs. No account, no cloud.",
   "main": "./out/main/index.js",
