@@ -159,6 +159,7 @@ try {
   })
   await check('overflow keeps active tab and plus accessible', async () => {
     for (let i = 0; i < 9; i++) {
+      await page.locator('.addtab[data-a=newterm]').locator('..').hover()
       await page.click('.addtab[data-a=newterm]')
       await page.click('[data-a=ntk][data-id=shell]')
       await page.click('[data-a=nt-ok]')

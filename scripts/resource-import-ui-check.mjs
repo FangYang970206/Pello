@@ -6,6 +6,8 @@ import { zipSync, strToU8 } from 'fflate'
 import { _electron as electron } from 'playwright'
 
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'awb-import-ui-')), home = path.join(data, 'home')
+// The first visual pass explicitly starts dark; fresh profiles now default light.
+fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: { theme: 'dark' } }))
 const source = path.join(data, 'bundle'), archive = path.join(data, 'skills.zip'), config = path.join(data, 'mcp.jsonc')
 const skill = (name) => `---\nname: ${name}\ndescription: ${name} fixture\n---\nBody\n`
 fs.mkdirSync(path.join(source, 'group/deep/inner/references'), { recursive: true })

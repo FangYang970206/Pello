@@ -1,9 +1,10 @@
 const PATHS = {
   download: 'M12 3v12M7 10l5 5 5-5M4 16v4h16v-4',
   plus: 'M12 5v14M5 12h14',
-  more: 'M5 12h.01M12 12h.01M19 12h.01',
+  more: 'M6.75 12a1.75 1.75 0 1 1-3.5 0 1.75 1.75 0 1 1 3.5 0M13.75 12a1.75 1.75 0 1 1-3.5 0 1.75 1.75 0 1 1 3.5 0M20.75 12a1.75 1.75 0 1 1-3.5 0 1.75 1.75 0 1 1 3.5 0',
   terminal: 'M4 17l6-5-6-5M12 19h8',
   folder: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
+  'folder-open': 'M3 10V7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v1M5 19h13a2 2 0 0 0 1.9-1.4l2-6A1.2 1.2 0 0 0 20.8 10H6a2 2 0 0 0-1.9 1.4L2.5 17a1.5 1.5 0 0 0 1.4 2H5z',
   settings:
     'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z',
   laptop: 'M4 6a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v9H4zM2 18h20',
@@ -39,7 +40,7 @@ export type IconName = keyof typeof PATHS
 export function Icon({ name, className = '' }: { name: IconName; className?: string }) {
   return (
     <svg className={`i ${className}`} viewBox="0 0 24 24" aria-hidden="true">
-      <path d={PATHS[name]} />
+      <path d={PATHS[name]} fill={name === 'more' ? 'currentColor' : undefined} stroke={name === 'more' ? 'none' : undefined} />
     </svg>
   )
 }

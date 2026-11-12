@@ -92,7 +92,17 @@ const cases = [
   ['AWB064', 'src/renderer/ProjectSidebar.tsx', '<Icon name="plus"', '<Icon name="more"'],
   ['AWB064', 'src/renderer/ProjectSidebar.tsx', "contextMenu('agents-filter')", "contextMenu('unused')"],
   ['AWB064', 'src/renderer/ProjectSidebar.tsx', "event.shiftKey && event.key === 'F10'", 'false'],
-  ['AWB064', 'src/shared/locales/en.ts', '"临时会话": "TempSessions"', '"临时会话": "Temporary sessions"']
+  ['AWB064', 'src/shared/locales/en.ts', '"临时会话": "TempSessions"', '"临时会话": "Temporary sessions"'],
+  ['AWB065', 'src/renderer/ProjectSidebar.tsx', 'props.onNewProject()', 'void 0'],
+  ['AWB065', 'src/renderer/styles/workbench.css', '.proj:has(:focus-visible) .project-add', '.proj .missing'],
+  ['AWB065', 'src/renderer/Workspace.tsx', '<main className="center" id="center">', '<main className="center" id="center"><button data-a="newproj" />'],
+  ['AWB066', 'src/main/store.ts', "theme: 'light'", "theme: 'dark'"],
+  ['AWB066', 'src/renderer/index.html', 'data-theme="light"', 'data-theme="dark"'],
+  ['AWB066', 'src/renderer/styles/workbench.css', 'font:var(--fs,13px)/1.7 var(--mono)', 'font:12px/1.7 var(--mono)'],
+  ['AWB066', 'src/renderer/icons.tsx', "fill={name === 'more' ? 'currentColor' : undefined}", 'fill="none"'],
+  ['AWB067', 'src/renderer/ProjectSidebar.tsx', 't("最近")', '"Agents"'],
+  ['AWB067', 'src/renderer/ProjectSidebar.tsx', "collapsed[project.id] ? 'folder' : 'folder-open'", "'folder'"],
+  ['AWB067', 'src/renderer/styles/extra.css', '.sidebar-section-heading > [aria-expanded=true] .sidebar-disclosure { opacity:0; }', '.sidebar-section-heading .sidebar-disclosure { opacity:1; }']
 ]
 for (const [id, file, before, after] of cases) {
   const mutated = new Map(files)

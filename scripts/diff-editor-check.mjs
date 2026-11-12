@@ -44,6 +44,7 @@ try {
     assert.ok(styles.every((style) => !['transparent', 'rgba(0, 0, 0, 0)'].includes(style.lineBackground)), 'changed lines must retain their background highlight')
   }
   await contents.first().waitFor()
+  assert.deepEqual(await contents.evaluateAll((nodes) => nodes.map((node) => getComputedStyle(node).fontSize)), ['13px', '13px'], 'Both diff panes must use the terminal font size')
   fs.mkdirSync(path.join(root, 'output/playwright/diff-editor'), { recursive: true })
   await page.screenshot({ path: path.join(root, 'output/playwright/diff-editor/split-initial.png') })
   await checkChangedLineStyle()
@@ -80,6 +81,18 @@ try {
   await page.getByRole('button', { name: '保存文件', exact: true }).click()
   assert.equal(fs.readFileSync(path.join(project, 'fixture.txt'), 'utf8'), 'edited right\n')
   await contents.nth(0).fill('editable baseline\n')
+  await page.evaluate(() => { window.__diffFontNodes = [...document.querySelectorAll('.diff-split .cm-content')] })
+  for (const size of [10, 18, 24, 13]) {
+    await page.click('[data-a=settings]'); await page.click('[data-a=sec][data-id=look]')
+    await page.getByLabel('字号', { exact: true }).selectOption(String(size))
+    await page.getByLabel('源码字号', { exact: true }).selectOption('17')
+    await page.click('[data-a=back]')
+    await page.waitForFunction((size) => [...document.querySelectorAll('.diff-split .cm-content,.diff-split .cm-gutters')].every((node) => getComputedStyle(node).fontSize === `${size}px`), size)
+    assert.equal(await page.evaluate(() => window.__diffFontNodes.every((node, i) => node === document.querySelectorAll('.diff-split .cm-content')[i])), true, 'Font changes must preserve both editor instances')
+    assert.ok((await contents.nth(0).textContent()).includes('editable baseline'))
+    assert.ok((await contents.nth(1).textContent()).includes('edited right'))
+    assert.equal(fs.readFileSync(path.join(project, 'fixture.txt'), 'utf8'), 'edited right\n', 'Changing fonts must retain the unsaved baseline')
+  }
   await page.locator('[data-a=dmode][data-id=unified]').click()
   await page.locator('[data-a=dmode][data-id=split]').click()
   await contents.nth(0).focus()
@@ -131,7 +144,7 @@ try {
     fs.mkdirSync(path.join(root, 'output/playwright/diff-editor'), { recursive: true })
     await page.screenshot({ path: path.join(root, `output/playwright/diff-editor/${theme}-${width}.png`) })
   }
-  console.log(`PASS editable diff, synchronized axes, resizing, hunk revert, guarded save (${data})`)
+  console.log(`PASS editable diff, live terminal font size (10/13/18/24px), independent source size, editor/draft/undo preservation, synchronized axes, resizing, hunk revert, guarded save (${data})`)
 } catch (error) {
   const page = await app.firstWindow()
   console.error(await page.evaluate(() => ({ scroll: [...document.querySelectorAll('.cm-scroller')].map(n => ({ width:n.clientWidth, total:n.scrollWidth, left:n.scrollLeft, content:n.querySelector('.cm-content')?.getBoundingClientRect().width, min:n.querySelector('.cm-content')?.style.minWidth, gutters:n.querySelector('.cm-gutters')?.getBoundingClientRect().width })), errors: [...document.querySelectorAll('.file-error')].map((node) => node.textContent), editors: [...document.querySelectorAll('.cm-content')].map((node) => node.textContent?.slice(0, 100)), tabs: [...document.querySelectorAll('.tabs .tab')].map((node) => node.textContent) })))

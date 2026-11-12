@@ -25,6 +25,7 @@ try {
     })
   })
   const page = await app.firstWindow()
+  await page.locator('[data-a=newproj]').locator('..').hover()
   await page.click('[data-a=newproj]')
   await page.click('[data-a=nph][data-id=wsl-fixture]')
   await page.click('[data-a=browse]')

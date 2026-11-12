@@ -82,6 +82,7 @@ try {
   await session('old-temp-a').dblclick()
   await rename('临时排查 $&')
   assert.equal((await state()).db.workSessions['old-temp-a'][0].name, '临时排查 $&')
+  await page.locator('[data-a=newterm]').locator('..').hover()
   await page.click('[data-a=newterm]')
   await page.click('[data-a=ntk][data-id=shell]'); await page.click('[data-a=nt-ok]')
   await page.locator('.dlg').waitFor({ state: 'detached' })
@@ -102,6 +103,7 @@ try {
   await page.getByRole('heading', { name: 'General', exact: true }).waitFor()
   assert.equal(await page.locator('[data-set=language]').inputValue(), 'en')
   assert.equal((await page.locator('[data-a=temporary-toggle]').textContent()).trim(), 'TempSessions')
+  assert.equal((await page.locator('[data-a=agents-toggle]').textContent()).trim(), 'Recent')
   const blockedSave = path.join(data, 'workbench.json.tmp')
   fs.mkdirSync(blockedSave)
   try {
@@ -160,14 +162,17 @@ try {
   const error = await page.evaluate(async () => { try { await window.awb.configureTemporaryDirectory('relative') } catch (error) { return String(error) } })
   assert.ok(error.includes('Choose an absolute directory for temporary sessions'), 'Main-process errors follow the selected language')
   // Cancellation creates neither a UUID folder nor a project record.
+  await page.locator('[data-a=temporary-session]').locator('..').hover()
   await page.click('[data-a=temporary-session]')
   await page.getByRole('heading', { name: 'Configure temporary session directory', exact: true }).waitFor()
   await page.keyboard.press('Escape')
   const base = path.join(data, 'new-temporary-root')
   await page.evaluate((base) => window.awb.configureTemporaryDirectory(base), base)
+  await page.locator('[data-a=temporary-session]').locator('..').hover()
   await page.click('[data-a=temporary-session]'); await page.keyboard.press('Escape')
   assert.equal(fs.readdirSync(base).length, 0)
   for (let index = 0; index < 2; index++) {
+    await page.locator('[data-a=temporary-session]').locator('..').hover()
     await page.click('[data-a=temporary-session]'); await page.click('[data-a=ntk][data-id=shell]'); await page.click('[data-a=nt-ok]')
     await page.locator('.dlg').waitFor({ state: 'detached' })
   }

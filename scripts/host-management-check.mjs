@@ -11,6 +11,7 @@ delete env.ELECTRON_RUN_AS_NODE
 const app = await electron.launch({ args: ['.'], env })
 try {
   const page = await app.firstWindow()
+  await page.locator('[data-a=newproj]').locator('..').hover()
   await page.click('[data-a=newproj]')
   await page.click('[data-a=np-addhost]')
   await page.fill('[data-nh=name]', 'unreachable fixture')

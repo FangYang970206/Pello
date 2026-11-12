@@ -141,6 +141,7 @@ try {
   await page.getByLabel('新名称', { exact: true }).press('Enter')
   assert.equal(await page.evaluate(() => window.__sidebarTerminal === document.querySelector('.pane:not([hidden]) .xterm')), true)
   // Project plus creates a separate session; tab plus adds within it.
+  await page.locator('[data-a=new-session][data-id=p2]').locator('..').hover()
   await page.locator('[data-a=new-session][data-id=p2]').click()
   await page.getByRole('heading', { name: '新建会话', exact: true }).waitFor()
   assert.equal(await page.locator('[data-a=side-session]').count(), 2, 'No group created before choosing an executor')
@@ -152,6 +153,7 @@ try {
   assert.ok(newGroup)
   assert.equal(await page.locator('.tabs [data-a=tab]').count(), 1)
   assert.equal(await select('ready').count(), 0)
+  await page.locator('.addtab[data-a=newterm]').locator('..').hover()
   await page.locator('.addtab[data-a=newterm]').click()
   await page.getByRole('heading', { name: '新建终端', exact: true }).waitFor()
   await page.click('[data-a=ntk][data-id=shell]'); await page.click('[data-a=nt-ok]')
@@ -233,6 +235,7 @@ try {
   assert.equal(db.workSessions.p2.length, 1)
   assert.ok(db.sessions.p2.every((term) => term.sessionId === 'session:p2'))
   fs.rmdirSync(disappearing)
+  await page.locator('[data-a=new-session][data-id=p3]').locator('..').hover()
   await page.locator('[data-a=new-session][data-id=p3]').click()
   await page.click('[data-a=ntk][data-id=shell]'); await page.click('[data-a=nt-ok]')
   await page.getByRole('alert').filter({ hasText: '终端启动失败' }).waitFor()

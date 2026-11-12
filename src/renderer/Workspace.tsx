@@ -56,7 +56,6 @@ export function Workspace({
   onNavigateFile,
   onClose,
   onNewTerm,
-  onNewProject,
   onQuick,
   onInterrupt,
   onReconnect,
@@ -95,7 +94,6 @@ export function Workspace({
   onNavigateFile: (path: string, anchor?: string) => void
   onClose: (id: string) => void
   onNewTerm: () => void
-  onNewProject: () => void
   onQuick: () => void
   onInterrupt: (id: string) => void
   onReconnect: (id: string) => void
@@ -221,11 +219,6 @@ export function Workspace({
             </div>
             <h2>{t("创建第一个项目")}</h2>
             <p>{t("项目是某台机器上的一个目录，终端在其中运行 Agent CLI。")}</p>
-            <div className="acts">
-              <button className="btn pri" data-a="newproj" onClick={onNewProject}>
-                <Icon name="plus" className="s" />
-                {t("新建项目")}</button>
-            </div>
           </div>
         </div>
       ) : (

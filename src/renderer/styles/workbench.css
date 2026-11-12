@@ -34,10 +34,7 @@ svg.i.s{width:14px;height:14px}
 .wc{display:flex;height:40px}.wc button{width:46px;display:grid;place-items:center;color:var(--muted);transition:background var(--t)}
 .wc button:hover{background:var(--hover);color:var(--text)}.wc button.close:hover{background:#c42b1c;color:#fff}
 /* sidebar */
-.side{display:flex;flex-direction:column;padding:8px 10px 10px;min-height:0}
-.newp{display:flex;align-items:center;gap:8px;height:var(--control-height);padding:0 10px;border-radius:var(--r1);color:var(--text);font-weight:550;transition:background var(--t)}
-.newp:hover{background:var(--hover)}.newp:active{background:var(--press)}
-.newp kbd{margin-left:auto}
+.side{display:flex;flex-direction:column;padding:0 10px 10px;min-height:0}
 kbd{font:11px var(--mono);color:var(--faint);padding:0 4px;border-radius:4px;border:1px solid var(--line2)}
 .sec{font-size:calc(var(--ui-size,13px) - 1px);color:var(--faint);padding:20px 10px 8px;font-weight:550}
 .plist{overflow:auto;flex:1;margin:0 -2px;padding:0 2px}
@@ -45,7 +42,7 @@ kbd{font:11px var(--mono);color:var(--faint);padding:0 4px;border-radius:4px;bor
 .project-open{display:flex;align-items:center;gap:8px;flex:1;min-width:0;min-height:34px;padding:4px 6px 4px 8px;border-radius:inherit;text-align:left}
 .proj{display:flex;align-items:center;gap:0;margin-bottom:0}
 .project-add{width:26px;height:28px;flex:none;border-radius:4px;display:grid;place-items:center;color:var(--muted)}
-.project-add:hover{background:var(--press);color:var(--text)}
+.project-add:hover{color:var(--text)}
 .project-add{margin-right:4px}
 .project-folder{display:flex;align-items:center;flex:none;color:var(--host-color)}
 .project-pin{display:flex;align-items:center;flex:none;color:var(--accent)}
@@ -53,7 +50,7 @@ kbd{font:11px var(--mono);color:var(--faint);padding:0 4px;border-radius:4px;bor
 .pmenu button{width:100%;height:28px;padding:0 8px;border-radius:var(--r1);text-align:left;font-size:calc(var(--ui-size,13px) - 1px);color:var(--text)}
 .pmenu [data-a=proj-remove]{color:var(--red)}
 .pmenu button:hover{background:var(--hover)}
-.proj:hover{background:var(--hover)}.proj.on{background:var(--accent-soft)}
+.proj:hover,.proj:has(:focus-visible){background:var(--hover)}.proj.on{background:var(--accent-soft)}
 .proj .n{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sfoot{border-top:1px solid var(--line);margin:8px -8px 0;padding:8px 8px 0}
 .navb{width:100%;display:flex;align-items:center;gap:10px;height:var(--control-height);padding:0 10px;border-radius:var(--r1);color:var(--muted);transition:background var(--t),color var(--t)}
@@ -87,6 +84,10 @@ kbd{font:11px var(--mono);color:var(--faint);padding:0 4px;border-radius:4px;bor
 .dot.terminal-status.ready{background:var(--green)}
 .addtab{flex:none;width:32px;height:32px;align-self:center;display:grid;place-items:center;border-radius:var(--r1);color:var(--muted);transition:background var(--t)}
 .addtab:hover{background:var(--hover);color:var(--text)}
+.project-add,.sidebar-add,.tabtools [data-a=newterm]{opacity:0;pointer-events:none}
+.proj:hover .project-add,.proj:has(:focus-visible) .project-add,.sidebar-section-heading:hover .sidebar-add,.sidebar-section-heading:has(:focus-visible) .sidebar-add,.tabbar:hover .tabtools [data-a=newterm],.tabbar:has(:focus-visible) .tabtools [data-a=newterm]{opacity:1;pointer-events:auto}
+.tabtools [data-a=newterm]:hover{background:transparent}
+@media(hover:none){.project-add,.sidebar-add,.tabtools [data-a=newterm]{opacity:1;pointer-events:auto}}
 .mark{width:18px;height:18px;border-radius:5px;display:grid;place-items:center;font:600 11px/1 var(--ui);color:#15161a;flex:none;letter-spacing:-.02em}
 .mark.lg{width:32px;height:32px;border-radius:8px;font-size:var(--ui-size,13px)}
 .mark.md{width:24px;height:24px;border-radius:6px;font-size:11px}
@@ -195,7 +196,7 @@ kbd{font:11px var(--mono);color:var(--faint);padding:0 4px;border-radius:4px;bor
 .diff-split .cm-mergeView,.diff-split .cm-mergeViewEditors{height:100%;overflow:hidden}
 .diff-split .cm-mergeViewEditor{min-width:0;overflow:hidden}
 .diff-split .cm-mergeViewEditor:first-child{flex:0 0 calc((100% - 32px) * var(--diff-ratio))}
-.diff-split .cm-mergeView .cm-editor{height:100%!important;overflow:hidden!important;background:var(--panel);color:var(--text);font:12px/1.7 var(--mono)}
+.diff-split .cm-mergeView .cm-editor{height:100%!important;overflow:hidden!important;background:var(--panel);color:var(--text);font:var(--fs,13px)/1.7 var(--mono)}
 .diff-split .cm-mergeView .cm-scroller{height:100%!important;overflow:auto!important;overscroll-behavior:contain;font-family:inherit}
 .diff-split .cm-content{caret-color:var(--text);padding:4px 0}
 .diff-split .cm-gutters{background:var(--panel);color:var(--faint);border-color:var(--line)}

@@ -37,6 +37,7 @@ const fail = (message) => {
 
 try {
   await page.waitForSelector('[data-a=newproj]')
+  await page.locator('[data-a=newproj]').locator('..').hover()
   await page.click('[data-a=newproj]')
   await page.fill('[data-np=name]', 'pw-check')
   await page.fill('[data-np=path]', demo)
@@ -56,6 +57,7 @@ try {
   }, prompt)
 
   for (let i = 0; i < 8; i++) {
+    await page.locator('.addtab[data-a=newterm]').locator('..').hover()
     await page.click('.addtab[data-a=newterm]')
     await page.click('[data-a=ntk][data-id=shell]')
     await page.click('[data-a=nt-ok]')
@@ -144,8 +146,8 @@ try {
     return cycled && back.ok
   }
 
-  await openClose('新建项目', '.side [data-a=newproj]', () => page.click('.side [data-a=newproj]'))
-  await openClose('新建终端', '.addtab[data-a=newterm]', () => page.click('.addtab[data-a=newterm]'))
+  await openClose('新建项目', '.side [data-a=newproj]', async () => { await page.locator('[data-a=projects-toggle]').hover(); await page.click('.side [data-a=newproj]') })
+  await openClose('新建终端', '.addtab[data-a=newterm]', async () => { await page.locator('.tabtools').hover(); await page.click('.addtab[data-a=newterm]') })
 
   await page.click('.pane:not([hidden]) .xterm')
   await page.keyboard.type(process.platform === 'win32' ? 'Start-Sleep -Seconds 30' : 'sleep 30')

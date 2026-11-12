@@ -61,6 +61,7 @@ try {
   await page.click('[data-a=back]')
   assert.equal(await page.evaluate(() => window.__originalTerminal === document.querySelector('.termhost .xterm')), true)
   await page.evaluate(() => { window.__shellStates = {}; window.awb.onPty((event) => { if (event.type === 'state') window.__shellStates[event.id] = event }) })
+  await page.locator('.addtab[data-a=newterm]').locator('..').hover()
   await page.click('.addtab[data-a=newterm]')
   const bashOption = page.getByRole('radio', { name: nativeBash.label, exact: true })
   if (detected.length > 1) { await bashOption.waitFor(); assert.equal(await bashOption.getAttribute('aria-checked'), 'true') }
@@ -120,6 +121,7 @@ try {
   await page.click('[data-a=back]')
   await app.evaluate(() => { globalThis.__shellDetectionMode = 'missing' })
   if (detected.length > 1) {
+    await page.locator('.addtab[data-a=newterm]').locator('..').hover()
     await page.click('.addtab[data-a=newterm]')
     await page.getByRole('alert').filter({ hasText: '未检测到 bash' }).waitFor()
     assert.equal(await page.locator('[data-a=nt-ok]').isDisabled(), true)

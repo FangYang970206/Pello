@@ -182,10 +182,17 @@ kbd {
 .resource-import-item small { display: block; color: var(--muted); overflow-wrap: anywhere; margin-top: 4px; }
 .resource-import-item .bad { color: var(--red); }
 .project-group { margin-bottom: 4px; }
-.sidebar-section-heading { display:flex; align-items:center; gap:4px; margin:16px 4px 4px; color:var(--muted); }
-.sidebar-section-heading > button:first-child { display:flex; align-items:center; gap:6px; flex:1; min-height:30px; text-align:left; font-size:12px; font-weight:550; border-radius:var(--r1); }
-.sidebar-section-heading > button:hover { color:var(--text); background:var(--hover); }
-.sidebar-section-heading .more { display:grid; place-items:center; width:26px; height:26px; border-radius:var(--r1); }
+.sidebar-section-heading { position:relative; display:flex; align-items:center; margin:16px 0 4px; border-radius:var(--r1); color:var(--muted); }
+.sidebar-section-heading > button:first-child { display:flex; align-items:center; gap:6px; flex:1; min-width:0; min-height:30px; padding:0 8px; text-align:left; font-size:12px; font-weight:550; border-radius:var(--r1); }
+.plist > .sidebar-section-heading:first-child { margin-top:0; }
+.plist > .sidebar-section-heading:first-child > button:first-child { min-height:40px; }
+.sidebar-heading-label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-right:34px; }
+.sidebar-disclosure { margin-left:auto; pointer-events:none; }
+.sidebar-section-heading > [aria-expanded=true] .sidebar-disclosure { opacity:0; }
+.sidebar-section-heading:hover > [aria-expanded=true] .sidebar-disclosure,.sidebar-section-heading:has(:focus-visible) > [aria-expanded=true] .sidebar-disclosure { opacity:1; }
+.sidebar-section-heading:hover,.sidebar-section-heading:has(:focus-visible) { background:var(--hover); }
+.sidebar-section-heading > button:hover { color:var(--text); }
+.sidebar-section-heading .sidebar-add { position:absolute; right:30px; top:50%; transform:translateY(-50%); display:grid; place-items:center; width:26px; height:26px; border-radius:var(--r1); }
 .sidebar-sessions { padding:2px 0 4px 24px; }
 .sidebar-session,.sidebar-term { position:relative; border-radius:var(--r1); }
 .sidebar-session.on,.sidebar-term.on { background:var(--sel); }

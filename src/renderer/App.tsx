@@ -299,7 +299,7 @@ export function App() {
 
   const project = db?.projects.find((item) => item.id === projectId) || null
   const host = db?.hosts.find((item) => item.id === project?.host) || db?.hosts[0]
-  const theme: ThemeName = db?.settings.theme || 'dark'
+  const theme: ThemeName = db?.settings.theme || 'light'
   const sessionId = project ? selectedSessions[project.id] || workSessions[project.id]?.[0]?.id : undefined
   const projectTabs = project ? tabs.filter((tab) => tab.projectId === project.id && (tab.type !== 'term' || sessionOf(tab) === sessionId)) : []
   const active = projectTabs.find((tab) => tab.id === activeMap[project?.id || '']) ?? projectTabs[0]
@@ -415,7 +415,7 @@ export function App() {
       if (existingId) {
         const message = err instanceof Error ? err.message : t("无法启动终端")
         flushRestoredHistory(id)
-        writeNotice(id, db?.settings.theme || 'dark', 'red', t("[无法恢复会话：{{0}}。右键终端可选择重新连接。]", message))
+        writeNotice(id, db?.settings.theme || 'light', 'red', t("[无法恢复会话：{{0}}。右键终端可选择重新连接。]", message))
         setTabs((list) => list.map((item) => item.id === id && item.type === 'term' ? { ...item, state: 'failed', startedAt: null, exitCode: null, inputReady: false } : item))
         toast(t("会话 {{0}} 未能恢复：{{1}}", existingName || id, message), true)
         return null
@@ -1232,15 +1232,12 @@ export function App() {
           <div id="workspace" style={{ display: route === 'settings' ? 'none' : 'contents' }} inert={workspaceLocked ? true : undefined} aria-hidden={workspaceLocked ? true : undefined}>
               <aside className="side" aria-label={t("项目")}>
                 <SidebarResize width={sidebarWidth} onResize={resizeSidebar} />
-                <button className="newp" data-a="newproj" onClick={() => setModal({ type: 'project' })}>
-                  <Icon name="plus" />
-                  {t("新建项目")}</button>
                 <nav className="plist" aria-label={t("项目")}>
                   <ProjectSidebar projects={db?.projects || []} hosts={db?.hosts || []} terms={tabs.filter((tab): tab is TermTab => tab.type === 'term')} agents={agents} onNewTemporary={() => void newTemporary()} temporaryBusy={temporaryBusy}
                     sessions={workSessions} selectedSession={sessionId} onSession={selectSession} onRenameSession={renameSession} onRemoveSession={removeSession}
                     projectId={projectId} activeId={active?.id} menuId={menuId} onMenu={setMenuId} onProject={selectProject} onTerm={selectTab}
                     onRenameProject={renameProject} onRenameTerm={renameTerm} onRemoveProject={askRemove} onCloseTerm={requestClose}
-                    onTogglePin={togglePin}
+                    onTogglePin={togglePin} onNewProject={() => setModal({ type: 'project' })}
                     onProjectAction={(id, action) => { void window.awb.treeAction(id, '', true, action).catch((error) => toast(String(error))) }}
                     onNewSession={(id) => { selectProject(id); setModal({ type: 'term', newSession: true }) }} />
                 </nav>
@@ -1290,7 +1287,6 @@ export function App() {
                   }}
                   onClose={requestClose}
                   onNewTerm={() => (project ? setModal({ type: 'term' }) : setModal({ type: 'project' }))}
-                  onNewProject={() => setModal({ type: 'project' })}
                   onQuick={() => {
                     if (!project || !db || !host) return
                     void openTerm(project, project.agent, shellFor(host, db.settings.defShell))

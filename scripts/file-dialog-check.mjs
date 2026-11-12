@@ -109,6 +109,7 @@ for (const scale of baseline ? [1] : [1, 1.25, 1.5, 2]) for (const theme of base
       assert.ok(!settingsBounds.overflow && settingsBounds.left >= 0 && settingsBounds.right <= width && settingsBounds.height >= 30, JSON.stringify(settingsBounds))
       await page.screenshot({ path: path.join(captures, `${theme}-${width}-${scale}-file-settings.png`), animations: 'disabled' })
       await page.click('[data-a=back]')
+      await page.locator('[data-a=new-session][data-id=p]').locator('..').hover()
       await page.click('[data-a=new-session][data-id=p]')
       const termDialog = page.getByRole('dialog', { name: '新建会话', exact: true })
       await termDialog.waitFor()

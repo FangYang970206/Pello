@@ -30,7 +30,7 @@ export function defaultDatabase(): Database {
   return {
     settings: {
       language: 'zh-CN',
-      theme: 'dark',
+      theme: 'light',
       layout: 'focus',
       fontSize: 13, fontFamily: 'Cascadia Mono', uiFontFamily: 'Geist', uiFontSize: 13, editorFontSize: 14,
       defShell: hostPlatform() === 'linux' ? 'bash' : 'pwsh',
@@ -62,7 +62,7 @@ function sanitize(raw: Partial<Database> | null): Database {
   const settings = (raw.settings || {}) as Partial<Settings>
   base.settings = {
     language: settings.language === 'en' ? 'en' : 'zh-CN',
-    theme: THEMES.some((theme) => theme.id === settings.theme) ? settings.theme! : 'dark',
+    theme: THEMES.some((theme) => theme.id === settings.theme) ? settings.theme! : 'light',
     layout: ['balanced', 'focus', 'review'].includes(settings.layout || '') ? settings.layout : 'focus',
     panelSide: settings.panelSide === 'left' ? 'left' : 'right',
     density: settings.density === 'compact' ? 'compact' : 'comfortable',

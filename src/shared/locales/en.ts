@@ -1,5 +1,6 @@
 // Application-owned source messages. Interpolated values are preserved verbatim.
 export const en: Record<string, string> = {
+  "最近": "Recent",
   "发现新版本 {{0}}": "New version available: {{0}}",
   "版本 {{0}} 已下载，可安装并重启": "Version {{0}} is downloaded and ready to install",
   "更新安装失败，请重试": "Update installation failed. Please retry",

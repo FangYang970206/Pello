@@ -560,6 +560,7 @@ try {
     assert.equal(bytes.toString('utf8'), fs.realpathSync(path.join(projectDir, 'note.txt')))
   })
   await check('reference defaults to the most recently selected terminal across file switches', async () => {
+    await page.locator('.addtab[data-a=newterm]').locator('..').hover()
     await page.click('.addtab[data-a=newterm]')
     await page.click('[data-a=ntk][data-id=ui]')
     await page.click('[data-a=nt-ok]')
