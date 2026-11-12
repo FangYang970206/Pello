@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n'
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -43,8 +44,8 @@ export function pathExample(platform: OsKind): string {
 
 export function pathInvalidMessage(platform: OsKind): string {
   return platform === 'windows'
-    ? '请输入 Windows 绝对路径，例如 C:\\dev\\app'
-    : '请输入绝对路径，例如 /home/user/app'
+    ? t("请输入 Windows 绝对路径，例如 C:\\dev\\app")
+    : t("请输入绝对路径，例如 /home/user/app")
 }
 
 export function bashQuote(value: string): string {
@@ -112,7 +113,7 @@ export function ompInstallDirectory(): string {
 export function resolveLocalShell(pref: ShellKind, rcFile: string, environment: NodeJS.ProcessEnv = process.env): ShellLaunch {
   if (process.platform === 'win32') {
     const detected = localShell(pref)
-    if (!detected) throw new Error(`未检测到 ${pref === 'bash' ? 'Git Bash 或本机 Bash' : pref === 'pwsh' ? 'PowerShell' : pref.toUpperCase()}，请在设置中选择可用 Shell`)
+    if (!detected) throw new Error(t("未检测到 {{0}}，请在设置中选择可用 Shell", pref === 'bash' ? t("Git Bash 或本机 Bash") : pref === 'pwsh' ? 'PowerShell' : pref.toUpperCase()))
     if (pref === 'bash') {
       const binaryDirectory = path.dirname(detected.path)
       const gitRoot = path.basename(path.dirname(binaryDirectory)).toLowerCase() === 'usr' ? path.dirname(path.dirname(binaryDirectory)) : path.dirname(binaryDirectory)

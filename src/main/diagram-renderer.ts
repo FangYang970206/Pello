@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n'
 import { BrowserWindow } from 'electron'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
@@ -50,34 +51,34 @@ function windowForRendering(): Promise<BrowserWindow> {
 
 /** Diagram layout runs in its own sandboxed renderer, without the workbench preload. */
 export function renderMermaid(owner: BrowserWindow, source: string): Promise<string> {
-  if (typeof source !== 'string' || !source.trim() || source.length > 100_000) return Promise.reject(new Error('Mermaid 内容为空或超过 100000 字符'))
-  if (owner.isDestroyed()) return Promise.reject(new Error('工作台已关闭'))
+  if (typeof source !== 'string' || !source.trim() || source.length > 100_000) return Promise.reject(new Error(t("Mermaid 内容为空或超过 100000 字符")))
+  if (owner.isDestroyed()) return Promise.reject(new Error(t("工作台已关闭")))
   const key = createHash('sha256').update(source).digest('hex')
   const existing = cache.get(key)
   if (existing) { cache.delete(key); cache.set(key, existing); return Promise.resolve(existing) }
   const running = pending.get(key)
   if (running) return running
-  if (pending.size >= 24) return Promise.reject(new Error('图表渲染繁忙，请稍后重试'))
+  if (pending.size >= 24) return Promise.reject(new Error(t("图表渲染繁忙，请稍后重试")))
   const requestedGeneration = generation
   const task: Promise<string> = queue.then(async () => {
-    if (requestedGeneration !== generation) throw new DiagramCancelled('图表渲染已取消')
-    if (owner.isDestroyed()) throw new Error('工作台已关闭')
+    if (requestedGeneration !== generation) throw new DiagramCancelled(t("图表渲染已取消"))
+    if (owner.isDestroyed()) throw new Error(t("工作台已关闭"))
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
       const svg = await Promise.race([
         windowForRendering().then((window) => window.webContents.executeJavaScript(`window.renderMermaid(${JSON.stringify(source)}, ${JSON.stringify(`diagram-${key.slice(0, 16)}`)})`) as Promise<string>),
-        new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { resetRenderer(); reject(new Error('图表渲染超时，请简化图表后重试')) }, 15000) })
+        new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { resetRenderer(); reject(new Error(t("图表渲染超时，请简化图表后重试"))) }, 15000) })
       ])
-      if (requestedGeneration !== generation) throw new DiagramCancelled('图表渲染已取消')
-      if (owner.isDestroyed()) throw new Error('工作台已关闭')
-      if (typeof svg !== 'string' || !svg.includes('<svg')) throw new Error('图表渲染未返回 SVG')
+      if (requestedGeneration !== generation) throw new DiagramCancelled(t("图表渲染已取消"))
+      if (owner.isDestroyed()) throw new Error(t("工作台已关闭"))
+      if (typeof svg !== 'string' || !svg.includes('<svg')) throw new Error(t("图表渲染未返回 SVG"))
       if (svg.length * 2 <= 8_000_000) {
         cache.set(key, svg); cacheSize += svg.length * 2
         while (cache.size > 32 || cacheSize > 8_000_000) { const oldest = cache.keys().next().value!; cacheSize -= cache.get(oldest)!.length * 2; cache.delete(oldest) }
       }
       return svg
     } catch (error) {
-      if (requestedGeneration !== generation) throw new DiagramCancelled('图表渲染已取消')
+      if (requestedGeneration !== generation) throw new DiagramCancelled(t("图表渲染已取消"))
       throw error
     } finally { clearTimeout(timer) }
   }).finally(() => { if (pending.get(key) === task) pending.delete(key) })

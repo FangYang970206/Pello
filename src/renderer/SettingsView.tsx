@@ -1,9 +1,10 @@
+import { t } from '../shared/i18n'
 import { useState, type ReactNode } from 'react'
 import { useAnchoredMenu } from './useAnchoredMenu'
 import type { Executor, Host, Project, Settings, SettingsSection, ShellKind } from '../shared/types'
 import { FileSearchSettings } from './FileSearchSettings'
 import { hostColor } from '../shared/host-colors'
-import { PRESETS, cmdline, hostLine, preferredAgent, shellLabel } from '../shared/types'
+import { PRESETS, cmdline, hostDisplayName, hostLine, preferredAgent, shellLabel } from '../shared/types'
 import { useLocalShells } from './useLocalShells'
 import { ResourceSettings } from './ResourceSettings'
 import { CODE_FONTS, UI_FONTS } from '../shared/fonts'
@@ -11,23 +12,23 @@ import { THEMES } from '../shared/themes'
 import { Icon, type IconName, Mark } from './icons'
 
 const SECTIONS: { id: SettingsSection; label: string; icon: IconName }[] = [
-  { id: 'general', label: '通用', icon: 'sliders' },
-  { id: 'look', label: '外观', icon: 'palette' },
-  { id: 'agents', label: '执行器', icon: 'cpu' },
-  { id: 'hosts', label: '远程机器', icon: 'server' },
+  { id: 'general', get label() { return t("通用") }, icon: 'sliders' },
+  { id: 'look', get label() { return t("外观") }, icon: 'palette' },
+  { id: 'agents', get label() { return t("执行器") }, icon: 'cpu' },
+  { id: 'hosts', get label() { return t("远程机器") }, icon: 'server' },
   { id: 'mcp', label: 'MCP', icon: 'puzzle' },
   { id: 'skills', label: 'Skill', icon: 'file' },
-  { id: 'keys', label: '快捷键', icon: 'key' }
+  { id: 'keys', get label() { return t("快捷键") }, icon: 'key' }
 ]
 
 const LEADS: Record<SettingsSection, string> = {
-  general: '终端与项目的默认行为',
-  look: '主题与终端字体',
-  agents: '在终端里启动的 Code Agent CLI',
-  hosts: '项目可以运行在本机或通过 SSH 连接的远程机器上',
-  mcp: '管理各个 Code Agent 的 MCP 服务器',
-  skills: '查看与分发 Code Agent 的 Skill',
-  keys: '键盘快捷键'
+  get general() { return t("终端与项目的默认行为") },
+  get look() { return t("主题与终端字体") },
+  get agents() { return t("在终端里启动的 Code Agent CLI") },
+  get hosts() { return t("项目可以运行在本机或通过 SSH 连接的远程机器上") },
+  get mcp() { return t("管理各个 Code Agent 的 MCP 服务器") },
+  get skills() { return t("查看与分发 Code Agent 的 Skill") },
+  get keys() { return t("键盘快捷键") }
 }
 
 function Row({ title, desc, control, lead }: { title: string; desc?: ReactNode; control?: ReactNode; lead?: ReactNode }) {
@@ -82,10 +83,10 @@ export function SettingsView({
   const agentChoices = [
     ...PRESETS.map((item) => ({ id: item.id, name: item.name, installed: !!installed[item.cmd] })),
     ...custom.map((item) => ({ id: item.id, name: item.name, installed: true })),
-    { id: 'shell', name: '仅 Shell', installed: true }
+    { id: 'shell', name: t("仅 Shell"), installed: true }
   ]
   const agentValue = preferredAgent(settings.defAgent, agentChoices)
-  const agentLabel = agentChoices.find((item) => item.id === agentValue)?.name || '仅 Shell'
+  const agentLabel = agentChoices.find((item) => item.id === agentValue)?.name || t("仅 Shell")
   const [agentOpen, setAgentOpen] = useState(false)
   const agentMenu = useAnchoredMenu(agentOpen, () => setAgentOpen(false))
   let body: ReactNode = null
@@ -93,15 +94,19 @@ export function SettingsView({
     body = (
       <>
         <div className="group">
-          <h2>终端</h2>
+          <h2>{t("语言")}</h2>
+          <div className="card"><Row title={t("应用语言")} desc={t("立即生效，重启后保留")} control={<select className="sel" aria-label={t("应用语言")} data-set="language" value={settings.language || 'zh-CN'} onChange={(event) => onSettings({ ...settings, language: event.target.value === 'en' ? 'en' : 'zh-CN' })}><option value="zh-CN">{t("简体中文")}</option><option value="en">English</option></select>} /></div>
+        </div>
+        <div className="group">
+          <h2>{t("终端")}</h2>
           <div className="card">
             <Row
-              title="默认 Shell"
-              desc={<>{shellsLoading ? '正在检测本机 Shell…' : shellsError || '新建终端时预选'} <button className="btn sm ghost" type="button" disabled={shellsLoading} onClick={refreshShells}>重新检测</button></>}
+              title={t("默认 Shell")}
+              desc={<>{shellsLoading ? t("正在检测本机 Shell…") : shellsError || t("新建终端时预选")} <button className="btn sm ghost" type="button" disabled={shellsLoading} onClick={refreshShells}>{t("重新检测")}</button></>}
               control={
                 <select
                   className="sel"
-                  aria-label="默认 Shell"
+                  aria-label={t("默认 Shell")}
                   value={shellValue}
                   disabled={shellsLoading || !shells.length}
                   data-set="defShell"
@@ -110,7 +115,7 @@ export function SettingsView({
                     if (next) onSettings({ ...settings, defShell: next })
                   }}
                 >
-                  {!shells.some((item) => item.id === shellValue) ? <option value={shellValue} disabled>{shellLabel(shellValue)}（{shellsLoading ? '检测中' : '未检测到'}）</option> : null}
+                  {!shells.some((item) => item.id === shellValue) ? <option value={shellValue} disabled>{shellLabel(shellValue)}{t('（')}{shellsLoading ? t("检测中") : t("未检测到")}{t('）')}</option> : null}
                   {shells.map((item) => (
                     <option key={item.id} value={item.id} title={item.path}>
                       {item.label}
@@ -120,32 +125,32 @@ export function SettingsView({
               }
             />
             <Row
-              title="结束进程前确认"
-              desc="防止误杀正在运行的 Agent"
-              control={<button className={`switch ${settings.confirmKill ? 'on' : ''}`} role="switch" aria-checked={settings.confirmKill} aria-label="结束进程前确认" data-a="swset" data-k="confirmKill" onClick={() => onSettings({ ...settings, confirmKill: !settings.confirmKill })} />}
+              title={t("结束进程前确认")}
+              desc={t("防止误杀正在运行的 Agent")}
+              control={<button className={`switch ${settings.confirmKill ? 'on' : ''}`} role="switch" aria-checked={settings.confirmKill} aria-label={t("结束进程前确认")} data-a="swset" data-k="confirmKill" onClick={() => onSettings({ ...settings, confirmKill: !settings.confirmKill })} />}
             />
             <Row
-              title="启动时恢复终端"
-              desc="重新打开项目时按原命令启动"
-              control={<button className={`switch ${settings.restore ? 'on' : ''}`} role="switch" aria-checked={settings.restore} aria-label="启动时恢复终端" data-a="swset" data-k="restore" onClick={() => onSettings({ ...settings, restore: !settings.restore })} />}
+              title={t("启动时恢复终端")}
+              desc={t("重新打开项目时按原命令启动")}
+              control={<button className={`switch ${settings.restore ? 'on' : ''}`} role="switch" aria-checked={settings.restore} aria-label={t("启动时恢复终端")} data-a="swset" data-k="restore" onClick={() => onSettings({ ...settings, restore: !settings.restore })} />}
             />
           </div>
         </div>
         <FileSearchSettings projects={projects} />
         <div className="group">
-          <h2>项目</h2>
+          <h2>{t("项目")}</h2>
           <div className="card">
             <Row
-              title="新项目的默认 Agent"
-              desc="可在每个项目中单独修改"
+              title={t("新项目的默认 Agent")}
+              desc={t("可在每个项目中单独修改")}
               control={
                 <div className="agentpick">
-                  <button type="button" className="sel" aria-label="默认 Agent" aria-haspopup="listbox" aria-expanded={agentOpen} data-set="defAgent" onClick={() => setAgentOpen((open) => !open)}
+                  <button type="button" className="sel" aria-label={t("默认 Agent")} aria-haspopup="listbox" aria-expanded={agentOpen} data-set="defAgent" onClick={() => setAgentOpen((open) => !open)}
                     onKeyDown={(event) => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setAgentOpen(true) } }}>
                     {agentLabel}
                   </button>
                   {agentOpen ? (
-                    <div ref={agentMenu} className="selmenu" role="listbox" aria-label="默认 Agent" popover="manual">
+                    <div ref={agentMenu} className="selmenu" role="listbox" aria-label={t("默认 Agent")} popover="manual">
                       {agentChoices.map((item) => {
                         const off = !item.installed
                         return (
@@ -165,7 +170,7 @@ export function SettingsView({
                             }}
                           >
                             {item.name}
-                            {off ? '（未找到命令）' : ''}
+                            {off ? t("（未找到命令）") : ''}
                           </button>
                         )
                       })}
@@ -183,10 +188,10 @@ export function SettingsView({
     body = (
       <>
         <div className="group">
-          <h2>主题</h2>
+          <h2>{t("主题")}</h2>
           <div className="card">
             <div className="srow" style={{ padding: 16 }}>
-              <div className="themes" role="radiogroup" aria-label="主题">
+              <div className="themes" role="radiogroup" aria-label={t("主题")}>
                 {THEMES.map(({ id, name: label, colors }) => {
                   const side = colors.side, panel = colors.panel
                   return (
@@ -207,13 +212,13 @@ export function SettingsView({
           </div>
         </div>
         <div className="group">
-          <h2>终端字体</h2>
+          <h2>{t("终端字体")}</h2>
           <div className="card">
-            <Row title="字体" control={<select className="sel" aria-label="终端字体" value={settings.fontFamily || 'Cascadia Mono'} onChange={(event) => onSettings({ ...settings, fontFamily: event.target.value })}>{CODE_FONTS.map((family) => <option key={family}>{family}</option>)}</select>} />
+            <Row title={t("字体")} control={<select className="sel" aria-label={t("终端字体")} value={settings.fontFamily || 'Cascadia Mono'} onChange={(event) => onSettings({ ...settings, fontFamily: event.target.value })}>{CODE_FONTS.map((family) => <option key={family}>{family}</option>)}</select>} />
             <Row
-              title="字号"
+              title={t("字号")}
               control={
-                <select className="sel" aria-label="字号" value={String(settings.fontSize)} onChange={(e) => onSettings({ ...settings, fontSize: Number(e.target.value) })}>
+                <select className="sel" aria-label={t("字号")} value={String(settings.fontSize)} onChange={(e) => onSettings({ ...settings, fontSize: Number(e.target.value) })}>
                   {Array.from({ length: 15 }, (_, index) => index + 10).map((size) => (
                     <option key={size} value={size}>
                       {size}
@@ -224,16 +229,16 @@ export function SettingsView({
             />
           </div>
         </div>
-        <div className="group"><h2>布局</h2><div className="card">
-          <Row title="工作布局" control={<select className="sel" aria-label="工作布局" value={settings.layout || 'focus'} onChange={(event) => onSettings({ ...settings, layout: event.target.value as Settings['layout'] })}>
-            <option value="balanced">均衡布局</option><option value="focus">终端专注</option><option value="review">跨仓库审阅</option></select>} />
-          <Row title="文件与变更面板位置" control={<select className="sel" aria-label="文件与变更面板位置" value={settings.panelSide || 'right'} onChange={(event) => onSettings({ ...settings, panelSide: event.target.value as Settings['panelSide'] })}><option value="right">右侧</option><option value="left">左侧</option></select>} />
-          <Row title="界面密度" control={<select className="sel" aria-label="界面密度" value={settings.density || 'comfortable'} onChange={(event) => onSettings({ ...settings, density: event.target.value as Settings['density'] })}><option value="comfortable">舒适</option><option value="compact">紧凑</option></select>} />
+        <div className="group"><h2>{t("布局")}</h2><div className="card">
+          <Row title={t("工作布局")} control={<select className="sel" aria-label={t("工作布局")} value={settings.layout || 'focus'} onChange={(event) => onSettings({ ...settings, layout: event.target.value as Settings['layout'] })}>
+            <option value="balanced">{t("均衡布局")}</option><option value="focus">{t("终端专注")}</option><option value="review">{t("跨仓库审阅")}</option></select>} />
+          <Row title={t("文件与变更面板位置")} control={<select className="sel" aria-label={t("文件与变更面板位置")} value={settings.panelSide || 'right'} onChange={(event) => onSettings({ ...settings, panelSide: event.target.value as Settings['panelSide'] })}><option value="right">{t("右侧")}</option><option value="left">{t("左侧")}</option></select>} />
+          <Row title={t("界面密度")} control={<select className="sel" aria-label={t("界面密度")} value={settings.density || 'comfortable'} onChange={(event) => onSettings({ ...settings, density: event.target.value as Settings['density'] })}><option value="comfortable">{t("舒适")}</option><option value="compact">{t("紧凑")}</option></select>} />
         </div></div>
-        <div className="group"><h2>界面与编辑器</h2><div className="card">
-          <Row title="界面字体" control={<select className="sel" aria-label="界面字体" value={settings.uiFontFamily || 'Geist'} onChange={(event) => onSettings({ ...settings, uiFontFamily: event.target.value })}>{UI_FONTS.map((family) => <option key={family}>{family}</option>)}</select>} />
-          <Row title="界面字号" control={<select className="sel" aria-label="界面字号" value={settings.uiFontSize || 13} onChange={(event) => onSettings({ ...settings, uiFontSize: Number(event.target.value) })}>{[12, 13, 14, 15, 16].map((size) => <option key={size}>{size}</option>)}</select>} />
-          <Row title="源码字号" control={<select className="sel" aria-label="源码字号" value={settings.editorFontSize || 14} onChange={(event) => onSettings({ ...settings, editorFontSize: Number(event.target.value) })}>{Array.from({ length: 15 }, (_, index) => index + 10).map((size) => <option key={size}>{size}</option>)}</select>} />
+        <div className="group"><h2>{t("界面与编辑器")}</h2><div className="card">
+          <Row title={t("界面字体")} control={<select className="sel" aria-label={t("界面字体")} value={settings.uiFontFamily || 'Geist'} onChange={(event) => onSettings({ ...settings, uiFontFamily: event.target.value })}>{UI_FONTS.map((family) => <option key={family}>{family}</option>)}</select>} />
+          <Row title={t("界面字号")} control={<select className="sel" aria-label={t("界面字号")} value={settings.uiFontSize || 13} onChange={(event) => onSettings({ ...settings, uiFontSize: Number(event.target.value) })}>{[12, 13, 14, 15, 16].map((size) => <option key={size}>{size}</option>)}</select>} />
+          <Row title={t("源码字号")} control={<select className="sel" aria-label={t("源码字号")} value={settings.editorFontSize || 14} onChange={(event) => onSettings({ ...settings, editorFontSize: Number(event.target.value) })}>{Array.from({ length: 15 }, (_, index) => index + 10).map((size) => <option key={size}>{size}</option>)}</select>} />
         </div></div>
       </>
     )
@@ -242,7 +247,7 @@ export function SettingsView({
     body = (
       <>
         <div className="group">
-          <h2>内置预设</h2>
+          <h2>{t("内置预设")}</h2>
           <div className="card">
             {PRESETS.map((preset) => {
               const ok = !!installed[preset.cmd]
@@ -256,14 +261,12 @@ export function SettingsView({
                     ok ? (
                       <span className="okt">
                         <Icon name="check" className="s" />
-                        已安装
-                      </span>
+                        {t("已安装")}</span>
                     ) : (
                       <>
-                        <span className="tag warn">未找到命令</span>
+                        <span className="tag warn">{t("未找到命令")}</span>
                         <button className="btn sm" data-a="install" onClick={() => onInstall(preset.name, preset.cmd)}>
-                          安装说明
-                        </button>
+                          {t("安装说明")}</button>
                       </>
                     )
                   }
@@ -274,11 +277,10 @@ export function SettingsView({
         </div>
         <div className="group">
           <h2>
-            <span className="grow">自定义</span>
+            <span className="grow">{t("自定义")}</span>
             <button className="btn sm" data-a="custom" onClick={onNewExec}>
               <Icon name="plus" className="s" />
-              添加
-            </button>
+              {t("添加")}</button>
           </h2>
           <div className="card">
             {custom.length ? (
@@ -294,7 +296,7 @@ export function SettingsView({
                 </button>
               ))
             ) : (
-              <Row title="还没有自定义执行器" desc="任何能在 PowerShell / CMD 里启动的 CLI 都可以添加" />
+              <Row title={t("还没有自定义执行器")} desc={t("任何能在 PowerShell / CMD 里启动的 CLI 都可以添加")} />
             )}
           </div>
         </div>
@@ -306,11 +308,10 @@ export function SettingsView({
       <>
         <div className="group">
           <h2>
-            <span className="grow">机器</span>
+            <span className="grow">{t("机器")}</span>
             <button className="btn sm" data-a="host" onClick={onNewHost}>
               <Icon name="plus" className="s" />
-              添加机器
-            </button>
+              {t("添加机器")}</button>
           </h2>
           <div className="card">
             {hosts.map((host) => (
@@ -325,38 +326,38 @@ export function SettingsView({
                   <Icon name={host.id === 'local' ? 'laptop' : 'server'} />
                 </span>
                 <div className="lt">
-                  <b>{host.name}</b>
+                  <b>{hostDisplayName(host)}</b>
                   <small>{hostLine(host)}</small>
                 </div>
                 <span className="tag">
                   <span className={`dot ${host.on ? 'running' : 'exited'}`} />
-                  {host.on ? '已连接' : '未连接'}
+                  {host.on ? t("已连接") : t("未连接")}
                 </span>
                 <Icon name="chev" className="s" />
               </button>
             ))}
           </div>
         </div>
-        <p style={{ fontSize: 12, color: 'var(--faint)' }}>远程终端通过 SSH 连接，使用目标机器的默认 Shell（Windows：PowerShell，Linux / macOS：bash 或 zsh）。</p>
+        <p style={{ fontSize: 12, color: 'var(--faint)' }}>{t("远程终端通过 SSH 连接，使用目标机器的默认 Shell（Windows：PowerShell，Linux / macOS：bash 或 zsh）。")}</p>
       </>
     )
   }
   if (section === 'mcp' || section === 'skills') body = <ResourceSettings key={section} kind={section} />
   if (section === 'keys') {
     const rows: [string, string][] = [
-      ['新建项目', 'Ctrl N'],
-      ['新建终端', 'Ctrl T'],
-      ['关闭标签', 'Ctrl W'],
-      ['切换文件面板', 'Ctrl B'],
-      ['打开设置', 'Ctrl ,'],
-      ['保存当前文件', 'Ctrl S'],
-      ['撤销文件编辑', 'Ctrl Z'],
-      ['重做文件编辑', 'Ctrl Shift Z']
+      [t("新建项目"), 'Ctrl N'],
+      [t("新建终端"), 'Ctrl T'],
+      [t("关闭标签"), 'Ctrl W'],
+      [t("切换文件面板"), 'Ctrl B'],
+      [t("打开设置"), 'Ctrl ,'],
+      [t("保存当前文件"), 'Ctrl S'],
+      [t("撤销文件编辑"), 'Ctrl Z'],
+      [t("重做文件编辑"), 'Ctrl Shift Z']
     ]
     body = (
       <>
         <div className="group">
-          <h2>常用</h2>
+          <h2>{t("常用")}</h2>
           <div className="card">
             {rows.map(([label, keys]) => (
               <Row
@@ -374,11 +375,11 @@ export function SettingsView({
           </div>
         </div>
         <div className="group">
-          <h2>终端内</h2>
+          <h2>{t("终端内")}</h2>
           <div className="card">
             <Row
-              title="中断"
-              desc="发给前台进程"
+              title={t("中断")}
+              desc={t("发给前台进程")}
               control={
                 <span className="keys">
                   <kbd>Ctrl</kbd>
@@ -393,15 +394,13 @@ export function SettingsView({
   }
   return (
     <section className="settings">
-      <nav className="snav" aria-label="设置分区">
+      <nav className="snav" aria-label={t("设置分区")}>
         <button className="back" data-a="back" onClick={onBack}>
           <Icon name="back" className="s" />
-          返回
-          <kbd style={{ marginLeft: 'auto' }}>Esc</kbd>
+          {t("返回")}<kbd style={{ marginLeft: 'auto' }}>Esc</kbd>
         </button>
         <div className="sec" style={{ paddingTop: 0 }}>
-          设置
-        </div>
+          {t("设置")}</div>
         {SECTIONS.map((item) => (
           <button key={item.id} className={`navb ${section === item.id ? 'on' : ''}`} data-a="sec" data-id={item.id} aria-current={section === item.id ? 'page' : undefined} onClick={() => onSection(item.id)}>
             <Icon name={item.icon} />

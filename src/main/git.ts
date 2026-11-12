@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n'
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -186,7 +187,7 @@ async function discoverRepositories(target: Target): Promise<Discovery> {
           const entries = await fs.promises.readdir(folder, { withFileTypes: true })
           if (entries.some((entry) => entry.name === '.git')) { roots.push(folder); continue }
           for (const entry of entries) if (entry.isDirectory() && !entry.isSymbolicLink() && !IGNORE.has(entry.name)) queue.push(path.join(folder, entry.name))
-        } catch (error) { errors.push(`${path.relative(target.cwd, folder) || '.'}：${(error as NodeJS.ErrnoException).code || '无法读取'}`) }
+        } catch (error) { errors.push(t("{{0}}：{{1}}", path.relative(target.cwd, folder) || '.', (error as NodeJS.ErrnoException).code || t("无法读取"))) }
       }
     } else if (target.platform === 'linux') {
       const excluded = [...IGNORE].filter((name) => name !== '.git').map((name) => `-name ${bashQuote(name)}`).join(' -o ')
@@ -195,12 +196,12 @@ async function discoverRepositories(target: Target): Promise<Discovery> {
       catch (error) {
         const failure = error as { stdout?: string }
         if (failure.stdout) roots.push(...failure.stdout.split('\0').filter(Boolean).map((name) => path.posix.dirname(name)))
-        errors.push('部分远程目录无法读取，请检查目录权限或连接后重试')
+        errors.push(t("部分远程目录无法读取，请检查目录权限或连接后重试"))
       }
     } else {
       const command = `$q=[Collections.Generic.Queue[string]]::new();$q.Enqueue(${psQuote(target.cwd)});$r=@();$e=@();while($q.Count){$p=$q.Dequeue();try{$d=@(Get-ChildItem -LiteralPath $p -Force -ErrorAction Stop);if($d.Name -contains '.git'){$r+=$p;continue};foreach($x in $d){if($x.PSIsContainer -and -not ($x.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $x.Name -notin @(${[...IGNORE].map(psQuote).join(',')})){$q.Enqueue($x.FullName)}}}catch{$e+=$p}};@{roots=@($r);errors=@($e)}|ConvertTo-Json -Compress`
       const result = JSON.parse(await run(target, command)) as Discovery
-      roots.push(...result.roots); errors.push(...result.errors.map((folder) => `${folder}：无法读取目录`))
+      roots.push(...result.roots); errors.push(...result.errors.map((folder) => t("{{0}}：无法读取目录", folder)))
     }
     const api = target.platform === 'windows' ? path.win32 : path.posix
     const unique = [...new Set(roots)].sort()
@@ -229,8 +230,8 @@ export async function gitStatus(target: Target, rescan = false): Promise<GitPane
         const cwd = roots[next++], prefix = api.relative(target.cwd, cwd).replace(/\\/g, '/')
         let repo: Awaited<ReturnType<typeof singleGitStatus>>
         try { repo = await singleGitStatus({ ...target, cwd }) }
-        catch { panel.errors!.push(`${prefix}：无法读取 Git 状态`); continue }
-        if (!repo.isRepo) { panel.errors!.push(`${prefix}：无法读取 Git 状态`); continue }
+        catch { panel.errors!.push(t("{{0}}：无法读取 Git 状态", prefix)); continue }
+        if (!repo.isRepo) { panel.errors!.push(t("{{0}}：无法读取 Git 状态", prefix)); continue }
         panel.repositories!.push({ path: prefix, branch: repo.branch, count: repo.files.length })
         for (const file of repo.files) {
           const rel = `${prefix}/${file.path}`
@@ -253,12 +254,12 @@ async function owningRepository(target: Target, rel: string): Promise<{ target: 
   let parent = api.dirname(absolute)
   while (true) {
     if (!target.host || target.host.id === 'local') {
-      if (fs.existsSync(parent) && !inside(fs.realpathSync(target.cwd), fs.realpathSync(parent))) throw new Error('路径超出项目目录')
+      if (fs.existsSync(parent) && !inside(fs.realpathSync(target.cwd), fs.realpathSync(parent))) throw new Error(t("路径超出项目目录"))
     }
     try {
       const root = (await git({ ...target, cwd: parent }, ['rev-parse', '--show-toplevel'])).trim()
       const relative = api.relative(root, absolute).replace(/\\/g, '/')
-      if (!relative || relative === '..' || relative.startsWith('../') || api.isAbsolute(relative)) throw new Error('路径超出 Git 仓库')
+      if (!relative || relative === '..' || relative.startsWith('../') || api.isAbsolute(relative)) throw new Error(t("路径超出 Git 仓库"))
       return { target: { ...target, cwd: root }, relative }
     } catch (error) {
       if (parent === target.cwd || api.relative(target.cwd, parent).startsWith('..')) throw error
@@ -364,32 +365,32 @@ function sortNodes(nodes: TreeNode[]): TreeNode[] {
 }
 
 function cleanRelative(rel: string): string {
-  if (rel.includes('\0') || /^[a-z]:|^[\\/]/i.test(rel) || rel.split(/[\\/]/).includes('..')) throw new Error('非法文件路径')
+  if (rel.includes('\0') || /^[a-z]:|^[\\/]/i.test(rel) || rel.split(/[\\/]/).includes('..')) throw new Error(t("非法文件路径"))
   return rel.replace(/\\/g, '/').split('/').filter((part) => part && part !== '.').join('/')
 }
 
 function localPath(cwd: string, rel: string): string {
   const root = fs.realpathSync(cwd)
   const abs = fs.realpathSync(path.resolve(root, cleanRelative(rel)))
-  if (!inside(root, abs)) throw new Error('路径超出项目目录')
+  if (!inside(root, abs)) throw new Error(t("路径超出项目目录"))
   return abs
 }
 
 export function validateEntryName(name: string, platform: OsKind): void {
-  if (typeof name !== 'string' || !name || name === '.' || name === '..' || /[\0/\\]/.test(name)) throw new Error('名称无效')
-  if (platform === 'windows' && (/[<>:"|?*]/.test(name) || [...name].some((char) => char.charCodeAt(0) < 32) || /[. ]$/.test(name) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name))) throw new Error('Windows 名称无效')
+  if (typeof name !== 'string' || !name || name === '.' || name === '..' || /[\0/\\]/.test(name)) throw new Error(t("名称无效"))
+  if (platform === 'windows' && (/[<>:"|?*]/.test(name) || [...name].some((char) => char.charCodeAt(0) < 32) || /[. ]$/.test(name) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name))) throw new Error(t("Windows 名称无效"))
 }
 
 /** Resolve a tree path in the main process before exposing it to native actions. */
 export function treePath(target: Target, rel: string): { full: string; relative: string } {
   const relative = cleanRelative(rel)
-  if (target.platform === 'windows' && relative.split('/').some((part) => part.includes(':'))) throw new Error('非法文件路径')
+  if (target.platform === 'windows' && relative.split('/').some((part) => part.includes(':'))) throw new Error(t("非法文件路径"))
   if (!target.host || target.host.id === 'local') return { full: localPath(target.cwd, relative), relative: relative || '.' }
   const paths = target.platform === 'windows' ? path.win32 : path.posix
   const root = paths.resolve(target.cwd)
   const full = paths.resolve(root, relative)
   const within = paths.relative(root, full)
-  if (within === '..' || within.startsWith(`..${paths.sep}`) || paths.isAbsolute(within)) throw new Error('路径超出项目目录')
+  if (within === '..' || within.startsWith(`..${paths.sep}`) || paths.isAbsolute(within)) throw new Error(t("路径超出项目目录"))
   return { full, relative: relative || '.' }
 }
 
@@ -400,7 +401,7 @@ export async function createTreeEntry(target: Target, parent: string, name: stri
   const rel = parent ? `${parent}/${name}` : name
   if (!target.host || target.host.id === 'local') {
     const base = localPath(target.cwd, parent)
-    if (!fs.statSync(base).isDirectory()) throw new Error('目标不是目录')
+    if (!fs.statSync(base).isDirectory()) throw new Error(t("目标不是目录"))
     const destination = path.join(base, name)
     if (directory) fs.mkdirSync(destination)
     else fs.closeSync(fs.openSync(destination, 'wx'))
@@ -409,7 +410,7 @@ export async function createTreeEntry(target: Target, parent: string, name: stri
   const abs = joinPath(target.platform, target.cwd, rel)
   const parentAbs = parent ? joinPath(target.platform, target.cwd, parent) : target.cwd
   if (target.platform === 'windows') {
-    const command = `$root=(Resolve-Path -LiteralPath ${psQuote(target.cwd)} -ErrorAction Stop).Path.TrimEnd('\\'); $parent=[IO.Path]::GetFullPath(${psQuote(parentAbs)}).TrimEnd('\\'); if ($parent -ne $root -and -not $parent.StartsWith($root+'\\',[StringComparison]::OrdinalIgnoreCase)) { throw '非法路径' }; $walk=$root; if ($parent -ne $root) { foreach ($part in $parent.Substring($root.Length+1).Split('\\')) { $walk=Join-Path $walk $part; if ((Get-Item -LiteralPath $walk -Force -ErrorAction Stop).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw '不支持链接目录' } } }; $dest=${psQuote(abs)}; ${directory ? 'New-Item -ItemType Directory -Path $dest -ErrorAction Stop | Out-Null' : '$f=[IO.File]::Open($dest,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None); $f.Dispose()'}`
+    const command = `$root=(Resolve-Path -LiteralPath ${psQuote(target.cwd)} -ErrorAction Stop).Path.TrimEnd('\\'); $parent=[IO.Path]::GetFullPath(${psQuote(parentAbs)}).TrimEnd('\\'); if ($parent -ne $root -and -not $parent.StartsWith($root+'\\',[StringComparison]::OrdinalIgnoreCase)) { throw ${psQuote(t("非法路径"))} }; $walk=$root; if ($parent -ne $root) { foreach ($part in $parent.Substring($root.Length+1).Split('\\')) { $walk=Join-Path $walk $part; if ((Get-Item -LiteralPath $walk -Force -ErrorAction Stop).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw ${psQuote(t("不支持链接目录"))} } } }; $dest=${psQuote(abs)}; ${directory ? 'New-Item -ItemType Directory -Path $dest -ErrorAction Stop | Out-Null' : '$f=[IO.File]::Open($dest,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None); $f.Dispose()'}`
     await run(target, command)
   } else {
     const command = `python3 -c ${bashQuote(LINUX_CREATE_SCRIPT)} ${bashQuote(target.cwd)} ${bashQuote(parent)} ${bashQuote(name)} ${directory ? '1' : '0'}`
@@ -431,42 +432,42 @@ export async function moveTreeEntry(target: Target, rel: string, destinationPare
 
 async function relocateTreeEntry(target: Target, rel: string, destinationParent: string, name: string, directory: boolean): Promise<string> {
   rel = cleanRelative(rel)
-  if (!rel) throw new Error('不能重命名项目根目录')
+  if (!rel) throw new Error(t("不能重命名项目根目录"))
   destinationParent = cleanRelative(destinationParent)
   validateEntryName(name, target.platform)
   const parts = rel.split('/')
   const oldName = parts.pop()!
   const nextRel = [destinationParent, name].filter(Boolean).join('/')
   const comparable = (value: string) => target.platform === 'windows' ? value.toLowerCase() : value
-  if (directory && (comparable(destinationParent) === comparable(rel) || comparable(destinationParent).startsWith(`${comparable(rel)}/`))) throw new Error('不能移入自身或子目录')
+  if (directory && (comparable(destinationParent) === comparable(rel) || comparable(destinationParent).startsWith(`${comparable(rel)}/`))) throw new Error(t("不能移入自身或子目录"))
   if (rel === nextRel) return rel
   if (target.platform === 'linux') {
-    await run(target, `python3 -c ${bashQuote(LINUX_RENAME_SCRIPT)} ${bashQuote(target.cwd)} ${bashQuote(rel)} ${bashQuote(name)} ${directory ? '1' : '0'} ${bashQuote(destinationParent)}`)
+    await run(target, `python3 -c ${bashQuote(LINUX_RENAME_SCRIPT())} ${bashQuote(target.cwd)} ${bashQuote(rel)} ${bashQuote(name)} ${directory ? '1' : '0'} ${bashQuote(destinationParent)}`)
     return nextRel
   }
-  const walk = [...parts, oldName].map((part) => `$walk=Join-Path $walk ${psQuote(part)}; $item=Get-Item -LiteralPath $walk -Force -ErrorAction Stop; if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw '不支持通过符号链接重命名' }`).join('; ')
-  const targetWalk = destinationParent ? destinationParent.split('/').map((part) => `$parent=Join-Path $parent ${psQuote(part)}; $parentItem=Get-Item -LiteralPath $parent -Force -ErrorAction Stop; if (($parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or -not $parentItem.PSIsContainer) { throw '目标不是安全目录' }`).join('; ') : ''
+  const walk = [...parts, oldName].map((part) => `$walk=Join-Path $walk ${psQuote(part)}; $item=Get-Item -LiteralPath $walk -Force -ErrorAction Stop; if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw ${psQuote(t("不支持通过符号链接重命名"))} }`).join('; ')
+  const targetWalk = destinationParent ? destinationParent.split('/').map((part) => `$parent=Join-Path $parent ${psQuote(part)}; $parentItem=Get-Item -LiteralPath $parent -Force -ErrorAction Stop; if (($parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or -not $parentItem.PSIsContainer) { throw ${psQuote(t("目标不是安全目录"))} }`).join('; ') : ''
   const move = directory ? '[IO.Directory]::Move' : '[IO.File]::Move'
   const temporary = `.awb-rename-${randomUUID()}`
-  const command = `$ErrorActionPreference='Stop'; $root=(Resolve-Path -LiteralPath ${psQuote(target.cwd)} -ErrorAction Stop).Path; $walk=$root; ${walk}; if ($item.PSIsContainer -ne $${directory ? 'true' : 'false'}) { throw '文件类型已更改' }; $parent=$root; ${targetWalk ? `${targetWalk}; ` : ''}$dest=Join-Path $parent ${psQuote(name)}; if ([String]::Equals($walk,$dest,[StringComparison]::OrdinalIgnoreCase)) { $temp=Join-Path $parent ${psQuote(temporary)}; ${move}($walk,$temp); try { ${move}($temp,$dest) } catch { try { ${move}($temp,$walk) } catch { throw ('重命名失败，原对象保留于 '+$temp) }; throw } } else { ${move}($walk,$dest) }`
+  const command = `$ErrorActionPreference='Stop'; $root=(Resolve-Path -LiteralPath ${psQuote(target.cwd)} -ErrorAction Stop).Path; $walk=$root; ${walk}; if ($item.PSIsContainer -ne $${directory ? 'true' : 'false'}) { throw ${psQuote(t("文件类型已更改"))} }; $parent=$root; ${targetWalk ? `${targetWalk}; ` : ''}$dest=Join-Path $parent ${psQuote(name)}; if ([String]::Equals($walk,$dest,[StringComparison]::OrdinalIgnoreCase)) { $temp=Join-Path $parent ${psQuote(temporary)}; ${move}($walk,$temp); try { ${move}($temp,$dest) } catch { try { ${move}($temp,$walk) } catch { throw (${psQuote(t("重命名失败，原对象保留于 "))}+$temp) }; throw } } else { ${move}($walk,$dest) }`
   await run(target, command)
   return nextRel
 }
 
 /** Permanently remove a remote descendant after checking every path component. */
 export async function removeRemoteEntry(target: Target, rel: string, directory: boolean): Promise<void> {
-  if (!target.host || target.host.id === 'local') throw new Error('此操作仅适用于远程项目')
+  if (!target.host || target.host.id === 'local') throw new Error(t("此操作仅适用于远程项目"))
   rel = cleanRelative(rel)
-  if (!rel) throw new Error('不能删除项目根目录')
+  if (!rel) throw new Error(t("不能删除项目根目录"))
   const parts = rel.split('/')
   if (target.platform === 'windows') {
-    if (parts.some((part) => part.includes(':'))) throw new Error('非法文件路径')
-    const walk = parts.map((part) => `$walk=Join-Path $walk ${psQuote(part)}; $item=Get-Item -LiteralPath $walk -Force -ErrorAction Stop; if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw '不支持删除符号链接' }`).join('; ')
-    const command = `$ErrorActionPreference='Stop'; $walk=(Resolve-Path -LiteralPath ${psQuote(target.cwd)} -ErrorAction Stop).Path; ${walk}; if ($item.PSIsContainer -ne $${directory ? 'true' : 'false'}) { throw '文件类型已更改' }; ${directory ? "Get-ChildItem -LiteralPath $walk -Force -Recurse | ForEach-Object { if ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw '目录包含符号链接' } }; Remove-Item -LiteralPath $walk -Recurse -Force -ErrorAction Stop" : 'Remove-Item -LiteralPath $walk -Force -ErrorAction Stop'}`
+    if (parts.some((part) => part.includes(':'))) throw new Error(t("非法文件路径"))
+    const walk = parts.map((part) => `$walk=Join-Path $walk ${psQuote(part)}; $item=Get-Item -LiteralPath $walk -Force -ErrorAction Stop; if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw ${psQuote(t("不支持删除符号链接"))} }`).join('; ')
+    const command = `$ErrorActionPreference='Stop'; $walk=(Resolve-Path -LiteralPath ${psQuote(target.cwd)} -ErrorAction Stop).Path; ${walk}; if ($item.PSIsContainer -ne $${directory ? 'true' : 'false'}) { throw ${psQuote(t("文件类型已更改"))} }; ${directory ? `Get-ChildItem -LiteralPath $walk -Force -Recurse | ForEach-Object { if ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw ${psQuote(t("目录包含符号链接"))} } }; Remove-Item -LiteralPath $walk -Recurse -Force -ErrorAction Stop` : 'Remove-Item -LiteralPath $walk -Force -ErrorAction Stop'}`
     await run(target, command)
   } else {
-    const walk = parts.map((part) => `p="$p"/${bashQuote(part)}; [ ! -L "$p" ] || { echo '不支持删除符号链接' >&2; exit 1; }`).join('; ')
-    const command = `p=$(cd -P -- ${bashQuote(target.cwd)} && pwd) || exit 1; ${walk}; ${directory ? '[ -d "$p" ]' : '[ -f "$p" ]'} || { echo '文件类型已更改' >&2; exit 1; }; ${directory ? 'rm -rf -- "$p"' : 'rm -f -- "$p"'}`
+    const walk = parts.map((part) => `p="$p"/${bashQuote(part)}; [ ! -L "$p" ] || { echo ${bashQuote(t("不支持删除符号链接"))} >&2; exit 1; }`).join('; ')
+    const command = `p=$(cd -P -- ${bashQuote(target.cwd)} && pwd) || exit 1; ${walk}; ${directory ? '[ -d "$p" ]' : '[ -f "$p" ]'} || { echo ${bashQuote(t("文件类型已更改"))} >&2; exit 1; }; ${directory ? 'rm -rf -- "$p"' : 'rm -f -- "$p"'}`
     await run(target, command)
   }
 }
@@ -504,16 +505,16 @@ export async function readFile(target: Target, rel: string): Promise<FileContent
 /** Read preview assets through the same project boundary as the editor. */
 export async function readAsset(target: Target, rel: string): Promise<Buffer> {
   rel = cleanRelative(rel)
-  if (!rel) throw new Error('文件路径不能为空')
+  if (!rel) throw new Error(t("文件路径不能为空"))
   if (!target.host || target.host.id === 'local') {
     const abs = localPath(target.cwd, rel)
-    if (fs.statSync(abs).size > 12_000_000) throw new Error('预览资源超过 12 MB')
+    if (fs.statSync(abs).size > 12_000_000) throw new Error(t("预览资源超过 12 MB"))
     return fs.readFileSync(abs)
   }
   const abs = joinPath(target.platform, target.cwd, rel)
   const q = target.platform === 'windows' ? psQuote(abs) : bashQuote(abs)
   const command = target.platform === 'windows'
-    ? `$root=(Resolve-Path -LiteralPath ${psQuote(target.cwd)} -ErrorAction Stop).Path.TrimEnd('\\')+'\\'; $file=[IO.Path]::GetFullPath(${q}); if (-not $file.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)) { throw '非法路径' }; $walk=$root; foreach ($part in $file.Substring($root.Length).Split('\\')) { $walk=Join-Path $walk $part; if ((Get-Item -LiteralPath $walk -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw '符号链接不可预览' } }; [Convert]::ToBase64String([IO.File]::ReadAllBytes($file))`
+    ? `$root=(Resolve-Path -LiteralPath ${psQuote(target.cwd)} -ErrorAction Stop).Path.TrimEnd('\\')+'\\'; $file=[IO.Path]::GetFullPath(${q}); if (-not $file.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)) { throw ${psQuote(t("非法路径"))} }; $walk=$root; foreach ($part in $file.Substring($root.Length).Split('\\')) { $walk=Join-Path $walk $part; if ((Get-Item -LiteralPath $walk -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw ${psQuote(t("符号链接不可预览"))} } }; [Convert]::ToBase64String([IO.File]::ReadAllBytes($file))`
     : `root=$(cd -P -- ${bashQuote(target.cwd)} && pwd); file=${q}; [ ! -L "$file" ] || exit 1; parent=$(cd -P -- "$(dirname -- "$file")" && pwd) || exit 1; root=\${root%/}; case "$parent/" in "$root/"*) base64 "$file" ;; *) exit 1;; esac`
   return Buffer.from((await run(target, command)).trim(), 'base64')
 }
@@ -536,7 +537,7 @@ async function createMissingFile(target: Target, rel: string, bytes: Buffer): Pr
     const command = `$ErrorActionPreference='Stop'
 $root=(Resolve-Path -LiteralPath ${psQuote(target.cwd)} -ErrorAction Stop).Path
 $parent=$root
-${parts.map((part) => `$parent=Join-Path $parent ${psQuote(part)}; $item=Get-Item -LiteralPath $parent -Force -ErrorAction Stop; if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw '不支持链接目录' }`).join('\n')}
+${parts.map((part) => `$parent=Join-Path $parent ${psQuote(part)}; $item=Get-Item -LiteralPath $parent -Force -ErrorAction Stop; if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw ${psQuote(t("不支持链接目录"))} }`).join('\n')}
 $dest=Join-Path $parent ${psQuote(name)}
 $temp=Join-Path $parent ('.awb-'+[Guid]::NewGuid().ToString('N')+'.tmp')
 try { [IO.File]::WriteAllBytes($temp,[Convert]::FromBase64String([Console]::In.ReadToEnd())); [IO.File]::Move($temp,$dest) }
@@ -566,16 +567,16 @@ finally:
 
 export async function writeFile(target: Target, rel: string, text: string, version: string | null): Promise<FileContent> {
   rel = cleanRelative(rel)
-  if (!rel || (version !== null && !/^[a-f0-9]{64}$/.test(version))) throw new Error('请先读取文件再保存')
+  if (!rel || (version !== null && !/^[a-f0-9]{64}$/.test(version))) throw new Error(t("请先读取文件再保存"))
   const bytes = Buffer.from(text, 'utf8')
-  if (bytes.length > 2_000_000) throw new Error('文件超过 2 MB，无法在内置编辑器中保存')
+  if (bytes.length > 2_000_000) throw new Error(t("文件超过 2 MB，无法在内置编辑器中保存"))
   if (version === null) return createMissingFile(target, rel, bytes)
-  const conflict = () => new Error('文件已被其他程序修改，请重新读取后合并更改')
+  const conflict = () => new Error(t("文件已被其他程序修改，请重新读取后合并更改"))
   if (!target.host || target.host.id === 'local') {
     const abs = localPath(target.cwd, rel)
     const current = fs.readFileSync(abs)
     if (versionOf(current) !== version) throw conflict()
-    if (looksBinary(current) || !isUtf8(current)) throw new Error('只能编辑 UTF-8 文本文件')
+    if (looksBinary(current) || !isUtf8(current)) throw new Error(t("只能编辑 UTF-8 文本文件"))
     const temp = `${abs}.awb-${randomUUID()}.tmp`
     try {
       fs.writeFileSync(temp, bytes, { flag: 'wx', mode: fs.statSync(abs).mode })
@@ -587,9 +588,9 @@ export async function writeFile(target: Target, rel: string, text: string, versi
     return readLocal(target.cwd, rel)
   }
   const before = await readRemote(target, rel)
-  if (before.missing) throw new Error('文件不存在')
+  if (before.missing) throw new Error(t("文件不存在"))
   if (before.version !== version) throw conflict()
-  if (before.binary) throw new Error('只能编辑 UTF-8 文本文件')
+  if (before.binary) throw new Error(t("只能编辑 UTF-8 文本文件"))
   const abs = joinPath(target.platform, target.cwd, rel)
   let command: string
   if (target.platform === 'windows') {
@@ -634,7 +635,7 @@ printf saved`
   try { await run(target, command, bytes.toString('base64')) } catch (error) {
     const detail = String((error as { stderr?: string }).stderr || error)
     if (detail.includes('AWB_CONFLICT')) throw conflict()
-    if (detail.includes('AWB_UNSAFE_PATH')) throw new Error('无法保存项目目录外的文件或符号链接', { cause: error })
+    if (detail.includes('AWB_UNSAFE_PATH')) throw new Error(t("无法保存项目目录外的文件或符号链接"), { cause: error })
     throw error
   }
   return readRemote(target, rel)

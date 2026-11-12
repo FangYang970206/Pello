@@ -2,13 +2,9 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import ts from 'typescript'
+import { loadTypeScript } from './fixtures/load-ts.mjs'
 
-const load = async (file, replace = (value) => value) => {
-  const source = replace(fs.readFileSync(new URL(file, import.meta.url), 'utf8'))
-  const js = ts.transpile(source, { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext })
-  return import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`)
-}
+const load = (file, replace) => loadTypeScript(new URL(file, import.meta.url), replace)
 const { agentResumeCommand, terminalSessionKey } = await load('../src/main/agent-resume.ts')
 const { matchLegacyConversation, openCodeConversations } = await load('../src/main/legacy-agent-session.ts')
 const candidates = [

@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import type { DocumentDraft } from './documents'
 import { SourceHighlight } from './SourceHighlight'
@@ -62,16 +63,16 @@ export function FilePane({ path, anchor, onNavigate, document, onEdit, onSave, o
           else onHistory(key === 'y' || event.shiftKey)
         }
       }}>
-      {document?.replacing ? <p className="rmeta" role="status">正在处理文件覆盖…</p> : readonly ? <div className="empty"><div className="in"><h2>{!document ? '正在读取文件…' : document.missing ? '文件不存在' : document.binary ? '无法编辑二进制或非 UTF-8 文件' : '文件超过 2 MB，请使用外部编辑器'}</h2></div></div>
+      {document?.replacing ? <p className="rmeta" role="status">{t("正在处理文件覆盖…")}</p> : readonly ? <div className="empty"><div className="in"><h2>{!document ? t("正在读取文件…") : document.missing ? t("文件不存在") : document.binary ? t("无法编辑二进制或非 UTF-8 文件") : t("文件超过 2 MB，请使用外部编辑器")}</h2></div></div>
         : html && visual ? preview.error ? <p className="file-error" role="alert">{preview.error}</p> : preview.url && preview.content === document.draft && preview.replacementId === document.replacementId ?
-          <iframe key={preview.url} className="html-preview" title="HTML 预览" sandbox="allow-scripts" src={preview.url} /> : <p className="rmeta">正在加载预览…</p>
-        : markdown && visual ? <Suspense fallback={<div className="rmeta">正在加载 Markdown 编辑器…</div>}>
+          <iframe key={preview.url} className="html-preview" title={t("HTML 预览")} sandbox="allow-scripts" src={preview.url} /> : <p className="rmeta">{t("正在加载预览…")}</p>
+        : markdown && visual ? <Suspense fallback={<div className="rmeta">{t("正在加载 Markdown 编辑器…")}</div>}>
           <MarkdownEditor value={document.draft} projectId={document.projectId} path={path} anchor={anchor} onNavigate={onNavigate} onChange={onEdit} formatRef={format} />
         </Suspense> : <div className="file-editor">
           <div className="editor-gutter" ref={gutter} aria-hidden="true">{document.draft.split('\n').map((_, i) => <div key={i}>{i + 1}</div>)}</div>
           <div className="source-editor">
           <pre ref={highlight} className="source-highlight" aria-hidden="true"><SourceHighlight value={document.draft} path={path} /></pre>
-          <textarea aria-label="文件内容" value={document.draft} wrap="off" spellCheck={false} autoCorrect="off" autoCapitalize="off"
+          <textarea aria-label={t("文件内容")} value={document.draft} wrap="off" spellCheck={false} autoCorrect="off" autoCapitalize="off"
             onChange={(event) => onEdit(event.target.value)}
             onScroll={(event) => { if (gutter.current) gutter.current.scrollTop = event.currentTarget.scrollTop; if (highlight.current) { highlight.current.scrollTop = event.currentTarget.scrollTop; highlight.current.scrollLeft = event.currentTarget.scrollLeft } }}
             onKeyDown={(event) => {

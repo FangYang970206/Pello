@@ -2,17 +2,9 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import ts from 'typescript'
+import { loadTypeScript } from './fixtures/load-ts.mjs'
 
-const sourceModule = ts.transpileModule(fs.readFileSync(new URL('../src/main/transfer.ts', import.meta.url), 'utf8'), {
-  compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 }
-}).outputText
-const policyModule = ts.transpileModule(fs.readFileSync(new URL('../src/shared/file-conflicts.ts', import.meta.url), 'utf8'), {
-  compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 }
-}).outputText
-const policyUrl = `data:text/javascript;base64,${Buffer.from(policyModule).toString('base64')}`
-const linkedSource = sourceModule.replace(/from (['"])..\/shared\/file-conflicts\1/, `from '${policyUrl}'`)
-const { TransferManager } = await import(`data:text/javascript;base64,${Buffer.from(linkedSource).toString('base64')}`)
+const { TransferManager } = await loadTypeScript(new URL('../src/main/transfer.ts', import.meta.url))
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'awb-transfer-'))
 const source = path.join(root, '来源 目录')

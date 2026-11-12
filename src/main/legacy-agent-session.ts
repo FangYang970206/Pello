@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -11,7 +12,7 @@ const exec = promisify(execFile)
 
 export async function openCodeConversations(cwd: string, environment: NodeJS.ProcessEnv, run?: (args: string[]) => Promise<string>): Promise<NativeConversation[]> {
   const invoke = run || (async (args: string[]) => {
-    if (args.some((arg) => !/^[\w-]+$/.test(arg))) throw new Error('OpenCode 会话参数无效')
+    if (args.some((arg) => !/^[\w-]+$/.test(arg))) throw new Error(t("OpenCode 会话参数无效"))
     const command = `opencode session ${args.join(' ')}`
     const windows = process.platform === 'win32'
     const result = await exec(windows ? 'powershell.exe' : 'bash', windows ? ['-NoProfile', '-Command', command] : ['-lc', `[ ! -f ~/.bashrc ] || source ~/.bashrc; ${command}`], { cwd, env: environment, windowsHide: true, timeout: 20000, maxBuffer: 32_000_000 })

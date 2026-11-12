@@ -5,21 +5,12 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { generateKeyPairSync } from 'node:crypto'
-import ts from 'typescript'
+import { loadTypeScript } from './fixtures/load-ts.mjs'
 import ssh2 from 'ssh2'
 import { _electron as electron } from 'playwright'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const source = ts.transpileModule(fs.readFileSync(path.join(root, 'src/main/platform.ts'), 'utf8'), {
-  compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 }
-}).outputText
-const localShellSource = ts.transpileModule(fs.readFileSync(path.join(root, 'src/main/local-shells.ts'), 'utf8'), {
-  compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 }
-}).outputText
-const localShellUrl = `data:text/javascript;base64,${Buffer.from(localShellSource).toString('base64')}`
-const linkedSource = source.replace("from './local-shells'", `from '${localShellUrl}'`)
-assert.notEqual(linkedSource, source, 'Link the actual Shell detection dependency before loading platform.ts')
-const { remoteBootstrap } = await import(`data:text/javascript;base64,${Buffer.from(linkedSource).toString('base64')}`)
+const { remoteBootstrap } = await loadTypeScript(path.join(root, 'src/main/platform.ts'))
 const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`
 const failures = []
 const check = async (name, run) => {

@@ -4,10 +4,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { _electron as electron } from 'playwright'
 import { installDocumentHarness } from './fixtures/document-harness.mjs'
-import ts from 'typescript'
+import { loadTypeScript } from './fixtures/load-ts.mjs'
 
-const layoutSource = fs.readFileSync(new URL('../src/renderer/terminal-layout.ts', import.meta.url), 'utf8')
-const { splitTile } = await import(`data:text/javascript;base64,${Buffer.from(ts.transpile(layoutSource, { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext })).toString('base64')}`)
+const { splitTile } = await loadTypeScript(new URL('../src/renderer/terminal-layout.ts', import.meta.url))
 for (const direction of ['left', 'right', 'up', 'down']) {
   const result = splitTile([{ id: 'original', x: 0, y: 0, width: 2, height: 2 }], 'original', 'added', direction)
   const original = result.find((item) => item.id === 'original'), added = result.find((item) => item.id === 'added')

@@ -1,12 +1,13 @@
+import { t } from '../shared/i18n'
 export type Tile = { id: string; x: number; y: number; width: number; height: number }
 export type SplitDirection = 'left' | 'right' | 'up' | 'down'
 
 export function splitTile(tiles: Tile[], id: string, nextId: string, direction: SplitDirection): Tile[] {
-  if (tiles.length >= 4 || tiles.some((tile) => tile.id === nextId)) throw new Error('最多支持四个终端分栏')
+  if (tiles.length >= 4 || tiles.some((tile) => tile.id === nextId)) throw new Error(t("最多支持四个终端分栏"))
   const tile = tiles.find((item) => item.id === id)
-  if (!tile) throw new Error('终端已关闭')
+  if (!tile) throw new Error(t("终端已关闭"))
   const horizontal = direction === 'left' || direction === 'right'
-  if ((horizontal ? tile.width : tile.height) < 2) throw new Error('此方向已达到分栏上限，请选择另一方向')
+  if ((horizontal ? tile.width : tile.height) < 2) throw new Error(t("此方向已达到分栏上限，请选择另一方向"))
   const first = { ...tile, width: horizontal ? 1 : tile.width, height: horizontal ? tile.height : 1 }
   const second = { ...first, x: horizontal ? tile.x + 1 : tile.x, y: horizontal ? tile.y : tile.y + 1 }
   const before = direction === 'left' || direction === 'up'

@@ -1,4 +1,5 @@
 import type { Terminal } from '@xterm/xterm'
+import { hasMessageFragment, t } from '../shared/i18n'
 import type { ThemeName } from '../shared/types'
 import { workbenchTheme } from '../shared/themes'
 import { SerializeAddon } from '@xterm/addon-serialize'
@@ -92,7 +93,7 @@ export function snapshotTerm(id: string): void {
   const previous = retainedHistories.get(id) || ''
   // A TUI can clear either screen, and xterm has bounded in-memory scrollback.
   // Keep the previous launch's history outside that mutable screen buffer.
-  const text = previous && !current.includes('── 上次会话记录 ──') ? `${previous}\n${current}` : current
+  const text = previous && !hasMessageFragment(current, '── 上次会话记录 ──') ? `${previous}\n${current}` : current
   if (!text.trim()) return
   window.awb.saveTerminalHistory(id, text)
 }
@@ -164,7 +165,7 @@ export function restoreHistoryText(text: string): string {
   const normalized = text.replaceAll('\r\n', '\n').replaceAll('\r', '\n').trimEnd()
   if (!normalized) return ''
   const body = normalized.split('\n').join('\r\n')
-  return `\x1b[38;5;244m── 上次会话记录 ──\x1b[0m\r\n${body}\r\n\x1b[38;5;244m── 会话已恢复，下面连接新进程 ──\x1b[0m\r\n`
+  return `\x1b[38;5;244m${t('── 上次会话记录 ──')}\x1b[0m\r\n${body}\r\n\x1b[38;5;244m${t('── 会话已恢复，下面连接新进程 ──')}\x1b[0m\r\n`
 }
 
 export function termPlain(id: string): string {

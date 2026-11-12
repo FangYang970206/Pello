@@ -162,7 +162,7 @@ export function checkInvariants(files) {
     'AWB052', 'src/main/index.ts', '文件搜索始终跳过以点开头的目录，并在设置中说明')
   require(files.get('src/renderer/RightPanel.tsx')?.includes('seg plain-seg') && files.get('src/renderer/RightPanel.tsx')?.includes('mode-cluster') && files.get('src/renderer/RightPanel.tsx')?.includes('data-a="file-search"') && files.get('src/renderer/RightPanel.tsx')?.includes('<Icon name="search"') && !/>\s*文件\s*<\/button>/.test(files.get('src/renderer/RightPanel.tsx') || '') && !files.get('src/renderer/RightPanel.tsx')?.includes("{mode === 'files' ? <button") && !files.get('src/renderer/RightPanel.tsx')?.includes('files.length ? <span className="c">') && files.get('src/renderer/icons.tsx')?.includes('changes: \'M15 18a3 3 0 1 0 6 0'),
     'AWB053', 'src/renderer/RightPanel.tsx', '文件、变更和搜索使用无边框图标入口且搜索紧邻变更；变更为 Git 变更图标且不显示数量；搜索框默认收起并可再次关闭')
-  require(files.get('src/renderer/ProjectSidebar.tsx')?.includes('Number(!!b.project.pinned) - Number(!!a.project.pinned)') && files.get('src/renderer/ProjectSidebar.tsx')?.includes("project.pinned ? '取消置顶' : '置顶项目'") && files.get('src/main/store.ts')?.includes('project.pinned === true'),
+  require(files.get('src/renderer/ProjectSidebar.tsx')?.includes('Number(!!b.project.pinned) - Number(!!a.project.pinned)') && hasString(source('src/renderer/ProjectSidebar.tsx'), '取消置顶') && hasString(source('src/renderer/ProjectSidebar.tsx'), '置顶项目') && files.get('src/main/store.ts')?.includes('project.pinned === true'),
     'AWB054', 'src/renderer/ProjectSidebar.tsx', '置顶项目排在最前、可从项目菜单切换并在重启后保留')
   require(files.get('src/main/pty.ts')?.includes('windowsDescendants(roots)') && files.get('src/main/pty.ts')?.includes('session.disposeRoot()') && files.get('src/main/pty.ts')?.includes('proc.kill()'),
     'AWB055', 'src/main/pty.ts', '退出时先按进程快照叶子优先结束子孙，再串行结束根进程并等待原生退出，避免 taskkill 与 ConPTY 并发析构')
@@ -209,6 +209,11 @@ export function checkInvariants(files) {
     'AWB058', 'src/renderer/terms.ts', '历史回放保留当前终端画面和光标；退出等待渲染队列快照落盘')
   require(files.get('src/main/legacy-agent-session.ts')?.includes('other.candidate.id !== candidate.id') && files.get('src/main/legacy-agent-session.ts')?.includes('size === 1') && files.get('src/main/pty.ts')?.includes('if (!match) throw new Error'),
     'AWB059', 'src/main/legacy-agent-session.ts', '旧记录只能按独有消息绑定原生对话，不猜测最近会话或静默创建空白对话')
+  const sidebar = files.get('src/renderer/ProjectSidebar.tsx') || ''
+  require(sidebar.includes('projects.filter((project) => !project.temporary)') && sidebar.includes('className="temporary-group"') && sidebar.includes('data-a="temporary-toggle"') && sidebar.includes('props.onNewTemporary()') && files.get('src/main/temporary-sessions.ts')?.includes('path.join(base, id)'),
+    'AWB060', 'src/renderer/ProjectSidebar.tsx', '临时会话独立归组并保留各自工作目录；新增终端沿用会话目录')
+  require(files.get('src/main/store.ts')?.includes("language: settings.language === 'en' ? 'en' : 'zh-CN'") && called(main, 'saveSettings').length && files.get('src/renderer/App.tsx')?.includes('useSyncExternalStore(subscribeLanguage, getLanguage)') && !files.get('src/renderer/App.tsx')?.includes('key={language}') && files.get('src/shared/i18n.ts')?.includes('String(values[Number(index)])') && !called(named(source('src/shared/i18n.ts'), 't'), 't').length && scripts.check?.includes('scripts/i18n-check.mjs'),
+    'AWB061', 'src/shared/i18n.ts', '中英文配置持久化，共享翻译保留插值，切换不重建工作区并保留行为回归')
   return errors
 }
 

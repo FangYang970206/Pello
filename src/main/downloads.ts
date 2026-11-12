@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -29,8 +30,8 @@ export class DownloadManager {
   }
   retry(id: string): string {
     const history = this.histories.get(id)
-    if (!history?.finished || !history.failed.length) throw new Error('没有可重试的失败项')
-    if (this.context(history.projectId).identity !== history.identity) throw new Error('项目环境已更改')
+    if (!history?.finished || !history.failed.length) throw new Error(t("没有可重试的失败项"))
+    if (this.context(history.projectId).identity !== history.identity) throw new Error(t("项目环境已更改"))
     return this.run(history.projectId, history.anchor, history.failed)
   }
 
@@ -49,13 +50,13 @@ export class DownloadManager {
       snapshot.items.push({ source: entry.source, destination: entry.destination, status: error ? 'failed' : 'done', ...(error ? { error } : {}) }); emit()
     }
     const check = async (entry: Entry) => {
-      if (controller.signal.aborted) throw new Error('传输已取消')
-      if (this.context(projectId).identity !== identity) throw new Error('项目环境已更改')
+      if (controller.signal.aborted) throw new Error(t("传输已取消"))
+      if (this.context(projectId).identity !== identity) throw new Error(t("项目环境已更改"))
       const parent = entry.kind === 'tree' ? entry.destination : path.dirname(entry.destination)
       const relative = path.relative(anchor, parent)
-      if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error('下载位置超出所选目录')
+      if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error(t("下载位置超出所选目录"))
       const real = await fs.realpath(parent)
-      if (process.platform === 'win32' ? real.toLowerCase() !== parent.toLowerCase() : real !== parent) throw new Error('下载位置已更改或包含链接')
+      if (process.platform === 'win32' ? real.toLowerCase() !== parent.toLowerCase() : real !== parent) throw new Error(t("下载位置已更改或包含链接"))
     }
     const completion = new Promise<void>((done) => setImmediate(() => {
       emit()
@@ -73,7 +74,7 @@ export class DownloadManager {
               result(entry)
             }
           } catch (error) {
-            if (!controller.signal.aborted) result(entry, (error as NodeJS.ErrnoException).code === 'EEXIST' ? '目标已存在，请选择新的文件名或目录' : error instanceof Error ? error.message : '下载失败')
+            if (!controller.signal.aborted) result(entry, (error as NodeJS.ErrnoException).code === 'EEXIST' ? t("目标已存在，请选择新的文件名或目录") : error instanceof Error ? error.message : t("下载失败"))
           }
         }
       })().finally(() => { snapshot.state = controller.signal.aborted ? 'cancelled' : 'completed'; history.finished = true; emit(); done() })

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
+import { getLanguage, hasMessageFragment, setLanguage, subscribeLanguage, t } from '../shared/i18n'
 import type { AgentInfo, Database, FileDiff, GitPanel, Host, SettingsSection, ShellKind, ThemeName, TreeNode, WorkSession } from '../shared/types'
 import { legacySessionId, sessionOf } from '../shared/work-sessions'
-import { PRESETS, SHELL_AGENT, cmdline, resolveAgent, shellLabel, uid } from '../shared/types'
+import { PRESETS, SHELL_AGENT, cmdline, hostDisplayName, resolveAgent, shellLabel, uid } from '../shared/types'
 import { Icon } from './icons'
 import appIcon from '../../assets/pello-rounded-small.svg'
 import { dropTerm, holdTermHistory, paint, prependTermHistory, queueSnapshot, releaseTermHistory, retainTermHistory, setTerminalHistoryEnabled, snapshotTerms, syncTermSize, writeNotice, writeTerm } from './terms'
@@ -37,6 +38,8 @@ function shellFor(host: Host | undefined, pref: ShellKind): ShellKind {
 }
 
 export function App() {
+  const language = useSyncExternalStore(subscribeLanguage, getLanguage)
+  useLayoutEffect(() => { document.documentElement.lang = language }, [language])
   const [db, setDb] = useState<Database | null>(null)
   const [installed, setInstalled] = useState<Record<string, boolean>>({})
   const [route, setRoute] = useState<'work' | 'settings'>('work')
@@ -108,13 +111,13 @@ export function App() {
     clearTimeout(uploadDismissTimers.current.get(id))
     uploadDismissTimers.current.delete(id)
     setTransferStates((current) => { const next = { ...current }; delete next[id]; return next })
-    void window.awb.transferDismiss(id).catch((error: unknown) => console.error('清理传输记录失败', error))
+    void window.awb.transferDismiss(id).catch((error: unknown) => console.error(t("清理传输记录失败"), error))
   }, [])
   useEffect(() => {
     const timers = uploadDismissTimers.current
     const unsubscribe = window.awb.onTransfer((snapshot) => {
       if (snapshot.state === 'completed' || snapshot.state === 'cancelled') setGitTick((tick) => tick + 1)
-      if (snapshot.direction === 'upload' && snapshot.state === 'cancelled' && !snapshot.warnings?.length && !snapshot.items.some((item) => item.error?.includes('保留于'))) { dismissTransfer(snapshot.id); return }
+      if (snapshot.direction === 'upload' && snapshot.state === 'cancelled' && !snapshot.warnings?.length && !snapshot.items.some((item) => hasMessageFragment(item.error, '保留于'))) { dismissTransfer(snapshot.id); return }
       setTransferStates((current) => ({ ...current, [snapshot.id]: snapshot }))
       if (uploadSucceeded(snapshot)) {
         if (!timers.has(snapshot.id)) timers.set(snapshot.id, setTimeout(() => dismissTransfer(snapshot.id), UPLOAD_SUCCESS_DURATION))
@@ -157,7 +160,7 @@ export function App() {
           }
         } catch (error) {
           const doc = documentsRef.current[key]
-          if (doc) putDocument(key, { ...doc, error: error instanceof Error ? error.message : '覆盖后读取失败' })
+          if (doc) putDocument(key, { ...doc, error: error instanceof Error ? error.message : t("覆盖后读取失败") })
         }
       })).finally(() => { setGitTick((tick) => tick + 1); finishLock() })
       return
@@ -175,7 +178,7 @@ export function App() {
     }
     if (!dirty.length) { window.awb.replacementReady(event.id, true); return }
     replacementConfirm.current = event.id
-    setModal({ type: 'confirm', title: '覆盖未保存的文件？', ok: '放弃草稿并覆盖', body: <>{event.directory ? '替换目录' : '文件'} <span className="mono">{event.path}</span> 会影响 {dirty.length} 个未保存的文件。{dirty.map((doc) => <span className="mono" style={{ display: 'block' }} key={`${doc.projectId}:${doc.path}`}>{doc.path}</span>)}覆盖成功后将读取新内容，撤销历史仍会保留。</>, run: () => { replacementConfirm.current = null; setModal(null); window.awb.replacementReady(event.id, true) } })
+    setModal({ type: 'confirm', title: t("覆盖未保存的文件？"), ok: t("放弃草稿并覆盖"), body: <>{event.directory ? t("替换目录") : t("文件")} <span className="mono">{event.path}</span> {t(" 会影响 ")}{dirty.length} {t(" 个未保存的文件。")}{dirty.map((doc) => <span className="mono" style={{ display: 'block' }} key={`${doc.projectId}:${doc.path}`}>{doc.path}</span>)}{t("覆盖成功后将读取新内容，撤销历史仍会保留。")}</>, run: () => { replacementConfirm.current = null; setModal(null); window.awb.replacementReady(event.id, true) } })
   }), [])
   useEffect(() => {
     if (!modal && replacementConfirm.current) { const id = replacementConfirm.current; replacementConfirm.current = null; window.awb.replacementReady(id, false) }
@@ -214,7 +217,7 @@ export function App() {
       setTreeChildren((map) => ({ ...map, [key]: nodes }))
     } catch (error) {
       setOpenDirs((map) => ({ ...map, [key]: false }))
-      toast(error instanceof Error ? error.message : '无法读取目录', true)
+      toast(error instanceof Error ? error.message : t("无法读取目录"), true)
     } finally { directoryRequests.current.delete(key) }
   }
 
@@ -249,6 +252,7 @@ export function App() {
 
   useEffect(() => {
     void window.awb.getState().then((state) => {
+      setLanguage(state.db.settings.language)
       setDb(state.db)
       putSessions(state.db.workSessions || {})
       selectedSessionsRef.current = state.db.activeSession || {}
@@ -356,7 +360,7 @@ export function App() {
     const id = existingId || uid('t')
     const groupId = targetSession || selectedSessionsRef.current[target.id] || sessionsRef.current[target.id]?.[0]?.id || legacySessionId(target.id)
     if (!sessionsRef.current[target.id]?.some((session) => session.id === groupId)) {
-      const next = { ...sessionsRef.current, [target.id]: [...(sessionsRef.current[target.id] || []), { id: groupId, name: '会话一' }] }
+      const next = { ...sessionsRef.current, [target.id]: [...(sessionsRef.current[target.id] || []), { id: groupId, name: target.temporary ? target.name : t("会话一") }] }
       sessionsRef.current = next; setWorkSessions(next)
     }
     if (activate) {
@@ -409,11 +413,11 @@ export function App() {
       return id
     } catch (err) {
       if (existingId) {
-        const message = err instanceof Error ? err.message : '无法启动终端'
+        const message = err instanceof Error ? err.message : t("无法启动终端")
         flushRestoredHistory(id)
-        writeNotice(id, db?.settings.theme || 'dark', 'red', `[无法恢复会话：${message}。右键终端可选择重新连接。]`)
+        writeNotice(id, db?.settings.theme || 'dark', 'red', t("[无法恢复会话：{{0}}。右键终端可选择重新连接。]", message))
         setTabs((list) => list.map((item) => item.id === id && item.type === 'term' ? { ...item, state: 'failed', startedAt: null, exitCode: null, inputReady: false } : item))
-        toast(`会话 ${existingName || id} 未能恢复：${message}`, true)
+        toast(t("会话 {{0}} 未能恢复：{{1}}", existingName || id, message), true)
         return null
       }
       setTabs((list) => {
@@ -426,7 +430,7 @@ export function App() {
         persist(next, activeIds)
         return next
       })
-      toast(err instanceof Error ? err.message : '无法启动终端', true)
+      toast(err instanceof Error ? err.message : t("无法启动终端"), true)
       return null
     }
   }, [db?.settings.theme, flushRestoredHistory, persist, toast])
@@ -503,8 +507,8 @@ export function App() {
       )
       if (!event.announce) return
       const mode = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark'
-      if (event.reason === 'kill') writeNotice(event.id, mode, 'red', '[进程已被强制结束]')
-      writeNotice(event.id, mode, 'faint', `[进程已退出，退出码 ${event.exitCode ?? 0}]`)
+      if (event.reason === 'kill') writeNotice(event.id, mode, 'red', t("[进程已被强制结束]"))
+      writeNotice(event.id, mode, 'faint', t("[进程已退出，退出码 {{0}}]", event.exitCode ?? 0))
     })
   }, [])
 
@@ -554,7 +558,7 @@ export function App() {
     let stop = false
     void window.awb.gitDiff(project.id, active.path, !!git?.untracked[active.path]).then((file) => {
       if (!stop) setDiff(file)
-    }).catch((err) => toast(err instanceof Error ? err.message : '无法读取差异', true))
+    }).catch((err) => toast(err instanceof Error ? err.message : t("无法读取差异"), true))
     return () => {
       stop = true
     }
@@ -568,7 +572,7 @@ export function App() {
     let stop = false
     void window.awb.gitRead(project.id, active.path).then((file) => {
       if (!stop) putDocument(key, { ...file, projectId: project.id, path: active.path, draft: editableText(file.text) })
-    }).catch((error) => toast(error instanceof Error ? error.message : '无法读取文件', true))
+    }).catch((error) => toast(error instanceof Error ? error.message : t("无法读取文件"), true))
     return () => {
       stop = true
     }
@@ -625,10 +629,10 @@ export function App() {
       putDocument(key, { ...latest, ...saved, draft, saving: false, error: undefined })
       setTabs((list) => list.map((item) => item.type !== 'term' && item.projectId === tab.projectId && item.path === tab.path ? { ...item, dirty: draft !== editableText(saved.text) } : item))
       setGitTick((tick) => tick + 1)
-      toast(automatic ? '已自动保存' : '文件已保存')
+      toast(automatic ? t("已自动保存") : t("文件已保存"))
       return true
     } catch (error) {
-      const message = error instanceof Error ? error.message : '保存失败'
+      const message = error instanceof Error ? error.message : t("保存失败")
       putDocument(key, { ...(documentsRef.current[key] || doc), saving: false, error: message })
       if (!automatic) toast(message, true)
       return false
@@ -677,7 +681,7 @@ export function App() {
       }).catch((error) => toast(String(error), true))
     }
     if (documentsRef.current[key] && isDirty(documentsRef.current[key])) {
-      setModal({ type: 'confirm', title: '重新读取文件？', body: '这会放弃此文件尚未保存的更改。', ok: '放弃并重新读取', run: reload })
+      setModal({ type: 'confirm', title: t("重新读取文件？"), body: t("这会放弃此文件尚未保存的更改。"), ok: t("放弃并重新读取"), run: reload })
     } else reload()
   }
 
@@ -690,7 +694,7 @@ export function App() {
         await window.awb.ptyClose(id)
       } catch (error) {
         closingTerms.current.delete(id)
-        toast(error instanceof Error ? error.message : '无法关闭终端', true)
+        toast(error instanceof Error ? error.message : t("无法关闭终端"), true)
         return
       }
       dropTerm(id)
@@ -721,9 +725,9 @@ export function App() {
     if (!tab || !db) return
     if (tab.type !== 'term') {
       const doc = documentsRef.current[documentKey(tab.projectId, tab.path)]
-      if (doc?.saving) { toast('文件正在保存，请稍候'); return }
+      if (doc?.saving) { toast(t("文件正在保存，请稍候")); return }
       if (doc && isDirty(doc)) {
-        setModal({ type: 'confirm', title: '文件尚未保存', body: `${tab.path} 有未保存的更改。`, ok: '放弃并关闭',
+        setModal({ type: 'confirm', title: t("文件尚未保存"), body: t("{{0}} 有未保存的更改。", tab.path), ok: t("放弃并关闭"),
           run: () => { setModal(null); void closeTab(id) },
           save: () => { void saveFile(tab).then((saved) => { if (saved) { setModal(null); void closeTab(id) } }) }
         })
@@ -739,12 +743,11 @@ export function App() {
     const procCmd = cmdline(agent) || shellLabel(tab.shell)
     setModal({
       type: 'confirm',
-      title: '关闭标签？',
-      ok: '结束并关闭',
+      title: t("关闭标签？"),
+      ok: t("结束并关闭"),
       body: (
         <>
-          关闭标签会结束正在运行的 <b>{procName}</b>（<span className="mono">{procCmd}</span>）。未保存的会话会丢失，已写入磁盘的文件不受影响。
-        </>
+          {t("关闭标签会结束正在运行的 ")}<b>{procName}</b>{t('（')}<span className="mono">{procCmd}</span>{t("）。未保存的会话会丢失，已写入磁盘的文件不受影响。")}</>
       ),
       run: () => {
         setModal(null)
@@ -794,7 +797,8 @@ export function App() {
   }
 
   async function renameSession(project: string, id: string, name: string) {
-    const groups = (sessionsRef.current[project] || []).map((item) => item.id === id ? { ...item, name } : item)
+    const existing = sessionsRef.current[project] || [{ id, name }]
+    const groups = existing.map((item) => item.id === id ? { ...item, name } : item)
     const terms = tabs.filter((tab): tab is TermTab => tab.type === 'term' && tab.projectId === project)
     await window.awb.saveSessions(project, terms, activeMapRef.current[project], groups, selectedSessionsRef.current[project])
     putSessions({ ...sessionsRef.current, [project]: groups })
@@ -804,7 +808,7 @@ export function App() {
     const group = sessionsRef.current[project]?.find((item) => item.id === id)
     if (!group) return
     const terms = tabs.filter((tab): tab is TermTab => tab.type === 'term' && tab.projectId === project && sessionOf(tab) === id)
-    setModal({ type: 'confirm', title: '删除会话？', body: `删除 ${group.name} 将关闭其中的 ${terms.length} 个终端，项目文件会保留。`, ok: '删除会话', run: async () => {
+    setModal({ type: 'confirm', title: t("删除会话？"), body: t("删除 {{0}} 将关闭其中的 {{1}} 个终端，项目文件会保留。", group.name, terms.length), ok: t("删除会话"), run: async () => {
       for (const term of terms) closingTerms.current.add(term.id)
       try { await Promise.all(terms.map((term) => window.awb.ptyClose(term.id))) }
       catch (error) { for (const term of terms) closingTerms.current.delete(term.id); toast(String(error), true); return }
@@ -833,7 +837,7 @@ export function App() {
       const groups = sessionsRef.current[project.id] || []
       let number = groups.length + 1
       while (groups.some((group) => group.name === `会话 ${number}`)) number++
-      putSessions({ ...sessionsRef.current, [project.id]: [...groups, { id: groupId, name: `会话 ${number}` }] })
+      putSessions({ ...sessionsRef.current, [project.id]: [...groups, { id: groupId, name: t("会话 {{0}}", number) }] })
     }
     const result = await openTerm(project, kind, shell, true, undefined, undefined, groupId)
     if (result) setModal(null)
@@ -850,7 +854,7 @@ export function App() {
           return [...list]
         })
       }
-      throw new Error('终端启动失败，请检查项目目录、环境连接与执行器配置后重试。')
+      throw new Error(t("终端启动失败，请检查项目目录、环境连接与执行器配置后重试。"))
     }
   }
 
@@ -863,7 +867,7 @@ export function App() {
       temporaryPending.current = target
     }
     setProjectId(target.id); setRoute('work')
-    if (!await openTerm(target, kind, shell, true)) throw new Error('临时终端启动失败，请重试')
+    if (!await openTerm(target, kind, shell, true)) throw new Error(t("临时终端启动失败，请重试"))
     temporaryPending.current = null; setModal(null)
   }
 
@@ -891,13 +895,13 @@ export function App() {
     if (!target) return
     const projects = db.projects.map((item) => item.id === id ? { ...item, pinned: !item.pinned } : item)
     setDb(await window.awb.saveProjects(projects))
-    toast(target.pinned ? `已取消置顶 ${target.name}` : `已置顶 ${target.name}`)
+    toast(target.pinned ? t("已取消置顶 {{0}}", target.name) : t("已置顶 {{0}}", target.name))
   }
 
   async function renameTerm(id: string, name: string) {
     const tab = tabs.find((item) => item.id === id && item.type === 'term')
     if (!tab) return
-    const terms = tabs.filter((item): item is TermTab => item.type === 'term' && item.projectId === tab.projectId).map((item) => ({ id: item.id, kind: item.kind, shell: item.shell, sessionId: sessionOf(item), name: item.id === id ? name : item.name }))
+    const terms = tabs.filter((item): item is TermTab => item.type === 'term' && item.projectId === tab.projectId).map((item) => ({ id: item.id, kind: item.kind, shell: item.shell, sessionId: sessionOf(item), agentSessionId: item.agentSessionId, name: item.id === id ? name : item.name }))
     await window.awb.saveSessions(tab.projectId, terms, activeMapRef.current[tab.projectId], sessionsRef.current[tab.projectId], selectedSessionsRef.current[tab.projectId])
     setTabs((list) => list.map((item) => item.id === id ? { ...item, name } : item))
   }
@@ -908,16 +912,14 @@ export function App() {
     const untracked = !!git?.untracked[rel]
     setModal({
       type: 'confirm',
-      title: untracked ? '删除新文件？' : '放弃更改？',
-      ok: untracked ? '删除文件' : '放弃更改',
+      title: untracked ? t("删除新文件？") : t("放弃更改？"),
+      ok: untracked ? t("删除文件") : t("放弃更改"),
       body: untracked ? (
         <>
-          <span className="mono">{rel}</span> 尚未被 Git 跟踪，将从磁盘删除（<code className="mono">git clean -f</code>），无法撤销。
-        </>
+          <span className="mono">{rel}</span> {t(" 尚未被 Git 跟踪，将从磁盘删除（")}<code className="mono">git clean -f</code>{t("），无法撤销。")}</>
       ) : (
         <>
-          <span className="mono">{rel}</span> 的工作区修改将被还原（git restore），无法撤销。
-        </>
+          <span className="mono">{rel}</span> {t(" 的工作区修改将被还原（git restore），无法撤销。")}</>
       ),
       run: () => {
         setModal(null)
@@ -936,9 +938,9 @@ export function App() {
               return next
             })
             setGitTick((n) => n + 1)
-            toast(untracked ? '已删除文件' : '已放弃更改')
+            toast(untracked ? t("已删除文件") : t("已放弃更改"))
           })
-          .catch((err) => toast(err instanceof Error ? err.message : '放弃失败', true))
+          .catch((err) => toast(err instanceof Error ? err.message : t("放弃失败"), true))
       }
     })
   }
@@ -959,7 +961,7 @@ export function App() {
     if (!project) return
     const opened = tabs.find((tab) => tab.type === 'file' && tab.projectId === project.id && tab.path === rel)
     if (opened) { setTabs((list) => list.map((tab) => tab.id === opened.id ? { ...tab, anchor } : tab)); selectTab(opened.id); return }
-    if (replacementAt(project.id, rel)) { toast('此目录正在替换，完成后可打开文件'); return }
+    if (replacementAt(project.id, rel)) { toast(t("此目录正在替换，完成后可打开文件")); return }
     const id = uid('f')
     setTabs((list) => [...list, { id, type: 'file', projectId: project.id, path: rel, anchor }])
     setActiveMap((map) => ({ ...map, [project.id]: id }))
@@ -976,9 +978,9 @@ export function App() {
   async function relocateTree(projectId: string, rel: string, directory: boolean, operation: () => Promise<string>): Promise<void> {
     const affected = (value: string) => value === rel || (directory && value.startsWith(`${rel}/`))
     const pending = Object.values(documentsRef.current).filter((doc) => doc.projectId === projectId && affected(doc.path))
-    if (pending.some((doc) => doc.saving || savingDocuments.current.has(documentKey(projectId, doc.path)))) throw new Error('文件正在保存，请稍候')
+    if (pending.some((doc) => doc.saving || savingDocuments.current.has(documentKey(projectId, doc.path)))) throw new Error(t("文件正在保存，请稍候"))
     const lockId = documentKey(projectId, rel)
-    if ([...pathMutations.current.values()].some((item) => item.projectId === projectId && (affected(item.path) || (item.directory && rel.startsWith(`${item.path}/`))))) throw new Error('文件操作正在进行')
+    if ([...pathMutations.current.values()].some((item) => item.projectId === projectId && (affected(item.path) || (item.directory && rel.startsWith(`${item.path}/`))))) throw new Error(t("文件操作正在进行"))
     pathMutations.current.set(lockId, { projectId, path: rel, directory })
     for (const doc of pending) {
       const key = documentKey(projectId, doc.path), timer = autoSaveTimers.current.get(key)
@@ -1024,18 +1026,18 @@ export function App() {
     if (!rel) return
     const owner = db?.projects.find((item) => item.id === projectId)
     const projectHost = db?.hosts.find((item) => item.id === owner?.host)
-    if (!owner || !projectHost) { toast('项目或环境不存在', true); return }
+    if (!owner || !projectHost) { toast(t("项目或环境不存在"), true); return }
     const remote = projectHost.id !== 'local'
     const affected = (path: string) => path === rel || (directory && path.startsWith(`${rel}/`))
     const relevant = Object.values(documentsRef.current).filter((doc) => doc.projectId === projectId && affected(doc.path))
-    if (relevant.some((doc) => doc.saving || savingDocuments.current.has(documentKey(projectId, doc.path)))) { toast('文件正在保存，请稍候', true); return }
+    if (relevant.some((doc) => doc.saving || savingDocuments.current.has(documentKey(projectId, doc.path)))) { toast(t("文件正在保存，请稍候"), true); return }
     for (const doc of relevant) {
       const key = documentKey(projectId, doc.path), pending = autoSaveTimers.current.get(key)
       if (pending) { clearTimeout(pending.timer); autoSaveTimers.current.delete(key) }
     }
     const dirty = relevant.filter(isDirty).length
     const remove = async () => {
-      if (Object.values(documentsRef.current).some((doc) => doc.projectId === projectId && affected(doc.path) && (doc.saving || savingDocuments.current.has(documentKey(projectId, doc.path))))) { toast('文件正在保存，请稍候', true); return }
+      if (Object.values(documentsRef.current).some((doc) => doc.projectId === projectId && affected(doc.path) && (doc.saving || savingDocuments.current.has(documentKey(projectId, doc.path))))) { toast(t("文件正在保存，请稍候"), true); return }
       try {
         await window.awb.treeTrash(projectId, rel, directory)
         const nextDocs = Object.fromEntries(Object.entries(documentsRef.current).filter(([, doc]) => !(doc.projectId === projectId && affected(doc.path))))
@@ -1052,13 +1054,13 @@ export function App() {
         })
         setTreeSelections((current) => current[projectId] && affected(current[projectId].path) ? Object.fromEntries(Object.entries(current).filter(([id]) => id !== projectId)) : current)
         setOpenDirs((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${projectId}:`) || !affected(key.slice(projectId.length + 1)))))
-        setModal(null); setGitTick((tick) => tick + 1); toast(remote ? '远程对象已永久删除' : '已移入回收站')
-      } catch (error) { toast(error instanceof Error ? error.message : '删除失败', true) }
+        setModal(null); setGitTick((tick) => tick + 1); toast(remote ? t("远程对象已永久删除") : t("已移入回收站"))
+      } catch (error) { toast(error instanceof Error ? error.message : t("删除失败"), true) }
     }
-    const impact = <>将{directory ? '文件夹及其全部内容' : '文件'} <span className="mono">{rel}</span> {remote ? '从远程机器永久删除，无法通过工作台恢复' : '移入系统回收站'}。
-      {dirty ? <> 有 {dirty} 个未保存的文件，删除后这些草稿将被放弃。</> : null}</>
-    if (remote) setModal({ type: 'confirm', title: '删除远程对象？', ok: '继续', body: impact, run: () => setModal({ type: 'confirm', title: '再次确认永久删除？', ok: '永久删除', body: impact, run: remove }) })
-    else setModal({ type: 'confirm', title: '移入回收站？', ok: '移入回收站', body: impact, run: remove })
+    const impact = <>{remote ? t('将从远程机器永久删除以下对象，无法通过工作台恢复。') : t('将以下对象移入系统回收站。')} <span className="mono">{rel}</span> {directory ? t('包含文件夹内的全部内容。') : null}
+      {dirty ? t('其中有 {{0}} 个未保存的文件，删除后这些草稿将被放弃。', dirty) : null}</>
+    if (remote) setModal({ type: 'confirm', title: t("删除远程对象？"), ok: t("继续"), body: impact, run: () => setModal({ type: 'confirm', title: t("再次确认永久删除？"), ok: t("永久删除"), body: impact, run: remove }) })
+    else setModal({ type: 'confirm', title: t("移入回收站？"), ok: t("移入回收站"), body: impact, run: remove })
   }
 
   function askRemove(id: string) {
@@ -1066,19 +1068,18 @@ export function App() {
     const item = db.projects.find((projectItem) => projectItem.id === id)
     if (!item) return
     const unsaved = Object.values(documentsRef.current).filter((doc) => doc.projectId === id && isDirty(doc)).length
-    if (Object.values(documentsRef.current).some((doc) => doc.projectId === id && doc.saving)) { toast('文件正在保存，请稍候'); return }
+    if (Object.values(documentsRef.current).some((doc) => doc.projectId === id && doc.saving)) { toast(t("文件正在保存，请稍候")); return }
     const itemHost = db.hosts.find((hostItem) => hostItem.id === item.host) || db.hosts[0]
     const running = tabs.filter((tab) => tab.projectId === id && tab.type === 'term' && tab.state === 'running').length
     setMenuId(null)
     setModal({
       type: 'confirm',
-      title: '移除项目？',
-      ok: '移除',
+      title: t("移除项目？"),
+      ok: t("移除"),
       body: (
         <>
-          将从列表中移除 {item.name}，并关闭它的所有终端。{itemHost?.name || '本机'}上的目录 <span className="mono">{item.path}</span> 及其中的文件不会被删除。
-          {running ? <> 有 {running} 个正在运行的进程会被结束。</> : null}
-          {unsaved ? <> 此项目有 {unsaved} 个文件尚未保存，更改会被放弃。</> : null}
+          {t("将从列表中移除 ")}{item.name}{t("，并关闭它的所有终端。")}{itemHost ? hostDisplayName(itemHost) : t("本机")}{t("上的目录 ")}<span className="mono">{item.path}</span> {t(" 及其中的文件不会被删除。")}{running ? <> {t(" 有 ")}{running} {t(" 个正在运行的进程会被结束。")}</> : null}
+          {unsaved ? <> {t(" 此项目有 ")}{unsaved} {t(" 个文件尚未保存，更改会被放弃。")}</> : null}
         </>
       ),
       run: async () => {
@@ -1088,7 +1089,7 @@ export function App() {
           await Promise.all(terms.map((tab) => window.awb.ptyClose(tab.id)))
         } catch (error) {
           for (const tab of terms) closingTerms.current.delete(tab.id)
-          toast(error instanceof Error ? error.message : '无法关闭项目终端', true)
+          toast(error instanceof Error ? error.message : t("无法关闭项目终端"), true)
           return
         }
         for (const tab of terms) { dropTerm(tab.id); forgetTermHistory(tab.id) }
@@ -1100,7 +1101,7 @@ export function App() {
         setModal(null)
         void window.awb.saveProjects(projects)
         void window.awb.saveSessions(id, [], null)
-        toast(`已移除 ${item.name}`)
+        toast(t("已移除 {{0}}", item.name))
       }
     })
   }
@@ -1216,28 +1217,26 @@ export function App() {
           </div>
           <span className="grow" />
           <div className="wc">
-            <button aria-label="最小化" onClick={() => void window.awb.winMin()}>
+            <button aria-label={t("最小化")} onClick={() => void window.awb.winMin()}>
               <Icon name="minus" className="s" />
             </button>
-            <button aria-label="最大化" onClick={() => void window.awb.winMax()}>
+            <button aria-label={t("最大化")} onClick={() => void window.awb.winMax()}>
               <Icon name="square" className="s" />
             </button>
-            <button className="close" aria-label="关闭窗口" onClick={() => { snapshotTerms(); void window.awb.winClose() }}>
+            <button className="close" aria-label={t("关闭窗口")} onClick={() => { snapshotTerms(); void window.awb.winClose() }}>
               <Icon name="x" className="s" />
             </button>
           </div>
         </header>
         <div className="body">
           <div id="workspace" style={{ display: route === 'settings' ? 'none' : 'contents' }} inert={workspaceLocked ? true : undefined} aria-hidden={workspaceLocked ? true : undefined}>
-              <aside className="side" aria-label="项目">
+              <aside className="side" aria-label={t("项目")}>
                 <SidebarResize width={sidebarWidth} onResize={resizeSidebar} />
                 <button className="newp" data-a="newproj" onClick={() => setModal({ type: 'project' })}>
                   <Icon name="plus" />
-                  新建项目
-                </button>
-                <button className="newp" data-a="temporary-session" disabled={temporaryBusy} onClick={() => void newTemporary()}><Icon name="terminal" />临时会话</button>
-                <nav className="plist" aria-label="项目">
-                  <ProjectSidebar projects={db?.projects || []} hosts={db?.hosts || []} terms={tabs.filter((tab): tab is TermTab => tab.type === 'term')} agents={agents}
+                  {t("新建项目")}</button>
+                <nav className="plist" aria-label={t("项目")}>
+                  <ProjectSidebar projects={db?.projects || []} hosts={db?.hosts || []} terms={tabs.filter((tab): tab is TermTab => tab.type === 'term')} agents={agents} onNewTemporary={() => void newTemporary()} temporaryBusy={temporaryBusy}
                     sessions={workSessions} selectedSession={sessionId} onSession={selectSession} onRenameSession={renameSession} onRemoveSession={removeSession}
                     projectId={projectId} activeId={active?.id} menuId={menuId} onMenu={setMenuId} onProject={selectProject} onTerm={selectTab}
                     onRenameProject={renameProject} onRenameTerm={renameTerm} onRemoveProject={askRemove} onCloseTerm={requestClose}
@@ -1248,8 +1247,7 @@ export function App() {
                 <div className="sfoot">
                   <button className="navb" data-a="settings" onClick={() => openSettings()}>
                     <Icon name="settings" />
-                    设置
-                  </button>
+                    {t("设置")}</button>
                 </div>
               </aside>
               <div id="mainwrap" style={{ display: 'contents' }}>
@@ -1285,9 +1283,9 @@ export function App() {
                   onSplitTerm={async (id) => {
                     const term = tabs.find((tab): tab is TermTab => tab.id === id && tab.type === 'term')
                     const target = db?.projects.find((item) => item.id === term?.projectId)
-                    if (!term || !target) throw new Error('终端已关闭')
+                    if (!term || !target) throw new Error(t("终端已关闭"))
                     const result = await openTerm(target, term.kind, term.shell, true, undefined, undefined, sessionOf(term))
-                    if (!result) throw new Error('分栏终端启动失败')
+                    if (!result) throw new Error(t("分栏终端启动失败"))
                     return result
                   }}
                   onClose={requestClose}
@@ -1299,7 +1297,7 @@ export function App() {
                   }}
                   onInterrupt={(id) => {
                     void window.awb.ptyInterrupt(id).then((action) => {
-                      if (action === 'hint') writeTerm(id, paint(theme, 'amber', '再次按 Ctrl+C 退出'))
+                      if (action === 'hint') writeTerm(id, paint(theme, 'amber', t("再次按 Ctrl+C 退出")))
                     })
                   }}
                   onReconnect={(id) => {
@@ -1350,14 +1348,14 @@ export function App() {
                     onRevealFile={revealFile}
                     onTreeRulesChanged={() => setGitTick((tick) => tick + 1)}
                     referenceTerms={tabs.filter((tab): tab is TermTab => tab.type === 'term' && tab.projectId === project.id && tab.state !== 'exited' && tab.state !== 'failed').sort((a, b) => Number(b.id === lastTerminal.current[project.id]) - Number(a.id === lastTerminal.current[project.id]))}
-                    onReference={(id, text) => { const term = tabs.find((tab): tab is TermTab => tab.id === id && tab.type === 'term' && tab.projectId === project.id && tab.state !== 'exited' && tab.state !== 'failed'); if (!term) { toast('目标终端已关闭', true); return }; window.awb.ptyWrite(id, text); selectTab(id) }}
+                    onReference={(id, text) => { const term = tabs.find((tab): tab is TermTab => tab.id === id && tab.type === 'term' && tab.projectId === project.id && tab.state !== 'exited' && tab.state !== 'failed'); if (!term) { toast(t("目标终端已关闭"), true); return }; window.awb.ptyWrite(id, text); selectTab(id) }}
                     onTrash={askTrash}
                     onRename={renameTree}
                     onMove={moveTree}
                     transfers={Object.values(transferStates).filter((item) => item.projectId === project.id)}
                     onDismissTransfer={dismissTransfer}
                     onCollapse={() => setRight(false)}
-                    onRescan={async () => { const id = project.id; try { const panel = await window.awb.gitStatus(id, true); if (projectIdRef.current === id) setGit(panel) } catch { toast('无法重新扫描仓库，请检查连接和目录权限', true) } }}
+                    onRescan={async () => { const id = project.id; try { const panel = await window.awb.gitStatus(id, true); if (projectIdRef.current === id) setGit(panel) } catch { toast(t("无法重新扫描仓库，请检查连接和目录权限"), true) } }}
                   />
                 ) : null}
               </div>
@@ -1376,14 +1374,13 @@ export function App() {
               }}
               onBack={() => closeSettings()}
               onSettings={(settings) => {
-                setDb({ ...db, settings })
-                void window.awb.saveSettings(settings)
+                void window.awb.saveSettings(settings).then((saved) => { setLanguage(saved.settings.language); setDb(saved) }).catch((error) => toast(String(error), true))
               }}
               onEditExec={(id) => setModal({ type: 'exec', id })}
               onNewExec={() => setModal({ type: 'exec' })}
               onEditHost={(id) => setModal({ type: 'host', id })}
               onNewHost={() => setModal({ type: 'host' })}
-              onInstall={(name, cmd) => toast(cmd ? `请先安装 ${name}，并确保命令 ${cmd} 在 PATH 中` : name)}
+              onInstall={(name, cmd) => toast(cmd ? t("请先安装 {{0}}，并确保命令 {{1}} 在 PATH 中", name, cmd) : name)}
               onLocalHost={() => setModal({ type: 'host', id: 'local' })}
             />
           ) : null}
@@ -1413,7 +1410,7 @@ export function App() {
               setRoute('work')
               setModal(null)
               void window.awb.saveProjects(projects)
-              toast('已创建项目')
+              toast(t("已创建项目"))
             }}
           />
         ) : null}
@@ -1451,7 +1448,7 @@ export function App() {
               setDb((current) => current ? { ...current, custom: saved.custom } : current)
               setModal(null)
               const state = await window.awb.getState(); setInstalled(state.installed)
-              toast('已保存执行器')
+              toast(t("已保存执行器"))
             }}
           />
         ) : null}
@@ -1464,9 +1461,9 @@ export function App() {
             onDelete={(id) => {
               setModal({
                 type: 'confirm',
-                title: '移除机器？',
-                ok: '移除',
-                body: '使用这台机器的项目将无法打开终端。',
+                title: t("移除机器？"),
+                ok: t("移除"),
+                body: t("使用这台机器的项目将无法打开终端。"),
                 run: async () => {
                   const hosts = db.hosts.filter((item) => item.id !== id)
                   try {
@@ -1482,7 +1479,7 @@ export function App() {
               const saved = await window.awb.saveHosts(hosts)
               setDb((current) => current ? { ...current, hosts: saved.hosts } : current)
               setModal(null)
-              toast('已保存')
+              toast(t("已保存"))
             }}
           />
         ) : null}

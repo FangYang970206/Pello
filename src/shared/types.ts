@@ -1,3 +1,4 @@
+import { t } from './i18n'
 export type ThemeName = 'dark' | 'light' | 'nord' | 'dracula' | 'catppuccin' | 'solarized-light'
 export type ShellKind = 'pwsh' | 'cmd' | 'bash' | 'zsh'
 export type LocalShell = { id: ShellKind; label: string; path: string }
@@ -13,6 +14,7 @@ export interface EnvVar {
 }
 
 export interface Settings {
+  language?: 'zh-CN' | 'en'
   theme: ThemeName
   fontSize: number
   fontFamily?: string
@@ -290,6 +292,10 @@ export function hostShellName(platform: OsKind): string {
   return platform === 'linux' ? 'bash' : 'PowerShell'
 }
 
+export function hostDisplayName(host: Host): string {
+  return host.id === 'local' && host.name === '本机' ? t('本机') : host.name
+}
+
 export function hostLine(host: Host): string {
   const shell = hostShellName(host.platform)
   if (host.id === 'local') return `${host.os} · ${shell}`
@@ -319,8 +325,8 @@ export function fmtElapsed(ms: number): string {
 }
 
 export const STATE_LABEL: Record<ProcState, string> = {
-  running: '运行中',
-  idle: '空闲',
-  exited: '已退出',
-  failed: '失败'
+  get running() { return t("运行中") },
+  get idle() { return t("空闲") },
+  get exited() { return t("已退出") },
+  get failed() { return t("失败") }
 }

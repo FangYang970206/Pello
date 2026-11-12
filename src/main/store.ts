@@ -1,4 +1,5 @@
 import { CODE_FONTS, UI_FONTS } from '../shared/fonts'
+import { setLanguage } from '../shared/i18n'
 import { THEMES } from '../shared/themes'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -28,6 +29,7 @@ export function defaultDatabase(): Database {
   }
   return {
     settings: {
+      language: 'zh-CN',
       theme: 'dark',
       layout: 'focus',
       fontSize: 13, fontFamily: 'Cascadia Mono', uiFontFamily: 'Geist', uiFontSize: 13, editorFontSize: 14,
@@ -58,6 +60,7 @@ function sanitize(raw: Partial<Database> | null): Database {
   if (!raw || typeof raw !== 'object') return base
   const settings = (raw.settings || {}) as Partial<Settings>
   base.settings = {
+    language: settings.language === 'en' ? 'en' : 'zh-CN',
     theme: THEMES.some((theme) => theme.id === settings.theme) ? settings.theme! : 'dark',
     layout: ['balanced', 'focus', 'review'].includes(settings.layout || '') ? settings.layout : 'focus',
     panelSide: settings.panelSide === 'left' ? 'left' : 'right',
@@ -232,10 +235,18 @@ export function saveDb(db: Database): void {
   fs.renameSync(tmp, dest)
 }
 
+export function saveSettings(settings: Settings): Database {
+  const next = { ...db(), settings: { ...settings, language: settings.language === 'en' ? 'en' as const : 'zh-CN' as const } }
+  saveDb(next)
+  cache = next
+  setLanguage(next.settings.language)
+  return next
+}
+
 let cache: Database | null = null
 
 export function db(): Database {
-  if (!cache) cache = loadDb()
+  if (!cache) { cache = loadDb(); setLanguage(cache.settings.language) }
   return cache
 }
 
@@ -243,5 +254,6 @@ export function mutate(fn: (draft: Database) => void): Database {
   const draft = db()
   fn(draft)
   saveDb(draft)
+  setLanguage(draft.settings.language)
   return draft
 }

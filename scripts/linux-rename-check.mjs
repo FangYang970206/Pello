@@ -1,12 +1,9 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import fs from 'node:fs'
-import ts from 'typescript'
+import { loadTypeScript } from './fixtures/load-ts.mjs'
 
-const sourceModule = ts.transpileModule(fs.readFileSync(new URL('../src/main/linux-rename.ts', import.meta.url), 'utf8'), {
-  compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 }
-}).outputText
-const { LINUX_RENAME_SCRIPT } = await import(`data:text/javascript;base64,${Buffer.from(sourceModule).toString('base64')}`)
+const { LINUX_RENAME_SCRIPT } = await loadTypeScript(new URL('../src/main/linux-rename.ts', import.meta.url))
+const { setLanguage } = await loadTypeScript(new URL('../src/shared/i18n.ts', import.meta.url))
 
 const harness = `import os, pathlib, subprocess, sys, tempfile
 script = sys.argv[1]
@@ -41,7 +38,10 @@ print('PASS Linux atomic no-replace rename: files, directories, Unicode, collisi
 `
 
 const runner = process.platform === 'win32' ? 'wsl.exe' : 'python3'
-const args = process.platform === 'win32' ? ['-d', 'Ubuntu', '--', 'python3', '-c', harness, LINUX_RENAME_SCRIPT] : ['-c', harness, LINUX_RENAME_SCRIPT]
-const output = execFileSync(runner, args, { encoding: 'utf8', timeout: 30000 })
-assert.match(output, /PASS Linux atomic/)
-console.log(output.trim())
+for (const language of ['zh-CN', 'en']) {
+  setLanguage(language)
+  const args = process.platform === 'win32' ? ['-d', 'Ubuntu', '--', 'python3', '-c', harness, LINUX_RENAME_SCRIPT()] : ['-c', harness, LINUX_RENAME_SCRIPT()]
+  const output = execFileSync(runner, args, { encoding: 'utf8', timeout: 30000 })
+  assert.match(output, /PASS Linux atomic/)
+  console.log(`${language}: ${output.trim()}`)
+}

@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n'
 import { useId, useLayoutEffect, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Icon } from './icons'
@@ -32,7 +33,7 @@ export function ResourceDialog({ title, onClose, children, footer, busy = false,
     onPointerDown={(event) => { pressedOutside.current = event.target === event.currentTarget && outside(event.clientX, event.clientY) }}
     onPointerUp={(event) => { if (dismissOnBackdrop && !busy && pressedOutside.current && event.target === event.currentTarget && outside(event.clientX, event.clientY)) onClose(); pressedOutside.current = false }}
     onKeyDown={(event) => event.stopPropagation()}>
-    <header><h2 id={heading}>{title}</h2><button className="ib" data-a="mclose" aria-label="关闭" disabled={busy} onClick={onClose}><Icon name="x" /></button></header>
+    <header><h2 id={heading}>{title}</h2><button className="ib" data-a="mclose" aria-label={t("关闭")} disabled={busy} onClick={onClose}><Icon name="x" /></button></header>
     <div className="bdy">{children}</div><footer>{footer}</footer>
   </dialog>, document.body)
 }

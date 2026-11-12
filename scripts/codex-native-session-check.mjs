@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import ts from 'typescript'
+import { loadTypeScript } from './fixtures/load-ts.mjs'
 import { _electron as electron } from 'playwright'
 import { createServer } from 'node:http'
 
@@ -37,7 +37,7 @@ process.env.CODEX_HOME = home
 let source = fs.readFileSync(path.join(root, 'src/main/codex-session.ts'), 'utf8')
 source = source.replace(/import \{ bashQuote, psQuote, sshBatchArgs \} from '.\/platform'/, 'const bashQuote = JSON.stringify, psQuote = JSON.stringify, sshBatchArgs = () => []')
 source = source.replace(/import \{ connectPasswordHost, remoteCommand \} from '.\/ssh'/, 'const connectPasswordHost = () => { throw new Error("unexpected remote") }, remoteCommand = () => ""')
-const { createCodexThread } = await import(`data:text/javascript;base64,${Buffer.from(ts.transpile(source, { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext })).toString('base64')}`)
+const { createCodexThread } = await loadTypeScript(path.join(root, 'src/main/codex-session.ts'), () => source)
 const ids = [await createCodexThread(project), await createCodexThread(project)]
 assert.notEqual(ids[0], ids[1], 'same-directory terminals must own different native threads')
 const allFiles = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((item) => item.isDirectory() ? allFiles(path.join(dir, item.name)) : [path.join(dir, item.name)])

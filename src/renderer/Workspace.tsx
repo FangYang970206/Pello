@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n'
 import { useEffect, useRef, useState } from 'react'
 import type { AgentInfo, FileDiff, ProcState, Project, ShellKind, ThemeName } from '../shared/types'
 import { resolveAgent, shellLabel, shellLetter } from '../shared/types'
@@ -115,6 +116,13 @@ export function Workspace({
   const [fade, setFade] = useState<'none' | 'left' | 'right' | 'both'>('none')
   const [menu, setMenu] = useState(false)
   const [renaming, setRenaming] = useState<string | null>(null)
+  const renameFocus = useRef<string | null>(null)
+  useEffect(() => {
+    if (renaming) { renameFocus.current = renaming; return }
+    const id = renameFocus.current
+    renameFocus.current = null
+    if (id) scroller.current?.querySelector<HTMLElement>(`[data-a="tab"][data-id="${CSS.escape(id)}"]`)?.focus()
+  }, [renaming])
   const [layouts, setLayouts] = useState(loadTerminalLayouts)
   const [splitting, setSplitting] = useState(false)
   const [layoutError, setLayoutError] = useState('')
@@ -211,13 +219,12 @@ export function Workspace({
             <div className="glyph">
               <Icon name="folder" />
             </div>
-            <h2>创建第一个项目</h2>
-            <p>项目是某台机器上的一个目录，终端在其中运行 Agent CLI。</p>
+            <h2>{t("创建第一个项目")}</h2>
+            <p>{t("项目是某台机器上的一个目录，终端在其中运行 Agent CLI。")}</p>
             <div className="acts">
               <button className="btn pri" data-a="newproj" onClick={onNewProject}>
                 <Icon name="plus" className="s" />
-                新建项目
-              </button>
+                {t("新建项目")}</button>
             </div>
           </div>
         </div>
@@ -240,9 +247,9 @@ export function Workspace({
                       >
                         <Icon name="file" className="s" />
                         <span className="lbl" title={tab.path}>{label}</span>
-                        {tab.dirty ? <span className="dot unsaved" role="img" aria-label="有未保存的更改" /> : null}
+                        {tab.dirty ? <span className="dot unsaved" role="img" aria-label={t("有未保存的更改")} /> : null}
                       </button>
-                      <button className="x" data-a="close" data-id={tab.id} aria-label="关闭" onClick={() => onClose(tab.id)}>
+                      <button className="x" data-a="close" data-id={tab.id} aria-label={t("关闭")} onClick={() => onClose(tab.id)}>
                         <Icon name="x" className="s" />
                       </button>
                     </div>
@@ -260,7 +267,7 @@ export function Workspace({
                       <span className="lbl">{name}</span>
                       <span className={`dot terminal-status ${status.color}${status.spinning ? ' spinning' : ''}`} role="img" aria-label={status.label} />
                     </button>}
-                    <button className="x" data-a="close" data-id={tab.id} aria-label={`关闭 ${name}`} onClick={() => onClose(tab.id)}>
+                    <button className="x" data-a="close" data-id={tab.id} aria-label={t("关闭 {{0}}", name)} onClick={() => onClose(tab.id)}>
                       <Icon name="x" className="s" />
                     </button>
                   </div>
@@ -269,16 +276,16 @@ export function Workspace({
             </div>
             <div className="tabtools">
               {overflow ? (
-                <button className="addtab" data-a="tabs-menu" aria-label="全部标签" title="全部标签" onClick={() => setMenu((value) => !value)}>
+                <button className="addtab" data-a="tabs-menu" aria-label={t("全部标签")} title={t("全部标签")} onClick={() => setMenu((value) => !value)}>
                   <Icon name="chev" className="s chev open" />
                 </button>
               ) : null}
-              <button className="addtab" data-a="newterm" title="新建终端" aria-label="新建终端" onClick={onNewTerm}>
+              <button className="addtab" data-a="newterm" title={t("新建终端")} aria-label={t("新建终端")} onClick={onNewTerm}>
                 <Icon name="plus" />
               </button>
             </div>
             <span className="grow" />
-            {!rightOpen ? <button className="ib" data-a="right" title="显示文件面板" aria-label="显示文件面板" onClick={onToggleRight}><Icon name="panel" /></button> : null}
+            {!rightOpen ? <button className="ib" data-a="right" title={t("显示文件面板")} aria-label={t("显示文件面板")} onClick={onToggleRight}><Icon name="panel" /></button> : null}
             {menu ? (
               <div className="pop" style={{ left: 8, right: 'auto' }}>
                 {mine.map((tab) => {
@@ -307,18 +314,16 @@ export function Workspace({
                 <div className="glyph">
                   <Icon name="terminal" />
                 </div>
-                <h2>还没有终端</h2>
+                <h2>{t("还没有终端")}</h2>
                 <p>
-                  在 <span className="mono">{project.path}</span> 打开一个 Agent CLI。
-                </p>
+                  {t("在 ")}<span className="mono">{project.path}</span> {t(" 打开一个 Agent CLI。")}</p>
                 <div className="acts">
                   <button className="btn pri" data-a="quick" onClick={onQuick}>
                     <Mark letter={agentOf(project.agent).letter} color={agentOf(project.agent).color} />
-                    启动 {agentOf(project.agent).name}
+                    {t("启动 ")}{agentOf(project.agent).name}
                   </button>
                   <button className="btn" data-a="newterm" onClick={onNewTerm}>
-                    选择其他…
-                  </button>
+                    {t("选择其他…")}</button>
                 </div>
               </div>
             </div>
@@ -345,7 +350,7 @@ export function Workspace({
           ) : null}
         </>
       )}
-            {layoutError ? <div role="alert" className="file-error">{layoutError}<button className="ib" aria-label="关闭错误" onClick={() => setLayoutError('')}><Icon name="x" className="s" /></button></div> : null}
+            {layoutError ? <div role="alert" className="file-error">{layoutError}<button className="ib" aria-label={t("关闭错误")} onClick={() => setLayoutError('')}><Icon name="x" className="s" /></button></div> : null}
             <div className="panes" data-split={!!tiles} hidden={!project || shown?.type !== 'term'} aria-busy={splitting || undefined}>
               {terms.map((tab) => {
                 const tile = tiles?.find((item) => item.id === tab.id)

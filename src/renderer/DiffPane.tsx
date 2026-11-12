@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n'
 import type { FileDiff } from '../shared/types'
 import { lcs, lineStats, segments, splitLines, type Seg, type SideRow } from '../shared/diff'
 import { useMemo } from 'react'
@@ -111,7 +112,7 @@ export function DiffPane({
     return (
       <div className="empty">
         <div className="in">
-          <h2>正在读取差异…</h2>
+          <h2>{t("正在读取差异…")}</h2>
         </div>
       </div>
     )
@@ -120,7 +121,7 @@ export function DiffPane({
     return (
       <div className="empty">
         <div className="in">
-          <h2>{diff.binary ? '无法比较二进制文件' : '文件较大，已跳过逐行对比'}</h2>
+          <h2>{diff.binary ? t("无法比较二进制文件") : t("文件较大，已跳过逐行对比")}</h2>
           <p className="mono">{diff.path}</p>
         </div>
       </div>
@@ -162,7 +163,7 @@ export function DiffPane({
     )
   } else {
     body = (
-      document ? <SplitDiffEditor path={diff.path} before={editableText(baseline ?? diff.before)} after={document.draft} onBefore={onBaseline} onAfter={onEdit} onSave={onSave} onCompose={onCompose} onHistory={onHistory} onBeforeHistory={onBaselineHistory} /> : <p className="rmeta">正在读取可编辑内容…</p>
+      document ? <SplitDiffEditor path={diff.path} before={editableText(baseline ?? diff.before)} after={document.draft} onBefore={onBaseline} onAfter={onEdit} onSave={onSave} onCompose={onCompose} onHistory={onHistory} onBeforeHistory={onBaselineHistory} /> : <p className="rmeta">{t("正在读取可编辑内容…")}</p>
     )
   }
   return (
@@ -175,10 +176,10 @@ export function DiffPane({
           <span className="d">−{dels}</span>
         </span>
         <span className="grow" />
-        {document && isDirty(document) ? <span className="muted">未保存</span> : null}
-        <button className="btn sm" aria-label="保存文件" disabled={!document || document.saving || document.replacing} onClick={onSave}>{document?.saving ? '保存中…' : '保存'}</button>
-        <div className="seg" role="radiogroup" aria-label="视图">
-          {([['unified', '统一'], ['split', '并排']] as const).map(([id, label]) => (
+        {document && isDirty(document) ? <span className="muted">{t("未保存")}</span> : null}
+        <button className="btn sm" aria-label={t("保存文件")} disabled={!document || document.saving || document.replacing} onClick={onSave}>{document?.saving ? t("保存中…") : t("保存")}</button>
+        <div className="seg" role="radiogroup" aria-label={t("视图")}>
+          {([['unified', t("统一")], ['split', t("并排")]] as const).map(([id, label]) => (
             <button key={id} className={mode === id ? 'on' : ''} role="radio" aria-checked={mode === id} data-a="dmode" data-id={id} onClick={() => onMode(id)}>
               {label}
             </button>
@@ -186,11 +187,11 @@ export function DiffPane({
         </div>
         <span className="vsep" />
         <button className="btn sm dangero" data-a="discard" onClick={onDiscard}>
-          {untracked ? '删除文件' : '放弃更改'}
+          {untracked ? t("删除文件") : t("放弃更改")}
         </button>
       </div>
-      {document?.error ? <div className="file-error" role="alert">{document.error}<button className="btn sm" onClick={onReload}>重新读取文件</button></div> : null}
-      {mode === 'split' ? <div className="diff-headings"><span>比较基准（可编辑）</span><span>工作区</span></div> : null}
+      {document?.error ? <div className="file-error" role="alert">{document.error}<button className="btn sm" onClick={onReload}>{t("重新读取文件")}</button></div> : null}
+      {mode === 'split' ? <div className="diff-headings"><span>{t("比较基准（可编辑）")}</span><span>{t("工作区")}</span></div> : null}
       <div className={`diff ${mode === 'unified' ? 'diff-unified' : ''}`}>{body}</div>
     </>
   )

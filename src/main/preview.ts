@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n'
 import { createServer, type Server } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
@@ -46,12 +47,12 @@ async function port(): Promise<number> {
           // font requests while keeping the project token and path checks.
           ...(request.headers.origin === 'null' ? { 'Access-Control-Allow-Origin': 'null', Vary: 'Origin' } : {}) })
         response.end(request.method === 'HEAD' ? undefined : bytes)
-      })().catch(() => { if (!response.headersSent) response.writeHead(404); response.end('资源不存在或不可访问') })
+      })().catch(() => { if (!response.headersSent) response.writeHead(404); response.end(t("资源不存在或不可访问")) })
     })
     server.once('error', reject)
     server.listen(0, '127.0.0.1', () => {
       const address = server?.address()
-      if (!address || typeof address === 'string') { reject(new Error('无法启动预览')); return }
+      if (!address || typeof address === 'string') { reject(new Error(t("无法启动预览"))); return }
       server?.unref()
       resolve(address.port)
     })
@@ -62,7 +63,7 @@ async function port(): Promise<number> {
 
 export async function previewUrl(projectId: string, target: Target, rel: string, draft?: string): Promise<string> {
   await readAsset(target, rel)
-  if (draft !== undefined && (!/\.html?$/i.test(rel) || typeof draft !== 'string' || Buffer.byteLength(draft) > 2 * 1024 * 1024)) throw new Error('预览草稿必须为 2 MB 以内的 HTML')
+  if (draft !== undefined && (!/\.html?$/i.test(rel) || typeof draft !== 'string' || Buffer.byteLength(draft) > 2 * 1024 * 1024)) throw new Error(t("预览草稿必须为 2 MB 以内的 HTML"))
   const identity = `${projectId}:${target.cwd}:${target.host?.id || 'local'}`
   let entry = projects.get(identity)
   if (!entry) { entry = { token: randomUUID(), target, drafts: new Map() }; projects.set(identity, entry) }
@@ -74,7 +75,7 @@ export async function previewUrl(projectId: string, target: Target, rel: string,
 }
 
 export async function openHtmlPreview(projectId: string, target: Target, rel: string): Promise<string> {
-  if (!/\.html?$/i.test(rel)) throw new Error('仅支持在浏览器中预览 HTML 文件')
+  if (!/\.html?$/i.test(rel)) throw new Error(t("仅支持在浏览器中预览 HTML 文件"))
   const url = await previewUrl(projectId, target, rel)
   await shell.openExternal(url)
   return url

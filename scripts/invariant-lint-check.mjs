@@ -79,7 +79,10 @@ const cases = [
   ['AWB056', 'src/renderer/SplitDiffEditor.tsx', "revertControls: 'a-to-b'", "revertControls: undefined"],
   ['AWB057', 'src/main/agent-resume.ts', '--session-dir ${directory} --continue', '--continue'],
   ['AWB058', 'src/renderer/terms.ts', 'serializer.serialize({ scrollback: 0 })', "''"],
-  ['AWB059', 'src/main/legacy-agent-session.ts', 'size === 1', 'size > 0']
+  ['AWB059', 'src/main/legacy-agent-session.ts', 'size === 1', 'size > 0'],
+  ['AWB060', 'src/renderer/ProjectSidebar.tsx', 'projects.filter((project) => !project.temporary)', 'projects'],
+  ['AWB061', 'src/main/store.ts', "language: settings.language === 'en' ? 'en' : 'zh-CN'", "language: 'zh-CN'"],
+  ['AWB061', 'src/shared/i18n.ts', 'String(values[Number(index)])', 't(String(values[Number(index)]))']
 ]
 for (const [id, file, before, after] of cases) {
   const mutated = new Map(files)

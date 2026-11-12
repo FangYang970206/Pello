@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
@@ -17,7 +18,7 @@ export class TransferManager {
   constructor(update: (snapshot: TransferSnapshot) => void, private replace?: (projectId: string, destination: string, operation: () => Promise<void>, signal: AbortSignal) => Promise<void>) { this.update = update }
 
   start(sources: string[], destination: string, projectId = ''): string {
-    if (!sources.length) throw new Error('请选择文件或文件夹')
+    if (!sources.length) throw new Error(t("请选择文件或文件夹"))
     return this.startEntries(sources.map((source) => ({ source, destination: path.join(destination, path.basename(source)) })), destination, projectId)
   }
 
@@ -37,28 +38,28 @@ export class TransferManager {
   }
   decide(id: string, choice: Choice, applyToBatch = false): void {
     const task = this.tasks.get(id)
-    if (!task?.decide || !['skip', 'keep', 'cancel', 'merge', 'overwrite'].includes(choice)) throw new Error('没有等待处理的冲突')
+    if (!task?.decide || !['skip', 'keep', 'cancel', 'merge', 'overwrite'].includes(choice)) throw new Error(t("没有等待处理的冲突"))
     new ConflictPolicy().validate(task.snapshot.items[0], choice)
     task.decide(choice, applyToBatch)
   }
   dismiss(id: string): void { const task = this.tasks.get(id); if (task && (task.snapshot.state === 'completed' || task.snapshot.state === 'cancelled')) this.tasks.delete(id) }
   context(id: string): { projectId: string; root: string } {
     const task = this.tasks.get(id)
-    if (!task) throw new Error('传输任务不存在')
+    if (!task) throw new Error(t("传输任务不存在"))
     return { projectId: task.snapshot.projectId, root: task.root }
   }
   retry(id: string): string {
     const task = this.tasks.get(id)
-    if (!task || (task.snapshot.state !== 'completed' && task.snapshot.state !== 'cancelled')) throw new Error('传输任务不存在或尚未结束')
+    if (!task || (task.snapshot.state !== 'completed' && task.snapshot.state !== 'cancelled')) throw new Error(t("传输任务不存在或尚未结束"))
     const entries = task.snapshot.items.filter((item) => item.status === 'failed' && item.source && item.error !== '部分内容未能复制').map(({ source, destination }) => ({ source, destination }))
-    if (!entries.length) throw new Error('没有可重试的失败项')
+    if (!entries.length) throw new Error(t("没有可重试的失败项"))
     return this.startEntries(entries, task.root, task.snapshot.projectId)
   }
   keepBoth(id: string): string {
     const task = this.tasks.get(id)
-    if (!task || (task.snapshot.state !== 'completed' && task.snapshot.state !== 'cancelled')) throw new Error('传输任务不存在或尚未结束')
+    if (!task || (task.snapshot.state !== 'completed' && task.snapshot.state !== 'cancelled')) throw new Error(t("传输任务不存在或尚未结束"))
     const entries = task.snapshot.items.filter((item) => item.status === 'conflict').map(({ source, destination }) => ({ source, destination }))
-    if (!entries.length) throw new Error('没有同名冲突项')
+    if (!entries.length) throw new Error(t("没有同名冲突项"))
     return this.startEntries(entries, task.root, task.snapshot.projectId, true)
   }
   private emit(task: Task): void { this.update({ ...task.snapshot, items: task.snapshot.items.map((item) => ({ ...item })) }) }
@@ -76,10 +77,10 @@ export class TransferManager {
     const checkParent = async (target: string) => {
       const parent = path.dirname(target)
       const relative = path.relative(root, parent)
-      if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error('目标超出项目目录')
+      if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error(t("目标超出项目目录"))
       const resolved = await fsp.realpath(parent)
       const same = process.platform === 'win32' ? resolved.toLowerCase() === parent.toLowerCase() : resolved === parent
-      if (!same) throw new Error('目标目录已变更或包含链接')
+      if (!same) throw new Error(t("目标目录已变更或包含链接"))
     }
     const result = (source: string, target: string, status: TransferItem['status'], error?: string) => {
       task.snapshot.items.push({ source, destination: target, status, ...(error ? { error } : {}) })
@@ -92,27 +93,27 @@ export class TransferManager {
     }
     const copy = async (source: string, target: string): Promise<void> => {
       if (signal.aborted) return
-      if (skipped.has(entryKey(source, target))) { result(source, target, 'conflict', '已跳过同名对象'); return }
+      if (skipped.has(entryKey(source, target))) { result(source, target, 'conflict', t("已跳过同名对象")); return }
       const keepBoth = task.keepBoth || kept.has(entryKey(source, target))
       try {
         await checkParent(target)
         const info = await fsp.lstat(source)
-        if (info.isSymbolicLink()) throw new Error('不导入符号链接')
-        if (path.resolve(source) === path.resolve(target)) throw new Error('不能覆盖来源文件自身')
+        if (info.isSymbolicLink()) throw new Error(t("不导入符号链接"))
+        if (path.resolve(source) === path.resolve(target)) throw new Error(t("不能覆盖来源文件自身"))
         if (info.isDirectory()) {
           const original = target
           for (let index = 0; ; index++) {
             const approved = merges.get(entryKey(source, target))
             if (approved) {
               const current = await fsp.lstat(target)
-              if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== approved.dev || current.ino !== approved.ino) throw new Error('目标目录已变更，请重新检查')
+              if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== approved.dev || current.ino !== approved.ino) throw new Error(t("目标目录已变更，请重新检查"))
               await checkParent(path.join(target, '_'))
               break
             }
             try { await fsp.mkdir(target); break } catch (error) {
               if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
               if (!keepBoth) { result(source, target, 'conflict'); return }
-              if (index >= 10000) throw new Error('无法找到可用名称', { cause: error })
+              if (index >= 10000) throw new Error(t("无法找到可用名称"), { cause: error })
               target = alternate(original, index + 1, true)
             }
           }
@@ -121,11 +122,11 @@ export class TransferManager {
           for (const child of children) { if (signal.aborted) break; await copy(path.join(source, child), path.join(target, child)) }
           if (!signal.aborted) {
             const failed = task.snapshot.items.slice(resultStart).some((item) => item.status !== 'done')
-            result(source, target, failed ? 'failed' : 'done', failed ? '部分内容未能复制' : undefined)
+            result(source, target, failed ? 'failed' : 'done', failed ? t("部分内容未能复制") : undefined)
           }
           return
         }
-        if (!info.isFile()) throw new Error('不支持此文件类型')
+        if (!info.isFile()) throw new Error(t("不支持此文件类型"))
         task.snapshot.current = source; task.snapshot.destination = path.dirname(target); task.snapshot.bytes = 0; task.snapshot.total = info.size; this.emit(task)
         const temp = path.join(path.dirname(target), `.awb-transfer-${randomUUID()}.tmp`)
         let reserved = false
@@ -138,12 +139,12 @@ export class TransferManager {
           await checkParent(target)
           const expected = replacements.get(entryKey(source, target))
           if (expected) {
-            if (!this.replace) throw new Error('覆盖保护不可用')
+            if (!this.replace) throw new Error(t("覆盖保护不可用"))
             await this.replace(task.snapshot.projectId, target, async () => {
-              if (signal.aborted) throw new Error('传输已取消')
+              if (signal.aborted) throw new Error(t("传输已取消"))
               await checkParent(target)
               const current = await fsp.lstat(target)
-              if (!current.isFile() || current.isSymbolicLink() || current.dev !== expected.dev || current.ino !== expected.ino || current.size !== expected.size || current.mtimeMs !== expected.mtimeMs || current.ctimeMs !== expected.ctimeMs) throw new Error('目标文件已更改，请重新检查冲突')
+              if (!current.isFile() || current.isSymbolicLink() || current.dev !== expected.dev || current.ino !== expected.ino || current.size !== expected.size || current.mtimeMs !== expected.mtimeMs || current.ctimeMs !== expected.ctimeMs) throw new Error(t("目标文件已更改，请重新检查冲突"))
               await fsp.rename(temp, target)
             }, signal)
             result(source, target, 'done')
@@ -154,14 +155,14 @@ export class TransferManager {
             try { await fsp.link(temp, target); break } catch (error) {
               if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
               if (!keepBoth) { result(source, target, 'conflict'); return }
-              if (index >= 10000) throw new Error('无法找到可用名称', { cause: error })
+              if (index >= 10000) throw new Error(t("无法找到可用名称"), { cause: error })
               target = alternate(original, index + 1, false)
             }
           }
           result(source, target, 'done')
         } finally { if (reserved) await fsp.unlink(temp).catch(() => undefined) }
       } catch (error) {
-        if (!signal.aborted) result(source, target, 'failed', error instanceof Error ? error.message : '传输失败')
+        if (!signal.aborted) result(source, target, 'failed', error instanceof Error ? error.message : t("传输失败"))
       }
     }
     try {
@@ -196,7 +197,7 @@ export class TransferManager {
             const item: TransferItem = { source: path.resolve(source), destination: output, status: 'conflict', mergeable, replaceable }
             if (targetInfo) observed.set(output, targetInfo)
             const approved = merges.get(entry)
-            if (approved && (!mergeable || targetInfo!.dev !== approved.dev || targetInfo!.ino !== approved.ino)) throw new Error('目标目录已更改，请重新检查')
+            if (approved && (!mergeable || targetInfo!.dev !== approved.dev || targetInfo!.ino !== approved.ino)) throw new Error(t("目标目录已更改，请重新检查"))
             if (!approved) {
               const remembered = policy.get(item)
               if (remembered) select(item, remembered)
@@ -232,11 +233,11 @@ export class TransferManager {
         try {
           const realSource = await fsp.realpath(absolute)
           const relative = path.relative(realSource, realDestination)
-          if (!relative || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))) throw new Error('不能导入到来源目录自身或其子目录')
+          if (!relative || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))) throw new Error(t("不能导入到来源目录自身或其子目录"))
           await copy(absolute, output)
-        } catch (error) { if (!signal.aborted) result(absolute, output, 'failed', error instanceof Error ? error.message : '传输失败') }
+        } catch (error) { if (!signal.aborted) result(absolute, output, 'failed', error instanceof Error ? error.message : t("传输失败")) }
       }
-    } catch (error) { result('', destination, 'failed', error instanceof Error ? error.message : '无法访问目标目录') }
+    } catch (error) { result('', destination, 'failed', error instanceof Error ? error.message : t("无法访问目标目录")) }
     task.snapshot.current = ''
     task.snapshot.state = signal.aborted ? 'cancelled' : 'completed'
     this.emit(task)

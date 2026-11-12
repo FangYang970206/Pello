@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n'
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -259,7 +260,7 @@ class Session {
     this.shellInput = ''
     this.statusAbort = new AbortController()
     if (!this.agentSessionId && host && host.id !== 'local' && ['claude', 'codex', 'opencode', 'pi', 'omp'].includes(this.kind) && loadTerminalHistory(this.id)) {
-      throw new Error('旧远程 Agent 会话缺少原生 ID，原终端历史已保留；未创建空白对话')
+      throw new Error(t("旧远程 Agent 会话缺少原生 ID，原终端历史已保留；未创建空白对话"))
     }
     if (!this.agentSessionId && (!host || host.id === 'local') && ['claude', 'codex', 'opencode', 'pi', 'omp'].includes(this.kind)) {
       const history = loadTerminalHistory(this.id)
@@ -267,7 +268,7 @@ class Session {
         const candidates = await legacyConversations(this.kind, this.cwd, this.env)
         if (this.disposed) return
         const match = matchLegacyConversation(history, candidates)
-        if (!match) throw new Error('无法唯一定位旧 Agent 对话，原终端历史已保留；未创建空白对话')
+        if (!match) throw new Error(t("无法唯一定位旧 Agent 对话，原终端历史已保留；未创建空白对话"))
         if (match) {
           if (this.kind === 'pi' || this.kind === 'omp') {
             const directory = path.join(app.getPath('userData'), 'agent-sessions', terminalSessionKey(this.id))
@@ -531,7 +532,7 @@ class Session {
           // taskkill completion precedes ConPTY's asynchronous output/exit cleanup.
           // Keep Electron alive until the native exit callback has released this PTY.
           await new Promise<void>((resolve, reject) => {
-            const timer = setTimeout(() => reject(new Error('等待终端退出超时')), 10000)
+            const timer = setTimeout(() => reject(new Error(t("等待终端退出超时"))), 10000)
             void this.processExit!.then(() => { clearTimeout(timer); resolve() })
           })
         }
@@ -566,12 +567,12 @@ class Session {
       }
       if (this.processExit && !this.procExited) {
         try {
-          await waitFor(this.processExit, 1500, '等待终端退出超时')
+          await waitFor(this.processExit, 1500, t("等待终端退出超时"))
         } catch {
           if (!this.procExited && proc.pid !== null) {
             await execFileP('taskkill', ['/F', '/T', '/PID', String(proc.pid)], { timeout: 4000, windowsHide: true }).catch(() => undefined)
           }
-          await waitFor(this.processExit, 8000, '等待终端退出超时')
+          await waitFor(this.processExit, 8000, t("等待终端退出超时"))
         }
       }
       this.proc = null
@@ -769,10 +770,10 @@ export async function createSession(
 ): Promise<SessionInfo> {
   const draft = db()
   const project = draft.projects.find((p) => p.id === opts.projectId)
-  if (!project) throw new Error('项目不存在')
-  if (opts.agentSessionId && !validAgentSession(opts.agentSessionId)) throw new Error('保存的 Agent 会话 ID 无效，已保留原记录')
+  if (!project) throw new Error(t("项目不存在"))
+  if (opts.agentSessionId && !validAgentSession(opts.agentSessionId)) throw new Error(t("保存的 Agent 会话 ID 无效，已保留原记录"))
   const host = draft.hosts.find((h) => h.id === project.host)
-  if (host && host.id !== 'local' && !host.on) throw new Error('这台机器未连接')
+  if (host && host.id !== 'local' && !host.on) throw new Error(t("这台机器未连接"))
   const agent = agentCommand(opts.kind)
   const shell = (!host || host.id === 'local') && process.platform === 'win32' && opts.shell === 'bash' ? 'bash' : shellForHost(host?.platform || (process.platform === 'win32' ? 'windows' : 'linux'), opts.shell)
   const existing = sessions.get(opts.id)
@@ -872,7 +873,7 @@ export async function testExecutor(opts: {
   cwd: string
 }): Promise<{ text: string; code: number | null }> {
   const command = cmdline(opts)
-  if (!command.trim()) return { text: '请先填写命令。', code: null }
+  if (!command.trim()) return { text: t("请先填写命令。"), code: null }
   const env: NodeJS.ProcessEnv = { ...process.env, TERM: 'xterm-256color' }
   for (const item of opts.env) if (item.k) env[item.k] = item.v
   const cwd = opts.cwd && fs.existsSync(opts.cwd) ? opts.cwd : process.cwd()

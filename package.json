@@ -1,6 +1,6 @@
 {
   "name": "pello",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "private": true,
   "description": "Local desktop workbench for code agent CLIs. No account, no cloud.",
   "main": "./out/main/index.js",
@@ -12,14 +12,15 @@
     "mcp:opencode": "node scripts/opencode-mcp-list.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "lint": "eslint src scripts electron.vite.config.ts --max-warnings 0 && node scripts/invariant-lint.mjs && node scripts/invariant-lint-check.mjs",
-    "check": "npm run check:files && npm run check:shells && node scripts/review-check.mjs && node scripts/windows-icon-check.mjs && node scripts/shell-profile-check.mjs && node scripts/terminal-check.mjs && node scripts/terminal-input-check.mjs && node scripts/terminal-shutdown-check.mjs && node scripts/session-restore-check.mjs && node scripts/agent-resume-check.mjs && node scripts/diff-editor-check.mjs && node scripts/ssh-password-check.mjs && node scripts/remote-terminal-check.mjs && node scripts/render-check.mjs && node scripts/workspace-check.mjs && node scripts/multi-repo-check.mjs && node scripts/program-status-check.mjs && node scripts/sidebar-check.mjs && node scripts/editor-check.mjs && node scripts/design-check.mjs && node scripts/appearance-check.mjs && node scripts/resources-check.mjs && node scripts/resource-import-check.mjs && node scripts/resource-import-ui-check.mjs && node scripts/opencode-mcp-check.mjs && node scripts/host-management-check.mjs && node scripts/directory-browser-check.mjs && node scripts/autosave-check.mjs && node scripts/resources-ui-check.mjs && node scripts/resource-dialog-check.mjs && node scripts/html-preview-check.mjs && node scripts/reading-workspace-check.mjs && node scripts/terminal-layout-check.mjs && node scripts/document-performance-check.mjs",
+    "check": "npm run check:files && npm run check:shells && node scripts/review-check.mjs && node scripts/windows-icon-check.mjs && node scripts/shell-profile-check.mjs && node scripts/terminal-check.mjs && node scripts/terminal-input-check.mjs && node scripts/terminal-shutdown-check.mjs && node scripts/session-restore-check.mjs && node scripts/agent-resume-check.mjs && node scripts/diff-editor-check.mjs && node scripts/ssh-password-check.mjs && node scripts/remote-terminal-check.mjs && node scripts/render-check.mjs && node scripts/workspace-check.mjs && node scripts/multi-repo-check.mjs && node scripts/program-status-check.mjs && node scripts/sidebar-check.mjs && node scripts/editor-check.mjs && node scripts/design-check.mjs && node scripts/appearance-check.mjs && node scripts/resources-check.mjs && node scripts/resource-import-check.mjs && node scripts/resource-import-ui-check.mjs && node scripts/opencode-mcp-check.mjs && node scripts/host-management-check.mjs && node scripts/directory-browser-check.mjs && node scripts/autosave-check.mjs && node scripts/resources-ui-check.mjs && node scripts/resource-dialog-check.mjs && node scripts/html-preview-check.mjs && node scripts/reading-workspace-check.mjs && node scripts/terminal-layout-check.mjs && node scripts/i18n-check.mjs && node scripts/document-performance-check.mjs",
     "check:files": "node scripts/transfer-check.mjs && node scripts/external-editors-check.mjs && node scripts/upload-status-check.mjs && node scripts/file-dialog-check.mjs && node scripts/upload-replace-check.mjs",
     "check:shells": "node scripts/local-shells-check.mjs",
     "check:files:ssh-linux": "node scripts/linux-rename-check.mjs && node scripts/linux-ssh-rename-check.mjs && node scripts/upload-replace-check.mjs --linux",
     "check:files:ssh-auth": "node scripts/ssh-file-auth-check.mjs",
     "verify": "npm run lint && npm run typecheck && npm run build && npm run check",
     "postinstall": "electron-rebuild -f -w node-pty",
-    "check:sessions:deep": "node scripts/codex-native-session-check.mjs && node scripts/pi-native-session-check.mjs"
+    "check:sessions:deep": "node scripts/codex-native-session-check.mjs && node scripts/pi-native-session-check.mjs",
+    "check:i18n": "node scripts/i18n-check.mjs"
   },
   "dependencies": {
     "fflate": "^0.8.3",

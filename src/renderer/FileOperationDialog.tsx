@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n'
 import { useId, useLayoutEffect, useRef, type FormEvent, type ReactNode } from 'react'
 import { Icon } from './icons'
 
@@ -11,7 +12,7 @@ export function FileOperationDialog({ title, busy = false, onClose, onSubmit, ch
   }, [])
   return <dialog ref={dialog} className="dlg file-operation-dialog" aria-labelledby={heading} onCancel={(event) => { event.preventDefault(); if (!busy) onClose() }} onKeyDown={(event) => event.stopPropagation()}>
     <form onSubmit={onSubmit}>
-      <header><h2 id={heading}>{title}</h2><button type="button" className="ib" aria-label="关闭" disabled={busy} onClick={onClose}><Icon name="x" /></button></header>
+      <header><h2 id={heading}>{title}</h2><button type="button" className="ib" aria-label={t("关闭")} disabled={busy} onClick={onClose}><Icon name="x" /></button></header>
       <div className="bdy">{children}</div><footer>{footer}</footer>
     </form>
   </dialog>

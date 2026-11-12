@@ -1,4 +1,5 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { getLanguage, subscribeLanguage, t } from '../shared/i18n'
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
 import { Crepe } from '@milkdown/crepe'
 import { editorViewCtx, serializerCtx } from '@milkdown/kit/core'
 import { toggleStrongCommand, toggleEmphasisCommand, toggleInlineCodeCommand, wrapInHeadingCommand, wrapInBlockquoteCommand, wrapInBulletListCommand, wrapInOrderedListCommand, createCodeBlockCommand } from '@milkdown/kit/preset/commonmark'
@@ -8,6 +9,8 @@ import type { EditorView as ProseMirrorView } from '@milkdown/kit/prose/view'
 import { $prose, callCommand, replaceAll } from '@milkdown/kit/utils'
 import { languages } from '@codemirror/language-data'
 import { EditorView } from '@codemirror/view'
+import { codeBlockConfig } from '@milkdown/kit/component/code-block'
+import type { NodeViewConstructor } from '@milkdown/kit/prose/view'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { tags } from '@lezer/highlight'
 import { diagramPreview } from './diagram-preview'
@@ -40,6 +43,9 @@ export default function MarkdownEditor({ value, projectId, path, anchor, onNavig
   anchor?: string; onNavigate: (path: string, anchor?: string) => void
   formatRef: { current: ((command: string) => void) | null }
 }) {
+  const language = useSyncExternalStore(subscribeLanguage, getLanguage)
+  const localizeEditor = useRef<(() => void) | null>(null)
+  useEffect(() => { localizeEditor.current?.() }, [language])
   const host = useRef<HTMLDivElement>(null)
   const frame = useRef<HTMLDivElement>(null)
   const outlineToggle = useRef<HTMLButtonElement>(null)
@@ -119,6 +125,7 @@ export default function MarkdownEditor({ value, projectId, path, anchor, onNavig
     let started = false
     let releaseCodeLayout = () => {}
     const initial = metadata(current.current)
+    let codeLanguage = getLanguage()
     const crepe = new Crepe({ root, defaultValue: initial.body,
       features: { [Crepe.Feature.AI]: false },
       featureConfigs: { [Crepe.Feature.CodeMirror]: {
@@ -132,13 +139,13 @@ export default function MarkdownEditor({ value, projectId, path, anchor, onNavig
         ]))],
         theme: EditorView.theme({ '&': { color: 'var(--text)', backgroundColor: 'var(--elev2)' }, '.cm-gutters': { backgroundColor: 'var(--elev2)', color: 'var(--muted)', border: 'none' }, '.cm-activeLineGutter': { backgroundColor: 'var(--elev2)' } }),
         renderPreview: diagramPreview,
-        previewOnlyByDefault: true, previewLabel: '图表预览', previewLoading: '正在渲染图表…', copyText: '复制', searchPlaceholder: '搜索语言', noResultText: '没有匹配语言'
+        previewOnlyByDefault: true, previewLabel: t("图表预览"), previewLoading: t("正在渲染图表…"), copyText: t("复制"), searchPlaceholder: t("搜索语言"), noResultText: t("没有匹配语言"), previewToggleText: (preview) => preview ? t('编辑') : t('收起')
       }, [Crepe.Feature.ImageBlock]: {
         proxyDomURL: (url) => imageSource(url, assetBase.current),
         onUpload: (file) => new Promise<string>((resolve, reject) => {
           const reader = new FileReader()
           reader.onload = () => resolve(String(reader.result))
-          reader.onerror = () => reject(new Error('无法读取图片'))
+          reader.onerror = () => reject(new Error(t("无法读取图片")))
           reader.readAsDataURL(file)
         })
       } }
@@ -194,8 +201,23 @@ export default function MarkdownEditor({ value, projectId, path, anchor, onNavig
       }
       const view = root.querySelector<HTMLElement>('.ProseMirror')
       view?.setAttribute('role', 'textbox')
-      view?.setAttribute('aria-label', 'Markdown 内容')
       view?.setAttribute('aria-multiline', 'true')
+      let codeView: NodeViewConstructor | undefined
+      localizeEditor.current = () => {
+        view?.setAttribute('aria-label', t('Markdown 内容'))
+        if (codeLanguage === getLanguage()) return
+        codeLanguage = getLanguage()
+        crepe.editor.action((ctx) => {
+          ctx.update(codeBlockConfig.key, (config) => ({ ...config, previewLabel: t('图表预览'), previewLoading: t('正在渲染图表…'), copyText: t('复制'), searchPlaceholder: t('搜索语言'), noResultText: t('没有匹配语言') }))
+          const editorView = ctx.get(editorViewCtx)
+          if (!codeView) editorView.someProp('nodeViews', (views) => { codeView ||= views.code_block; return false })
+          const factory = codeView
+          // Refresh code block controls against the new configuration while
+          // preserving the ProseMirror document, selection and undo state.
+          if (factory) editorView.setProps({ nodeViews: { ...editorView.props.nodeViews, code_block: (...args) => factory(...args) } })
+        })
+      }
+      localizeEditor.current()
     }).catch((reason) => { if (!disposed) setError(String(reason)) })
     return () => {
       disposed = true
@@ -203,6 +225,7 @@ export default function MarkdownEditor({ value, projectId, path, anchor, onNavig
       void window.awb.cancelDiagrams().catch(() => {})
       ready.current = false
       editor.current = null
+      localizeEditor.current = null
       formatRef.current = null
       void created.then(() => { if (started) return crepe.destroy() }).catch(() => {})
     }
@@ -223,14 +246,14 @@ export default function MarkdownEditor({ value, projectId, path, anchor, onNavig
   useEffect(() => { if (anchor && ready.current) scrollTo(anchor) }, [anchor])
 
   return <div ref={frame} className="markdown-view" data-has-outline={headings.length > 0} data-outline-open={headings.length > 0 && outlineOpen} data-compact={compact}>
-    {headings.length ? <aside className="markdown-outline" aria-label="文档导航" onKeyDown={(event) => {
+    {headings.length ? <aside className="markdown-outline" aria-label={t("文档导航")} onKeyDown={(event) => {
       if (event.key === 'Escape' && outlineOpen) { event.preventDefault(); event.stopPropagation(); setOutlineOpen(false); outlineToggle.current?.focus() }
     }}>
-      <button ref={outlineToggle} className="markdown-outline-toggle" aria-label={outlineOpen ? '收起文档目录' : '展开文档目录'} title={outlineOpen ? '收起文档目录' : '文档目录'} aria-expanded={outlineOpen} aria-controls={outlineId} onClick={() => setOutlineOpen((open) => !open)}><Icon name="panel" className="s" />{outlineOpen ? <><span>文档目录</span><Icon name="chev" className="s" /></> : null}</button>
-      <nav id={outlineId} aria-label="文档目录" hidden={!outlineOpen}>{headings.map((heading) => <button key={heading.id} title={heading.text} aria-current={heading.id === activeHeading ? 'location' : undefined} style={{ paddingLeft: (heading.level - 1) * 10 + 12 }} onClick={() => {
+      <button ref={outlineToggle} className="markdown-outline-toggle" aria-label={outlineOpen ? t("收起文档目录") : t("展开文档目录")} title={outlineOpen ? t("收起文档目录") : t("文档目录")} aria-expanded={outlineOpen} aria-controls={outlineId} onClick={() => setOutlineOpen((open) => !open)}><Icon name="panel" className="s" />{outlineOpen ? <><span>{t("文档目录")}</span><Icon name="chev" className="s" /></> : null}</button>
+      <nav id={outlineId} aria-label={t("文档目录")} hidden={!outlineOpen}>{headings.map((heading) => <button key={heading.id} title={heading.text} aria-current={heading.id === activeHeading ? 'location' : undefined} style={{ paddingLeft: (heading.level - 1) * 10 + 12 }} onClick={() => {
         if (compact) { setOutlineOpen(false); outlineToggle.current?.focus(); requestAnimationFrame(() => scrollTo(heading.id)) }
         else scrollTo(heading.id)
-      }}>{heading.text || '无标题'}</button>)}</nav>
+      }}>{heading.text || t("无标题")}</button>)}</nav>
     </aside> : null}
     <div className="markdown-editor"
     onBeforeInputCapture={() => { interacted.current = true }}
@@ -242,14 +265,14 @@ export default function MarkdownEditor({ value, projectId, path, anchor, onNavig
       event.preventDefault()
       const href = link.getAttribute('href') || ''
       setLinkError('')
-      if (href.startsWith('#')) { try { scrollTo(decodeURIComponent(href.slice(1))) } catch { setLinkError('无效的文档锚点') } }
+      if (href.startsWith('#')) { try { scrollTo(decodeURIComponent(href.slice(1))) } catch { setLinkError(t("无效的文档锚点")) } }
       else void window.awb.documentLink(projectId, path, href).then((target) => { if (target) onNavigate(target.path, target.anchor) }).catch((error) => setLinkError(String(error)))
     }}>
-    {parts.prefix ? <details className="markdown-metadata"><summary>文档属性</summary>
-      <textarea aria-label="Markdown 文档属性" value={parts.prefix} spellCheck={false}
+    {parts.prefix ? <details className="markdown-metadata"><summary>{t("文档属性")}</summary>
+      <textarea aria-label={t("Markdown 文档属性")} value={parts.prefix} spellCheck={false}
         onChange={(event) => onChange(event.target.value + parts.body)} />
     </details> : null}
-    {error ? <p className="file-error" role="alert">编辑器加载失败，请切换到源码编辑。{error}</p> : null}
+    {error ? <p className="file-error" role="alert">{t("编辑器加载失败，请切换到源码编辑。")}{error}</p> : null}
     {linkError ? <p className="file-error" role="alert">{linkError}</p> : null}
     <div ref={host} />
     </div>

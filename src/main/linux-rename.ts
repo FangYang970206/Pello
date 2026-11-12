@@ -1,10 +1,10 @@
-/** Linux atomic, no-replace rename, anchored to opened directory descriptors. */
-export const LINUX_RENAME_SCRIPT = `import ctypes, errno, os, stat, sys
+import { t } from '../shared/i18n'
+export const LINUX_RENAME_SCRIPT = () => `import ctypes, errno, os, stat, sys
 root, relative, name, want_dir, target_parent = sys.argv[1:]
 parts = relative.split('/')
 target_parts = target_parent.split('/') if target_parent else []
 if not parts or any(p in ('', '.', '..') for p in parts + target_parts) or name in ('', '.', '..') or '/' in name:
-    raise ValueError('非法路径')
+    raise ValueError(${JSON.stringify(t("非法路径"))})
 flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
 fd = os.open(root, flags)
 dest_fd = os.dup(fd)
@@ -19,11 +19,11 @@ try:
         dest_fd = next_fd
     info = os.stat(parts[-1], dir_fd=fd, follow_symlinks=False)
     if stat.S_ISLNK(info.st_mode) or (want_dir == '1' and not stat.S_ISDIR(info.st_mode)) or (want_dir == '0' and not stat.S_ISREG(info.st_mode)):
-        raise ValueError('文件类型已更改或路径包含符号链接')
+        raise ValueError(${JSON.stringify(t("文件类型已更改或路径包含符号链接"))})
     libc = ctypes.CDLL(None, use_errno=True)
     rename = getattr(libc, 'renameat2', None)
     if rename is None:
-        raise OSError(errno.ENOSYS, '系统不支持安全重命名')
+        raise OSError(errno.ENOSYS, ${JSON.stringify(t("系统不支持安全重命名"))})
     rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
     rename.restype = ctypes.c_int
     if rename(fd, os.fsencode(parts[-1]), dest_fd, os.fsencode(name), 1) != 0:

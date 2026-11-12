@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -13,11 +14,11 @@ import { readMcpImport } from './mcp-import'
 type ObjectValue = Record<string, unknown>
 export function validateResourcePaths(target: Executor['resources']) {
   if (!target) return
-  if (![target.mcpPath, target.skillPath, target.skillConfigPath || ''].every((value) => typeof value === 'string' && (!value || path.isAbsolute(value)))) throw new Error('资源目录和配置文件必须使用绝对路径')
-  if (!['standard', 'codex', 'opencode'].includes(target.format) || !['portable', 'claude', 'codex', 'opencode', 'pi', 'omp'].includes(target.skillAdapter || 'portable')) throw new Error('请选择支持的资源格式')
+  if (![target.mcpPath, target.skillPath, target.skillConfigPath || ''].every((value) => typeof value === 'string' && (!value || path.isAbsolute(value)))) throw new Error(t("资源目录和配置文件必须使用绝对路径"))
+  if (!['standard', 'codex', 'opencode'].includes(target.format) || !['portable', 'claude', 'codex', 'opencode', 'pi', 'omp'].includes(target.skillAdapter || 'portable')) throw new Error(t("请选择支持的资源格式"))
 }
 const object = (value: unknown): ObjectValue => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('配置必须是对象')
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(t("配置必须是对象"))
   return value as ObjectValue
 }
 const namePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
@@ -25,26 +26,26 @@ const MAX_BYTES = 32 * 1024 * 1024
 const message = (error: unknown) => error instanceof Error ? error.message : String(error)
 function mcpDescription(value: ObjectValue): string {
   if (typeof value.url === 'string') {
-    try { const url = new URL(value.url); return `${url.protocol}//${url.host}${url.pathname}` } catch { return '无效 URL' }
+    try { const url = new URL(value.url); return `${url.protocol}//${url.host}${url.pathname}` } catch { return t("无效 URL") }
   }
   return Array.isArray(value.command) ? String(value.command[0] || '') : typeof value.command === 'string' ? value.command : ''
 }
 function removeInside(root: string, target: string) {
   const absolute = path.resolve(target), relative = path.relative(path.resolve(root), absolute)
-  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('临时清理路径超出预期目录')
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw new Error(t("临时清理路径超出预期目录"))
   fs.rmSync(absolute, { recursive: true, force: true })
 }
 
 function readText(file: string): string {
   try {
-    if (fs.statSync(file).size > MAX_BYTES) throw new Error('配置文件超过 32 MB')
+    if (fs.statSync(file).size > MAX_BYTES) throw new Error(t("配置文件超过 32 MB"))
     return fs.readFileSync(file, 'utf8')
   } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return ''; throw error }
 }
 function json(text: string): ObjectValue {
   const errors: ParseError[] = []
   const value: unknown = parseJson(text.replace(/^\ufeff/, '') || '{}', errors, { allowTrailingComma: true })
-  if (errors.length) throw new Error('JSON 配置存在语法错误，请修复后重试')
+  if (errors.length) throw new Error(t("JSON 配置存在语法错误，请修复后重试"))
   return object(value)
 }
 function parseConfig(target: ResourceTarget, text: string) {
@@ -68,11 +69,11 @@ function wildcardMatches(pattern: string, value: string): boolean {
 }
 function atomicText(file: string, before: string, next: string) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
-  if (fs.existsSync(file) && fs.lstatSync(file).isSymbolicLink()) throw new Error('配置是符号链接，请选择真实配置文件')
+  if (fs.existsSync(file) && fs.lstatSync(file).isSymbolicLink()) throw new Error(t("配置是符号链接，请选择真实配置文件"))
   const temp = `${file}.${randomUUID()}.tmp`
   try {
     fs.writeFileSync(temp, next, { mode: 0o600, flag: 'wx' })
-    if (readText(file) !== before) throw new Error('配置已被其他程序修改，请刷新后重试')
+    if (readText(file) !== before) throw new Error(t("配置已被其他程序修改，请刷新后重试"))
     if (fs.existsSync(file)) fs.copyFileSync(file, `${file}.awb-backup`)
     fs.renameSync(temp, file)
   } finally { if (fs.existsSync(temp)) fs.unlinkSync(temp) }
@@ -80,15 +81,15 @@ function atomicText(file: string, before: string, next: string) {
 function skillInfo(file: string): { name: string; description: string; enabled: boolean } {
   const text = readText(file).replace(/^\ufeff/, '')
   const front = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text)
-  if (!front) throw new Error('SKILL.md 缺少 YAML 文档属性')
+  if (!front) throw new Error(t("SKILL.md 缺少 YAML 文档属性"))
   const value = object(parseYaml(front[1]))
-  if (typeof value.name !== 'string' || value.name.length > 64 || !namePattern.test(value.name)) throw new Error('Skill 名称须为小写字母、数字和单连字符，最多 64 字符')
-  if (typeof value.description !== 'string' || !value.description.trim() || value.description.length > 1024) throw new Error('Skill 需要 1 到 1024 字符的 description')
+  if (typeof value.name !== 'string' || value.name.length > 64 || !namePattern.test(value.name)) throw new Error(t("Skill 名称须为小写字母、数字和单连字符，最多 64 字符"))
+  if (typeof value.description !== 'string' || !value.description.trim() || value.description.length > 1024) throw new Error(t("Skill 需要 1 到 1024 字符的 description"))
   return { name: value.name, description: value.description.trim(), enabled: value.enabled !== false }
 }
 function safeRelative(value: string) {
   const normalized = value.replace(/\\/g, '/')
-  if (!normalized || /^[/]|^[a-z]:/i.test(normalized) || normalized.includes('\0') || normalized.split('/').some((p) => p === '..' || p.includes(':') || /[. ]$/.test(p) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(p))) throw new Error('导入包包含不安全路径')
+  if (!normalized || /^[/]|^[a-z]:/i.test(normalized) || normalized.includes('\0') || normalized.split('/').some((p) => p === '..' || p.includes(':') || /[. ]$/.test(p) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(p))) throw new Error(t("导入包包含不安全路径"))
   return normalized
 }
 
@@ -113,9 +114,9 @@ export class ResourceManager {
     return [...builtins.map((item): ResourceTarget => ({ ...item, skillAdapter: item.id as ResourceTarget['skillAdapter'] })), ...custom.map((item): ResourceTarget => ({ mcpPath: '', skillPath: '', format: 'standard', ...(saved[item.id] as Partial<ResourceTarget> || {}), ...item.resources, id: item.id, name: item.name }))]
   }
   saveTarget(target: ResourceTarget, custom: Executor[]) {
-    if (!custom.some((item) => item.id === target.id)) throw new Error('仅自定义 Agent 可设置资源路径')
-    if (![target.mcpPath, target.skillPath].every((p) => !p || path.isAbsolute(p))) throw new Error('请选择绝对路径')
-    if (!['standard', 'codex', 'opencode'].includes(target.format)) throw new Error('不支持的配置格式')
+    if (!custom.some((item) => item.id === target.id)) throw new Error(t("仅自定义 Agent 可设置资源路径"))
+    if (![target.mcpPath, target.skillPath].every((p) => !p || path.isAbsolute(p))) throw new Error(t("请选择绝对路径"))
+    if (!['standard', 'codex', 'opencode'].includes(target.format)) throw new Error(t("不支持的配置格式"))
     const file = path.join(this.data, 'resource-targets.json'), before = readText(file)
     const saved = json(before)
     saved[target.id] = { mcpPath: target.mcpPath, skillPath: target.skillPath, format: target.format }
@@ -123,7 +124,7 @@ export class ResourceManager {
   }
   private target(targets: ResourceTarget[], agent: string) {
     const target = targets.find((item) => item.id === agent)
-    if (!target) throw new Error('Agent 不存在')
+    if (!target) throw new Error(t("Agent 不存在"))
     return target
   }
   private skillRoots(target: ResourceTarget): string[] {
@@ -201,7 +202,7 @@ export class ResourceManager {
       for (const [pattern, policy] of Object.entries(typeof permission === 'string' ? {} : object(permission || {}))) {
         if (wildcardMatches(pattern, name)) enabled = policy !== 'deny'
       }
-      if (config.permissions !== undefined && !Array.isArray(config.permissions)) throw new Error('OpenCode V2 permissions 必须是数组')
+      if (config.permissions !== undefined && !Array.isArray(config.permissions)) throw new Error(t("OpenCode V2 permissions 必须是数组"))
       for (const raw of config.permissions as unknown[] || []) {
         const rule = object(raw)
         if (typeof rule.action === 'string' && typeof rule.resource === 'string' && wildcardMatches(rule.action, 'skill') && wildcardMatches(rule.resource, name)) enabled = rule.effect !== 'deny'
@@ -213,24 +214,24 @@ export class ResourceManager {
   }
   private listed(targets: ResourceTarget[], kind: 'mcp' | 'skills', agent: string, item: ResourceItem) {
     const found = this.list(targets, kind, agent, 1, '', true).items.find((entry) => entry.name === item.name && entry.path === item.path)
-    if (!found) throw new Error('资源已改变或不属于当前 Agent，请刷新后重试')
+    if (!found) throw new Error(t("资源已改变或不属于当前 Agent，请刷新后重试"))
     return found
   }
   skillDirectory(targets: ResourceTarget[], agent: string, raw: ResourceItem, removing = false): string {
     const item = this.listed(targets, 'skills', agent, raw), target = this.target(targets, agent)
     const folder = path.dirname(item.path), real = fs.realpathSync(folder)
     const roots = this.skillRoots(target).filter((root) => fs.existsSync(root))
-    if (!roots.some((root) => { const rel = path.relative(path.resolve(root), folder); return !rel.startsWith('..') && !path.isAbsolute(rel) })) throw new Error('Skill 路径不属于当前 Agent')
+    if (!roots.some((root) => { const rel = path.relative(path.resolve(root), folder); return !rel.startsWith('..') && !path.isAbsolute(rel) })) throw new Error(t("Skill 路径不属于当前 Agent"))
     if (!removing) return folder
     const inside = roots.some((root) => {
       const relative = path.relative(fs.realpathSync(root), real)
       return !!relative && !relative.startsWith('..') && !path.isAbsolute(relative)
     })
-    if (!inside) throw new Error('Skill 目录超出 Agent 资源范围，不能执行此操作')
+    if (!inside) throw new Error(t("Skill 目录超出 Agent 资源范围，不能执行此操作"))
     const root = roots.find((root) => { const rel = path.relative(path.resolve(root), folder); return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel) })
-    if (!root) throw new Error('不能删除整个 Skill 发现目录')
+    if (!root) throw new Error(t("不能删除整个 Skill 发现目录"))
     for (let current = folder; path.relative(path.resolve(root), current); current = path.dirname(current)) {
-      if (fs.lstatSync(current).isSymbolicLink()) throw new Error('不能删除通过符号链接发现的 Skill，请在资源管理器中管理该链接')
+      if (fs.lstatSync(current).isSymbolicLink()) throw new Error(t("不能删除通过符号链接发现的 Skill，请在资源管理器中管理该链接"))
     }
     return folder
   }
@@ -243,7 +244,7 @@ export class ResourceManager {
   }
   toggle(targets: ResourceTarget[], kind: 'mcp' | 'skills', agent: string, raw: ResourceItem, enabled: boolean) {
     const item = this.listed(targets, kind, agent, raw), target = this.target(targets, agent)
-    if (typeof enabled !== 'boolean') throw new Error('无效的开关状态')
+    if (typeof enabled !== 'boolean') throw new Error(t("无效的开关状态"))
     if (kind === 'mcp') {
       const before = readText(target.mcpPath), config = parseConfig(target, before)
       if (target.format === 'codex') { atomicText(target.mcpPath, before, setTomlValue(before, ['mcp_servers', item.name, 'enabled'], enabled)); return }
@@ -252,10 +253,10 @@ export class ResourceManager {
         // Claude has project-scoped toggles. For a user-level switch, park the
         // entry outside mcpServers so every new project stops discovering it.
         const active = object(config[key] || {}), parked = object(config.awbDisabledMcp || {})
-        if (enabled && Object.hasOwn(active, item.name)) throw new Error('已有同名 MCP，未覆盖当前配置')
-        if (!enabled && Object.hasOwn(parked, item.name)) throw new Error('已有同名停用配置，未覆盖原配置')
+        if (enabled && Object.hasOwn(active, item.name)) throw new Error(t("已有同名 MCP，未覆盖当前配置"))
+        if (!enabled && Object.hasOwn(parked, item.name)) throw new Error(t("已有同名停用配置，未覆盖原配置"))
         const source = enabled ? parked[item.name] : active[item.name]
-        if (!source) throw new Error('MCP 配置已改变')
+        if (!source) throw new Error(t("MCP 配置已改变"))
         const bom = before.startsWith('\ufeff') ? '\ufeff' : ''
         let next = before.replace(/^\ufeff/, '') || '{}'
         for (const [keys, value] of [[[enabled ? key : 'awbDisabledMcp', item.name], source], [[enabled ? 'awbDisabledMcp' : key, item.name], undefined]] as [(string | number)[], unknown][]) next = applyEdits(next, modify(next, keys, value, { formattingOptions: { insertSpaces: true, tabSize: 2 } }))
@@ -263,7 +264,7 @@ export class ResourceManager {
       } else this.patchJson(target.mcpPath, [...keys, item.name, v2 ? 'disabled' : 'enabled'], v2 ? !enabled : enabled)
     } else {
       const settings = this.settingsFile(target)
-      if (target.skillAdapter && target.skillAdapter !== 'portable' && !settings) throw new Error('请先在执行器高级属性中设置 Skill 配置文件或 MCP 配置文件')
+      if (target.skillAdapter && target.skillAdapter !== 'portable' && !settings) throw new Error(t("请先在执行器高级属性中设置 Skill 配置文件或 MCP 配置文件"))
       if (target.skillAdapter === 'codex') {
         const before = readText(settings), config = parseToml(before.replace(/^\ufeff/, ''))
         const entries = (config.skills as { config?: { path?: string; enabled?: boolean }[] } | undefined)?.config || []
@@ -274,7 +275,7 @@ export class ResourceManager {
       else if (target.skillAdapter === 'opencode') {
         const config = json(readText(settings))
         if (opencodeV2(config)) {
-          if (config.permissions !== undefined && !Array.isArray(config.permissions)) throw new Error('OpenCode V2 permissions 必须是数组')
+          if (config.permissions !== undefined && !Array.isArray(config.permissions)) throw new Error(t("OpenCode V2 permissions 必须是数组"))
           const rules = (config.permissions || []) as ObjectValue[], last = rules.at(-1)
           if (last?.action === 'skill' && last.resource === item.name) this.patchJson(settings, ['permissions', rules.length - 1, 'effect'], enabled ? 'allow' : 'deny')
           else this.patchJson(settings, ['permissions', rules.length], { action: 'skill', resource: item.name, effect: enabled ? 'allow' : 'deny' })
@@ -286,10 +287,10 @@ export class ResourceManager {
       }
       else if (target.skillAdapter === 'omp') {
         const before = readText(settings), document = parseDocument(before || '{}')
-        if (document.errors.length) throw new Error('Oh My Pi YAML 配置存在语法错误')
+        if (document.errors.length) throw new Error(t("Oh My Pi YAML 配置存在语法错误"))
         if (enabled) {
           const config = object(document.toJS() || {}), skills = object(config.skills || {}), include = (skills.includeSkills || []) as string[]
-          if (!skillInfo(item.path).enabled || skills.enabled === false || ((skills.ignoredSkills || []) as string[]).some((pattern) => wildcardMatches(pattern, item.name)) || (include.length && !include.some((pattern) => wildcardMatches(pattern, item.name)))) throw new Error('此 Skill 受 Oh My Pi 全局筛选或 SKILL.md 停用限制，请先修改对应设置')
+          if (!skillInfo(item.path).enabled || skills.enabled === false || ((skills.ignoredSkills || []) as string[]).some((pattern) => wildcardMatches(pattern, item.name)) || (include.length && !include.some((pattern) => wildcardMatches(pattern, item.name)))) throw new Error(t("此 Skill 受 Oh My Pi 全局筛选或 SKILL.md 停用限制，请先修改对应设置"))
         }
         const entries = ((document.toJS()?.disabledExtensions || []) as string[]).filter((entry) => entry !== `skill:${item.name}`)
         if (!enabled) entries.push(`skill:${item.name}`)
@@ -304,8 +305,8 @@ export class ResourceManager {
         const source = item.path + (enabled ? '.awb-disabled' : ''), dest = item.path + (enabled ? '' : '.awb-disabled')
         const real = fs.realpathSync(source)
         const root = fs.realpathSync(target.skillPath), relative = path.relative(root, real)
-        if (relative.startsWith('..') || path.isAbsolute(relative) || fs.lstatSync(source).isSymbolicLink()) throw new Error('不能切换指向其他目录的 Skill 链接')
-        if (fs.existsSync(dest)) throw new Error('目标文件已存在，未覆盖')
+        if (relative.startsWith('..') || path.isAbsolute(relative) || fs.lstatSync(source).isSymbolicLink()) throw new Error(t("不能切换指向其他目录的 Skill 链接"))
+        if (fs.existsSync(dest)) throw new Error(t("目标文件已存在，未覆盖"))
         fs.renameSync(source, dest)
       }
     }
@@ -320,11 +321,11 @@ export class ResourceManager {
     for (const field of Object.keys(clean)) if (/token|password|secret/i.test(field)) clean[field] = '********'
     if (typeof clean.url === 'string') { const url = new URL(clean.url); url.username = ''; url.password = ''; url.search = ''; url.hash = ''; clean.url = url.href }
     for (const field of ['args', 'command']) if (Array.isArray(clean[field])) { let secret = false; clean[field] = clean[field].map((arg) => { const hidden = secret; secret = /token|password|secret|api[-_]?key/i.test(String(arg)); return hidden || secret ? '********' : arg }) }
-    return { ...item, content: JSON.stringify(clean, null, 2), notice: '环境变量、请求头和认证信息已隐藏。' }
+    return { ...item, content: JSON.stringify(clean, null, 2), notice: t("环境变量、请求头和认证信息已隐藏。") }
   }
   private distribute(targets: ResourceTarget[], agents: string[], run: (target: ResourceTarget) => void): ResourceResult[] {
-    if (this.busy) throw new Error('正在分发资源，请稍候')
-    if (!Array.isArray(agents) || !agents.length) throw new Error('请选择至少一个 Code Agent')
+    if (this.busy) throw new Error(t("正在分发资源，请稍候"))
+    if (!Array.isArray(agents) || !agents.length) throw new Error(t("请选择至少一个 Code Agent"))
     this.busy = true
     try { return [...new Set(agents)].map((agent) => {
       try { run(this.target(targets, agent)); return { agent, ok: true } }
@@ -336,34 +337,34 @@ export class ResourceManager {
   }
   importMcpConfig(targets: ResourceTarget[], source: string, agents: string[], ids: string[]): ResourceResult[] {
     const entries = readMcpImport(source)
-    if (!Array.isArray(ids) || !ids.length || ids.some((id) => !entries.some((entry) => entry.id === id))) throw new Error('请选择扫描结果中的 MCP')
+    if (!Array.isArray(ids) || !ids.length || ids.some((id) => !entries.some((entry) => entry.id === id))) throw new Error(t("请选择扫描结果中的 MCP"))
     return entries.filter((entry) => ids.includes(entry.id)).flatMap<ResourceResult>((entry) => {
-      if (!entry.config || entry.error) return agents.map((agent) => ({ agent, name: entry.name, id: entry.id, ok: false, error: entry.error || '无效配置' }))
+      if (!entry.config || entry.error) return agents.map((agent) => ({ agent, name: entry.name, id: entry.id, ok: false, error: entry.error || t("无效配置") }))
       return this.addMcp(targets, entry.name, entry.config, agents, entry.enabled).map((result) => ({ ...result, name: entry.name, id: entry.id }))
     })
   }
   addMcp(targets: ResourceTarget[], name: string, raw: ObjectValue, agents: string[], enabled = true): ResourceResult[] {
-    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name)) throw new Error('MCP 名称只能包含字母、数字、下划线、连字符，最多 64 字符')
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name)) throw new Error(t("MCP 名称只能包含字母、数字、下划线、连字符，最多 64 字符"))
     const config = object(raw)
     const remote = typeof config.url === 'string'
     if (remote) {
       const url = new URL(config.url as string)
-      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('请使用不含账号密码的 HTTP / HTTPS URL')
-      if (config.command !== undefined || (config.type && config.type !== 'http')) throw new Error('HTTP MCP 请仅配置 url，type 使用 http')
-      if (config.args !== undefined || config.env !== undefined) throw new Error('HTTP MCP 使用 headers；args、env 仅用于 stdio')
-    } else if (typeof config.command !== 'string' || !config.command.trim() || config.command.includes('\0')) throw new Error('stdio MCP 需要 command')
-    if (!remote && (config.headers !== undefined || (config.type && config.type !== 'stdio'))) throw new Error('stdio MCP 使用 command、args、env；不支持 headers 或其他 type')
-    if (config.args !== undefined && (!Array.isArray(config.args) || !config.args.every((item) => typeof item === 'string'))) throw new Error('args 必须是字符串数组')
-    for (const key of ['env', 'headers']) if (config[key] !== undefined && Object.values(object(config[key])).some((v) => typeof v !== 'string')) throw new Error(`${key} 必须是字符串键值对象`)
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error(t("请使用不含账号密码的 HTTP / HTTPS URL"))
+      if (config.command !== undefined || (config.type && config.type !== 'http')) throw new Error(t("HTTP MCP 请仅配置 url，type 使用 http"))
+      if (config.args !== undefined || config.env !== undefined) throw new Error(t("HTTP MCP 使用 headers；args、env 仅用于 stdio"))
+    } else if (typeof config.command !== 'string' || !config.command.trim() || config.command.includes('\0')) throw new Error(t("stdio MCP 需要 command"))
+    if (!remote && (config.headers !== undefined || (config.type && config.type !== 'stdio'))) throw new Error(t("stdio MCP 使用 command、args、env；不支持 headers 或其他 type"))
+    if (config.args !== undefined && (!Array.isArray(config.args) || !config.args.every((item) => typeof item === 'string'))) throw new Error(t("args 必须是字符串数组"))
+    for (const key of ['env', 'headers']) if (config[key] !== undefined && Object.values(object(config[key])).some((v) => typeof v !== 'string')) throw new Error(t("{{0}} 必须是字符串键值对象", key))
     const allowed = new Set(['type', 'command', 'args', 'env', 'url', 'headers'])
-    if (Object.keys(config).some((key) => !allowed.has(key))) throw new Error('支持的字段为 type、command、args、env、url、headers')
+    if (Object.keys(config).some((key) => !allowed.has(key))) throw new Error(t("支持的字段为 type、command、args、env、url、headers"))
     return this.distribute(targets, agents, (target) => {
-      if (!target.mcpPath) throw new Error('请先设置这个 Agent 的 MCP 配置路径')
+      if (!target.mcpPath) throw new Error(t("请先设置这个 Agent 的 MCP 配置路径"))
       const before = readText(target.mcpPath), parsed = parseConfig(target, before)
       const { keys: activeKeys, servers, v2 } = mcpRoot(target, parsed)
       const parked = !enabled && target.format === 'standard' && target.id !== 'pi' && target.id !== 'omp'
       const keys = parked ? ['awbDisabledMcp'] : activeKeys
-      if (Object.hasOwn(servers, name) || Object.hasOwn(object(parsed.awbDisabledMcp || {}), name)) throw new Error('已存在同名 MCP，保留原配置')
+      if (Object.hasOwn(servers, name) || Object.hasOwn(object(parsed.awbDisabledMcp || {}), name)) throw new Error(t("已存在同名 MCP，保留原配置"))
       let value: ObjectValue
       if (target.format === 'codex') value = { ...(remote ? { url: config.url, ...(config.headers ? { http_headers: config.headers } : {}) } : { command: config.command, args: config.args || [], ...(config.env ? { env: config.env } : {}) }), ...(!enabled ? { enabled: false } : {}) }
       else if (target.format === 'opencode') value = { ...(remote ? { type: 'remote', url: config.url, ...(config.headers ? { headers: config.headers } : {}) } : { type: 'local', command: [config.command, ...(config.args as string[] || [])], ...(config.env ? { environment: config.env } : {}) }), ...(v2 ? { disabled: !enabled } : { enabled }) }
@@ -389,12 +390,12 @@ export class ResourceManager {
   importSkills(targets: ResourceTarget[], source: string, agents: string[], names?: string[]): ResourceResult[] {
     return this.withSkills(source, (discovered) => {
       const skills = names ? discovered.filter((skill) => names.includes(skill.name)) : discovered
-      if (!skills.length || (names && names.some((name) => !discovered.some((skill) => skill.name === name)))) throw new Error('请选择扫描结果中的 Skill')
+      if (!skills.length || (names && names.some((name) => !discovered.some((skill) => skill.name === name)))) throw new Error(t("请选择扫描结果中的 Skill"))
       const results = this.distribute(targets, agents, (target) => {
-        if (!target.skillPath) throw new Error('请先设置这个 Agent 的 Skill 目录')
+        if (!target.skillPath) throw new Error(t("请先设置这个 Agent 的 Skill 目录"))
         fs.mkdirSync(target.skillPath, { recursive: true })
         const root = fs.realpathSync(target.skillPath)
-        for (const skill of skills) if (fs.existsSync(path.join(root, skill.name))) throw new Error(`已存在 ${skill.name}，保留原文件`)
+        for (const skill of skills) if (fs.existsSync(path.join(root, skill.name))) throw new Error(t("已存在 {{0}}，保留原文件", skill.name))
         const prepared: { temp: string; dest: string }[] = [], installed: string[] = []
         try {
           for (const skill of skills) {
@@ -402,7 +403,7 @@ export class ResourceManager {
             prepared.push({ temp, dest }); fs.cpSync(skill.folder, temp, { recursive: true, errorOnExist: true, force: false })
           }
           for (const item of prepared) {
-            if (fs.existsSync(item.dest)) throw new Error('目标目录已变化，请刷新后重试')
+            if (fs.existsSync(item.dest)) throw new Error(t("目标目录已变化，请刷新后重试"))
             fs.renameSync(item.temp, item.dest); installed.push(item.dest)
           }
         } catch (error) { for (const dest of installed) removeInside(root, dest); throw error }
@@ -412,14 +413,14 @@ export class ResourceManager {
     })
   }
   private withSkills<T>(source: string, operation: (skills: { folder: string; name: string }[], staging: string) => T): T {
-    if (!path.isAbsolute(source)) throw new Error('请选择 Skill 文件夹或 ZIP 压缩包')
-    if (fs.lstatSync(source).isSymbolicLink()) throw new Error('导入文件夹包含符号链接，请选择真实目录')
+    if (!path.isAbsolute(source)) throw new Error(t("请选择 Skill 文件夹或 ZIP 压缩包"))
+    if (fs.lstatSync(source).isSymbolicLink()) throw new Error(t("导入文件夹包含符号链接，请选择真实目录"))
     const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'awb-skills-'))
     let bytes = 0, count = 0
     try {
       const put = (rel: string, content: Uint8Array) => {
         const safe = safeRelative(rel)
-        if (++count > 10000 || (bytes += content.length) > MAX_BYTES) throw new Error('Skill 包超过 10000 个文件或 32 MB')
+        if (++count > 10000 || (bytes += content.length) > MAX_BYTES) throw new Error(t("Skill 包超过 10000 个文件或 32 MB"))
         const dest = path.join(staging, safe)
         fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.writeFileSync(dest, content, { flag: 'wx' })
       }
@@ -427,19 +428,19 @@ export class ResourceManager {
         const copy = (folder: string, prefix = '') => {
           for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
             const file = path.join(folder, entry.name), rel = prefix + entry.name
-            if (entry.isSymbolicLink()) throw new Error('导入文件夹包含符号链接，请先移除链接')
+            if (entry.isSymbolicLink()) throw new Error(t("导入文件夹包含符号链接，请先移除链接"))
             if (entry.isDirectory()) copy(file, rel + '/')
-            else if (entry.isFile()) { if (fs.statSync(file).size > MAX_BYTES - bytes) throw new Error('Skill 包超过 32 MB'); put(rel, fs.readFileSync(file)) }
-            else throw new Error('Skill 包包含不支持的文件类型')
+            else if (entry.isFile()) { if (fs.statSync(file).size > MAX_BYTES - bytes) throw new Error(t("Skill 包超过 32 MB")); put(rel, fs.readFileSync(file)) }
+            else throw new Error(t("Skill 包包含不支持的文件类型"))
           }
         }
         copy(source)
       } else {
-        if (!/\.zip$/i.test(source) || fs.statSync(source).size > MAX_BYTES) throw new Error('请选择 32 MB 以内的 ZIP 文件')
+        if (!/\.zip$/i.test(source) || fs.statSync(source).size > MAX_BYTES) throw new Error(t("请选择 32 MB 以内的 ZIP 文件"))
         let expanded = 0, entries = 0
         const files = unzipSync(fs.readFileSync(source), { filter: (entry) => {
           safeRelative(entry.name.replace(/\/$/, ''))
-          if (++entries > 10000 || (expanded += entry.originalSize) > MAX_BYTES) throw new Error('ZIP 解压后超过 10000 个文件或 32 MB')
+          if (++entries > 10000 || (expanded += entry.originalSize) > MAX_BYTES) throw new Error(t("ZIP 解压后超过 10000 个文件或 32 MB"))
           return !entry.name.endsWith('/')
         } })
         for (const [rel, content] of Object.entries(files)) put(rel, content)
@@ -450,8 +451,8 @@ export class ResourceManager {
         for (const entry of fs.readdirSync(folder, { withFileTypes: true })) if (entry.isDirectory()) discover(path.join(folder, entry.name))
       }
       discover(staging)
-      if (!skills.length) throw new Error('未找到包含有效 SKILL.md 的目录')
-      if (new Set(skills.map((item) => item.name)).size !== skills.length) throw new Error('导入包包含同名 Skill')
+      if (!skills.length) throw new Error(t("未找到包含有效 SKILL.md 的目录"))
+      if (new Set(skills.map((item) => item.name)).size !== skills.length) throw new Error(t("导入包包含同名 Skill"))
       return operation(skills, staging)
     } finally { removeInside(os.tmpdir(), staging) }
   }

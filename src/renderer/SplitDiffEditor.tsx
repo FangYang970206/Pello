@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n'
 import { useEffect, useRef, useState } from 'react'
 import { MergeView } from '@codemirror/merge'
 import { EditorView, keymap, lineNumbers, drawSelection } from '@codemirror/view'
@@ -61,13 +62,13 @@ export function SplitDiffEditor({ before, after, path, onBefore, onAfter, onSave
       else callbacks.current.onAfter(value)
     })
     const view = new MergeView({ parent: host.current,
-      a: { doc: before, extensions: [...extensions, changed('a'), EditorView.contentAttributes.of({ 'aria-label': '变更前内容' })] },
-      b: { doc: after, extensions: [...extensions, changed('b'), EditorView.contentAttributes.of({ 'aria-label': '工作区内容' })] },
+      a: { doc: before, extensions: [...extensions, changed('a'), EditorView.contentAttributes.of({ 'aria-label': t("变更前内容") })] },
+      b: { doc: after, extensions: [...extensions, changed('b'), EditorView.contentAttributes.of({ 'aria-label': t("工作区内容") })] },
       revertControls: 'a-to-b',
       renderRevertControl: () => {
         const button = document.createElement('button')
         button.type = 'button'
-        button.title = '还原此处更改'
+        button.title = t("还原此处更改")
         button.setAttribute('aria-label', button.title)
         // Match the workbench's 16px stroked icons.
         const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
@@ -150,7 +151,7 @@ export function SplitDiffEditor({ before, after, path, onBefore, onAfter, onSave
 
   const resize = (value: number) => setRatio(Math.max(0.2, Math.min(0.8, value)))
   return <div className="diff-split" ref={host} style={{ '--diff-ratio': ratio } as React.CSSProperties}>
-    <div className="diff-resize" role="separator" aria-label="调整差异分栏" aria-orientation="vertical" aria-valuemin={20} aria-valuemax={80} aria-valuenow={Math.round(ratio * 100)} tabIndex={0}
+    <div className="diff-resize" role="separator" aria-label={t("调整差异分栏")} aria-orientation="vertical" aria-valuemin={20} aria-valuemax={80} aria-valuenow={Math.round(ratio * 100)} tabIndex={0}
       style={{ left: `calc((100% - 32px) * ${ratio} + 13px)` }}
       onKeyDown={(event) => {
         if (!['ArrowLeft', 'ArrowRight', 'Home'].includes(event.key)) return

@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n'
 import fs from 'node:fs'
 import path from 'node:path'
 import { app } from 'electron'
@@ -10,9 +11,9 @@ import { bashQuote, sshBatchArgs } from './platform'
 
 /** Password connections pin the first authenticated server key, like accept-new. */
 export function connectPasswordHost(host: Host, signal?: AbortSignal): Promise<Client> {
-  if (signal?.aborted) return Promise.reject(new Error('SSH 连接已取消'))
+  if (signal?.aborted) return Promise.reject(new Error(t("SSH 连接已取消")))
   const password = hostPassword(host)
-  if (!password) return Promise.reject(new Error('请填写 SSH 登录密码'))
+  if (!password) return Promise.reject(new Error(t("请填写 SSH 登录密码")))
   const file = path.join(app.getPath('userData'), 'ssh-host-keys.json')
   const identity = JSON.stringify([host.addr, host.port || 22])
   let fingerprint = ''
@@ -22,19 +23,19 @@ export function connectPasswordHost(host: Host, signal?: AbortSignal): Promise<C
   return new Promise((resolve, reject) => {
     const client = new Client()
     let ready = false
-    const abort = () => { client.destroy(); reject(new Error('SSH 连接已取消')) }
+    const abort = () => { client.destroy(); reject(new Error(t("SSH 连接已取消"))) }
     signal?.addEventListener('abort', abort, { once: true })
     client.on('error', (error: Error) => {
       if (!ready) { client.end(); reject(error) }
     })
     client.once('close', () => {
       signal?.removeEventListener('abort', abort)
-      if (!ready) reject(new Error('SSH 连接在认证完成前关闭'))
+      if (!ready) reject(new Error(t("SSH 连接在认证完成前关闭")))
     })
     client.once('ready', () => {
       try {
         const keys = known()
-        if (keys[identity] && keys[identity] !== fingerprint) throw new Error('SSH 主机密钥已改变')
+        if (keys[identity] && keys[identity] !== fingerprint) throw new Error(t("SSH 主机密钥已改变"))
         keys[identity] = fingerprint
         fs.mkdirSync(path.dirname(file), { recursive: true })
         fs.writeFileSync(file, JSON.stringify(keys, null, 2))
@@ -79,19 +80,19 @@ export interface RemoteStream {
 
 /** Open a binary SSH command with the same authentication and host-key policy as terminals. */
 export async function openRemoteStream(host: Host, args: string[], signal: AbortSignal): Promise<RemoteStream> {
-  if (signal.aborted) throw new Error('传输已取消')
+  if (signal.aborted) throw new Error(t("传输已取消"))
   const command = remoteCommand(host, args)
   if (host.auth === 'password') {
     const client = await connectPasswordHost(host, signal)
     try {
-      if (signal.aborted) throw new Error('传输已取消')
+      if (signal.aborted) throw new Error(t("传输已取消"))
       const channel = await new Promise<ClientChannel>((resolve, reject) => {
-        const abort = () => { client.destroy(); reject(new Error('传输已取消')) }
+        const abort = () => { client.destroy(); reject(new Error(t("传输已取消"))) }
         signal.addEventListener('abort', abort, { once: true })
         client.exec(command, (error, stream) => {
           signal.removeEventListener('abort', abort)
           if (error) reject(error)
-          else if (signal.aborted) { stream.destroy(); reject(new Error('传输已取消')) }
+          else if (signal.aborted) { stream.destroy(); reject(new Error(t("传输已取消"))) }
           else resolve(stream)
         })
       })
@@ -107,9 +108,9 @@ export async function openRemoteStream(host: Host, args: string[], signal: Abort
         client.once('error', reject)
         channel.once('close', () => {
           signal.removeEventListener('abort', abort); client.end()
-          if (signal.aborted) reject(new Error('传输已取消'))
+          if (signal.aborted) reject(new Error(t("传输已取消")))
           else if (exitCode === 0) resolve()
-          else reject(new Error(stderr.trim() || (exitCode === null ? 'SSH 连接中断' : `远程命令退出码 ${exitCode}`)))
+          else reject(new Error(stderr.trim() || (exitCode === null ? t("SSH 连接中断") : t("远程命令退出码 {{0}}", exitCode))))
         })
       })
       return { stdin: channel, stdout: channel, completion, close: abort }
@@ -126,9 +127,9 @@ export async function openRemoteStream(host: Host, args: string[], signal: Abort
     child.once('error', reject)
     child.once('close', (code) => {
       signal.removeEventListener('abort', abort)
-      if (signal.aborted) reject(new Error('传输已取消'))
+      if (signal.aborted) reject(new Error(t("传输已取消")))
       else if (code === 0) resolve()
-      else reject(new Error(stderr.trim() || (code === null ? 'SSH 连接中断' : `SSH 退出码 ${code}`)))
+      else reject(new Error(stderr.trim() || (code === null ? t("SSH 连接中断") : t("SSH 退出码 {{0}}", code))))
     })
   })
   return { stdin: child.stdin, stdout: child.stdout, completion, close: abort }
@@ -139,7 +140,7 @@ export async function runPasswordCommand(host: Host, command: string, input?: st
   return await new Promise((resolve, reject) => {
     let stdout = ''
     let stderr = ''
-    const timer = setTimeout(() => { client.destroy(); reject(new Error('远程命令执行超时')) }, 20000)
+    const timer = setTimeout(() => { client.destroy(); reject(new Error(t("远程命令执行超时"))) }, 20000)
     const fail = (error: Error) => { clearTimeout(timer); client.end(); reject(error) }
     client.once('error', fail)
     client.exec(command, (error, stream) => {
@@ -149,7 +150,7 @@ export async function runPasswordCommand(host: Host, command: string, input?: st
       stream.stderr.setEncoding('utf8')
       stream.on('data', (data: string) => {
         stdout += data
-        if (Buffer.byteLength(stdout) > 12_000_000) fail(new Error('远程输出过大'))
+        if (Buffer.byteLength(stdout) > 12_000_000) fail(new Error(t("远程输出过大")))
       })
       stream.stderr.on('data', (data: string) => { stderr = (stderr + data).slice(-16000) })
       stream.on('error', fail)
@@ -157,7 +158,7 @@ export async function runPasswordCommand(host: Host, command: string, input?: st
         clearTimeout(timer)
         client.end()
         if (code === 0) resolve(stdout)
-        else reject(Object.assign(new Error(stderr.trim() || (code == null ? 'SSH 连接在命令结束前关闭' : `远程命令退出码 ${code}`)), { stdout, stderr }))
+        else reject(Object.assign(new Error(stderr.trim() || (code == null ? t("SSH 连接在命令结束前关闭") : t("远程命令退出码 {{0}}", code))), { stdout, stderr }))
       })
       if (input !== undefined) stream.end(input)
     })

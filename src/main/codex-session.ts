@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n'
 import { spawn } from 'node:child_process'
 import type { Readable, Writable } from 'node:stream'
 import type { Host } from '../shared/types'
@@ -37,30 +38,30 @@ export async function createCodexThread(cwd: string, host?: Host, signal?: Abort
       if (error) reject(error)
       else resolve(id!)
     }
-    const abort = () => finish(new Error('会话启动已取消'))
-    const timer = setTimeout(() => finish(new Error('无法创建 Codex 原生会话，请检查 CLI 版本与连接')), 20000)
+    const abort = () => finish(new Error(t("会话启动已取消")))
+    const timer = setTimeout(() => finish(new Error(t("无法创建 Codex 原生会话，请检查 CLI 版本与连接"))), 20000)
     signal?.addEventListener('abort', abort, { once: true })
     input.on('error', (error) => finish(error))
     output.on('error', (error) => finish(error))
-    output.on('end', () => finish(new Error('Codex 在创建会话前退出')))
+    output.on('end', () => finish(new Error(t("Codex 在创建会话前退出"))))
     output.setEncoding('utf8')
     const send = (message: object) => input.write(JSON.stringify(message) + '\n')
     output.on('data', (data: string) => {
       pending += data
-      if (pending.length > 2_000_000) { finish(new Error('Codex 会话响应过大')); return }
+      if (pending.length > 2_000_000) { finish(new Error(t("Codex 会话响应过大"))); return }
       let end: number
       while ((end = pending.indexOf('\n')) >= 0) {
         const line = pending.slice(0, end); pending = pending.slice(end + 1)
         let response: { id?: number; error?: { message?: string }; result?: { thread?: { id?: string } } }
         try { response = JSON.parse(line) } catch { continue }
         if (![1, 2, 3].includes(response.id!)) continue
-        if (response.error) { finish(new Error(response.error.message || 'Codex 会话初始化失败')); return }
+        if (response.error) { finish(new Error(response.error.message || t("Codex 会话初始化失败"))); return }
         if (response.id === 1) {
           send({ method: 'initialized' })
           send({ id: 2, method: 'thread/start', params: { cwd, persistExtendedHistory: true } })
         } else if (response.id === 2) {
           const id = response.result?.thread?.id
-          if (!id || !/^[\w-]{1,160}$/.test(id)) finish(new Error('Codex 未返回有效会话 ID'))
+          if (!id || !/^[\w-]{1,160}$/.test(id)) finish(new Error(t("Codex 未返回有效会话 ID")))
           else { threadId = id; send({ id: 3, method: 'thread/name/set', params: { threadId: id, name: 'Pello' } }) }
         } else finish(undefined, threadId)
       }
