@@ -1,3 +1,6 @@
+import './app-paths'
+import { createAppUpdates } from './app-updates'
+import { UpdateScheduler } from './update-scheduler'
 import { t } from '../shared/i18n'
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, shell, type MenuItemConstructorOptions } from 'electron'
 import fs from 'node:fs'
@@ -44,15 +47,15 @@ const execFileP = promisify(execFile)
 const windowsAppId = app.isPackaged ? 'com.pello.app' : 'com.pello.app.dev'
 if (process.platform === 'win32') app.setAppUserModelId(windowsAppId)
 
-// Keep the existing profile, including encrypted SSH credentials, across the rename.
 app.setName('Pello')
-app.setPath('userData', process.env.AWB_USER_DATA || path.join(app.getPath('appData'), 'agent-workbench'))
 if (process.env.AWB_CAPTURE) {
   app.commandLine.appendSwitch('force-device-scale-factor', '1')
   app.disableHardwareAcceleration()
 }
 
 let win: BrowserWindow | null = null
+const appUpdates = createAppUpdates((state) => { if (win && !win.isDestroyed()) win.webContents.send('app:update', state) })
+const automaticUpdates = new UpdateScheduler(() => appUpdates.check())
 const transfers = new TransferManager((snapshot) => { if (win && !win.isDestroyed()) win.webContents.send('transfer:update', snapshot) }, guardReplacement)
 const replacementLocks = new Map<string, boolean>()
 const activeFileWrites = new Set<string>()
@@ -390,6 +393,30 @@ async function testHostConnection(host: Host): Promise<import('../shared/types')
 }
 
 function registerIpc(): void {
+  for (const [channel, action] of Object.entries({
+    'app:update-state': () => appUpdates.state,
+    'app:update-check': () => appUpdates.check(),
+    'app:update-download': () => appUpdates.download(),
+    'app:update-install': () => appUpdates.install(async () => {
+      if (closingWindow || quitting || !win || win.isDestroyed()) return false
+      if (hasUnsavedChanges && !confirmUnsavedClose()) return false
+      allowWindowClose = true
+      closingWindow = true
+      try {
+        await flushRendererHistory(win)
+        await Promise.all([closeAllSessions(), closeTransfers()])
+        sessionsClosed = true
+        return true
+      } catch (error) {
+        closingWindow = false
+        allowWindowClose = false
+        throw error
+      }
+    })
+  })) ipcMain.handle(channel, (event) => {
+    if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error(t("不允许此更新请求"))
+    return action()
+  })
   ipcMain.handle('diagram:mermaid', (event, source: string) => {
     if (!win || win.isDestroyed() || closingWindow) throw new Error(t("工作台正在关闭"))
     if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error(t("不允许此图表请求"))
@@ -412,6 +439,7 @@ function registerIpc(): void {
   ipcMain.handle('shells:local', () => discoverLocalShells())
   ipcMain.handle('db:settings', (_e, settings: Settings) => {
     const next = saveSettings(settings)
+    automaticUpdates.setEnabled(next.settings.autoCheckUpdates)
     broadcastTheme(settings.theme)
     return next
   })
@@ -870,6 +898,8 @@ app.whenReady().then(() => {
   pruneTerminalHistory(Object.values(db().sessions).flat().map((term) => term.id))
   createWindow()
   broadcastTheme(db().settings.theme)
+  automaticUpdates.setEnabled(db().settings.autoCheckUpdates)
+  app.once('will-quit', () => automaticUpdates.dispose())
 })
 
 app.on('window-all-closed', () => {

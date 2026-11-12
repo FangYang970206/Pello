@@ -8,3 +8,6 @@ dist
 output/playwright/
 output
 .impeccable
+/data/
+/data.migration-*/
+/pello.config.json

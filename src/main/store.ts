@@ -36,7 +36,8 @@ export function defaultDatabase(): Database {
       defShell: hostPlatform() === 'linux' ? 'bash' : 'pwsh',
       defAgent: 'claude',
       restore: true,
-      confirmKill: true
+      confirmKill: true,
+      autoCheckUpdates: true
     },
     custom: [],
     hosts: [local],
@@ -73,7 +74,8 @@ function sanitize(raw: Partial<Database> | null): Database {
     defShell: asShell(settings.defShell),
     defAgent: typeof settings.defAgent === 'string' && settings.defAgent ? settings.defAgent : 'claude',
     restore: asBool(settings.restore, true),
-    confirmKill: asBool(settings.confirmKill, true)
+    confirmKill: asBool(settings.confirmKill, true),
+    autoCheckUpdates: asBool(settings.autoCheckUpdates, true)
   }
   if (Array.isArray(raw.custom)) base.custom = raw.custom.filter(isExecutor)
   if (Array.isArray(raw.hosts) && raw.hosts.length) {
@@ -236,7 +238,7 @@ export function saveDb(db: Database): void {
 }
 
 export function saveSettings(settings: Settings): Database {
-  const next = { ...db(), settings: { ...settings, language: settings.language === 'en' ? 'en' as const : 'zh-CN' as const } }
+  const next = { ...db(), settings: { ...settings, autoCheckUpdates: asBool(settings.autoCheckUpdates, true), language: settings.language === 'en' ? 'en' as const : 'zh-CN' as const } }
   saveDb(next)
   cache = next
   setLanguage(next.settings.language)

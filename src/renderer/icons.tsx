@@ -1,4 +1,5 @@
 const PATHS = {
+  download: 'M12 3v12M7 10l5 5 5-5M4 16v4h16v-4',
   plus: 'M12 5v14M5 12h14',
   more: 'M5 12h.01M12 12h.01M19 12h.01',
   terminal: 'M4 17l6-5-6-5M12 19h8',

@@ -7,6 +7,7 @@ import { hostColor } from '../shared/host-colors'
 import { PRESETS, cmdline, hostDisplayName, hostLine, preferredAgent, shellLabel } from '../shared/types'
 import { useLocalShells } from './useLocalShells'
 import { ResourceSettings } from './ResourceSettings'
+import { AppUpdate } from './AppUpdate'
 import { CODE_FONTS, UI_FONTS } from '../shared/fonts'
 import { THEMES } from '../shared/themes'
 import { Icon, type IconName, Mark } from './icons'
@@ -69,7 +70,7 @@ export function SettingsView({
   installed: Record<string, boolean>
   onSection: (id: SettingsSection) => void
   onBack: () => void
-  onSettings: (next: Settings) => void
+  onSettings: (next: Settings, options?: { inlineError: boolean }) => Promise<boolean>
   onEditExec: (id: string) => void
   onNewExec: () => void
   onEditHost: (id: string) => void
@@ -97,6 +98,7 @@ export function SettingsView({
           <h2>{t("语言")}</h2>
           <div className="card"><Row title={t("应用语言")} desc={t("立即生效，重启后保留")} control={<select className="sel" aria-label={t("应用语言")} data-set="language" value={settings.language || 'zh-CN'} onChange={(event) => onSettings({ ...settings, language: event.target.value === 'en' ? 'en' : 'zh-CN' })}><option value="zh-CN">{t("简体中文")}</option><option value="en">English</option></select>} /></div>
         </div>
+        <AppUpdate settings={settings} onSettings={onSettings} />
         <div className="group">
           <h2>{t("终端")}</h2>
           <div className="card">

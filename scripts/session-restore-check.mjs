@@ -100,8 +100,8 @@ try {
   await page.waitForFunction((marker) => window.__awbBuffer('hidden-agent')?.includes('STATUS_COMMAND_hidden-conversation-' + marker) && window.__awbBuffer('hidden-shell')?.includes('hidden-shell-' + marker), marker)
 
   // Pin lives in the project menu and orders the sidebar immediately.
-  const pinMenu = page.getByLabel('项目菜单 置顶项目', { exact: true })
-  await pinMenu.click()
+  const pinMenu = page.getByLabel('打开项目 置顶项目', { exact: true })
+  await pinMenu.click({ button: 'right' })
   await page.getByRole('menuitem', { name: '置顶项目', exact: true }).click()
   await page.waitForFunction(() => document.querySelector('.sidebar-projects .proj')?.getAttribute('data-id') === 'p2')
   assert.equal(await page.locator('.sidebar-projects .project-pin').count(), 1)

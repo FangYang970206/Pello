@@ -56,11 +56,11 @@ try {
   await page.locator('[data-a=side-session]').waitFor()
   assert.equal(await page.locator('.proj.on').count(), 0)
   assert.equal(await page.locator('.sidebar-session.on').count(), 1)
-  await page.getByLabel('项目菜单 Layout', { exact: true }).click()
+  await page.getByLabel('打开项目 Layout', { exact: true }).click({ button: 'right' })
   const projectMenuX = (await page.getByRole('menu').boundingBox()).x
   await page.keyboard.press('Escape')
   await page.locator('[data-a=side-session]').locator('..').hover()
-  await page.getByLabel('会话菜单 会话一', { exact: true }).click()
+  await page.locator('[data-a=side-session]').click({ button: 'right' })
   assert.equal((await page.getByRole('menu').boundingBox()).x, projectMenuX)
   await page.keyboard.press('Escape')
   console.log('PASS native idle/working states, no phantom work on Enter, protocol precedence, Agent jump expansion, session-only selection and aligned menus')

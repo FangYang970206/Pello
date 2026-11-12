@@ -635,7 +635,7 @@ try {
     }
   })
   await check('project menu copies that project path without creating entries or altering its record', async () => {
-    await page.locator('[data-a=proj-more][data-id=p2]').click()
+    await page.locator('[data-a=proj][data-id=p2]').click({ button: 'right' })
     assert.equal(await page.getByRole('menuitem', { name: '新建文件夹' }).count(), 0)
     await page.getByRole('menuitem', { name: '复制路径', exact: true }).click()
     assert.equal(await app.evaluate(({ clipboard }) => clipboard.readText()), projectDir)

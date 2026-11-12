@@ -56,7 +56,7 @@ try {
     } finally { await page.click('[data-a=preview][data-id="guide.md"]'); await page.getByRole('textbox', { name: 'Markdown 内容', exact: true }).waitFor() }
   })
   await check('local project menu offers Explorer and path copy instead of file creation', async () => {
-    await page.getByLabel('项目菜单 Reading', { exact: true }).click()
+    await page.getByLabel('打开项目 Reading', { exact: true }).click({ button: 'right' })
     try {
       assert.equal(await page.getByRole('menuitem', { name: '新建文件', exact: true }).count(), 0)
       assert.equal(await page.getByRole('menuitem', { name: '新建文件夹', exact: true }).count(), 0)
@@ -65,7 +65,7 @@ try {
       assert.equal(await app.evaluate(({ clipboard }) => clipboard.readText()), data)
       await app.evaluate(({ shell }) => { globalThis.__projectOpenPath = ''; globalThis.__projectOriginalOpenPath = shell.openPath; shell.openPath = async (target) => { globalThis.__projectOpenPath = target; return '' } })
       try {
-        await page.getByLabel('项目菜单 Reading', { exact: true }).click()
+        await page.getByLabel('打开项目 Reading', { exact: true }).click({ button: 'right' })
         await page.getByRole('menuitem', { name: '在资源管理器中打开', exact: true }).click()
         await page.waitForFunction(() => !document.querySelector('[role=menu]'))
         assert.equal(await app.evaluate(() => globalThis.__projectOpenPath), data)

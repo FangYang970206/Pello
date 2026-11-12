@@ -15,7 +15,7 @@ export function projectFiles() {
     }
   }
   read('src')
-  for (const rel of ['package.json', 'AGENTS.md']) files.set(rel, fs.readFileSync(path.join(root, rel), 'utf8'))
+  for (const rel of ['package.json', 'AGENTS.md', 'electron-builder.yml', 'assets/installer.nsh']) files.set(rel, fs.readFileSync(path.join(root, rel), 'utf8'))
   return files
 }
 
@@ -167,6 +167,9 @@ export function checkInvariants(files) {
   require(files.get('src/main/pty.ts')?.includes('windowsDescendants(roots)') && files.get('src/main/pty.ts')?.includes('session.disposeRoot()') && files.get('src/main/pty.ts')?.includes('proc.kill()'),
     'AWB055', 'src/main/pty.ts', '退出时先按进程快照叶子优先结束子孙，再串行结束根进程并等待原生退出，避免 taskkill 与 ConPTY 并发析构')
   const diagramRenderer = files.get('src/main/diagram-renderer.ts') || ''
+  const sidebarText = files.get('src/renderer/ProjectSidebar.tsx') || ''
+  require(!sidebarText.includes('<Icon name="more"') && sidebarText.includes("contextMenu('agents-filter')") && sidebarText.includes("event.key === 'ContextMenu'") && sidebarText.includes("event.shiftKey && event.key === 'F10'") && !sidebarText.includes('<Icon name="folder" className="s" />') && files.get('src/shared/locales/en.ts')?.includes('"临时会话": "TempSessions"'),
+    'AWB064', 'src/renderer/ProjectSidebar.tsx', '侧栏无三个点，项目、会话及 Agents 菜单保留右键和键盘入口；临时分组无文件夹图标且英文为 TempSessions')
   require(diagramRenderer.includes('show: false') && diagramRenderer.includes('sandbox: true') && diagramRenderer.includes('nodeIntegration: false') && diagramRenderer.includes('source.length > 100_000') && diagramRenderer.includes('cancelDiagramRenderer') && files.get('src/renderer/diagram-renderer.ts')?.includes("securityLevel: 'strict'") && !files.get('src/renderer/diagram-preview.ts')?.includes("import('mermaid')") && files.get('src/main/index.ts')?.includes('disposeDiagramRenderer()'), 'AWB046', 'src/main/diagram-renderer.ts', 'Mermaid 在独立隐藏沙箱渲染，限制输入与缓存，关闭时清理；不得阻塞工作台渲染线程')
   const declarations = (selector) => {
     const values = new Map()
@@ -214,6 +217,12 @@ export function checkInvariants(files) {
     'AWB060', 'src/renderer/ProjectSidebar.tsx', '临时会话独立归组并保留各自工作目录；新增终端沿用会话目录')
   require(files.get('src/main/store.ts')?.includes("language: settings.language === 'en' ? 'en' : 'zh-CN'") && called(main, 'saveSettings').length && files.get('src/renderer/App.tsx')?.includes('useSyncExternalStore(subscribeLanguage, getLanguage)') && !files.get('src/renderer/App.tsx')?.includes('key={language}') && files.get('src/shared/i18n.ts')?.includes('String(values[Number(index)])') && !called(named(source('src/shared/i18n.ts'), 't'), 't').length && scripts.check?.includes('scripts/i18n-check.mjs'),
     'AWB061', 'src/shared/i18n.ts', '中英文配置持久化，共享翻译保留插值，切换不重建工作区并保留行为回归')
+  require(files.get('src/main/index.ts')?.startsWith("import './app-paths'") && files.get('src/main/app-paths.ts')?.includes("path.join(installationDirectory, 'data')") && files.get('src/main/app-paths.ts')?.includes("app.setPath('sessionData', dataDirectory)") && files.get('src/main/data-directory.ts')?.includes('fs.renameSync(staged, directory)') && files.get('assets/installer.nsh')?.includes('${AndIf} $R1 != "data"') && files.get('assets/installer.nsh')?.includes('${AndIf} $R1 != "pello.config.json"'),
+    'AWB062', 'src/main/app-paths.ts', '启动前配置安装目录数据及缓存，完整迁移并在升级和卸载时保留')
+  require(files.get('src/main/app-updates.ts')?.includes('driver.autoDownload = false') && files.get('src/main/app-updates.ts')?.includes('driver.autoInstallOnAppQuit = false') && files.get('src/main/app-updates.ts')?.includes('driver.installDirectory = installationDirectory') && files.get('src/main/index.ts')?.includes("'app:update-install': () => appUpdates.install(async () =>") && files.get('electron-builder.yml')?.includes('provider: github') && scripts.check?.includes('scripts/app-update-check.mjs'),
+    'AWB063', 'src/main/app-updates.ts', '更新必须显式下载与安装，安装前复用关闭流程，保留更新行为回归')
+  require(files.get('src/main/store.ts')?.includes('autoCheckUpdates: asBool(settings.autoCheckUpdates, true)') && files.get('src/main/index.ts')?.includes('automaticUpdates.setEnabled(next.settings.autoCheckUpdates)') && files.get('src/main/index.ts')?.includes('automaticUpdates.setEnabled(db().settings.autoCheckUpdates)') && files.get('src/main/update-scheduler.ts')?.includes('this.timers.clearTimeout(this.startup)') && files.get('src/main/update-scheduler.ts')?.includes('this.timers.clearInterval(this.interval)') && !files.get('src/renderer/App.tsx')?.includes('<AppUpdate') && files.get('src/renderer/SettingsView.tsx')?.includes('<AppUpdate settings={settings} onSettings={onSettings} />'),
+    'AWB064', 'src/renderer/AppUpdate.tsx', '更新只在通用栏目操作，自动检测默认开启、保存后调整定时器并支持关闭')
   return errors
 }
 

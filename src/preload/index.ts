@@ -3,6 +3,15 @@ import type { PtyEvent } from '../shared/types'
 import type { WorkbenchApi } from '../shared/api'
 
 const api: WorkbenchApi = {
+  appUpdateState: () => ipcRenderer.invoke('app:update-state'),
+  checkAppUpdate: () => ipcRenderer.invoke('app:update-check'),
+  downloadAppUpdate: () => ipcRenderer.invoke('app:update-download'),
+  installAppUpdate: () => ipcRenderer.invoke('app:update-install'),
+  onAppUpdate: (cb) => {
+    const listener = (_event: unknown, state: import('../shared/types').AppUpdateState) => cb(state)
+    ipcRenderer.on('app:update', listener)
+    return () => { ipcRenderer.removeListener('app:update', listener) }
+  },
   getState: () => ipcRenderer.invoke('db:get'),
   localShells: () => ipcRenderer.invoke('shells:local'),
   saveSettings: (settings) => ipcRenderer.invoke('db:settings', settings),

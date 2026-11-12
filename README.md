@@ -21,6 +21,10 @@
 
 第一次使用，跟着 [三个步骤启动终端](https://github.com/FangYang970206/Pello/wiki/Getting-Started)。
 
+Pello 自身的配置、会话历史、缓存、日志及更新下载保存在安装目录的 `data` 文件夹，`pello.config.json` 位于安装目录根部。首次启动会复制迁移旧版 `%APPDATA%\agent-workbench`，并保留旧目录；安装位置须允许当前用户写入。
+
+更新操作统一位于“设置 → 通用 → 应用更新”。自动检测默认开启，可关闭并在重启后保留，关闭后仍可手动检查。检测到新版本时显示版本号和下载按钮，下载进度、失败重试及安装重启均在同一栏目完成。安装版在安装目录提供 `Uninstall Pello.exe`，也可通过 Windows 应用列表卸载；升级和卸载保留数据。ZIP 解压版可直接删除程序文件，按需保留 `data` 与 `pello.config.json`。发布更新时需将构建生成的 `latest.yml`、安装包及 `.blockmap` 一起上传到 GitHub Release。
+
 <details>
 <summary>从源码开发</summary>
 

@@ -82,7 +82,17 @@ const cases = [
   ['AWB059', 'src/main/legacy-agent-session.ts', 'size === 1', 'size > 0'],
   ['AWB060', 'src/renderer/ProjectSidebar.tsx', 'projects.filter((project) => !project.temporary)', 'projects'],
   ['AWB061', 'src/main/store.ts', "language: settings.language === 'en' ? 'en' : 'zh-CN'", "language: 'zh-CN'"],
-  ['AWB061', 'src/shared/i18n.ts', 'String(values[Number(index)])', 't(String(values[Number(index)]))']
+  ['AWB061', 'src/shared/i18n.ts', 'String(values[Number(index)])', 't(String(values[Number(index)]))'],
+  ['AWB062', 'src/main/app-paths.ts', "path.join(installationDirectory, 'data')", "path.join(app.getPath('appData'), 'data')"],
+  ['AWB062', 'assets/installer.nsh', '${AndIf} $R1 != "data"', '${AndIf} $R1 != "other"'],
+  ['AWB063', 'src/main/app-updates.ts', 'driver.autoInstallOnAppQuit = false', 'driver.autoInstallOnAppQuit = true'],
+  ['AWB064', 'src/main/store.ts', 'autoCheckUpdates: asBool(settings.autoCheckUpdates, true)', 'autoCheckUpdates: false'],
+  ['AWB064', 'src/main/index.ts', 'automaticUpdates.setEnabled(next.settings.autoCheckUpdates)', 'automaticUpdates.setEnabled(true)'],
+  ['AWB064', 'src/renderer/App.tsx', '<div id="toasts"', '<AppUpdate /><div id="toasts"'],
+  ['AWB064', 'src/renderer/ProjectSidebar.tsx', '<Icon name="plus"', '<Icon name="more"'],
+  ['AWB064', 'src/renderer/ProjectSidebar.tsx', "contextMenu('agents-filter')", "contextMenu('unused')"],
+  ['AWB064', 'src/renderer/ProjectSidebar.tsx', "event.shiftKey && event.key === 'F10'", 'false'],
+  ['AWB064', 'src/shared/locales/en.ts', '"临时会话": "TempSessions"', '"临时会话": "Temporary sessions"']
 ]
 for (const [id, file, before, after] of cases) {
   const mutated = new Map(files)

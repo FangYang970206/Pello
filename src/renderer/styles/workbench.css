@@ -44,8 +44,8 @@ kbd{font:11px var(--mono);color:var(--faint);padding:0 4px;border-radius:4px;bor
 .proj{width:100%;border-radius:var(--r1);transition:background var(--t);position:relative;margin-bottom:4px}
 .project-open{display:flex;align-items:center;gap:8px;flex:1;min-width:0;min-height:34px;padding:4px 6px 4px 8px;border-radius:inherit;text-align:left}
 .proj{display:flex;align-items:center;gap:0;margin-bottom:0}
-.proj .more,.project-add{width:26px;height:28px;flex:none;border-radius:4px;display:grid;place-items:center;color:var(--muted)}
-.proj .more:hover,.project-add:hover{background:var(--press);color:var(--text)}
+.project-add{width:26px;height:28px;flex:none;border-radius:4px;display:grid;place-items:center;color:var(--muted)}
+.project-add:hover{background:var(--press);color:var(--text)}
 .project-add{margin-right:4px}
 .project-folder{display:flex;align-items:center;flex:none;color:var(--host-color)}
 .project-pin{display:flex;align-items:center;flex:none;color:var(--accent)}

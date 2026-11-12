@@ -1373,8 +1373,8 @@ export function App() {
                 document.querySelector('.scontent')?.scrollTo(0, 0)
               }}
               onBack={() => closeSettings()}
-              onSettings={(settings) => {
-                void window.awb.saveSettings(settings).then((saved) => { setLanguage(saved.settings.language); setDb(saved) }).catch((error) => toast(String(error), true))
+              onSettings={(settings, options) => {
+                return window.awb.saveSettings(settings).then((saved) => { setLanguage(saved.settings.language); setDb(saved); return true }).catch((error) => { if (!options?.inlineError) toast(String(error), true); return false })
               }}
               onEditExec={(id) => setModal({ type: 'exec', id })}
               onNewExec={() => setModal({ type: 'exec' })}

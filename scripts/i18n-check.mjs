@@ -25,6 +25,7 @@ for (const directory of ['src/main', 'src/renderer', 'src/shared']) for (const n
   visit(ast)
 }
 setLanguage('en')
+assert.equal(t('临时会话'), 'TempSessions')
 assert.equal(t('会话 {{0}}', '会话一 $& {{1}}'), 'Session 会话一 $& {{1}}', 'Names must remain verbatim')
 assert.ok(hasMessageFragment('临时上传保留于 D:/safe', '保留于'))
 assert.ok(hasMessageFragment('staged upload retained at D:/safe', '保留于'))
@@ -66,6 +67,8 @@ try {
     await input.waitFor({ state: 'detached' })
   }
   await session('old-temp-a').waitFor()
+  assert.equal((await page.locator('[data-a=temporary-toggle]').textContent()).trim(), '临时会话')
+  assert.equal(await page.locator('[data-a=temporary-toggle] svg').count(), 1, 'Only the disclosure chevron remains before the heading')
   assert.equal(await page.locator('[data-a=proj]').count(), 1)
   assert.equal(await page.locator('.temporary-group [data-a=side-session]').count(), 2)
   assert.ok((await session('old-temp-a').textContent()).includes('旧临时会话 A'))
@@ -98,6 +101,7 @@ try {
   await page.waitForFunction(() => document.documentElement.lang === 'en')
   await page.getByRole('heading', { name: 'General', exact: true }).waitFor()
   assert.equal(await page.locator('[data-set=language]').inputValue(), 'en')
+  assert.equal((await page.locator('[data-a=temporary-toggle]').textContent()).trim(), 'TempSessions')
   const blockedSave = path.join(data, 'workbench.json.tmp')
   fs.mkdirSync(blockedSave)
   try {

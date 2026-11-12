@@ -1,13 +1,15 @@
 # Windows NSIS packaging for Pello.
 # The version is read from package.json and is not repeated here.
 #
-# Keep the existing profile path explicitly in main/index.ts for upgrade compatibility.
+# Installation-local profiles are migrated by app-paths.ts.
 
 appId: com.pello.app
 productName: Pello
 
-# No update feed and no upload target.
-publish: null
+publish:
+  provider: github
+  owner: FangYang970206
+  repo: Pello
 
 directories:
   output: dist
@@ -102,6 +104,8 @@ win:
   # certificatePassword: ${env.CSC_KEY_PASSWORD}
 
 nsis:
+  include: assets/installer.nsh
+  uninstallDisplayName: Pello
   installerIcon: assets/pello-rounded.ico
   uninstallerIcon: assets/pello-rounded.ico
   artifactName: Pello-${version}-win-${arch}-setup.${ext}
@@ -110,7 +114,5 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: Pello
-  # Documented as one-click-only; the default is false. Set explicitly so
-  # uninstall removes the app, shortcuts, and registry keys, and leaves
-  # %APPDATA%\agent-workbench (userData / workbench.json) in place.
+  # customRemoveFiles preserves installation-local data on upgrades/uninstall.
   deleteAppDataOnUninstall: false

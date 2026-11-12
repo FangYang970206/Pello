@@ -2,11 +2,11 @@ import { t } from '../shared/i18n'
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { app } from 'electron'
+import { installationDirectory } from './app-paths'
 import { db, mutate } from './store'
 import type { Database, Project } from '../shared/types'
 
-function configFile() { return path.join(process.env.AWB_USER_DATA || path.dirname(app.getPath('exe')), 'pello.config.json') }
+function configFile() { return path.join(process.env.AWB_USER_DATA || installationDirectory, 'pello.config.json') }
 
 export function temporaryDirectory(): string | null {
   try {

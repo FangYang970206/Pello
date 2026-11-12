@@ -29,6 +29,11 @@ import type {
 } from './types'
 
 export interface WorkbenchApi {
+  appUpdateState(): Promise<import('./types').AppUpdateState>
+  checkAppUpdate(): Promise<import('./types').AppUpdateState>
+  downloadAppUpdate(): Promise<import('./types').AppUpdateState>
+  installAppUpdate(): Promise<boolean>
+  onAppUpdate(cb: (state: import('./types').AppUpdateState) => void): () => void
   getState(): Promise<{ db: Database; installed: Record<string, boolean> }>
   localShells(): Promise<LocalShell[]>
   saveSettings(settings: Settings): Promise<Database>

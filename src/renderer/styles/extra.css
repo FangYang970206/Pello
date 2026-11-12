@@ -190,13 +190,11 @@ kbd {
 .sidebar-session,.sidebar-term { position:relative; border-radius:var(--r1); }
 .sidebar-session.on,.sidebar-term.on { background:var(--sel); }
 .sidebar-session:hover,.sidebar-term:hover { background:var(--hover); }
-.sidebar-session-open,.sidebar-term-open { display:flex; gap:8px; align-items:center; width:100%; min-height:32px; padding:4px 30px 4px 8px; text-align:left; }
+.sidebar-session-open,.sidebar-term-open { display:flex; gap:8px; align-items:center; width:100%; min-height:32px; padding:4px 8px; text-align:left; }
 .sidebar-session-open .grow,.sidebar-term-open .grow { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .agent-terminal-name { display:block; overflow:hidden; text-overflow:ellipsis; }
 .sidebar-term-open small { display:block; overflow:hidden; text-overflow:ellipsis; color:var(--muted); font-size:11px; }
 .sidebar-term-open { min-height:46px; }
-.sidebar-session .more,.sidebar-term .more { position:absolute; right:2px; top:3px; width:24px; height:26px; display:grid; place-items:center; color:var(--muted); border-radius:var(--r1); visibility:hidden; }
-.sidebar-session:hover .more,.sidebar-session:focus-within .more,.sidebar-session .more[aria-expanded=true],.sidebar-term:hover .more,.sidebar-term:focus-within .more,.sidebar-term .more[aria-expanded=true] { visibility:visible; }
 .sidebar-name-editor { padding:4px; width:100%; }
 .sidebar-name-editor .tx { height:30px; width:100%; }
 .sidebar-name-editor small { display:block; overflow-wrap:anywhere; }
@@ -253,3 +251,8 @@ kbd {
 @media (max-width: 1180px) { :root { --sidebar-width: 216px; } }
 .repository-discovery { display: flex; align-items: center; gap: 8px; justify-content: space-between; padding: 4px 12px; color: var(--muted); }
 .pmenu[popover] { position: fixed; inset: auto; margin: 0; overflow-y: auto; }
+.app-update-status { flex-wrap: wrap; gap: 12px; }
+.app-update-status .lt { flex: 1 1 180px; }
+.app-update-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.app-update-actions .btn { display: inline-flex; align-items: center; gap: 8px; }
+.app-update-error { padding: 0 16px 14px; color: var(--red); }

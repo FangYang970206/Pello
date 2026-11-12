@@ -1,5 +1,5 @@
 import { t } from '../shared/i18n'
-import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import type { AgentInfo, Host, Project, WorkSession } from '../shared/types'
 import { hostColor } from '../shared/host-colors'
 import { legacySessionId, sessionOf } from '../shared/work-sessions'
@@ -62,6 +62,12 @@ export function ProjectSidebar(props: Props) {
   const [temporaryOpen, setTemporaryOpen] = useState(true)
   const [agentsOpen, setAgentsOpen] = useState(false)
   const [filters, setFilters] = useState(['running', 'waiting'])
+  const contextMenu = (id: string) => ({
+    onContextMenu: (event: MouseEvent) => { event.preventDefault(); onMenu(id) },
+    onKeyDown: (event: KeyboardEvent) => {
+      if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) { event.preventDefault(); event.stopPropagation(); onMenu(id) }
+    }
+  })
   const beginRename = (kind: 'project' | 'session' | 'term', id: string) => { onMenu(null); setEditing({ kind, id }) }
   const finishRename = () => {
     const previous = editing
@@ -76,10 +82,9 @@ export function ProjectSidebar(props: Props) {
   const sessionRow = (project: Project, session: WorkSession, temporary = false) => {
     const open = menuId === `session:${session.id}`
     const name = temporary && session.name === '会话一' ? project.name : session.name
-    return <div className={`sidebar-session ${projectId === project.id && selectedSession === session.id ? 'on' : ''}`} key={`${project.id}:${session.id}`} data-project-id={project.id} onContextMenu={(event) => { event.preventDefault(); onMenu(`session:${session.id}`) }}>
+    return <div className={`sidebar-session ${projectId === project.id && selectedSession === session.id ? 'on' : ''}`} key={`${project.id}:${session.id}`} data-project-id={project.id} {...contextMenu(`session:${session.id}`)}>
       {editing?.kind === 'session' && editing.id === session.id ? <NameEditor initial={name} onCancel={finishRename} onSave={async (value) => { await onRenameSession(project.id, session.id, value); finishRename() }} /> : <>
         <button className="sidebar-session-open" data-a="side-session" data-id={session.id} aria-current={projectId === project.id && selectedSession === session.id ? 'true' : undefined} title={temporary ? `${name}\n${project.path}` : name} onClick={() => onSession(project.id, session.id)} onDoubleClick={() => beginRename('session', session.id)} onKeyDown={(event) => { if (event.key === 'F2') { event.preventDefault(); beginRename('session', session.id) } }}><span className="grow">{name}</span></button>
-        <button className="more" aria-label={t("会话菜单 {{0}}", name)} aria-haspopup="menu" aria-expanded={open} onClick={() => onMenu(open ? null : `session:${session.id}`)}><Icon name="more" className="s" /></button>
         {open ? <SidebarMenu onClose={() => onMenu(null)}><button role="menuitem" onClick={() => beginRename('session', session.id)}>{t("重命名会话")}</button><button role="menuitem" onClick={() => { onMenu(null); onRemoveSession(project.id, session.id) }}>{t("删除会话")}</button></SidebarMenu> : null}
       </>}
     </div>
@@ -90,13 +95,12 @@ export function ProjectSidebar(props: Props) {
       const host = hosts.find((item) => item.id === project.host)
       const on = projectId === project.id, open = menuId === project.id
       return <section className="project-group" key={project.id} aria-label={project.name}>
-        <div className={`proj ${open ? 'menu' : ''}`} data-id={project.id} onContextMenu={(event) => { event.preventDefault(); onMenu(project.id) }}>
+        <div className={`proj ${open ? 'menu' : ''}`} data-id={project.id} {...contextMenu(project.id)}>
           {editing?.kind === 'project' && editing.id === project.id ? <NameEditor initial={project.name} onCancel={finishRename} onSave={async (name) => { await onRenameProject(project.id, name); finishRename() }} /> : <>
             <button className="project-open" data-a="proj" data-id={project.id} aria-label={t("打开项目 {{0}}", project.name)} aria-current={on ? 'true' : undefined} aria-expanded={!collapsed[project.id]} title={t("{{0}}\n{{1}}\n双击收起或展开会话", project.name, project.path)} onClick={() => onProject(project.id)} onDoubleClick={() => toggle(project.id)} onKeyDown={(event) => {
               if (event.key === 'F2') { event.preventDefault(); beginRename('project', project.id) }
               if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); setCollapsed((value) => ({ ...value, [project.id]: event.key === 'ArrowLeft' })) }
             }}>{project.pinned ? <span className="project-pin" title={t("已置顶")} aria-hidden="true"><Icon name="pin" className="s" /></span> : null}<span className="project-folder" data-color={hostColor(host?.color)}><Icon name="folder" /></span><span className="n grow">{project.name}</span></button>
-            <button className="more" data-a="proj-more" data-id={project.id} aria-label={t("项目菜单 {{0}}", project.name)} aria-haspopup="menu" aria-expanded={open} onClick={() => onMenu(open ? null : project.id)}><Icon name="more" className="s" /></button>
             {open ? <SidebarMenu onClose={() => onMenu(null)}>{host?.id === 'local' ? <button role="menuitem" onClick={() => { onMenu(null); onProjectAction(project.id, 'reveal') }}>{t("在资源管理器中打开")}</button> : null}<button role="menuitem" onClick={() => { onMenu(null); onProjectAction(project.id, 'copy-full') }}>{t("复制路径")}</button><button role="menuitem" onClick={() => { onMenu(null); onTogglePin(project.id) }}>{project.pinned ? t("取消置顶") : t("置顶项目")}</button><button role="menuitem" onClick={() => beginRename('project', project.id)}>{t("重命名项目")}</button><button role="menuitem" data-a="proj-remove" onClick={() => { onMenu(null); onRemoveProject(project.id) }}>{t("移除项目")}</button></SidebarMenu> : null}
             <button className="project-add" data-a="new-session" data-id={project.id} aria-label={t("为 {{0}} 新建会话", project.name)} onClick={() => { setCollapsed((value) => ({ ...value, [project.id]: false })); onNewSession(project.id) }}><Icon name="plus" className="s" /></button>
           </>}
@@ -105,21 +109,19 @@ export function ProjectSidebar(props: Props) {
       </section>
     })}{!ordered.length ? <p className="sidebar-empty">{t("暂无项目")}</p> : null}</div> : null}
     <section className="temporary-group" aria-label={t("临时会话")}>
-      <div className="sidebar-section-heading"><button data-a="temporary-toggle" aria-expanded={temporaryOpen} onClick={() => setTemporaryOpen(!temporaryOpen)} onKeyDown={(event) => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); setTemporaryOpen(event.key === 'ArrowRight') } }}><Icon name="chev" className={`s chev${temporaryOpen ? ' open' : ''}`} /><Icon name="folder" className="s" />{t("临时会话")}</button><button className="more" data-a="temporary-session" aria-label={t("新建临时会话")} disabled={props.temporaryBusy} onClick={() => { setTemporaryOpen(true); props.onNewTemporary() }}><Icon name="plus" className="s" /></button></div>
+      <div className="sidebar-section-heading"><button data-a="temporary-toggle" aria-expanded={temporaryOpen} onClick={() => setTemporaryOpen(!temporaryOpen)} onKeyDown={(event) => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); setTemporaryOpen(event.key === 'ArrowRight') } }}><Icon name="chev" className={`s chev${temporaryOpen ? ' open' : ''}`} />{t("临时会话")}</button><button className="more" data-a="temporary-session" aria-label={t("新建临时会话")} disabled={props.temporaryBusy} onClick={() => { setTemporaryOpen(true); props.onNewTemporary() }}><Icon name="plus" className="s" /></button></div>
       {temporaryOpen ? <div className="sidebar-sessions">{projects.filter((project) => project.temporary).flatMap((project) => (sessions[project.id] ?? [{ id: legacySessionId(project.id), name: project.name }]).map((session) => sessionRow(project, session, true)))}</div> : null}
     </section>
-    <div className="sidebar-section-heading agents-heading"><button data-a="agents-toggle" aria-expanded={agentsOpen} onClick={() => setAgentsOpen(!agentsOpen)}><Icon name="chev" className={`s chev${agentsOpen ? ' open' : ''}`} />Agents</button>
-      <button className="more" aria-label={t("筛选 Agents")} aria-haspopup="menu" aria-expanded={menuId === 'agents-filter'} onClick={() => onMenu(menuId === 'agents-filter' ? null : 'agents-filter')}><Icon name="more" className="s" /></button>
+    <div className="sidebar-section-heading agents-heading" {...contextMenu('agents-filter')}><button data-a="agents-toggle" aria-expanded={agentsOpen} onClick={() => setAgentsOpen(!agentsOpen)}><Icon name="chev" className={`s chev${agentsOpen ? ' open' : ''}`} />Agents</button>
       {menuId === 'agents-filter' ? <SidebarMenu onClose={() => onMenu(null)}>{FILTERS.map((filter) => <button key={filter.id} role="menuitemcheckbox" aria-checked={filters.includes(filter.id)} onClick={() => setFilters((value) => value.includes(filter.id) ? value.filter((item) => item !== filter.id) : [...value, filter.id])}><span className="filter-check">{filters.includes(filter.id) ? <Icon name="check" className="s" /> : null}</span>{filter.name}</button>)}</SidebarMenu> : null}
     </div>
     {agentsOpen ? <div className="sidebar-agents">{visible.map((term) => {
       const project = projects.find((item) => item.id === term.projectId)
       const session = sessions[term.projectId]?.find((item) => item.id === sessionOf(term))
       const name = termName(term), status = terminalStatus(term), open = menuId === `term:${term.id}`
-      return <div className={`sidebar-term ${activeId === term.id ? 'on' : ''}`} key={term.id} onContextMenu={(event) => { event.preventDefault(); onMenu(`term:${term.id}`) }}>
+      return <div className={`sidebar-term ${activeId === term.id ? 'on' : ''}`} key={term.id} {...contextMenu(`term:${term.id}`)}>
         {editing?.kind === 'term' && editing.id === term.id ? <NameEditor initial={name} onCancel={finishRename} onSave={async (value) => { await onRenameTerm(term.id, value); finishRename() }} /> : <>
           <button className="sidebar-term-open" data-a="side-term" data-id={term.id} data-status={status.activity} title={`${name} · ${status.label}\n${project?.name} / ${session?.name}`} aria-label={`${name} · ${status.label} · ${project?.name} / ${session?.name}`} onClick={() => { if (project) setCollapsed((value) => ({ ...value, [project.id]: false })); if (project?.temporary) setTemporaryOpen(true); setProjectsOpen(true); onTerm(term.id) }} onKeyDown={(event) => { if (event.key === 'F2') { event.preventDefault(); beginRename('term', term.id) } }}><span className={`dot terminal-status ${status.color}${status.spinning ? ' spinning' : ''}`} role="img" aria-label={status.label} /><span className="grow"><span className="agent-terminal-name">{name}</span><small>{project?.name} / {session?.name}</small></span></button>
-          <button className="more" aria-label={t("终端菜单 {{0}}", name)} aria-haspopup="menu" aria-expanded={open} onClick={() => onMenu(open ? null : `term:${term.id}`)}><Icon name="more" className="s" /></button>
           {open ? <SidebarMenu onClose={() => onMenu(null)}><button role="menuitem" onClick={() => beginRename('term', term.id)}>{t("重命名终端")}</button><button role="menuitem" onClick={() => { onMenu(null); onCloseTerm(term.id) }}>{t("删除终端")}</button></SidebarMenu> : null}
         </>}
       </div>

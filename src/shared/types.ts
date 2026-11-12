@@ -25,6 +25,7 @@ export interface Settings {
   defAgent: string
   restore: boolean
   confirmKill: boolean
+  autoCheckUpdates: boolean
   layout?: 'balanced' | 'focus' | 'review'
   panelSide?: 'left' | 'right'
   density?: 'comfortable' | 'compact'
@@ -329,4 +330,10 @@ export const STATE_LABEL: Record<ProcState, string> = {
   get idle() { return t("空闲") },
   get exited() { return t("已退出") },
   get failed() { return t("失败") }
+}
+export interface AppUpdateState {
+  phase: 'unsupported' | 'idle' | 'checking' | 'current' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'error'
+  version?: string
+  percent?: number
+  failed?: 'check' | 'download' | 'install'
 }
