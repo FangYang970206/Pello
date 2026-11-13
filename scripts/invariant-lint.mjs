@@ -15,7 +15,7 @@ export function projectFiles() {
     }
   }
   read('src')
-  for (const rel of ['package.json', 'AGENTS.md', 'electron-builder.yml', 'assets/installer.nsh', 'src/renderer/index.html']) files.set(rel, fs.readFileSync(path.join(root, rel), 'utf8'))
+  for (const rel of ['package.json', 'AGENTS.md', 'electron-builder.yml', 'electron.vite.config.ts', 'assets/installer.nsh', 'src/renderer/index.html']) files.set(rel, fs.readFileSync(path.join(root, rel), 'utf8'))
   return files
 }
 
@@ -226,11 +226,19 @@ export function checkInvariants(files) {
   const controlsCss = files.get('src/renderer/styles/workbench.css') || ''
   require(!files.get('src/renderer/App.tsx')?.includes('className="newp"') && !files.get('src/renderer/Workspace.tsx')?.includes('data-a="newproj"') && sidebar.includes('data-a="newproj"') && sidebar.includes('props.onNewProject()') && controlsCss.includes('.proj:has(:focus-visible) .project-add') && controlsCss.includes('.sidebar-section-heading:hover .sidebar-add') && controlsCss.includes('.tabbar:hover .tabtools [data-a=newterm]') && scripts.check?.includes('scripts/ui-affordance-check.mjs'),
     'AWB065', 'src/renderer/ProjectSidebar.tsx', '项目标题统一添加项目；加号按行悬停与键盘焦点显示，保留行为回归')
-  require(files.get('src/main/store.ts')?.includes("theme: 'light'") && files.get('src/renderer/index.html')?.includes('data-theme="light"') && controlsCss.includes('font:var(--fs,13px)/1.7 var(--mono)') && files.get('src/renderer/icons.tsx')?.includes("fill={name === 'more' ? 'currentColor' : undefined}"),
+  require(files.get('src/main/store.ts')?.includes("theme: 'light'") && files.get('src/renderer/index.html')?.includes('data-theme="light"') && controlsCss.includes('font:calc(var(--fs,13px) * var(--content-zoom,1))/1.7 var(--mono)') && files.get('src/renderer/icons.tsx')?.includes("fill={name === 'more' ? 'currentColor' : undefined}"),
     'AWB066', 'src/main/store.ts', '默认浅色，Diff 双栏实时沿用终端字号，更多菜单使用实心图标')
   const sidebarCss = files.get('src/renderer/styles/extra.css') || ''
   require(sidebar.includes('sidebar-heading-label') && sidebar.includes('sidebar-disclosure') && hasString(source('src/renderer/ProjectSidebar.tsx'), '最近') && sidebar.includes("collapsed[project.id] ? 'folder' : 'folder-open'") && sidebarCss.includes('.sidebar-section-heading > [aria-expanded=true] .sidebar-disclosure { opacity:0; }') && sidebarCss.includes('.sidebar-disclosure { flex:none; pointer-events:none; }') && !sidebarCss.includes('white-space:nowrap; padding-right:34px;'),
     'AWB067', 'src/renderer/ProjectSidebar.tsx', '折叠箭头紧邻分组文字，展开时按悬停与焦点显示、折叠常驻；加号不受折叠影响')
+  const media = files.get('src/renderer/MediaPreview.tsx') || ''
+  require(files.get('src/renderer/FilePane.tsx')?.includes('<MediaPreview') && media.includes('task?.destroy()') && files.get('electron.vite.config.ts')?.includes('bundled-pdf-assets') && scripts.check?.includes('scripts/media-preview-check.mjs'),
+    'AWB068', 'src/renderer/MediaPreview.tsx', '媒体在文件标签中预览，PDF 资源离线分发，离开时释放任务并保留行为回归')
+  const picker = files.get('src/renderer/DirectoryBrowser.tsx') || ''
+  require(picker.includes('<ResourceDialog') && picker.includes('onDoubleClick=') && files.get('src/renderer/Dialogs.tsx')?.includes("if (document.querySelector('dialog[open]')) return") && scripts.check?.includes('scripts/directory-browser-check.mjs'),
+    'AWB069', 'src/renderer/DirectoryBrowser.tsx', '远程目录浏览使用独立模态窗口，双击进入，外层焦点约束让位给选择器')
+  require(media.includes('usePreviewWheel(viewport') && media.includes('target.scrollTop + target.clientHeight') && files.get('src/renderer/usePreviewWheel.ts')?.includes('passive: false') && files.get('src/renderer/FilePane.tsx')?.includes('useContentZoom()') && files.get('src/renderer/DiffPane.tsx')?.includes('useContentZoom()') && scripts.check?.includes('scripts/preview-wheel-check.mjs'),
+    'AWB070', 'src/renderer/usePreviewWheel.ts', 'PDF 滚轮在页面边缘翻页，媒体、文件及 Diff 支持局部 Ctrl+滚轮缩放并保留行为回归')
   return errors
 }
 

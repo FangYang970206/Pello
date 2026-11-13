@@ -71,6 +71,7 @@ export function Frame({
     const first = root.querySelector<HTMLElement>('[data-autofocus], input:not([disabled]), .btn.pri')
     first?.focus()
     const onKey = (event: KeyboardEvent) => {
+      if (document.querySelector('dialog[open]')) return
       if (event.key === 'Escape' && busyRef.current) { event.preventDefault(); event.stopPropagation(); return }
       if (event.key !== 'Tab') return
       const items = focusableIn(root)

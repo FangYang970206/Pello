@@ -138,7 +138,9 @@ kbd {
 .resource-details dd { overflow-wrap: anywhere; margin: 0; }
 .resource-content { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.7 var(--mono); padding: 12px; background: var(--bg); border-radius: var(--r1); }
 .executor-resources { padding-bottom: 16px; margin-bottom: 16px; border-bottom: 1px solid var(--line); }
-.file-editor { font-size: var(--editor-size,14px); }
+.file-editor { font-size: calc(var(--editor-size,14px) * var(--content-zoom,1)); }
+.html-preview-viewport { flex: 1; min-height: 0; overflow: hidden; }
+.html-preview-viewport .html-preview { display: block; max-width: none; }
 .source-editor{flex:1;position:relative;min-width:0;min-height:0;overflow:hidden}
 .source-highlight,.source-editor textarea{position:absolute;inset:0;width:100%;height:100%;font:inherit;line-height:inherit;letter-spacing:normal;tab-size:2;padding:8px 12px 24px;white-space:pre;border:0;margin:0}
 .source-highlight{overflow:hidden;pointer-events:none;color:var(--text)}
@@ -158,16 +160,51 @@ kbd {
 .resource-pagination { margin-top: 16px; }
 .resource-results p { overflow-wrap: anywhere; }
 .host-fields { border: 0; min-width: 0; margin: 0; padding: 0; }
-.directory-browser { display: grid; gap: 8px; margin-top: 8px; padding: 12px; border: 1px solid var(--line2); border-radius: var(--r2); }
-.directory-browser .tx { min-width: 0; }
-.directory-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.directory-browser .browse { margin: 0; max-height: 192px; overflow-y: auto; }
-.directory-browser .mopt { width: 100%; text-align: left; }
-.directory-browser .grow { overflow-wrap: anywhere; min-width: 0; }
-.directory-browser p { margin: 0; }
-.directory-empty { padding: 12px; color: var(--muted); }
-.directory-select { height: auto; min-height: 36px; padding: 8px 12px; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; white-space: normal; text-align: left; }
-.directory-select span { overflow-wrap: anywhere; max-width: 100%; }
+.resource-dialog:has(.directory-browser) { width: 840px; }
+.resource-dialog:has(.directory-browser) .bdy { padding: 0; overflow: hidden; display: flex; min-height: 0; }
+.resource-dialog:has(.directory-browser) footer { gap: 8px; }
+.directory-browser { display: flex; flex-direction: column; width: 100%; min-width: 0; min-height: 0; }
+.directory-toolbar { display: flex; align-items: center; gap: 8px; padding: 16px 20px 8px; }
+.directory-toolbar .grow, .directory-browser .tx { min-width: 0; }
+.directory-toolbar .tx { width: 100%; }
+.directory-location { display: flex; align-items: center; gap: 16px; padding: 0 20px 12px; }
+.directory-location > .tx { width: 240px; flex-shrink: 0; }
+.directory-crumbs { display: flex; align-items: center; flex: 1; overflow-x: auto; min-width: 0; }
+.directory-crumbs .btn { flex-shrink: 0; gap: 4px; }
+.directory-body { display: grid; grid-template-columns: 140px minmax(0,1fr); min-height: 0; border-top: 1px solid var(--line); }
+.directory-body aside { padding: 12px 8px; background: var(--panel); border-right: 1px solid var(--line); }
+.directory-body aside .btn { width: 100%; justify-content: flex-start; gap: 8px; }
+.directory-contents { min-width: 0; display: flex; flex-direction: column; }
+.directory-list-heading { padding: 10px 16px; display: flex; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); }
+.directory-list-heading span { color: var(--muted); font-size: 12px; }
+.directory-list { height: clamp(160px,34vh,360px); overflow: auto; padding: 4px; }
+.directory-entry { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 36px; border: 0; border-radius: var(--r); padding: 8px 12px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.directory-entry span { overflow-wrap: anywhere; min-width: 0; }
+.directory-entry .i { flex-shrink: 0; color: var(--muted); }
+.directory-entry:hover { background: var(--hover); }
+.directory-entry.on { background: var(--accent-soft); color: var(--text); }
+.directory-entry.on .i { color: var(--accent); }
+.directory-empty { padding: 20px 16px; color: var(--muted); }
+.directory-empty p { margin: 0 0 12px; overflow-wrap: anywhere; }
+.directory-count { padding: 8px 16px; border-top: 1px solid var(--line); color: var(--muted); }
+.directory-picked { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1 1 200px; }
+.directory-picked > :first-child { flex-shrink: 0; color: var(--muted); }
+.directory-picked .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.media-preview { display: flex; flex-direction: column; flex: 1; width: 100%; height: 100%; min-height: 0; min-width: 0; }
+.media-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; padding: 8px 12px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
+.media-zoom, .media-paging { display: flex; align-items: center; gap: 4px; }
+.media-scale { min-width: 48px; text-align: center; font-variant-numeric: tabular-nums; }
+.media-toolbar-divider { height: 20px; border-left: 1px solid var(--line); margin: 0 4px; }
+.media-page-input.tx { width: 58px; height: 30px; text-align: center; padding: 4px; }
+.media-page-count { color: var(--muted); font-variant-numeric: tabular-nums; }
+.media-viewport { flex: 1; min-height: 0; overflow: auto; position: relative; background: var(--panel); padding: 24px; }
+.pdf-page { display: block; margin: 0 auto; background: white; box-shadow: 0 2px 12px rgb(0 0 0 / 14%); max-width: none; }
+.media-loading { position: absolute; top: 24px; left: 24px; color: var(--muted); }
+.image-viewport { display: grid; align-items: start; justify-items: start; }
+.image-viewport img { display: block; max-width: none; margin: auto; }
+.image-viewport.fit { display: flex; align-items: center; justify-content: center; }
+.image-viewport.fit img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.media-error { margin: auto; padding: 24px; text-align: center; max-width: 65ch; overflow-wrap: anywhere; }
 .repository-filter { display: block; padding: 8px 12px; }
 .repository-filter .sel { width: 100%; }
 .repository-group { border-bottom: 1px solid var(--line); }

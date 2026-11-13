@@ -3,6 +3,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { _electron as electron } from 'playwright'
+import { loadTypeScript } from './fixtures/load-ts.mjs'
+const { themeVariables } = await loadTypeScript(new URL('../src/shared/themes.ts', import.meta.url))
 
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'awb-directory-browser-'))
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ hosts: [
@@ -29,12 +31,19 @@ try {
   await page.click('[data-a=newproj]')
   await page.click('[data-a=nph][data-id=wsl-fixture]')
   await page.click('[data-a=browse]')
-  const browser = page.locator('.directory-browser')
+  const browser = page.locator('dialog:has(.directory-browser)')
   await page.getByLabel('浏览路径', { exact: true }).waitFor({ timeout: 3000 })
   await page.waitForFunction(() => document.querySelector('[aria-label="浏览路径"]')?.value === '/home/tester')
+  fs.mkdirSync(path.resolve('.cache/directory-browser-shots'), { recursive: true })
+  await page.screenshot({ path: path.resolve('.cache/directory-browser-shots/current.png') })
+  assert.equal(await page.locator('dialog[open]').count(), 1, 'Remote browsing must open a separate modal directory picker')
   await page.getByLabel('筛选子目录').fill('下载')
-  assert.equal(await browser.locator('.mopt').count(), 1)
-  await browser.getByRole('button', { name: '下载', exact: true }).click()
+  assert.equal(await browser.locator('.directory-entry').count(), 1)
+  await browser.getByRole('button', { name: '下载', exact: true }).dblclick()
+  await page.waitForFunction(() => document.querySelector('[aria-label="浏览路径"]')?.value === '/home/tester/下载')
+  await browser.getByRole('button', { name: '返回', exact: true }).click()
+  await page.waitForFunction(() => document.querySelector('[aria-label="浏览路径"]')?.value === '/home/tester')
+  await browser.getByRole('button', { name: '前进', exact: true }).click()
   await page.waitForFunction(() => document.querySelector('[aria-label="浏览路径"]')?.value === '/home/tester/下载')
   async function go(input) {
     await page.getByLabel('浏览路径', { exact: true }).fill(input)
@@ -64,18 +73,27 @@ try {
   fs.mkdirSync(shots, { recursive: true })
   for (const theme of ['dark', 'light']) for (const [width, height] of [[1024, 680], [1440, 900]]) {
     await page.setViewportSize({ width, height })
-    await page.evaluate((theme) => { document.documentElement.dataset.theme = theme }, theme)
+    await page.evaluate(({ theme, variables }) => { document.documentElement.dataset.theme = theme; for (const [key, value] of Object.entries(variables)) document.documentElement.style.setProperty(key, value) }, { theme, variables: themeVariables(theme) })
     await browser.scrollIntoViewIfNeeded()
     await page.screenshot({ path: path.join(shots, `${theme}-${width}.png`) })
-    assert.equal(await page.locator('.dlg').evaluate((el) => el.scrollWidth <= el.clientWidth), true)
-    assert.equal(await page.locator('.dlg').evaluate((el) => { const r = el.getBoundingClientRect(); return r.top >= 23 && r.bottom <= innerHeight - 23 }), true)
+    assert.equal(await browser.evaluate((el) => el.scrollWidth <= el.clientWidth), true)
+    assert.equal(await browser.evaluate((el) => { const r = el.getBoundingClientRect(); return r.top >= 23 && r.bottom <= innerHeight - 23 }), true)
   }
+  await browser.getByRole('button', { name: 'projects', exact: true }).click()
+  assert.equal(await page.getByLabel('浏览路径', { exact: true }).inputValue(), '/home/tester', 'Single click selects without navigating')
   await browser.getByRole('button', { name: /^使用此目录/ }).click()
-  assert.equal(await page.locator('[data-np=path]').inputValue(), '/home/tester')
+  assert.equal(await page.locator('[data-np=path]').inputValue(), '/home/tester/projects')
   assert.equal(await browser.count(), 0)
+  assert.equal(await page.locator('[data-a=browse]').evaluate((el) => el === document.activeElement), true)
   await page.click('[data-a=browse]')
   await browser.waitFor()
+  await page.keyboard.press('Tab')
+  assert.equal(await page.evaluate(() => !!document.activeElement.closest('dialog[open]')), true, 'Outer form must not steal Tab focus')
+  await page.keyboard.press('Escape')
+  assert.equal(await browser.count(), 0)
+  assert.equal(await page.locator('[data-np=path]').inputValue(), '/home/tester/projects', 'Cancel preserves the form path')
+  assert.equal(await page.locator('#modal .dlg').count(), 1, 'Escape closes only the directory picker')
   await page.click('[data-a=nph][data-id=local]')
   assert.equal(await browser.count(), 0, 'Switching hosts closes the previous environment browser')
-  console.log('PASS remote directory browser: path entry, Unicode filter, home/parent, errors, empty/loading states, stale navigation, selection, host switch and four layouts')
+  console.log('PASS remote directory picker: modal focus/Escape, single selection/double-click navigation, history, path entry, Unicode filter, home/parent, errors, empty/loading, stale navigation, selection/cancel, host switch and four layouts')
 } finally { await app.close() }

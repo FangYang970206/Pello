@@ -6,6 +6,7 @@ import { SplitDiffEditor } from './SplitDiffEditor'
 import { editableText, isDirty, type DocumentDraft } from './documents'
 import { Chunk } from '@codemirror/merge'
 import { Text } from '@codemirror/state'
+import { useContentZoom } from './usePreviewWheel'
 
 function Rich({ text, peers }: { text: string; peers?: string[] }) {
   const segs: Seg[] = segments(text, peers)
@@ -89,6 +90,7 @@ export function DiffPane({
   onReload: () => void
   untracked?: boolean
 }) {
+  const { ref, zoom } = useContentZoom()
   const computed: DiffData | null = useMemo(() => {
     if (!diff || diff.binary || diff.tooBig) return null
     const base = editableText(baseline ?? diff.before), work = document?.draft ?? editableText(diff.after)
@@ -192,7 +194,7 @@ export function DiffPane({
       </div>
       {document?.error ? <div className="file-error" role="alert">{document.error}<button className="btn sm" onClick={onReload}>{t("重新读取文件")}</button></div> : null}
       {mode === 'split' ? <div className="diff-headings"><span>{t("比较基准（可编辑）")}</span><span>{t("工作区")}</span></div> : null}
-      <div className={`diff ${mode === 'unified' ? 'diff-unified' : ''}`}>{body}</div>
+      <div ref={ref} style={{ '--content-zoom': zoom } as React.CSSProperties} className={`diff ${mode === 'unified' ? 'diff-unified' : ''}`}>{body}</div>
     </>
   )
 }

@@ -98,12 +98,21 @@ const cases = [
   ['AWB065', 'src/renderer/Workspace.tsx', '<main className="center" id="center">', '<main className="center" id="center"><button data-a="newproj" />'],
   ['AWB066', 'src/main/store.ts', "theme: 'light'", "theme: 'dark'"],
   ['AWB066', 'src/renderer/index.html', 'data-theme="light"', 'data-theme="dark"'],
-  ['AWB066', 'src/renderer/styles/workbench.css', 'font:var(--fs,13px)/1.7 var(--mono)', 'font:12px/1.7 var(--mono)'],
+  ['AWB066', 'src/renderer/styles/workbench.css', 'font:calc(var(--fs,13px) * var(--content-zoom,1))/1.7 var(--mono)', 'font:12px/1.7 var(--mono)'],
   ['AWB066', 'src/renderer/icons.tsx', "fill={name === 'more' ? 'currentColor' : undefined}", 'fill="none"'],
   ['AWB067', 'src/renderer/ProjectSidebar.tsx', 't("最近")', '"Agents"'],
   ['AWB067', 'src/renderer/ProjectSidebar.tsx', "collapsed[project.id] ? 'folder' : 'folder-open'", "'folder'"],
   ['AWB067', 'src/renderer/styles/extra.css', '.sidebar-section-heading > [aria-expanded=true] .sidebar-disclosure { opacity:0; }', '.sidebar-section-heading .sidebar-disclosure { opacity:1; }'],
-  ['AWB067', 'src/renderer/styles/extra.css', '.sidebar-disclosure { flex:none; pointer-events:none; }', '.sidebar-disclosure { margin-left:auto; pointer-events:none; }']
+  ['AWB067', 'src/renderer/styles/extra.css', '.sidebar-disclosure { flex:none; pointer-events:none; }', '.sidebar-disclosure { margin-left:auto; pointer-events:none; }'],
+  ['AWB068', 'src/renderer/MediaPreview.tsx', 'task?.destroy()', 'void 0'],
+  ['AWB068', 'src/renderer/FilePane.tsx', '<MediaPreview', '<MissingPreview'],
+  ['AWB068', 'electron.vite.config.ts', 'bundled-pdf-assets', 'missing-assets'],
+  ['AWB069', 'src/renderer/DirectoryBrowser.tsx', '<ResourceDialog', '<div'],
+  ['AWB069', 'src/renderer/Dialogs.tsx', "if (document.querySelector('dialog[open]')) return", 'void 0'],
+  ['AWB070', 'src/renderer/usePreviewWheel.ts', 'passive: false', 'passive: true'],
+  ['AWB070', 'src/renderer/MediaPreview.tsx', 'target.scrollTop + target.clientHeight', '0'],
+  ['AWB070', 'src/renderer/FilePane.tsx', 'useContentZoom()', 'useState(1)'],
+  ['AWB070', 'src/renderer/DiffPane.tsx', 'useContentZoom()', 'useState(1)']
 ]
 for (const [id, file, before, after] of cases) {
   const mutated = new Map(files)

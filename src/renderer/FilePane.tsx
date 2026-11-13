@@ -2,8 +2,11 @@ import { t } from '../shared/i18n'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import type { DocumentDraft } from './documents'
 import { SourceHighlight } from './SourceHighlight'
+import { mediaKind } from '../shared/media'
+import { useContentZoom } from './usePreviewWheel'
 
 const MarkdownEditor = lazy(() => import('./MarkdownEditor'))
+const MediaPreview = lazy(() => import('./MediaPreview'))
 
 export function FilePane({ path, anchor, onNavigate, document, onEdit, onSave, onReload, onHistory, onCompose, onToggleRight }: {
   path: string
@@ -26,8 +29,19 @@ export function FilePane({ path, anchor, onNavigate, document, onEdit, onSave, o
   const [preview, setPreview] = useState<{ url?: string; error?: string; content?: string; replacementId?: string }>({})
   const markdown = /\.(md|markdown|mdown)$/i.test(path)
   const html = /\.html?$/i.test(path)
-  const readonly = !document || document.binary || document.missing || document.tooBig
+  const media = mediaKind(path)
+  const readonly = !document || !!media || document.binary || document.missing || document.tooBig
   const projectId = document?.projectId
+  const { ref: content, zoom, changeZoom } = useContentZoom()
+  const frame = useRef<HTMLIFrameElement>(null)
+  useEffect(() => {
+    const receive = (event: MessageEvent) => {
+      if (event.source !== frame.current?.contentWindow || event.data?.type !== 'pello-preview-zoom' || !Number.isFinite(event.data.deltaY) || !event.data.deltaY) return
+      changeZoom(event.data.deltaY)
+    }
+    window.addEventListener('message', receive)
+    return () => window.removeEventListener('message', receive)
+  }, [changeZoom])
   useEffect(() => window.awb.onPreviewSource(() => { if (html) { setPreview({}); setVisual(false) } }), [html])
   useEffect(() => {
     if (!html || !visual || !projectId) return
@@ -50,7 +64,7 @@ export function FilePane({ path, anchor, onNavigate, document, onEdit, onSave, o
   }
   return <>
     {document?.error ? <div className="file-error" role="alert">{document.error}</div> : null}
-    <div className="file-content" tabIndex={-1}
+    <div className="file-content" tabIndex={-1} ref={content} style={{ '--content-zoom': zoom } as React.CSSProperties}
       onContextMenu={(event) => { event.preventDefault(); void contextMenu() }}
       onCompositionStartCapture={() => onCompose(true)} onCompositionEndCapture={() => onCompose(false)}
       onKeyDownCapture={(event) => {
@@ -63,9 +77,11 @@ export function FilePane({ path, anchor, onNavigate, document, onEdit, onSave, o
           else onHistory(key === 'y' || event.shiftKey)
         }
       }}>
-      {document?.replacing ? <p className="rmeta" role="status">{t("正在处理文件覆盖…")}</p> : readonly ? <div className="empty"><div className="in"><h2>{!document ? t("正在读取文件…") : document.missing ? t("文件不存在") : document.binary ? t("无法编辑二进制或非 UTF-8 文件") : t("文件超过 2 MB，请使用外部编辑器")}</h2></div></div>
+      {document?.replacing ? <p className="rmeta" role="status">{t("正在处理文件覆盖…")}</p> : media && document ? <Suspense fallback={<p className="rmeta" role="status">{t("正在加载预览…")}</p>}>
+        <MediaPreview key={`${document.projectId}:${path}:${document.replacementId || ''}`} projectId={document.projectId} path={path} version={document.version} />
+      </Suspense> : readonly ? <div className="empty"><div className="in"><h2>{!document ? t("正在读取文件…") : document.missing ? t("文件不存在") : document.binary ? t("无法编辑二进制或非 UTF-8 文件") : t("文件超过 2 MB，请使用外部编辑器")}</h2></div></div>
         : html && visual ? preview.error ? <p className="file-error" role="alert">{preview.error}</p> : preview.url && preview.content === document.draft && preview.replacementId === document.replacementId ?
-          <iframe key={preview.url} className="html-preview" title={t("HTML 预览")} sandbox="allow-scripts" src={preview.url} /> : <p className="rmeta">{t("正在加载预览…")}</p>
+          <div className="html-preview-viewport"><iframe ref={frame} key={preview.url} className="html-preview" title={t("HTML 预览")} sandbox="allow-scripts" src={`${preview.url}${preview.url.includes('?') ? '&' : '?'}workbenchWheel=1`} style={{ zoom, width: `${100 / zoom}%`, height: `${100 / zoom}%` }} /></div> : <p className="rmeta">{t("正在加载预览…")}</p>
         : markdown && visual ? <Suspense fallback={<div className="rmeta">{t("正在加载 Markdown 编辑器…")}</div>}>
           <MarkdownEditor value={document.draft} projectId={document.projectId} path={path} anchor={anchor} onNavigate={onNavigate} onChange={onEdit} formatRef={format} />
         </Suspense> : <div className="file-editor">

@@ -187,7 +187,7 @@ kbd{font:11px var(--mono);color:var(--faint);padding:0 4px;border-radius:4px;bor
 /* diff */
 .diffbar{display:flex;align-items:center;gap:8px;min-height:44px;padding:6px 12px;border-bottom:1px solid var(--line);background:var(--panel);flex:none;font-size:calc(var(--ui-size,13px) - 1px);flex-wrap:wrap}
 .diffbar .path{font-family:var(--mono);color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.diff{flex:1;display:grid;grid-template-rows:minmax(0,1fr);background:var(--panel);font:12px/1.7 var(--mono);overflow:hidden}
+.diff{flex:1;display:grid;grid-template-rows:minmax(0,1fr);background:var(--panel);font:calc(12px * var(--content-zoom,1))/1.7 var(--mono);overflow:hidden}
 .diff>*{min-width:0;min-height:0}
 .diff-unified{display:block;overflow:auto}
 .diff-headings{display:flex;gap:32px;border-bottom:1px solid var(--line);background:var(--panel);color:var(--muted);font-size:12px}
@@ -196,7 +196,7 @@ kbd{font:11px var(--mono);color:var(--faint);padding:0 4px;border-radius:4px;bor
 .diff-split .cm-mergeView,.diff-split .cm-mergeViewEditors{height:100%;overflow:hidden}
 .diff-split .cm-mergeViewEditor{min-width:0;overflow:hidden}
 .diff-split .cm-mergeViewEditor:first-child{flex:0 0 calc((100% - 32px) * var(--diff-ratio))}
-.diff-split .cm-mergeView .cm-editor{height:100%!important;overflow:hidden!important;background:var(--panel);color:var(--text);font:var(--fs,13px)/1.7 var(--mono)}
+.diff-split .cm-mergeView .cm-editor{height:100%!important;overflow:hidden!important;background:var(--panel);color:var(--text);font:calc(var(--fs,13px) * var(--content-zoom,1))/1.7 var(--mono)}
 .diff-split .cm-mergeView .cm-scroller{height:100%!important;overflow:auto!important;overscroll-behavior:contain;font-family:inherit}
 .diff-split .cm-content{caret-color:var(--text);padding:4px 0}
 .diff-split .cm-gutters{background:var(--panel);color:var(--faint);border-color:var(--line)}

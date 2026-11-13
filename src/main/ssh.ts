@@ -135,7 +135,7 @@ export async function openRemoteStream(host: Host, args: string[], signal: Abort
   return { stdin: child.stdin, stdout: child.stdout, completion, close: abort }
 }
 
-export async function runPasswordCommand(host: Host, command: string, input?: string): Promise<string> {
+export async function runPasswordCommand(host: Host, command: string, input?: string, maxOutput = 12_000_000): Promise<string> {
   const client = await connectPasswordHost(host)
   return await new Promise((resolve, reject) => {
     let stdout = ''
@@ -150,7 +150,7 @@ export async function runPasswordCommand(host: Host, command: string, input?: st
       stream.stderr.setEncoding('utf8')
       stream.on('data', (data: string) => {
         stdout += data
-        if (Buffer.byteLength(stdout) > 12_000_000) fail(new Error(t("远程输出过大")))
+        if (Buffer.byteLength(stdout) > maxOutput) fail(new Error(t("远程输出过大")))
       })
       stream.stderr.on('data', (data: string) => { stderr = (stderr + data).slice(-16000) })
       stream.on('error', fail)

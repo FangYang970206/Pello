@@ -25,7 +25,8 @@ const mime: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.htm': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
   '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif', '.webp': 'image/webp', '.ico': 'image/x-icon', '.woff': 'font/woff', '.woff2': 'font/woff2'
+  '.gif': 'image/gif', '.webp': 'image/webp', '.ico': 'image/x-icon', '.woff': 'font/woff', '.woff2': 'font/woff2',
+  '.pdf': 'application/pdf', '.bmp': 'image/bmp', '.avif': 'image/avif'
 }
 
 async function port(): Promise<number> {
@@ -40,8 +41,17 @@ async function port(): Promise<number> {
         if (!project) { response.writeHead(404).end(); return }
         const rel = parts.map(decodeURIComponent).join('/')
         const draft = project.drafts.get(rel)
-        const bytes = draft && url.searchParams.get('draft') === draft.token ? Buffer.from(draft.text, 'utf8') : await readAsset(project.target, rel)
+        let bytes = draft && url.searchParams.get('draft') === draft.token ? Buffer.from(draft.text, 'utf8') : await readAsset(project.target, rel)
+        if (/\.html?$/i.test(rel) && url.searchParams.get('workbenchWheel') === '1') {
+          // Only report a zoom gesture to the owning sandbox iframe; no workbench API is exposed.
+          const bridge = '<script>addEventListener("wheel",function(e){if((e.ctrlKey||e.metaKey)&&!e.altKey&&e.deltaY){e.preventDefault();e.stopPropagation();parent.postMessage({type:"pello-preview-zoom",deltaY:e.deltaY},"*")}},{passive:false,capture:true})</script>'
+          const html = bytes.toString('utf8')
+          const start = html.match(/<head(?:\s[^>]*)?>/i) || html.match(/<!doctype[^>]*>/i)
+          const offset = start ? start.index! + start[0].length : 0
+          bytes = Buffer.from(html.slice(0, offset) + bridge + html.slice(offset), 'utf8')
+        }
         response.writeHead(200, { 'Content-Type': mime[path.extname(rel).toLowerCase()] || 'application/octet-stream',
+          'Content-Length': bytes.length,
           'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
           // Sandboxed documents have an opaque origin. Permit their module and
           // font requests while keeping the project token and path checks.
