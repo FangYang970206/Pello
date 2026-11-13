@@ -102,7 +102,8 @@ const cases = [
   ['AWB066', 'src/renderer/icons.tsx', "fill={name === 'more' ? 'currentColor' : undefined}", 'fill="none"'],
   ['AWB067', 'src/renderer/ProjectSidebar.tsx', 't("最近")', '"Agents"'],
   ['AWB067', 'src/renderer/ProjectSidebar.tsx', "collapsed[project.id] ? 'folder' : 'folder-open'", "'folder'"],
-  ['AWB067', 'src/renderer/styles/extra.css', '.sidebar-section-heading > [aria-expanded=true] .sidebar-disclosure { opacity:0; }', '.sidebar-section-heading .sidebar-disclosure { opacity:1; }']
+  ['AWB067', 'src/renderer/styles/extra.css', '.sidebar-section-heading > [aria-expanded=true] .sidebar-disclosure { opacity:0; }', '.sidebar-section-heading .sidebar-disclosure { opacity:1; }'],
+  ['AWB067', 'src/renderer/styles/extra.css', '.sidebar-disclosure { flex:none; pointer-events:none; }', '.sidebar-disclosure { margin-left:auto; pointer-events:none; }']
 ]
 for (const [id, file, before, after] of cases) {
   const mutated = new Map(files)

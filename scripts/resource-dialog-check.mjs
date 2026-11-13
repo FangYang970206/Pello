@@ -43,7 +43,7 @@ try {
     assert.ok(geometry.inside && geometry.footerVisible && !geometry.overflow, JSON.stringify(geometry))
     if (compact) assert.ok(geometry.height <= geometry.pageHeight * .6 + 1 && geometry.scrollable, JSON.stringify(geometry))
   }
-  for (const theme of ['dark', 'light']) {
+  for (const theme of ['dark', 'light', 'nord', 'dracula', 'catppuccin', 'solarized-light']) {
     await section('look'); await page.click(`[data-a=theme][data-id=${theme}]`)
     for (const [width, height] of [[1440, 900], [1024, 680]]) {
       await page.evaluate(([width, height]) => window.awb.winResize(width, height), [width, height])
@@ -75,7 +75,7 @@ try {
       await page.keyboard.press('Escape')
     }
   }
-  console.log('PASS resource add/detail dialogs align with the current page in both themes and window sizes; Skill details fit 60% height with scrolling, keyboard focus and backdrop dismissal')
+  console.log('PASS resource add/detail dialogs align with the current page in six themes and both window sizes; Skill details fit 60% height with scrolling, keyboard focus and backdrop dismissal')
   await section('skills')
   const trigger = page.getByRole('button', { name: 'Skill 菜单 delete-me', exact: true })
   await trigger.focus(); await trigger.press('Enter')

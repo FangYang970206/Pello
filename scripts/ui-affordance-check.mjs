@@ -28,6 +28,7 @@ try {
     projects: [{ id: 'p', name: 'Hover fixture', path: data, host: 'local', agent: 'shell' }]
   }))
   app = await launch(); page = await app.firstWindow()
+  await page.emulateMedia({ reducedMotion: 'reduce' })
   await page.locator('[data-a=proj]').waitFor()
   check((await page.evaluate(() => window.awb.getState())).db.settings.theme === 'light', 'Missing theme in an existing configuration must default to light')
   const reveal = async (row, button, label) => {
@@ -70,12 +71,17 @@ try {
           if (await toggle.getAttribute('aria-expanded') !== String(expanded)) await toggle.click()
           await page.mouse.move(800, 500); await page.evaluate(() => document.activeElement?.blur())
           check(await arrow.evaluate((node) => Number(getComputedStyle(node).opacity)) === Number(!expanded), `${theme} ${action}: expanded arrow hides at rest; collapsed arrow stays visible`)
-          const geometry = await arrow.evaluate((node) => ({ arrow: node.getBoundingClientRect().right, row: node.closest('.sidebar-section-heading').getBoundingClientRect().right }))
-          check(geometry.row - geometry.arrow <= 10, `${theme} ${action}: disclosure is at the far right`)
+          const geometry = await arrow.evaluate((node) => {
+            const arrow = node.getBoundingClientRect(), label = node.parentElement.querySelector('.sidebar-heading-label').getBoundingClientRect()
+            return { gap: arrow.left - label.right, width: arrow.width }
+          })
+          check(geometry.gap >= 4 && geometry.gap <= 8 && geometry.width >= 12, `${theme} ${action}: disclosure follows the title with a small gap: ${JSON.stringify(geometry)}`)
           await row.hover()
           check(await arrow.evaluate((node) => Number(getComputedStyle(node).opacity)) === 1, `${theme} ${action}: hover reveals disclosure`)
           await page.mouse.move(800, 500); await page.keyboard.press('Tab'); await toggle.focus()
           check(await arrow.evaluate((node) => Number(getComputedStyle(node).opacity)) === 1, `${theme} ${action}: keyboard focus reveals disclosure`)
+          const add = row.locator('.sidebar-add')
+          if (await add.count()) await reveal(row, add, `${theme} ${action} expanded=${expanded}`)
         }
         if (await toggle.getAttribute('aria-expanded') !== original) await toggle.click()
       }
@@ -123,5 +129,5 @@ try {
   database = (await page.evaluate(() => window.awb.getState())).db
   check(database.settings.theme === 'solarized-light', 'Saved theme must survive restart')
   assert.deepEqual(failures, [])
-  console.log('PASS title/bar/folder alignment, right-side disclosure states, open/closed folder icons, Recent heading, fresh light default, saved theme, mouse/keyboard add controls and Skill menus in six themes at two sizes')
+  console.log('PASS title/bar/folder alignment, title-adjacent disclosure states, add controls in expanded/collapsed groups, open/closed folder icons, Recent heading, fresh light default, saved theme, mouse/keyboard add controls and Skill menus in six themes at two sizes')
 } finally { await app.close() }

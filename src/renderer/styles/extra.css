@@ -186,13 +186,14 @@ kbd {
 .sidebar-section-heading > button:first-child { display:flex; align-items:center; gap:6px; flex:1; min-width:0; min-height:30px; padding:0 8px; text-align:left; font-size:12px; font-weight:550; border-radius:var(--r1); }
 .plist > .sidebar-section-heading:first-child { margin-top:0; }
 .plist > .sidebar-section-heading:first-child > button:first-child { min-height:40px; }
-.sidebar-heading-label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-right:34px; }
-.sidebar-disclosure { margin-left:auto; pointer-events:none; }
+.sidebar-section-heading:has(.sidebar-add) > button:first-child { padding-right:40px; }
+.sidebar-heading-label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sidebar-disclosure { flex:none; pointer-events:none; }
 .sidebar-section-heading > [aria-expanded=true] .sidebar-disclosure { opacity:0; }
 .sidebar-section-heading:hover > [aria-expanded=true] .sidebar-disclosure,.sidebar-section-heading:has(:focus-visible) > [aria-expanded=true] .sidebar-disclosure { opacity:1; }
 .sidebar-section-heading:hover,.sidebar-section-heading:has(:focus-visible) { background:var(--hover); }
 .sidebar-section-heading > button:hover { color:var(--text); }
-.sidebar-section-heading .sidebar-add { position:absolute; right:30px; top:50%; transform:translateY(-50%); display:grid; place-items:center; width:26px; height:26px; border-radius:var(--r1); }
+.sidebar-section-heading .sidebar-add { position:absolute; right:8px; top:50%; transform:translateY(-50%); display:grid; place-items:center; width:26px; height:26px; border-radius:var(--r1); }
 .sidebar-sessions { padding:2px 0 4px 24px; }
 .sidebar-session,.sidebar-term { position:relative; border-radius:var(--r1); }
 .sidebar-session.on,.sidebar-term.on { background:var(--sel); }

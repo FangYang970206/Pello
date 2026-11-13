@@ -228,8 +228,9 @@ export function checkInvariants(files) {
     'AWB065', 'src/renderer/ProjectSidebar.tsx', '项目标题统一添加项目；加号按行悬停与键盘焦点显示，保留行为回归')
   require(files.get('src/main/store.ts')?.includes("theme: 'light'") && files.get('src/renderer/index.html')?.includes('data-theme="light"') && controlsCss.includes('font:var(--fs,13px)/1.7 var(--mono)') && files.get('src/renderer/icons.tsx')?.includes("fill={name === 'more' ? 'currentColor' : undefined}"),
     'AWB066', 'src/main/store.ts', '默认浅色，Diff 双栏实时沿用终端字号，更多菜单使用实心图标')
-  require(sidebar.includes('sidebar-heading-label') && sidebar.includes('sidebar-disclosure') && hasString(source('src/renderer/ProjectSidebar.tsx'), '最近') && sidebar.includes("collapsed[project.id] ? 'folder' : 'folder-open'") && files.get('src/renderer/styles/extra.css')?.includes('.sidebar-section-heading > [aria-expanded=true] .sidebar-disclosure { opacity:0; }'),
-    'AWB067', 'src/renderer/ProjectSidebar.tsx', '分组标题右侧箭头随展开与焦点显示，项目使用展开文件夹图标，最近标题共享翻译')
+  const sidebarCss = files.get('src/renderer/styles/extra.css') || ''
+  require(sidebar.includes('sidebar-heading-label') && sidebar.includes('sidebar-disclosure') && hasString(source('src/renderer/ProjectSidebar.tsx'), '最近') && sidebar.includes("collapsed[project.id] ? 'folder' : 'folder-open'") && sidebarCss.includes('.sidebar-section-heading > [aria-expanded=true] .sidebar-disclosure { opacity:0; }') && sidebarCss.includes('.sidebar-disclosure { flex:none; pointer-events:none; }') && !sidebarCss.includes('white-space:nowrap; padding-right:34px;'),
+    'AWB067', 'src/renderer/ProjectSidebar.tsx', '折叠箭头紧邻分组文字，展开时按悬停与焦点显示、折叠常驻；加号不受折叠影响')
   return errors
 }
 
