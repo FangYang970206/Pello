@@ -4,11 +4,13 @@ import { Crepe } from '@milkdown/crepe'
 import { editorViewCtx, serializerCtx } from '@milkdown/kit/core'
 import { toggleStrongCommand, toggleEmphasisCommand, toggleInlineCodeCommand, wrapInHeadingCommand, wrapInBlockquoteCommand, wrapInBulletListCommand, wrapInOrderedListCommand, createCodeBlockCommand } from '@milkdown/kit/preset/commonmark'
 import { insertTableCommand } from '@milkdown/kit/preset/gfm'
-import { Plugin } from '@milkdown/kit/prose/state'
+import { Plugin, PluginKey, TextSelection } from '@milkdown/kit/prose/state'
+import { Decoration, DecorationSet } from '@milkdown/kit/prose/view'
 import type { EditorView as ProseMirrorView } from '@milkdown/kit/prose/view'
 import { $prose, callCommand, replaceAll } from '@milkdown/kit/utils'
 import { languages } from '@codemirror/language-data'
-import { EditorView } from '@codemirror/view'
+import { Decoration as CodeDecoration, EditorView } from '@codemirror/view'
+import { Compartment } from '@codemirror/state'
 import { codeBlockConfig } from '@milkdown/kit/component/code-block'
 import type { NodeViewConstructor } from '@milkdown/kit/prose/view'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
@@ -16,6 +18,8 @@ import { tags } from '@lezer/highlight'
 import { diagramPreview } from './diagram-preview'
 import { preserveCodeLayout } from './markdown-code-layout'
 import { Icon } from './icons'
+import type { SearchAdapter } from './search-types'
+import { clearSearchHighlights, domText, revealSearchRect } from './document-search'
 import '@milkdown/crepe/theme/common/style.css'
 import '@milkdown/crepe/theme/frame.css'
 import './styles/markdown.css'
@@ -38,10 +42,11 @@ function imageSource(source: string, base: string): string {
 type Heading = { text: string; level: number; id: string }
 type HeadingTarget = Heading & { nativeId: string; position: number; element: HTMLElement | null }
 
-export default function MarkdownEditor({ value, projectId, path, anchor, onNavigate, onChange, formatRef }: {
+export default function MarkdownEditor({ value, projectId, path, anchor, onNavigate, onChange, formatRef, searchRef, onSearchText }: {
   value: string; projectId: string; path: string; onChange: (markdown: string) => void
   anchor?: string; onNavigate: (path: string, anchor?: string) => void
   formatRef: { current: ((command: string) => void) | null }
+  searchRef: { current: SearchAdapter | null }; onSearchText: (text: string) => void
 }) {
   const language = useSyncExternalStore(subscribeLanguage, getLanguage)
   const localizeEditor = useRef<(() => void) | null>(null)
@@ -60,6 +65,8 @@ export default function MarkdownEditor({ value, projectId, path, anchor, onNavig
   const serialized = useRef('')
   const current = useRef(value)
   const change = useRef(onChange)
+  const searchText = useRef(onSearchText)
+  searchText.current = onSearchText
   const assetBase = useRef('')
   const [error, setError] = useState('')
   const [linkError, setLinkError] = useState('')
@@ -124,13 +131,31 @@ export default function MarkdownEditor({ value, projectId, path, anchor, onNavig
     let disposed = false
     let started = false
     let releaseCodeLayout = () => {}
+    const searchKey = new PluginKey<DecorationSet>('document-search')
+    const codeSearch = new Compartment()
+    let activeCode: EditorView | null = null
+    let stopSearchReveal = () => {}
+    let searchGeneration = 0
+    let searchMap: { from: number; to: number; pos: number }[] = []
+    const syncSearch = (view: ProseMirrorView) => {
+      let text = ''
+      searchMap = []
+      view.state.doc.descendants((node, pos) => {
+        if (node.isBlock && text && !text.endsWith('\n')) text += '\n'
+        if (node.isText) {
+          searchMap.push({ from: text.length, to: text.length + node.text!.length, pos })
+          text += node.text
+        } else if (node.type.name === 'hardbreak') text += '\n'
+      })
+      searchText.current(text)
+    }
     const initial = metadata(current.current)
     let codeLanguage = getLanguage()
     const crepe = new Crepe({ root, defaultValue: initial.body,
       features: { [Crepe.Feature.AI]: false },
       featureConfigs: { [Crepe.Feature.CodeMirror]: {
         languages,
-        extensions: [syntaxHighlighting(HighlightStyle.define([
+        extensions: [codeSearch.of([]), syntaxHighlighting(HighlightStyle.define([
           { tag: [tags.keyword, tags.bool, tags.null], color: 'var(--magenta)' },
           { tag: [tags.string, tags.regexp], color: 'var(--green)' },
           { tag: [tags.number, tags.atom], color: 'var(--amber)' },
@@ -150,6 +175,10 @@ export default function MarkdownEditor({ value, projectId, path, anchor, onNavig
         })
       } }
     })
+    crepe.editor.use($prose(() => new Plugin({ key: searchKey,
+      state: { init: () => DecorationSet.empty, apply: (tr, decorations) => tr.getMeta(searchKey) ?? decorations.map(tr.mapping, tr.doc) },
+      props: { decorations: (state) => searchKey.getState(state) }
+    })))
     // A synchronous document transaction listener avoids losing the last edit
     // when a file tab closes before a library's debounced change event fires.
     const syncHeadings = (view: ProseMirrorView) => {
@@ -170,6 +199,7 @@ export default function MarkdownEditor({ value, projectId, path, anchor, onNavig
       setHeadings((previous) => previous.length === entries.length && previous.every((entry, index) => entry.id === entries[index].id && entry.text === entries[index].text && entry.level === entries[index].level) ? previous : entries)
     }
     crepe.editor.use($prose((ctx) => new Plugin({ view: () => ({ update: (view, previous) => {
+      if (!view.state.doc.eq(previous.doc)) syncSearch(view)
       if (!view.state.doc.eq(previous.doc)) queueMicrotask(() => { if (!disposed) syncHeadings(view) })
       if (!ready.current || applying.current || !interacted.current || view.state.doc.eq(previous.doc)) return
       const markdown = ctx.get(serializerCtx)(view.state.doc)
@@ -188,6 +218,78 @@ export default function MarkdownEditor({ value, projectId, path, anchor, onNavig
       ready.current = true
       releaseCodeLayout = preserveCodeLayout(root)
       crepe.editor.action((ctx) => syncHeadings(ctx.get(editorViewCtx)))
+      crepe.editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx)
+        syncSearch(view)
+        const position = (offset: number, end = false) => {
+          const segment = searchMap.find((item) => end ? item.to >= offset : item.to > offset) || searchMap.at(-1)
+          return segment ? segment.pos + Math.max(0, Math.min(segment.to - segment.from, offset - segment.from)) : 1
+        }
+        searchRef.current = {
+          focus: () => view.focus(),
+          replace: (matches, value) => {
+            interacted.current = true
+            let tr = view.state.tr
+            for (const match of [...matches].reverse()) tr = tr.insertText(value, position(match.from), position(match.to, true))
+            view.dispatch(tr)
+          },
+          reveal: (match, matches, active) => {
+            const generation = ++searchGeneration
+            stopSearchReveal(); stopSearchReveal = () => {}
+            clearSearchHighlights()
+            if (activeCode?.dom.isConnected) activeCode.dispatch({ effects: codeSearch.reconfigure([]) })
+            activeCode = null
+            const decorations = matches.slice(0, 2000).map((item, index) => Decoration.inline(position(item.from), position(item.to, true), { class: index === active ? 'search-hit search-active' : 'search-hit' }))
+            if (match && active >= 2000) decorations.push(Decoration.inline(position(match.from), position(match.to, true), { class: 'search-hit search-active' }))
+            let tr = view.state.tr.setMeta(searchKey, DecorationSet.create(view.state.doc, decorations))
+            if (match) tr = tr.setSelection(TextSelection.create(view.state.doc, position(match.from), position(match.to, true)))
+            view.dispatch(tr)
+            // ProseMirror's scrollIntoView ignores selections while the find
+            // input owns the DOM selection. Scroll the real reading viewport.
+            const scroller = root.closest<HTMLElement>('.markdown-editor')
+            if (match && scroller) {
+              const $from = view.state.doc.resolve(position(match.from))
+              if ($from.parent.type.name === 'code_block') {
+                const block = view.nodeDOM($from.before()) as HTMLElement | null
+                if (!block) return
+                const start = $from.start(), from = position(match.from) - start, to = position(match.to, true) - start
+                const revealCode = () => {
+                  const dom = block.querySelector<HTMLElement>('.cm-editor')
+                  const code = dom ? EditorView.findFromDOM(dom) : null
+                  if (!code) return false
+                  const codeMatches = matches.filter((item) => position(item.from) >= start && position(item.to, true) <= start + $from.parent.content.size)
+                  const highlighted = codeMatches.slice(0, 2000)
+                  if (!highlighted.includes(match)) highlighted.push(match)
+                  const marks = highlighted
+                    .map((item) => CodeDecoration.mark({ class: item === match ? 'search-hit search-active' : 'search-hit' }).range(position(item.from) - start, position(item.to, true) - start))
+                  activeCode = code
+                  code.dispatch({ selection: { anchor: from, head: to }, effects: [codeSearch.reconfigure(EditorView.decorations.of(CodeDecoration.set(marks, true))), EditorView.scrollIntoView(from, { y: 'center' })] })
+                  const line = code.lineBlockAt(from), left = scroller.getBoundingClientRect().left + 24
+                  revealSearchRect(scroller, { top: code.documentTop + line.top, bottom: code.documentTop + line.bottom, left, right: left })
+                  code.requestMeasure({ read: () => code.coordsAtPos(from), write: (rect) => { if (rect && !disposed && generation === searchGeneration) revealSearchRect(scroller, rect) } })
+                  return true
+                }
+                if (!revealCode()) {
+                  // Offscreen blocks may still be lightweight placeholders.
+                  // Reveal their actual text first, then hand off once mounted.
+                  const placeholder = block.querySelector<HTMLElement>('.milkdown-code-block-placeholder')
+                  const range = placeholder ? domText(placeholder).range({ from, to }) : null
+                  if (range) {
+                    CSS.highlights.set('document-current', new Highlight(range))
+                    revealSearchRect(scroller, range.getBoundingClientRect())
+                  }
+                  const observer = new MutationObserver(() => { if (!disposed && generation === searchGeneration && revealCode()) observer.disconnect() })
+                  observer.observe(block, { childList: true, subtree: true })
+                  stopSearchReveal = () => observer.disconnect()
+                }
+                return
+              }
+              const rect = root.querySelector('.search-active')?.getClientRects()[0] || view.coordsAtPos(position(match.from))
+              revealSearchRect(scroller, rect)
+            }
+          }
+        }
+      })
       if (requestedAnchor.current) requestAnimationFrame(() => { if (!disposed) scrollTo(requestedAnchor.current!) })
       serialized.current = crepe.getMarkdown()
       formatRef.current = (command) => {
@@ -221,12 +323,16 @@ export default function MarkdownEditor({ value, projectId, path, anchor, onNavig
     }).catch((reason) => { if (!disposed) setError(String(reason)) })
     return () => {
       disposed = true
+      searchGeneration++
+      stopSearchReveal()
+      clearSearchHighlights()
       releaseCodeLayout()
       void window.awb.cancelDiagrams().catch(() => {})
       ready.current = false
       editor.current = null
       localizeEditor.current = null
       formatRef.current = null
+      searchRef.current = null
       void created.then(() => { if (started) return crepe.destroy() }).catch(() => {})
     }
   }, [projectId, path])

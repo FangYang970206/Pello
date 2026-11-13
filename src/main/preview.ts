@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { shell } from 'electron'
 import { readAsset, type Target } from './git'
+import { htmlPreviewBridge } from '../shared/preview-bridge'
 
 const projects = new Map<string, { token: string; target: Target; drafts: Map<string, { token: string; text: string }> }>()
 export function invalidatePreview(projectId: string, rel: string): void {
@@ -44,7 +45,7 @@ async function port(): Promise<number> {
         let bytes = draft && url.searchParams.get('draft') === draft.token ? Buffer.from(draft.text, 'utf8') : await readAsset(project.target, rel)
         if (/\.html?$/i.test(rel) && url.searchParams.get('workbenchWheel') === '1') {
           // Only report a zoom gesture to the owning sandbox iframe; no workbench API is exposed.
-          const bridge = '<script>addEventListener("wheel",function(e){if((e.ctrlKey||e.metaKey)&&!e.altKey&&e.deltaY){e.preventDefault();e.stopPropagation();parent.postMessage({type:"pello-preview-zoom",deltaY:e.deltaY},"*")}},{passive:false,capture:true})</script>'
+          const bridge = `<script>(${htmlPreviewBridge.toString()})()</script>`
           const html = bytes.toString('utf8')
           const start = html.match(/<head(?:\s[^>]*)?>/i) || html.match(/<!doctype[^>]*>/i)
           const offset = start ? start.index! + start[0].length : 0

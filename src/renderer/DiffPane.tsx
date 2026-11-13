@@ -1,12 +1,15 @@
 import { t } from '../shared/i18n'
 import type { FileDiff } from '../shared/types'
 import { lcs, lineStats, segments, splitLines, type Seg, type SideRow } from '../shared/diff'
-import { useMemo } from 'react'
+import { useMemo, useRef, useState, useEffect } from 'react'
 import { SplitDiffEditor } from './SplitDiffEditor'
 import { editableText, isDirty, type DocumentDraft } from './documents'
 import { Chunk } from '@codemirror/merge'
 import { Text } from '@codemirror/state'
 import { useContentZoom } from './usePreviewWheel'
+import { DocumentSearch, useDocumentSearch } from './DocumentSearch'
+import type { SearchAdapter } from './search-types'
+import { clearSearchHighlights, domText } from './document-search'
 
 function Rich({ text, peers }: { text: string; peers?: string[] }) {
   const segs: Seg[] = segments(text, peers)
@@ -27,7 +30,7 @@ function Rich({ text, peers }: { text: string; peers?: string[] }) {
   )
 }
 
-function Line({ row }: { row: SideRow }) {
+function Line({ row, beforeStart, afterStart }: { row: SideRow; beforeStart?: number; afterStart?: number }) {
   if (row.kind === 'pad') {
     return (
       <div className="cl pad">
@@ -42,7 +45,7 @@ function Line({ row }: { row: SideRow }) {
     <div className={`cl ${row.kind}`}>
       <span className="ln">{row.n ?? ''}</span>
       <span className="sg">{sign}</span>
-      <span>
+      <span className="diff-line-text" data-before-start={beforeStart} data-after-start={afterStart}>
         <Rich text={row.text || ''} peers={row.kind ? row.peers : undefined} />
       </span>
     </div>
@@ -91,6 +94,32 @@ export function DiffPane({
   untracked?: boolean
 }) {
   const { ref, zoom } = useContentZoom()
+  const [side, setSide] = useState<'before' | 'after'>('after')
+  const searchRef = useRef<SearchAdapter | null>(null)
+  const base = editableText(baseline ?? diff?.before ?? ''), work = document?.draft ?? editableText(diff?.after ?? '')
+  const search = useDocumentSearch({ root: ref, text: side === 'before' ? base : work, revision: `${mode}:${side}`,
+    save: onSave,
+    enabled: !!diff && !diff.binary && !diff.tooBig,
+    replace: document && !document.replacing ? side === 'before' ? onBaseline : onEdit : undefined,
+    focus: () => { if (mode === 'split') searchRef.current?.focus(); else ref.current?.focus() },
+    reveal: (match, matches, active) => {
+      if (mode === 'split') { searchRef.current?.reveal(match, matches, active); return }
+      clearSearchHighlights()
+      const ranges: Range[] = [], current: Range[] = []
+      for (const node of ref.current?.querySelectorAll<HTMLElement>(`.diff-line-text[data-${side}-start]`) || []) {
+        const start = Number(node.dataset[side === 'before' ? 'beforeStart' : 'afterStart']), end = start + (node.textContent?.length || 0)
+        const map = domText(node)
+        const local = matches.filter((item) => item.from < end && item.to > start)
+        for (const item of local) {
+          const range = map.range({ from: Math.max(0, item.from - start), to: Math.min(end, item.to) - start })
+          if (range && ranges.length < 2000) ranges.push(range)
+          if (range && item === match) { current.push(range); node.scrollIntoView({ block: 'nearest', inline: 'nearest' }) }
+        }
+      }
+      CSS.highlights.set('document-matches', new Highlight(...ranges)); CSS.highlights.set('document-current', new Highlight(...current))
+    }
+  })
+  useEffect(() => () => clearSearchHighlights(), [])
   const computed: DiffData | null = useMemo(() => {
     if (!diff || diff.binary || diff.tooBig) return null
     const base = editableText(baseline ?? diff.before), work = document?.draft ?? editableText(diff.after)
@@ -136,6 +165,8 @@ export function DiffPane({
   if (mode === 'unified') {
     let delIndex = 0
     let addIndex = 0
+    const offsets = (lines: string[]) => { let offset = 0; return lines.map((line) => { const start = offset; offset += line.length + 1; return start }) }
+    const beforeOffsets = offsets(before), afterOffsets = offsets(after)
     body = (
       <>
         <div className="hunk">
@@ -152,6 +183,8 @@ export function DiffPane({
           return (
             <Line
               key={index}
+              beforeStart={row[0] !== 'add' ? beforeOffsets[row[2]!] : undefined}
+              afterStart={row[0] !== 'del' ? afterOffsets[row[3]!] : undefined}
               row={{
                 kind: row[0] || '',
                 text: row[1],
@@ -165,7 +198,7 @@ export function DiffPane({
     )
   } else {
     body = (
-      document ? <SplitDiffEditor path={diff.path} before={editableText(baseline ?? diff.before)} after={document.draft} onBefore={onBaseline} onAfter={onEdit} onSave={onSave} onCompose={onCompose} onHistory={onHistory} onBeforeHistory={onBaselineHistory} /> : <p className="rmeta">{t("正在读取可编辑内容…")}</p>
+      document ? <SplitDiffEditor path={diff.path} before={editableText(baseline ?? diff.before)} after={document.draft} onBefore={onBaseline} onAfter={onEdit} onSave={onSave} onCompose={onCompose} onHistory={onHistory} onBeforeHistory={onBaselineHistory} searchRef={searchRef} searchSide={side} onSearchSide={setSide} /> : null
     )
   }
   return (
@@ -194,7 +227,10 @@ export function DiffPane({
       </div>
       {document?.error ? <div className="file-error" role="alert">{document.error}<button className="btn sm" onClick={onReload}>{t("重新读取文件")}</button></div> : null}
       {mode === 'split' ? <div className="diff-headings"><span>{t("比较基准（可编辑）")}</span><span>{t("工作区")}</span></div> : null}
-      <div ref={ref} style={{ '--content-zoom': zoom } as React.CSSProperties} className={`diff ${mode === 'unified' ? 'diff-unified' : ''}`}>{body}</div>
+      <div className="editor-surface">
+      <DocumentSearch search={search} scope={<label>{t("搜索范围")}<select className="tx" aria-label={t("搜索范围")} value={side} onChange={(event) => setSide(event.target.value as 'before' | 'after')}><option value="after">{t("工作区")}</option><option value="before">{t("比较基准（可编辑）")}</option></select></label>} />
+      <div ref={ref} tabIndex={-1} style={{ '--content-zoom': zoom } as React.CSSProperties} className={`diff ${mode === 'unified' ? 'diff-unified' : ''}`}>{body}</div>
+      </div>
     </>
   )
 }

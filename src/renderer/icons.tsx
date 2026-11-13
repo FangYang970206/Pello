@@ -33,6 +33,8 @@ const PATHS = {
   trash: 'M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3',
   open: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v1H7l-4 9z',
   search: 'M10 17a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM15 15l6 6',
+  replace: 'M3 6h10M10 3l3 3-3 3M4 14h5v6H4zM15 14h5v6h-5z',
+  'replace-all': 'M3 5h10M10 2l3 3-3 3M3 10h10M10 7l3 3-3 3M4 16h5v5H4zM15 16h5v5h-5z',
   changes: 'M15 18a3 3 0 1 0 6 0 3 3 0 0 0-6 0zM3 6a3 3 0 1 0 6 0 3 3 0 0 0-6 0zM13 6h3a2 2 0 0 1 2 2v7M11 18H8a2 2 0 0 1-2-2V9',
   pin: 'M9 4h6l-1 6 3 3v2h-4v5l-1 1-1-1v-5H6v-2l3-3z'
 } as const

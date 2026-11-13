@@ -354,7 +354,18 @@ export function SettingsView({
       [t("打开设置"), 'Ctrl ,'],
       [t("保存当前文件"), 'Ctrl S'],
       [t("撤销文件编辑"), 'Ctrl Z'],
-      [t("重做文件编辑"), 'Ctrl Shift Z']
+      [t("重做文件编辑"), 'Ctrl Shift Z'],
+      [t("文件 / Diff 查找"), 'Ctrl F'],
+      [t("文件 / Diff 替换"), 'Ctrl H'],
+      [t("下一个匹配（查找框内）"), 'Enter'],
+      [t("上一个匹配（查找框内）"), 'Shift Enter'],
+      [t("下一个匹配"), 'F3'],
+      [t("上一个匹配"), 'Shift F3'],
+      [t("关闭搜索"), 'Esc'],
+      [t("文件 / Diff / 媒体缩放"), `Ctrl ${t("滚轮")}`],
+      [t("PDF 上一页"), 'PageUp'],
+      [t("PDF 下一页"), 'PageDown'],
+      [t("PDF 滚动 / 边缘翻页"), t("滚轮")]
     ]
     body = (
       <>

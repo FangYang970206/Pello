@@ -239,6 +239,11 @@ export function checkInvariants(files) {
     'AWB069', 'src/renderer/DirectoryBrowser.tsx', '远程目录浏览使用独立模态窗口，双击进入，外层焦点约束让位给选择器')
   require(media.includes('usePreviewWheel(viewport') && media.includes('target.scrollTop + target.clientHeight') && files.get('src/renderer/usePreviewWheel.ts')?.includes('passive: false') && files.get('src/renderer/FilePane.tsx')?.includes('useContentZoom()') && files.get('src/renderer/DiffPane.tsx')?.includes('useContentZoom()') && scripts.check?.includes('scripts/preview-wheel-check.mjs'),
     'AWB070', 'src/renderer/usePreviewWheel.ts', 'PDF 滚轮在页面边缘翻页，媒体、文件及 Diff 支持局部 Ctrl+滚轮缩放并保留行为回归')
+  const search = files.get('src/renderer/DocumentSearch.tsx') || ''
+  require(files.get('src/renderer/MarkdownEditor.tsx')?.includes('revealSearchRect(scroller') && scripts.check?.includes('scripts/search-navigation-check.mjs'),
+    'AWB072', 'src/renderer/MarkdownEditor.tsx', '查找和上下导航定位实际匹配文字，使用所属视口并保留长文档及虚拟代码块回归')
+  require(search.includes('useDocumentSearch') && search.includes('event.isComposing') && sidebarCss.includes('.document-search { position: absolute;') && sidebarCss.includes('.editor-surface { position: relative;') && files.get('src/renderer/MarkdownEditor.tsx')?.includes('tr.insertText(value, position(match.from)') && files.get('src/renderer/SettingsView.tsx')?.includes("'Ctrl F'") && !media.includes('正在加载预览') && !files.get('src/renderer/FilePane.tsx')?.includes('正在加载预览') && scripts.check?.includes('scripts/document-search-check.mjs'),
+    'AWB071', 'src/renderer/DocumentSearch.tsx', '搜索替换悬浮在编辑器内且保留行为回归，Markdown 通过模型替换，快捷键列入设置，预览不显示加载文字')
   return errors
 }
 

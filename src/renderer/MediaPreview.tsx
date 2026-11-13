@@ -3,6 +3,7 @@ import { t } from '../shared/i18n'
 import { mediaKind } from '../shared/media'
 import { Icon } from './icons'
 import { isZoomWheel, usePreviewWheel } from './usePreviewWheel'
+import { DocumentSearch, useDocumentSearch } from './DocumentSearch'
 
 export default function MediaPreview({ projectId, path, version }: { projectId: string; path: string; version: string | null }) {
   const [source, setSource] = useState<{ url?: string; error?: string }>({})
@@ -16,7 +17,7 @@ export default function MediaPreview({ projectId, path, version }: { projectId: 
   const retry = () => { setSource({}); setAttempt((value) => value + 1) }
   return <section className="media-preview" aria-label={mediaKind(path) === 'pdf' ? t("PDF 预览") : t("图片预览")}>
     {source.error ? <PreviewError error={source.error} retry={retry} /> : source.url ? mediaKind(path) === 'pdf' ?
-      <PdfPreview key={`${source.url}:${version}:${attempt}`} url={source.url} retry={retry} /> : <ImagePreview key={`${source.url}:${version}:${attempt}`} url={source.url} path={path} retry={retry} /> : <p className="rmeta" role="status">{t("正在加载预览…")}</p>}
+      <PdfPreview key={`${source.url}:${version}:${attempt}`} url={source.url} retry={retry} /> : <ImagePreview key={`${source.url}:${version}:${attempt}`} url={source.url} path={path} retry={retry} /> : null}
   </section>
 }
 
@@ -54,7 +55,7 @@ function ImagePreview({ url, path, retry }: { url: string; path: string; retry: 
   })
   return error ? <PreviewError error={t("图片格式不受支持或文件已损坏")} retry={retry} /> : <>
     <div className="media-toolbar" role="toolbar" aria-label={t("图片预览")}><ZoomControls zoom={zoom} scale={scale} setZoom={setZoom} />
-      <span className="grow" /><span className="rmeta">{size ? `${size.width} × ${size.height}` : t("正在加载预览…")}</span>
+      <span className="grow" /><span className="rmeta">{size ? `${size.width} × ${size.height}` : ''}</span>
     </div>
     <div ref={viewport} className={`media-viewport image-viewport${zoom === null ? ' fit' : ''}`} tabIndex={0} aria-label={t("图片预览")}>
       <img src={url} alt={path.split(/[\\/]/).pop() || path} draggable={false}
@@ -63,6 +64,9 @@ function ImagePreview({ url, path, retry }: { url: string; path: string; retry: 
     </div>
   </>
 }
+
+type PdfSearchItem = { from: number; to: number; left: number; top: number; width: number; height: number }
+type PdfSearchPage = { page: number; from: number; to: number; items: PdfSearchItem[] }
 
 function PdfPreview({ url, retry }: { url: string; retry: () => void }) {
   const [pdf, setPdf] = useState<import('pdfjs-dist').PDFDocumentProxy | null>(null)
@@ -75,6 +79,53 @@ function PdfPreview({ url, retry }: { url: string; retry: () => void }) {
   const canvas = useRef<HTMLCanvasElement>(null), viewport = useRef<HTMLDivElement>(null)
   const gesture = useRef({ delta: 0, time: 0, flipped: 0, direction: 0 })
   const pageEntry = useRef<'top' | 'bottom' | null>(null)
+  const [searchText, setSearchText] = useState({ text: '', pages: [] as PdfSearchPage[] })
+  const [searchError, setSearchError] = useState('')
+  const search = useDocumentSearch({ root: viewport, text: searchText.text,
+    focus: () => viewport.current?.focus(),
+    reveal: (match) => {
+      if (!match) return
+      const target = searchText.pages.find((item) => item.from <= match.from && item.to >= match.to)
+      if (target && target.page !== page) go(target.page)
+    }
+  })
+  useEffect(() => {
+    if (!pdf || !search.open || searchText.pages.length) return
+    let stopped = false
+    void (async () => {
+      let text = ''
+      const pages: PdfSearchPage[] = []
+      for (let number = 1; number <= pdf.numPages; number++) {
+        if (stopped) return
+        const current = await pdf.getPage(number), content = await current.getTextContent()
+        if (stopped) return
+        const from = text.length, items: PdfSearchItem[] = [], view = current.getViewport({ scale: 1 })
+        for (const item of content.items) {
+          if (!('str' in item)) continue
+          const start = text.length
+          text += item.str
+          const [x1, y1] = view.convertToViewportPoint(item.transform[4], item.transform[5])
+          const [x2, y2] = view.convertToViewportPoint(item.transform[4] + item.width, item.transform[5] + item.height)
+          items.push({ from: start, to: text.length, left: Math.min(x1, x2), top: Math.min(y1, y2), width: Math.abs(x2 - x1), height: Math.abs(y2 - y1) })
+          if (item.hasEOL) text += '\n'
+        }
+        pages.push({ page: number, from, to: text.length, items }); text += '\n\f\n'
+      }
+      if (!stopped) { setSearchText({ text, pages }); setSearchError('') }
+    })().catch((reason) => { if (!stopped) setSearchError(String(reason)) })
+    return () => { stopped = true }
+  }, [pdf, search.open, searchText.pages.length])
+  const currentMatch = search.open ? search.matches[search.active] : undefined
+  const searchRects = search.open ? (searchText.pages.find((item) => item.page === page)?.items || []).flatMap((item) => search.matches.filter((match) => match.from < item.to && match.to > item.from).map((match) => {
+    const length = Math.max(1, item.to - item.from), from = Math.max(match.from, item.from), to = Math.min(match.to, item.to)
+    return { left: (item.left + (from - item.from) / length * item.width) * scale, top: item.top * scale,
+      width: Math.max(2, (to - from) / length * item.width * scale), height: Math.max(2, item.height * scale), active: match === currentMatch }
+  })) : []
+  useEffect(() => {
+    if (!rendered || !viewport.current) return
+    const active = viewport.current.querySelector<HTMLElement>('.pdf-search-hit.search-active')
+    if (active) viewport.current.scrollTop = Math.max(0, active.offsetTop + active.parentElement!.offsetTop - viewport.current.clientHeight / 3)
+  }, [rendered, currentMatch, page, scale])
   useEffect(() => {
     let stopped = false, task: import('pdfjs-dist').PDFDocumentLoadingTask | undefined
     void (async () => {
@@ -168,11 +219,17 @@ function PdfPreview({ url, retry }: { url: string; retry: () => void }) {
       </div>
       <span className="media-toolbar-divider" /><ZoomControls zoom={zoom} scale={scale} setZoom={setZoom} />
     </div>
+    <div className="editor-surface">
+    <DocumentSearch search={search} />
+    {search.open && searchError ? <p className="file-error" role="alert">{searchError}</p> : null}
     <div className="media-viewport" ref={viewport} tabIndex={0} aria-label={t("PDF 页面")} onKeyDown={(event) => {
       if (event.key === 'PageDown' || event.key === 'PageUp') { event.preventDefault(); go(page + (event.key === 'PageDown' ? 1 : -1)) }
     }}>
-      {!rendered ? <p className="media-loading" role="status">{t("正在加载预览…")}</p> : null}
+      <div className="pdf-page-wrap">
       <canvas ref={canvas} className="pdf-page" data-page={page} data-rendered={rendered} style={{ visibility: rendered ? 'visible' : 'hidden' }} role="img" aria-label={t("第 {{0}} 页，共 {{1}} 页", page, pdf?.numPages || 0)} />
+      {rendered ? searchRects.map((rect, index) => <span key={index} className={`pdf-search-hit${rect.active ? ' search-active' : ''}`} style={{ left: rect.left, top: rect.top, width: rect.width, height: rect.height }} />) : null}
+      </div>
+    </div>
     </div>
   </>
 }

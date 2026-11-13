@@ -1,19 +1,21 @@
 import { t } from '../shared/i18n'
 import { useEffect, useRef, useState } from 'react'
 import { MergeView } from '@codemirror/merge'
-import { EditorView, keymap, lineNumbers, drawSelection } from '@codemirror/view'
+import { Decoration, EditorView, keymap, lineNumbers, drawSelection } from '@codemirror/view'
 import { history, historyKeymap, defaultKeymap, indentWithTab } from '@codemirror/commands'
 import { Compartment, Prec } from '@codemirror/state'
 import { languages } from '@codemirror/language-data'
 import { LanguageDescription, HighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { tags } from '@lezer/highlight'
+import type { SearchAdapter } from './search-types'
 
 /** Both documents stay editable; MergeView aligns unchanged lines as chunks change. */
-export function SplitDiffEditor({ before, after, path, onBefore, onAfter, onSave, onCompose, onHistory, onBeforeHistory }: {
+export function SplitDiffEditor({ before, after, path, onBefore, onAfter, onSave, onCompose, onHistory, onBeforeHistory, searchRef, searchSide, onSearchSide }: {
   before: string; after: string; path: string
   onBefore: (text: string) => void; onAfter: (text: string) => void
   onSave: () => void; onCompose: (value: boolean) => void; onHistory: (redo: boolean) => void
   onBeforeHistory: (redo: boolean) => void
+  searchRef: { current: SearchAdapter | null }; searchSide: 'before' | 'after'; onSearchSide: (side: 'before' | 'after') => void
 }) {
   const host = useRef<HTMLDivElement>(null)
   const merge = useRef<MergeView | null>(null)
@@ -24,11 +26,14 @@ export function SplitDiffEditor({ before, after, path, onBefore, onAfter, onSave
   const texts = useRef({ before, after })
   texts.current = { before, after }
   const sizeHorizontalRanges = useRef<() => void>(() => {})
+  const searching = useRef({ searchSide, onSearchSide })
+  searching.current = { searchSide, onSearchSide }
 
   useEffect(() => {
     if (!host.current) return
     let stopped = false
     const language = new Compartment()
+    const searchA = new Compartment(), searchB = new Compartment()
     const extensions = [lineNumbers(), drawSelection(), history(), language.of([]),
       syntaxHighlighting(HighlightStyle.define([
         { tag: [tags.keyword, tags.bool, tags.null], color: 'var(--magenta)' },
@@ -40,6 +45,7 @@ export function SplitDiffEditor({ before, after, path, onBefore, onAfter, onSave
       Prec.highest(EditorView.domEventHandlers({
         compositionstart: () => { callbacks.current.onCompose(true) },
         compositionend: () => { callbacks.current.onCompose(false) },
+        focus: (_event, view) => { searching.current.onSearchSide(view === merge.current?.a ? 'before' : 'after') },
         keydown: (event, view) => {
           if (event.isComposing || !(event.ctrlKey || event.metaKey) || event.altKey) return false
           const key = event.key.toLowerCase()
@@ -62,8 +68,8 @@ export function SplitDiffEditor({ before, after, path, onBefore, onAfter, onSave
       else callbacks.current.onAfter(value)
     })
     const view = new MergeView({ parent: host.current,
-      a: { doc: before, extensions: [...extensions, changed('a'), EditorView.contentAttributes.of({ 'aria-label': t("变更前内容") })] },
-      b: { doc: after, extensions: [...extensions, changed('b'), EditorView.contentAttributes.of({ 'aria-label': t("工作区内容") })] },
+      a: { doc: before, extensions: [...extensions, searchA.of([]), changed('a'), EditorView.contentAttributes.of({ 'aria-label': t("变更前内容") })] },
+      b: { doc: after, extensions: [...extensions, searchB.of([]), changed('b'), EditorView.contentAttributes.of({ 'aria-label': t("工作区内容") })] },
       revertControls: 'a-to-b',
       renderRevertControl: () => {
         const button = document.createElement('button')
@@ -85,6 +91,18 @@ export function SplitDiffEditor({ before, after, path, onBefore, onAfter, onSave
       }
     })
     merge.current = view
+    searchRef.current = {
+      focus: () => (searching.current.searchSide === 'before' ? view.a : view.b).focus(),
+      reveal: (match, matches, active) => {
+        const side = searching.current.searchSide === 'before' ? view.a : view.b
+        const marks = matches.slice(0, 2000).map((item, index) => Decoration.mark({ class: index === active ? 'search-hit search-active' : 'search-hit' }).range(item.from, item.to))
+        if (match && active >= 2000) marks.push(Decoration.mark({ class: 'search-hit search-active' }).range(match.from, match.to))
+        for (const [editor, compartment] of [[view.a, searchA], [view.b, searchB]] as const) {
+          editor.dispatch({ effects: compartment.reconfigure(editor === side ? EditorView.decorations.of(Decoration.set(marks, true)) : []) })
+        }
+        if (match && match.to <= side.state.doc.length) side.dispatch({ selection: { anchor: match.from, head: match.to }, effects: EditorView.scrollIntoView(match.from, { y: 'center' }) })
+      }
+    }
     let sizing = 0
     const resizeRanges = () => {
       cancelAnimationFrame(sizing)
@@ -142,6 +160,7 @@ export function SplitDiffEditor({ before, after, path, onBefore, onAfter, onSave
       observer.disconnect(); cancelAnimationFrame(sizing)
       view.a.scrollDOM.removeEventListener('scroll', aScroll); view.b.scrollDOM.removeEventListener('scroll', bScroll)
       view.destroy(); merge.current = null
+      searchRef.current = null
     }
     // Document updates are dispatched below without rebuilding editors or selection.
   }, [path])

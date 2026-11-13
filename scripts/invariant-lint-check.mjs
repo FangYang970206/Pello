@@ -112,7 +112,13 @@ const cases = [
   ['AWB070', 'src/renderer/usePreviewWheel.ts', 'passive: false', 'passive: true'],
   ['AWB070', 'src/renderer/MediaPreview.tsx', 'target.scrollTop + target.clientHeight', '0'],
   ['AWB070', 'src/renderer/FilePane.tsx', 'useContentZoom()', 'useState(1)'],
-  ['AWB070', 'src/renderer/DiffPane.tsx', 'useContentZoom()', 'useState(1)']
+  ['AWB070', 'src/renderer/DiffPane.tsx', 'useContentZoom()', 'useState(1)'],
+  ['AWB071', 'src/renderer/DocumentSearch.tsx', 'event.isComposing', 'false'],
+  ['AWB071', 'src/renderer/MarkdownEditor.tsx', 'tr.insertText(value, position(match.from)', 'tr.delete(position(match.from)'],
+  ['AWB071', 'src/renderer/SettingsView.tsx', "'Ctrl F'", "'Ctrl G'"],
+  ['AWB071', 'src/renderer/styles/extra.css', '.document-search { position: absolute;', '.document-search { position: relative;'],
+  ['AWB071', 'src/renderer/styles/extra.css', '.editor-surface { position: relative;', '.editor-surface { position: static;'],
+  ['AWB072', 'src/renderer/MarkdownEditor.tsx', 'revealSearchRect(scroller', 'skipSearchReveal(scroller']
 ]
 for (const [id, file, before, after] of cases) {
   const mutated = new Map(files)
