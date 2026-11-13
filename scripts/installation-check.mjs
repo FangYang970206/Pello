@@ -4,21 +4,31 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import http from 'node:http'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { _electron as electron } from 'playwright'
 
-// A separate app ID prevents the installer from touching any real Pello install.
+// Isolate both registry identity and executable name: NSIS checks running apps
+// by filename, so a separate app ID alone can still stop a real Pello process.
 if (process.platform !== 'win32') { console.log('SKIP Windows NSIS installation check'); process.exit(0) }
 const run = promisify(execFile)
 const root = path.resolve('.cache/installation-check')
 fs.mkdirSync(root, { recursive: true })
 const installation = fs.mkdtempSync(path.join(root, 'install '))
 assert.ok(installation.startsWith(path.resolve('.cache') + path.sep))
-const artifacts = path.resolve('.cache/installation-check-artifacts')
-await run(process.execPath, ['node_modules/electron-builder/out/cli/cli.js', '--win', 'nsis', '--x64', '--prepackaged', 'dist/win-unpacked', '--publish', 'never',
-  '-c.appId=com.pello.installationcheck', '-c.productName=PelloInstallationCheck', `-c.directories.output=${artifacts}`,
+const artifacts = fs.mkdtempSync(path.join(root, 'artifacts-'))
+const runtime = fs.mkdtempSync(path.join(root, 'runtime-'))
+const identity = randomUUID()
+const executableBase = `PelloInstallationCheck-${identity}`
+const executableName = executableBase + '.exe'
+fs.cpSync(path.resolve('dist/win-unpacked'), runtime, { recursive: true })
+fs.renameSync(path.join(runtime, 'Pello.exe'), path.join(runtime, executableName))
+await run(process.execPath, ['node_modules/electron-builder/out/cli/cli.js', '--win', 'nsis', '--x64', '--prepackaged', runtime, '--publish', 'never',
+  `-c.appId=com.pello.installationcheck.${identity}`, '-c.productName=PelloInstallationCheck', `-c.directories.output=${artifacts}`,
+  `-c.win.executableName=${executableBase}`,
   '-c.nsis.createDesktopShortcut=false', '-c.nsis.createStartMenuShortcut=false', '-c.nsis.runAfterFinish=false'], { windowsHide: true, timeout: 180000, maxBuffer: 4 * 1024 * 1024 })
-const installer = path.join(artifacts, fs.readdirSync(artifacts).find((file) => file.endsWith('-setup.exe')))
+const installers = fs.readdirSync(artifacts).filter((file) => file.endsWith('-setup.exe'))
+assert.equal(installers.length, 1, 'Use only the installer produced by this run')
+const installer = path.join(artifacts, installers[0])
 const data = path.join(installation, 'data')
 fs.mkdirSync(data)
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: { restore: true, defAgent: 'shell', defShell: 'pwsh', confirmKill: false },
@@ -29,7 +39,7 @@ const install = () => run(installer, ['/S', `/D=${installation}`], { windowsHide
 await install()
 const uninstaller = path.join(installation, fs.readdirSync(installation).find((file) => /^Uninstall .*\.exe$/.test(file)))
 assert.ok(fs.statSync(uninstaller).size > 0)
-const executable = path.join(installation, 'Pello.exe')
+const executable = path.join(installation, executableName)
 assert.ok(fs.existsSync(executable))
 const fixture = Buffer.from('LOCAL_UPDATE_FIXTURE_NEVER_EXECUTE'), hash = createHash('sha512').update(fixture).digest('base64')
 const server = http.createServer((req, res) => {
@@ -47,6 +57,7 @@ try {
   await page.locator('[data-a=settings]').waitFor()
   const paths = await app.evaluate(({ app }) => ({ packaged: app.isPackaged, paths: Object.fromEntries(['userData', 'sessionData', 'temp', 'logs', 'crashDumps'].map((name) => [name, app.getPath(name)])) }))
   assert.equal(paths.packaged, true)
+  assert.equal(await app.evaluate(({ app }) => app.getVersion()), JSON.parse(fs.readFileSync('package.json', 'utf8')).version, 'Installed runtime must match the release version')
   assert.equal(paths.paths.userData, data)
   for (const directory of Object.values(paths.paths)) assert.ok(directory === data || directory.startsWith(data + path.sep))
   const state = await page.evaluate(() => window.awb.appUpdateState())
