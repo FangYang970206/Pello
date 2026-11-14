@@ -732,16 +732,18 @@ try {
     for (const [width, height] of [[1024, 680], [1440, 900]]) {
       await page.evaluate(([width, height]) => window.awb.winResize(width, height), [width, height])
       await page.waitForFunction((width) => window.innerWidth === width, width)
-      await page.waitForFunction(() => {
-        const pane = document.querySelector('.pane:not([hidden]) .termhost').getBoundingClientRect()
-        const screen = document.querySelector('.pane:not([hidden]) .xterm-screen').getBoundingClientRect()
-        return screen.bottom <= pane.bottom - 15 && screen.right <= pane.right - 15
-      })
-      // ConPTY can split a fixture redraw across packets. Capture one complete
-      // frame for the current geometry instead of sampling again mid-redraw.
+      // Require the screen to fill its new frame as well as fit inside it.
+      // An old smaller screen can otherwise pass immediately while fit/ConPTY
+      // redraw is still pending. Sample geometry and complete content together.
       const frame = await page.waitForFunction(() => {
         const text = window.__awbBuffer('ui'), geometry = window.__awbGeometry('ui')
-        return (text.match(/TERM_HEADER/g) || []).length === 1 && text.includes(`FOOTER_VISIBLE rows=${geometry.rows}`) ? text : false
+        const pane = document.querySelector('.pane:not([hidden]) .termhost').getBoundingClientRect()
+        const host = document.querySelector('.pane:not([hidden]) .termframe').getBoundingClientRect()
+        const screen = document.querySelector('.pane:not([hidden]) .xterm-screen').getBoundingClientRect()
+        const cellWidth = screen.width / geometry.cols, cellHeight = screen.height / geometry.rows
+        const fits = screen.bottom <= pane.bottom - 15 && screen.right <= pane.right - 15
+        const fills = host.right - screen.right < cellWidth + 20 && host.bottom - screen.bottom < cellHeight + 2
+        return fits && fills && (text.match(/TERM_HEADER/g) || []).length === 1 && text.includes(`FOOTER_VISIBLE rows=${geometry.rows}`) ? text : false
       })
       assert.equal(((await frame.jsonValue()).match(/TERM_HEADER/g) || []).length, 1)
     }

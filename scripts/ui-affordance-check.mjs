@@ -38,6 +38,13 @@ try {
     check(await opacity() === 0, `${label}: hidden at rest`)
     await row.hover()
     check(await opacity() === 1, `${label}: revealed on row hover`)
+    // pointer-events changes after hover must reach Chromium's hit-test tree
+    // before the next pointer action; CSS opacity alone is not sufficient.
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    check(await button.evaluate((node) => {
+      const box = node.getBoundingClientRect()
+      return node.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2))
+    }), `${label}: visible add control receives pointer input`)
     await button.hover()
     const backgrounds = await button.evaluate((node) => ({ own: getComputedStyle(node).backgroundColor }))
     check(backgrounds.own === 'rgba(0, 0, 0, 0)', `${label}: add control shares the row surface`)

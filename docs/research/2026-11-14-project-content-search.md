@@ -34,4 +34,10 @@ UI 用例验证文件页常驻空白名称输入、独立内容视图、独立�
 
 workspace 另外验证从真实终端触发快捷键、不发送控制字节、输入法组合期间不接管及终端节点保留。
 
-相关既有用例为 workspace、session-restore、reading-workspace、document-search、search-navigation、i18n 和 document-performance（small）。日常运行 lint、typecheck、build 及这些定向用例；本次不发布，不运行全量 verify。
+相关既有用例为 workspace、session-restore、reading-workspace、document-search、search-navigation、i18n 和 document-performance（small）。功能开发阶段运行 lint、typecheck、build 及这些定向用例；v0.1.12 发布另运行完整 verify 和打包后的实际 EXE 检查。
+
+## v0.1.12 发布验证记录
+
+2026-11-15 两次完整 verify 执行分别在侧栏悬停命中、工作区切换后的终端画面等待处中断。产品代码未因此改动；悬停用例补充 Chromium 渲染同步和实际命中断言，终端用例将新尺寸填充、边界及完整画面合并采样，避免旧的小尺寸屏幕仅凭“不溢出”提前通过。两个受影响用例已单独通过。
+
+正式版本的 lint、typecheck、build 与中断前所有行为检查均已通过；修正用例后按分层策略从工作区用例续跑，余下 28 项检查全部以退出码 0 完成，覆盖原 verify 的完整范围。原始失败日志及续跑证据保留在忽略目录 `.cache/v0.1.12-verify*.log`，不将前两次命令记为退出码 0。
