@@ -132,6 +132,7 @@ export function App() {
   }, [dismissTransfer])
   const booted = useRef(false)
   const restoring = useRef(false)
+  const ptySeen = useRef(new Set<string>())
   const closingTerms = useRef(new Set<string>())
   const touring = useRef(false)
   const modalRef = useRef<Modal | null>(null)
@@ -409,9 +410,10 @@ export function App() {
       if (restoredHistory.current[id]) historyTimers.current[id] = setTimeout(() => flushRestoredHistory(id), 1200)
       syncTermSize(id)
       setTabs((list) => {
+        const seen = ptySeen.current.has(id)
         const next = list.map((item) =>
           item.id === id && item.type === 'term'
-            ? { ...item, shell: info.shell, state: info.state as TermTab['state'], startedAt: info.startedAt, exitCode: info.exitCode, inputReady: info.inputReady, agentKind: info.agentKind, agentSessionId: info.agentSessionId ?? item.agentSessionId }
+            ? { ...item, shell: info.shell, agentKind: info.agentKind, agentSessionId: info.agentSessionId ?? item.agentSessionId, ...(seen ? {} : { state: info.state as TermTab['state'], startedAt: info.startedAt, exitCode: info.exitCode, inputReady: info.inputReady }) }
             : item
         )
         const ids = activate ? { ...activeMapRef.current, [target.id]: id } : activeMapRef.current
@@ -505,6 +507,7 @@ export function App() {
         writeTerm(event.id, event.data)
         return
       }
+      ptySeen.current.add(event.id)
       queueSnapshot(event.id)
       setTabs((list) =>
         list.map((tab) =>

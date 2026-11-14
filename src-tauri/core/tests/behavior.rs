@@ -707,10 +707,11 @@ fn terminal_panes_rename_restore_and_run_state() {
 
     let agent = bench.dispatch("pty:create", &[json!({ "id": "agent-1", "projectId": "p", "kind": "claude", "shell": "bash", "agentSessionId": "session-1" })]).unwrap();
     assert_eq!(agent["agentKind"], "claude");
-    wait_terminal(&bench, "agent-1", true, "idle");
-    let (_, green) = snap_status(&bench, "agent-1");
-    assert_eq!(green["color"], "ready");
-    assert_eq!(green["spinning"], false);
+    let finished = wait_terminal(&bench, "agent-1", true, "failed");
+    assert_eq!(finished["exitCode"], 127, "a missing agent command keeps its shell exit code");
+    let (_, status) = snap_status(&bench, "agent-1");
+    assert_eq!(status["color"], "failed");
+    assert_eq!(status["spinning"], false);
     bench.dispatch("pty:feed", &[json!("agent-1"), json!("\u{1b}]9;4;1\u{7}")]).unwrap();
     let (_, progress) = snap_status(&bench, "agent-1");
     assert_eq!(progress["color"], "busy");
@@ -2061,9 +2062,18 @@ fn pane_split_keeps_the_terminal_and_claude_gets_settings() {
     let original = bench.dispatch("pty:create", &[json!({ "id": "term-split", "projectId": "p", "kind": "shell", "shell": "bash" })]).unwrap();
     let born = original["born"].clone();
     let pid = original["rootPid"].as_u64().unwrap();
-    let environ = fs::read(format!("/proc/{pid}/environ")).unwrap_or_default();
-    let environ = String::from_utf8_lossy(&environ);
-    assert!(environ.contains("PI_PROGRAM_STATUS=1"), "{environ}");
+    let mut environ;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match fs::read(format!("/proc/{pid}/environ")) {
+            Ok(bytes) => environ = String::from_utf8_lossy(&bytes).into_owned(),
+            Err(error) => environ = format!("read error: {error}"),
+        }
+        if environ.contains("PI_PROGRAM_STATUS=1") { break }
+        if std::time::Instant::now() > deadline { break }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(environ.contains("PI_PROGRAM_STATUS=1"), "pid {pid} environ was not ready: {environ:?}");
     wait_terminal(&bench, "term-split", true, "idle");
     let split = assert_implemented(bench.dispatch("terminal:split", &[json!({ "projectId": "p", "sessionId": "s", "termId": "term-split", "direction": "right" })]));
     assert_ne!(split["id"], "term-split");

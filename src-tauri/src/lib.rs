@@ -24,9 +24,17 @@ fn awb(window: Window, state: State<Arc<Workbench>>, channel: String, args: Vec<
             Ok(Value::Null)
         }
         "win:resize" => {
-            let width = args.first().and_then(|value| value.as_f64()).unwrap_or(1280.0).max(1024.0);
-            let height = args.get(1).and_then(|value| value.as_f64()).unwrap_or(800.0).max(680.0);
-            window.set_size(tauri::Size::Logical(tauri::LogicalSize { width, height })).map_err(|error| error.to_string())?;
+            let requested_width = args.first().and_then(|value| value.as_f64()).unwrap_or(1280.0).max(1024.0);
+            let requested_height = args.get(1).and_then(|value| value.as_f64()).unwrap_or(800.0).max(680.0);
+            // GTK logical size is CSS pixels times the DPI scale. Electron's content size is the CSS viewport.
+            let dpi = std::env::var("GDK_DPI_SCALE").ok().and_then(|value| value.parse::<f64>().ok()).filter(|value| *value > 0.0).unwrap_or(1.0);
+            // The Linux menu bar sits inside the window, so the WebKit viewport is shorter than the logical height.
+            let menu = [(1.0, 28.0), (1.25, 27.0), (1.5, 25.0), (2.0, 24.0)].into_iter()
+                .find(|(scale, _)| (dpi - scale).abs() < 0.02).map_or(28.0, |(_, gap)| gap);
+            window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                width: requested_width * dpi,
+                height: (requested_height + menu) * dpi,
+            })).map_err(|error| error.to_string())?;
             Ok(Value::Null)
         }
         "terminal:menu" | "file:menu" | "tree:menu" => {
@@ -57,6 +65,14 @@ fn popup_menu(window: &Window, template: &Value) -> Result<Value, String> {
         let enabled = item["enabled"].as_bool().unwrap_or(true);
         let entry = MenuItem::with_id(app, id, label, enabled, None::<&str>).map_err(|error| error.to_string())?;
         menu.append(&entry).map_err(|error| error.to_string())?;
+    }
+    if let Ok(path) = std::env::var("AWB_MENU_FILE") {
+        let choice = std::fs::read_to_string(&path).unwrap_or_default();
+        let choice = choice.trim().to_string();
+        let _ = std::fs::write(&path, "");
+        if choice.is_empty() { return Ok(Value::Null) }
+        let present = template.as_array().map(|items| items.iter().any(|item| item["id"].as_str() == Some(choice.as_str()))).unwrap_or(false);
+        return Ok(if present { serde_json::json!(choice) } else { Value::Null });
     }
     if let Ok(choice) = std::env::var("AWB_MENU_CHOICE") {
         if choice.is_empty() { return Ok(Value::Null) }

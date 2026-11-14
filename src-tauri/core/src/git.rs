@@ -254,10 +254,6 @@ pub fn discard_remote(data: &Path, host: &Value, root: &str, rel: &str, untracke
     Ok(())
 }
 
-pub fn show_error(language: &str) -> String {
-    translate(language, "远程项目的该操作尚未在 Rust 移植中实现", &[] as &[String])
-}
-
 pub fn read_remote(data: &Path, host: &Value, root: &str, rel: &str, language: &str) -> Result<Value, String> {
     let Ok(relative) = files::clean_relative(rel, language) else { return Ok(files::missing_file()) };
     if relative.is_empty() { return Ok(files::missing_file()) }

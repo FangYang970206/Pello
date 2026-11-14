@@ -3,8 +3,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { _electron as electron } from 'playwright'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 import { installDocumentHarness } from './fixtures/document-harness.mjs'
+import { glyphRows } from './fixtures/png-bitmap.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const shots = path.join(root, 'output/playwright')
@@ -24,7 +25,7 @@ for (const fontFamily of requestedFonts.length ? requestedFonts : ['Cascadia Mon
   }))
   const env = { ...process.env, AWB_USER_DATA: data }
   delete env.ELECTRON_RUN_AS_NODE
-  const app = await electron.launch({ args: [root, `--force-device-scale-factor=${scale}`], cwd: root, env })
+  const app = await launchWorkbench({ args: [root, `--force-device-scale-factor=${scale}`], cwd: root, env, scale })
   try {
     const page = await app.firstWindow()
     await page.waitForFunction(() => window.__awbBuffer?.('glyphs')?.includes('终端边线测试'))
@@ -39,8 +40,8 @@ for (const fontFamily of requestedFonts.length ? requestedFonts : ['Cascadia Mon
     assert.ok(alignment <= 1, `Plus is vertically offset by ${alignment}px at ${scale}x`)
     const png = await page.locator('.pane:not([hidden]) .xterm-screen').screenshot()
     fs.writeFileSync(path.join(shots, `terminal-glyphs-${fontFamily.replaceAll(' ', '-')}-${scale * 100}.png`), png)
-    const pixels = await app.evaluate(({ nativeImage }, png) => {
-      const im = nativeImage.createFromBuffer(Buffer.from(png, 'base64'))
+    const pixels = app.shell === 'tauri' ? glyphRows(png) : await app.evaluate(({ nativeImage }, encoded) => {
+      const im = nativeImage.createFromBuffer(Buffer.from(encoded, 'base64'))
       const { width, height } = im.getSize()
       const bitmap = im.toBitmap()
       const rows = []
@@ -64,7 +65,8 @@ for (const fontFamily of requestedFonts.length ? requestedFonts : ['Cascadia Mon
     console.log(`PASS ${fontFamily} ${scale * 100}% DPI: plus offset ${alignment}px, continuous vertical line ${pixels.uninterrupted}px`)
     await installDocumentHarness(app, page, false)
     const split = async (id, direction, count) => {
-      await app.evaluate((_electron, command) => { globalThis.__documentMenuCommand = command }, `split-${direction}`)
+      if (app.menuFile) fs.writeFileSync(app.menuFile, `split-${direction}`)
+      else await app.evaluate((_electron, command) => { globalThis.__documentMenuCommand = command }, `split-${direction}`)
       await page.locator(`[data-a=pane][data-id="${id}"]`).dispatchEvent('contextmenu')
       await page.waitForFunction((count) => document.querySelectorAll('.pane:not([hidden])').length === count, count)
       return page.locator('.tab.on [data-a=tab]').getAttribute('data-id')

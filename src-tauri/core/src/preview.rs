@@ -19,6 +19,9 @@ use std::time::{Duration, Instant};
 const PREVIEW_LIMIT: u64 = 12_000_000;
 const DRAFT_LIMIT: usize = 2 * 1024 * 1024;
 
+/// Same behavior as `htmlPreviewBridge` in `src/shared/preview-bridge.ts`.
+/// `awb-eval` exists because WebKitGTK's remote inspector does not evaluate a
+/// sandboxed opaque iframe. Only the embedding page can send it.
 const BRIDGE: &str = r#"<script>(function(){
 const send=(data)=>parent.postMessage(data,'*');
 let searchOpen=false;
@@ -29,13 +32,54 @@ addEventListener('keydown',(event)=>{
   if(event.isComposing)return;
   const key=event.key.toLowerCase();
   if(((event.ctrlKey||event.metaKey)&&!event.altKey&&!event.shiftKey&&(key==='f'||key==='h'))||(searchOpen&&(event.key==='F3'||event.key==='Escape'))){
-    event.preventDefault();event.stopPropagation();send({type:'pello-preview-key',key:key,shift:event.shiftKey});
+    event.preventDefault();event.stopPropagation();send({type:'pello-preview-key',key,shift:event.shiftKey});
   }
 },true);
+let text='',nodes=[],starts=[];
+const collect=()=>{
+  const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
+  let node,value='';
+  nodes=[];starts=[];
+  while((node=walker.nextNode())){
+    const element=node.parentElement;
+    if(!element||element.closest('script,style,noscript,[hidden],[aria-hidden=true]')||!element.getClientRects().length||getComputedStyle(element).visibility==='hidden')continue;
+    starts.push(value.length);nodes.push(node);value+=node.textContent||'';
+  }
+  if(text!==value){text=value;send({type:'pello-preview-text',text});}
+};
 addEventListener('message',(event)=>{
-  if(event.source!==parent||!event.data||event.data.type!=='pello-preview-search')return;
+  if(event.source!==parent||!event.data)return;
+  if(event.data.type==='awb-eval'){
+    const id=event.data.id;
+    try{(0,eval)(event.data.source);}catch(error){send({type:'awb-eval-result',id,ok:false,error:String(error&&error.message||error)});}
+    return;
+  }
+  if(event.data.type!=='pello-preview-search')return;
   searchOpen=!!event.data.open;
-  send({type:'pello-preview-text',text:(document.body&&document.body.innerText)||''});
+  collect();
+  const ranges=[];
+  const range=(from,to)=>{
+    let a=0,b=0;
+    while(a<nodes.length-1&&starts[a+1]<=from)a++;
+    while(b<nodes.length-1&&starts[b]+nodes[b].length<to)b++;
+    if(!nodes[a]||!nodes[b]||from<0||to>text.length)return null;
+    const result=document.createRange();
+    result.setStart(nodes[a],from-starts[a]);result.setEnd(nodes[b],to-starts[b]);return result;
+  };
+  const matches=Array.isArray(event.data.matches)?event.data.matches:[];
+  for(const match of matches.slice(0,2000)){const item=range(match.from,match.to);if(item)ranges.push(item);}
+  const current=event.data.current?range(event.data.current.from,event.data.current.to):null;
+  CSS.highlights.set('document-matches',new Highlight(...ranges));
+  CSS.highlights.set('document-current',new Highlight(...(current?[current]:[])));
+  if(current){const box=current.getBoundingClientRect();if(box.top<24||box.bottom>innerHeight-24)scrollBy(0,box.top-innerHeight/3);}
+});
+addEventListener('DOMContentLoaded',()=>{
+  const style=document.createElement('style');
+  style.textContent='::highlight(document-matches){background:#fff0a6;color:#211d00}::highlight(document-current){background:#d6bbff;color:#201138}';
+  document.head.append(style);
+  collect();
+  let timer;
+  new MutationObserver(()=>{clearTimeout(timer);timer=setTimeout(collect,100);}).observe(document.body,{childList:true,characterData:true,subtree:true});
 });
 })()</script>"#;
 
@@ -488,7 +532,14 @@ fn respond(mut stream: TcpStream, inner: &Inner) {
         body = format!("{}{BRIDGE}{}", &html[..offset], &html[offset..]).into_bytes();
     }
     let mime = mime_of(&relative);
-    let _ = write_response(&mut stream, 200, mime, &body, &[("X-Content-Type-Options", "nosniff"), ("Referrer-Policy", "no-referrer"), ("Cache-Control", "no-store")], method == "HEAD");
+    let _ = write_response(&mut stream, 200, mime, &body, &[
+        ("X-Content-Type-Options", "nosniff"),
+        ("Referrer-Policy", "no-referrer"),
+        ("Cache-Control", "no-store"),
+        // The workbench origin and this loopback port differ, so PDF.js can read the bytes.
+        ("Access-Control-Allow-Origin", "*"),
+        ("Access-Control-Expose-Headers", "Accept-Ranges, Content-Encoding, Content-Length, Content-Range"),
+    ], method == "HEAD");
 }
 
 fn write_response(stream: &mut TcpStream, status: u16, mime: &str, body: &[u8], extra: &[(&str, &str)], head: bool) -> std::io::Result<()> {

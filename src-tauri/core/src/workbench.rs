@@ -400,9 +400,6 @@ impl Workbench {
 
     fn local_root(&self, id: &str, language: &str) -> Result<std::path::PathBuf, String> {
         let project = self.project(id, language)?;
-        if project["host"] != "local" && !project["host"].as_str().unwrap_or("").is_empty() {
-            return Err(translate(language, "远程项目的该操作尚未在 Rust 移植中实现", &[] as &[String]));
-        }
         Ok(std::path::PathBuf::from(project["path"].as_str().unwrap_or("")))
     }
 

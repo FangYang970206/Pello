@@ -31,7 +31,6 @@ const EN: &[(&str, &str)] = &[
     ("连接失败", "Connection failed"),
     ("密码登录的主机校验尚未在 Rust 移植中实现，未保存机器", "Password host checks are not in the Rust port yet, so the machine was not saved"),
     ("此功能尚未在 Rust 移植中实现：{{0}}", "This feature is not implemented in the Rust port yet: {{0}}"),
-    ("远程项目的该操作尚未在 Rust 移植中实现", "This operation is not implemented for remote projects in the Rust port yet"),
     ("旧远程 Agent 会话缺少原生 ID，原终端历史已保留；未创建空白对话", "The previous remote Agent session has no native ID. Its terminal history was kept and a blank conversation was not created"),
     ("无法唯一定位旧 Agent 对话，原终端历史已保留；未创建空白对话", "The previous Agent conversation could not be identified uniquely. Its history was kept and a blank conversation was not created"),
     ("未检测到 {{0}}，请在设置中选择可用 Shell", "{{0}} was not found. Choose an available shell in Settings"),

@@ -1,3 +1,5 @@
+import fs from 'node:fs'
+
 export async function installDocumentHarness(app, page, accelerate = true) {
   if (accelerate) await page.evaluate(() => {
     const original = window.setTimeout.bind(window)
@@ -8,6 +10,7 @@ export async function installDocumentHarness(app, page, accelerate = true) {
       return original(callback, delay === 120000 ? window.__autosaveDelay : delay, ...args)
     }
   })
+  if (app.menuFile) return
   await app.evaluate(({ Menu }) => {
     if (globalThis.__documentMenuInstalled) return
     globalThis.__documentMenuInstalled = true
@@ -25,6 +28,7 @@ export async function installDocumentHarness(app, page, accelerate = true) {
 }
 
 export async function documentCommand(app, page, command) {
-  await app.evaluate((_electron, command) => { globalThis.__documentMenuCommand = command }, command)
+  if (app.menuFile) fs.writeFileSync(app.menuFile, command)
+  else await app.evaluate((_electron, command) => { globalThis.__documentMenuCommand = command }, command)
   await page.locator('.file-content').dispatchEvent('contextmenu')
 }

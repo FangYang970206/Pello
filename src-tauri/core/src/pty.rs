@@ -256,7 +256,7 @@ impl Manager {
         let id_timer = id.to_string();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(1200));
-            arm(&id_timer, &live_timer, &writer_timer, &emit_timer, true);
+            arm(&id_timer, &live_timer, &writer_timer, &emit_timer, true, None);
         });
         let guard = live.lock().expect("pty live");
         let mut info = snapshot(id, &guard);
@@ -497,7 +497,7 @@ fn handle_chunk(id: &str, live: &Arc<Mutex<Live>>, writer: &Arc<Mutex<Box<dyn Wr
     if let Some(event) = state_event {
         emit(json!({ "channel": "pty:event", "payload": event }));
     }
-    if !prompts.is_empty() { arm(id, live, writer, emit, false); }
+    if !prompts.is_empty() { arm(id, live, writer, emit, false, prompts.last().copied()); }
 }
 
 fn apply_reports(live: &mut Live, reports: &[Report]) {
@@ -522,11 +522,12 @@ fn apply_reports(live: &mut Live, reports: &[Report]) {
                 if report.protocol == Protocol::Program || report.protocol == Protocol::Lifecycle { live.native_working = true; }
             }
             "waiting" => {
+                // The process is still alive. Electron records programWaiting
+                // without changing the command state, so Recent can list an
+                // idle agent (state stays "running", inputReady becomes true).
+                // A shell that already returned to its prompt stays idle.
                 live.native_working = false;
                 live.input_ready = true;
-                live.state = "idle".into();
-                live.phase = Phase::Prompt;
-                live.started_at = None;
                 live.exit_code = None;
             }
             "clear" => {
@@ -591,7 +592,7 @@ fn valid_agent_session(value: &str) -> Option<String> {
     if value.chars().all(|char| char.is_ascii_alphanumeric() || ":./@+-_".contains(char)) { Some(value.to_string()) } else { None }
 }
 
-fn arm(id: &str, live: &Mutex<Live>, writer: &Mutex<Box<dyn Write + Send>>, emit: &Emit, from_timer: bool) {
+fn arm(id: &str, live: &Mutex<Live>, writer: &Mutex<Box<dyn Write + Send>>, emit: &Emit, from_timer: bool, prompt_code: Option<i32>) {
     let mut live = live.lock().expect("pty live");
     if live.phase == Phase::Dead { return }
     if from_timer && live.phase != Phase::Starting { return }
@@ -603,6 +604,16 @@ fn arm(id: &str, live: &Mutex<Live>, writer: &Mutex<Box<dyn Write + Send>>, emit
         live.state = "running".into();
         live.input_ready = false;
         let _ = writer.lock().expect("writer").write_all(command.as_bytes());
+    } else if live.launched && live.kind != "shell" && prompt_code.is_some() {
+        // A non-shell command returned to the prompt. Electron keeps the exit
+        // code on the tab: zero is exited, anything else is failed.
+        let code = prompt_code.unwrap_or(0);
+        live.phase = Phase::Prompt;
+        live.exit_code = Some(code);
+        live.input_ready = true;
+        live.native_working = false;
+        live.started_at = None;
+        live.state = if code == 0 { "exited" } else { "failed" }.into();
     } else if live.command.is_empty() || live.phase == Phase::Command {
         live.phase = Phase::Prompt;
         live.state = "idle".into();
