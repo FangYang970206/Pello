@@ -30,11 +30,39 @@ pub fn bash_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+pub fn ps_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
 pub fn remote_command(platform: &str, args: &[String]) -> String {
-    if platform == "windows" {
-        return args.iter().map(|arg| if arg.chars().any(|char| char.is_whitespace() || char == '"') { format!("\"{}\"", arg.replace('"', "\\\"")) } else { arg.clone() }).collect::<Vec<_>>().join(" ");
+    if platform != "windows" {
+        return args.iter().map(|arg| bash_quote(arg)).collect::<Vec<_>>().join(" ");
     }
-    args.iter().map(|arg| bash_quote(arg)).collect::<Vec<_>>().join(" ")
+    if args.first().map(|arg| arg == "powershell.exe").unwrap_or(false) {
+        if let Some(index) = args.iter().position(|arg| arg == "-Command") {
+            if index + 1 < args.len() {
+                let encoded = encode_utf16_le_base64(&args[index + 1]);
+                return format!("{} -EncodedCommand {encoded}", args[..index].join(" "));
+            }
+        }
+    }
+    args.iter().map(|arg| if arg.chars().any(|char| char.is_whitespace() || char == '"') { format!("\"{}\"", arg.replace('"', "\\\"")) } else { arg.clone() }).collect::<Vec<_>>().join(" ")
+}
+
+fn encode_utf16_le_base64(text: &str) -> String {
+    let mut bytes = Vec::new();
+    for unit in text.encode_utf16() {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+pub fn decode_powershell_command(command: &str) -> Option<String> {
+    let encoded = command.split_whitespace().skip_while(|part| *part != "-EncodedCommand").nth(1)?;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).ok()?;
+    if bytes.len() % 2 != 0 { return None }
+    let units: Vec<u16> = bytes.chunks_exact(2).map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]])).collect();
+    String::from_utf16(&units).ok()
 }
 
 pub fn remote_bootstrap(cwd: &str) -> String {
@@ -161,11 +189,41 @@ pub fn has_password(data: &Path, host: &Value) -> bool {
 pub fn run(data: &Path, host: &Value, script: &str, input: Option<&[u8]>, language: &str) -> Result<String, String> {
     let platform = host["platform"].as_str().unwrap_or("linux");
     let command = if platform == "windows" {
-        script.to_string()
+        remote_command("windows", &[String::from("powershell.exe"), String::from("-NoProfile"), String::from("-Command"), script.to_string()])
     } else {
         remote_command("linux", &[String::from("bash"), String::from("-lc"), script.to_string()])
     };
     exec_command(data, host, &command, input, language)
+}
+
+/// Remote delete script. Only the fixed error strings are translated and quoted.
+/// Cmdlets, `rm`, and the caller's path stay as written.
+pub fn remove_remote_script(platform: &str, root: &str, relative: &str, directory: bool, language: &str) -> Result<String, String> {
+    let relative = crate::files::clean_relative(relative, language)?;
+    if relative.is_empty() { return Err(translate(language, "不能删除项目根目录", &[] as &[String])) }
+    let parts: Vec<&str> = relative.split('/').filter(|part| !part.is_empty()).collect();
+    if platform == "windows" {
+        if parts.iter().any(|part| part.contains(':')) { return Err(translate(language, "非法文件路径", &[] as &[String])) }
+        let link = ps_quote(&translate(language, "不支持删除符号链接", &[] as &[String]));
+        let changed = ps_quote(&translate(language, "文件类型已更改", &[] as &[String]));
+        let nested = ps_quote(&translate(language, "目录包含符号链接", &[] as &[String]));
+        let walk = parts.iter().map(|part| {
+            format!("$walk=Join-Path $walk {}; $item=Get-Item -LiteralPath $walk -Force -ErrorAction Stop; if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {{ throw {link} }}", ps_quote(part))
+        }).collect::<Vec<_>>().join("; ");
+        let action = if directory {
+            format!("Get-ChildItem -LiteralPath $walk -Force -Recurse | ForEach-Object {{ if ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) {{ throw {nested} }} }}; Remove-Item -LiteralPath $walk -Recurse -Force -ErrorAction Stop")
+        } else {
+            "Remove-Item -LiteralPath $walk -Force -ErrorAction Stop".to_string()
+        };
+        let flag = if directory { "true" } else { "false" };
+        return Ok(format!("$ErrorActionPreference='Stop'; $walk=(Resolve-Path -LiteralPath {} -ErrorAction Stop).Path; {walk}; if ($item.PSIsContainer -ne ${flag}) {{ throw {changed} }}; {action}", ps_quote(root)));
+    }
+    let link = bash_quote(&translate(language, "不支持删除符号链接", &[] as &[String]));
+    let changed = bash_quote(&translate(language, "文件类型已更改", &[] as &[String]));
+    let walk = parts.iter().map(|part| format!("p=\"$p\"/{}; [ ! -L \"$p\" ] || {{ echo {link} >&2; exit 1; }}", bash_quote(part))).collect::<Vec<_>>().join("; ");
+    let kind = if directory { "[ -d \"$p\" ]" } else { "[ -f \"$p\" ]" };
+    let remove = if directory { "rm -rf -- \"$p\"" } else { "rm -f -- \"$p\"" };
+    Ok(format!("p=$(cd -P -- {} && pwd) || exit 1; {walk}; {kind} || {{ echo {changed} >&2; exit 1; }}; {remove}", bash_quote(root)))
 }
 
 fn exec_command(data: &Path, host: &Value, command: &str, input: Option<&[u8]>, language: &str) -> Result<String, String> {
@@ -290,20 +348,47 @@ async fn password_exec(data: &Path, host: &Value, password: &str, command: &str,
     }
 }
 
-fn key_exec(host: &Value, command: &str, input: &[u8], language: &str) -> Result<String, String> {
-    let port = host_port(host).to_string();
-    let mut ssh = std::process::Command::new("ssh");
-    ssh.arg("-T").arg("-o").arg("BatchMode=yes").arg("-p").arg(&port)
-        .arg("-o").arg("StrictHostKeyChecking=accept-new")
-        .arg("-o").arg("ConnectTimeout=8")
-        .arg("-o").arg("ServerAliveInterval=15");
-    if host["auth"] != "agent" {
-        if let Some(home) = std::env::var_os("HOME") {
-            let key = Path::new(&home).join(".ssh/id_ed25519");
-            if key.is_file() { ssh.arg("-o").arg("IdentitiesOnly=yes").arg("-i").arg(key); }
+fn ssh_program() -> String {
+    std::env::var("AWB_SSH_BIN").unwrap_or_else(|_| "ssh".into())
+}
+
+fn ssh_home() -> Option<PathBuf> {
+    std::env::var_os("AWB_SSH_HOME").or_else(|| std::env::var_os("HOME")).map(PathBuf::from)
+}
+
+pub fn ssh_batch_args(host: &Value) -> Vec<String> {
+    let mut args = vec![
+        "-T".into(),
+        "-o".into(),
+        "BatchMode=yes".into(),
+        "-p".into(),
+        host_port(host).to_string(),
+        "-o".into(),
+        "StrictHostKeyChecking=accept-new".into(),
+        "-o".into(),
+        "ConnectTimeout=8".into(),
+        "-o".into(),
+        "ServerAliveInterval=15".into(),
+    ];
+    if host["auth"].as_str() == Some("key") {
+        if let Some(home) = ssh_home() {
+            let key = home.join(".ssh/id_ed25519");
+            if key.is_file() {
+                args.push("-o".into());
+                args.push("IdentitiesOnly=yes".into());
+                args.push("-i".into());
+                args.push(key.to_string_lossy().into_owned());
+            }
         }
     }
-    ssh.arg(format!("{}@{}", host["user"].as_str().unwrap_or(""), host["addr"].as_str().unwrap_or(""))).arg(command);
+    args.push(format!("{}@{}", host["user"].as_str().unwrap_or(""), host["addr"].as_str().unwrap_or("")));
+    args
+}
+
+fn key_exec(host: &Value, command: &str, input: &[u8], language: &str) -> Result<String, String> {
+    let mut ssh = std::process::Command::new(ssh_program());
+    for arg in ssh_batch_args(host) { ssh.arg(arg); }
+    ssh.arg(command);
     ssh.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     let mut child = ssh.spawn().map_err(|error| error.to_string())?;
     if let Some(mut stdin) = child.stdin.take() { let _ = stdin.write_all(input); }

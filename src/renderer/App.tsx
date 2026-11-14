@@ -399,6 +399,11 @@ export function App() {
         }
       }
       const info = await window.awb.ptyCreate({ id, projectId: target.id, kind, shell, agentSessionId: existingAgentSessionId })
+      if (info.replay) {
+        retainTermHistory(id, info.replay)
+        restoredHistory.current[id] = { text: info.replay }
+        holdTermHistory(id)
+      }
       // Replay is a display operation, independent of Agent completion. Keep
       // startup screen setup out of the historical scrollback transaction.
       if (restoredHistory.current[id]) historyTimers.current[id] = setTimeout(() => flushRestoredHistory(id), 1200)

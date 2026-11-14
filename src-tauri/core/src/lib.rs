@@ -1,6 +1,7 @@
 pub mod files;
 pub mod git;
 pub mod i18n;
+pub mod layout;
 pub mod search;
 pub mod paths;
 pub mod pty;

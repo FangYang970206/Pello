@@ -4,6 +4,7 @@
 use crate::files::{self, default_ignore};
 use crate::git;
 use crate::i18n::{self, translate};
+use crate::layout::{self, Tile};
 use crate::paths::Paths;
 use crate::pty::{self, Manager};
 use crate::search::{self, ContentSearch, TreeSearch};
@@ -28,6 +29,8 @@ pub struct Workbench {
     dirty: Mutex<bool>,
     content_searches: Mutex<HashMap<String, ContentSearch>>,
     tree_searches: Mutex<HashMap<String, TreeSearch>>,
+    layouts: Mutex<HashMap<String, Vec<Tile>>>,
+    restore_failures: Mutex<HashMap<String, String>>,
     emit: Emit,
 }
 
@@ -44,7 +47,7 @@ impl Workbench {
         if !db["settings"]["language"].is_string() {
             db["settings"]["language"] = json!("zh-CN");
         }
-        Ok(Self { paths, db: Mutex::new(db), pty: Manager::new(), dirty: Mutex::new(false), content_searches: Mutex::new(HashMap::new()), tree_searches: Mutex::new(HashMap::new()), emit })
+        Ok(Self { paths, db: Mutex::new(db), pty: Manager::new(), dirty: Mutex::new(false), content_searches: Mutex::new(HashMap::new()), tree_searches: Mutex::new(HashMap::new()), layouts: Mutex::new(HashMap::new()), restore_failures: Mutex::new(HashMap::new()), emit })
     }
 
     pub fn database_path(&self) -> std::path::PathBuf { self.paths.data.join("workbench.json") }
@@ -88,7 +91,7 @@ impl Workbench {
             "tree:create" => self.with_local(&str_arg(args, 0), &language, |root| files::create_entry(root, str_arg(args, 1), str_arg(args, 2), bool_arg(args, 3)?, &language).map(|path| json!(path))),
             "tree:rename" => self.with_local(&str_arg(args, 0), &language, |root| files::rename_entry(root, str_arg(args, 1), str_arg(args, 2), bool_arg(args, 3)?, &language).map(|path| json!(path))),
             "tree:move" => self.with_local(&str_arg(args, 0), &language, |root| files::move_entry(root, str_arg(args, 1), str_arg(args, 2), bool_arg(args, 3)?, &language).map(|path| json!(path))),
-            "tree:trash" => self.with_local(&str_arg(args, 0), &language, |root| files::trash_entry(root, str_arg(args, 1), bool_arg(args, 2)?, &language).map(|_| Value::Null)),
+            "tree:trash" => self.trash(args, &language),
             "content:search-start" => self.content_start(args, &language),
             "content:search-cancel" => { self.content_cancel(str_arg(args, 0)); Ok(Value::Null) }
             "content:search-next" => self.content_next(str_arg(args, 0), &language),
@@ -96,6 +99,13 @@ impl Workbench {
             "tree:search-cancel" => { self.tree_cancel(str_arg(args, 0)); Ok(Value::Null) }
             "tree:search-next" => self.tree_next(str_arg(args, 0), &language),
             "pty:create" => self.pty_create(args.first().cloned().unwrap_or(json!({})), &language),
+            "pty:snapshot" => Ok(self.pty.snapshot_of(str_arg(args, 0)).unwrap_or(Value::Null)),
+            "pty:feed" => { self.pty.feed(str_arg(args, 0), str_arg(args, 1), &self.emit); Ok(Value::Null) }
+            "terminal:split" => self.split_terminal(args.first().cloned().unwrap_or(json!({})), &language),
+            "terminal:merge" => self.merge_terminal(args.first().cloned().unwrap_or(json!({})), &language),
+            "terminal:rename" => self.rename_terminal(args.first().cloned().unwrap_or(json!({})), &language),
+            "terminal:failure" => Ok(self.terminal_failure(str_arg(args, 0))),
+            "terminal:hook" => Ok(self.terminal_hook(str_arg(args, 0))),
             "pty:write" => { let bytes = pty_bytes(str_arg(args, 1), args.get(2).and_then(|value| value.as_bool()).unwrap_or(false)); self.pty.write(str_arg(args, 0), &bytes, &self.emit); Ok(Value::Null) }
             "pty:resize" => { self.pty.resize(str_arg(args, 0), number_arg(args, 1) as u16, number_arg(args, 2) as u16); Ok(Value::Null) }
             "pty:interrupt" => Ok(json!(self.pty.interrupt(str_arg(args, 0), &self.emit))),
@@ -369,6 +379,22 @@ impl Workbench {
 
     fn pty_create(&self, request: Value, language: &str) -> Result<Value, String> {
         let id = request["id"].as_str().filter(|id| !id.is_empty()).map(|id| id.to_string()).unwrap_or_else(|| uid("t"));
+        match self.pty_create_inner(request, &id, language) {
+            Ok(info) => {
+                self.restore_failures.lock().expect("restore").remove(&id);
+                Ok(info)
+            }
+            Err(error) => {
+                if self.term_saved(&id) {
+                    let notice = translate(language, "[无法恢复会话：{{0}}。右键终端可选择重新连接。]", &[error.clone()]);
+                    self.restore_failures.lock().expect("restore").insert(id, notice);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn pty_create_inner(&self, request: Value, id: &str, language: &str) -> Result<Value, String> {
         let project = self.project(request["projectId"].as_str().unwrap_or(""), language)?;
         if let Some(host) = self.optional_host(project["host"].as_str().unwrap_or("local"))? {
             let kind = request["kind"].as_str().unwrap_or("shell");
@@ -547,6 +573,105 @@ impl Workbench {
             return Err(translate(language, "项目环境已更改", &[] as &[String]));
         }
         Ok(())
+    }
+
+    fn trash(&self, args: &[Value], language: &str) -> Result<Value, String> {
+        let project_id = str_arg(args, 0);
+        let relative = str_arg(args, 1).to_string();
+        let directory = bool_arg(args, 2)?;
+        if let Some((host, path)) = self.remote_place(project_id, language)? {
+            let script = ssh::remove_remote_script(host["platform"].as_str().unwrap_or("linux"), &path, &relative, directory, language)?;
+            ssh::run(&self.paths.data, &host, &script, None, language)?;
+            return Ok(Value::Null);
+        }
+        self.with_local(project_id, language, |root| files::trash_entry(root, &relative, directory, language).map(|_| Value::Null))
+    }
+
+    fn term_saved(&self, id: &str) -> bool {
+        let db = self.db.lock().expect("db");
+        db["sessions"].as_object().is_some_and(|map| map.values().any(|list| list.as_array().is_some_and(|terms| terms.iter().any(|term| term["id"] == id))))
+    }
+
+    fn term_kind(&self, project_id: &str, term_id: &str) -> (String, String) {
+        let db = self.db.lock().expect("db");
+        let term = db["sessions"][project_id].as_array().and_then(|list| list.iter().find(|term| term["id"] == term_id));
+        let kind = term.and_then(|term| term["kind"].as_str()).unwrap_or("shell").to_string();
+        let shell = term.and_then(|term| term["shell"].as_str()).unwrap_or("bash").to_string();
+        (kind, shell)
+    }
+
+    fn append_term(&self, project_id: &str, id: &str, kind: &str, shell: &str, session_id: &str) -> Result<Value, String> {
+        let (terms, active, groups, selected) = {
+            let db = self.db.lock().expect("db");
+            let mut terms = db["sessions"][project_id].as_array().cloned().unwrap_or_default();
+            terms.push(json!({ "id": id, "kind": kind, "shell": shell, "sessionId": session_id }));
+            let active = db["activeTab"][project_id].as_str().unwrap_or("").to_string();
+            let groups = db["workSessions"][project_id].clone();
+            let selected = db["activeSession"][project_id].clone();
+            (terms, active, groups, selected)
+        };
+        self.save_sessions(&[json!(project_id), Value::Array(terms), json!(active), groups, selected])
+    }
+
+    fn split_terminal(&self, request: Value, language: &str) -> Result<Value, String> {
+        let project_id = request["projectId"].as_str().unwrap_or("").to_string();
+        let session_id = request["sessionId"].as_str().unwrap_or("").to_string();
+        let term_id = request["termId"].as_str().unwrap_or("").to_string();
+        let direction = request["direction"].as_str().unwrap_or("");
+        self.project(&project_id, language)?;
+        let key = format!("{project_id}:{session_id}");
+        let current = self.layouts.lock().expect("layout").get(&key).cloned().unwrap_or_else(|| vec![Tile::full(&term_id)]);
+        let next_id = uid("t");
+        let tiles = layout::split_tile(&current, &term_id, &next_id, direction, language)?;
+        let born = self.pty.born(&term_id);
+        let (kind, shell) = self.term_kind(&project_id, &term_id);
+        self.pty_create(json!({ "id": next_id, "projectId": project_id, "kind": kind, "shell": shell }), language)?;
+        if self.pty.born(&term_id) != born {
+            return Err(translate(language, "终端已关闭", &[] as &[String]));
+        }
+        self.append_term(&project_id, &next_id, &kind, &shell, &session_id)?;
+        self.layouts.lock().expect("layout").insert(key, tiles.clone());
+        Ok(json!({ "id": next_id, "born": born, "tiles": tiles.iter().map(Tile::to_json).collect::<Vec<_>>() }))
+    }
+
+    fn merge_terminal(&self, request: Value, _language: &str) -> Result<Value, String> {
+        let project_id = request["projectId"].as_str().unwrap_or("");
+        let session_id = request["sessionId"].as_str().unwrap_or("");
+        let kept = request["termId"].as_str().unwrap_or("");
+        self.layouts.lock().expect("layout").remove(&format!("{project_id}:{session_id}"));
+        Ok(json!({ "tiles": [], "born": self.pty.born(kept), "focus": kept }))
+    }
+
+    fn rename_terminal(&self, request: Value, language: &str) -> Result<Value, String> {
+        let project_id = request["projectId"].as_str().unwrap_or("");
+        let term_id = request["termId"].as_str().unwrap_or("");
+        let cancel = request["cancel"].as_bool().unwrap_or(false);
+        let mut db = self.db.lock().expect("db");
+        let terms = db["sessions"][project_id].as_array_mut().ok_or_else(|| translate(language, "终端已关闭", &[] as &[String]))?;
+        let term = terms.iter_mut().find(|term| term["id"] == term_id).ok_or_else(|| translate(language, "终端已关闭", &[] as &[String]))?;
+        if cancel {
+            return Ok(json!({ "focus": term_id, "cancelled": true, "name": term["name"].clone() }));
+        }
+        let cleaned = layout::display_name(request["name"].as_str().unwrap_or(""));
+        if cleaned.is_empty() { return Err(translate(language, "名称不能为空", &[] as &[String])); }
+        term["name"] = json!(cleaned.clone());
+        drop(db);
+        self.persist()?;
+        Ok(json!({ "focus": term_id, "cancelled": false, "name": cleaned }))
+    }
+
+    fn terminal_failure(&self, id: &str) -> Value {
+        match self.restore_failures.lock().expect("restore").get(id) {
+            Some(notice) => json!({ "reconnect": true, "notice": notice }),
+            None => json!({ "reconnect": false }),
+        }
+    }
+
+    fn terminal_hook(&self, id: &str) -> Value {
+        match self.pty.hook(id) {
+            Some((port, token)) => json!({ "port": port, "token": token }),
+            None => Value::Null,
+        }
     }
 }
 

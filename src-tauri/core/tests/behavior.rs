@@ -7,7 +7,7 @@ use serde_json::json;
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 fn temp_dir(name: &str) -> PathBuf {
@@ -435,4 +435,351 @@ fn ssh_password_pins_host_key_and_serves_remote_files() {
     assert!(remaining["db"].to_string().contains("wrong-password") == false);
     let _ = fs::remove_dir_all(root);
     let _ = fs::remove_dir_all(copied);
+}
+
+struct VarGuard {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(())).lock().expect("ssh env")
+}
+
+fn var_guard(key: &'static str, value: &str) -> VarGuard {
+    let previous = std::env::var_os(key);
+    std::env::set_var(key, value);
+    VarGuard { key, previous }
+}
+
+impl Drop for VarGuard {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
+struct SshCall {
+    sock: String,
+    args: Vec<String>,
+}
+
+fn parse_ssh_calls(log: &str) -> Vec<SshCall> {
+    log.lines().filter_map(|line| {
+        let rest = line.strip_prefix("CALL\u{1e}")?;
+        let mut parts = rest.split('\u{1e}');
+        let sock = parts.next().unwrap_or("").to_string();
+        Some(SshCall { sock, args: parts.map(|part| part.to_string()).collect() })
+    }).collect()
+}
+
+fn install_ssh_shim(root: &std::path::Path) -> (PathBuf, PathBuf) {
+    let bin = root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let shim = bin.join("ssh");
+    let log = root.join("ssh.log");
+    fs::write(&shim, "#!/bin/bash\nlog=\"${AWB_SSH_LOG:?}\"\n{\n  printf 'CALL\\036%s' \"${SSH_AUTH_SOCK-}\"\n  for arg in \"$@\"; do printf '\\036%s' \"$arg\"; done\n  printf '\\n'\n} >> \"$log\"\nlast=\"${@: -1}\"\nkey=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [[ \"$prev\" == -i ]]; then key=\"$arg\"; fi\n  prev=\"$arg\"\ndone\nif [[ -n \"$key\" ]]; then\n  [[ -f \"$key\" ]] || exit 2\n  grep -q \"OPENSSH PRIVATE KEY\" \"$key\" || exit 3\n  printf '%s\\0' \"$@\" | grep -q 'IdentitiesOnly=yes' || exit 4\nelse\n  [[ -S \"${SSH_AUTH_SOCK-}\" ]] || exit 5\nfi\nif [[ \"$last\" == *\"-EncodedCommand \"* ]]; then exit 0; fi\nif [[ \"$last\" == *\"uname -s\"* ]]; then\n  if [[ -n \"${AWB_SSH_OS:-}\" ]]; then printf '%s\\n' \"$AWB_SSH_OS\"; else printf 'Linux\\n'; fi\n  exit 0\nfi\nbash -lc \"$last\"\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = fs::metadata(&shim).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&shim, permissions).unwrap();
+    (shim, log)
+}
+
+fn ssh_env(home: &std::path::Path, shim: &std::path::Path, log: &std::path::Path, sock: &std::path::Path) -> Vec<VarGuard> {
+    vec![
+        var_guard("AWB_SSH_HOME", &home.display().to_string()),
+        var_guard("AWB_SSH_BIN", &shim.display().to_string()),
+        var_guard("AWB_SSH_LOG", &log.display().to_string()),
+        var_guard("SSH_AUTH_SOCK", &sock.display().to_string()),
+    ]
+}
+
+fn snap_status(bench: &Workbench, id: &str) -> (serde_json::Value, serde_json::Value) {
+    let snap = bench.dispatch("pty:snapshot", &[json!(id)]).unwrap();
+    let status = pello_core::pty::terminal_status(snap["kind"].as_str().unwrap_or(""), snap["agentKind"].as_str(), snap["state"].as_str().unwrap_or(""), snap["inputReady"].as_bool().unwrap_or(false));
+    (snap, status)
+}
+
+fn wait_terminal(bench: &Workbench, id: &str, ready: bool, state: &str) -> serde_json::Value {
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    loop {
+        let snap = bench.dispatch("pty:snapshot", &[json!(id)]).unwrap();
+        if snap["inputReady"].as_bool() == Some(ready) && snap["state"] == state { return snap }
+        if std::time::Instant::now() > deadline { panic!("timed out for {id} ready={ready} state={state}: {snap}") }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+}
+
+fn post_hook(bench: &Workbench, id: &str, state: &str) {
+    let hook = bench.dispatch("terminal:hook", &[json!(id)]).unwrap();
+    let port = hook["port"].as_u64().unwrap() as u16;
+    let token = hook["token"].as_str().unwrap();
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let request = format!("GET /{token}/{state} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    std::io::Write::write_all(&mut stream, request.as_bytes()).unwrap();
+    let mut buffer = [0u8; 128];
+    let _ = std::io::Read::read(&mut stream, &mut buffer);
+}
+
+#[test]
+fn ssh_key_and_agent_use_system_ssh_without_leaking_secrets() {
+    let _env_lock = env_lock();
+    let root = temp_dir("ssh-key");
+    let home = root.join("home");
+    let project = root.join("project");
+    fs::create_dir_all(home.join(".ssh")).unwrap();
+    fs::create_dir_all(&project).unwrap();
+    let material = "PRIVATEKEYMATERIAL9f3a";
+    let password = "do-not-leak-ssh-secret";
+    fs::write(home.join(".ssh/id_ed25519"), format!("-----BEGIN OPENSSH PRIVATE KEY-----\n{material}\n-----END OPENSSH PRIVATE KEY-----\n")).unwrap();
+    let (shim, log) = install_ssh_shim(&root);
+    let sock = root.join("agent.sock");
+    let _agent = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    let _env = ssh_env(&home, &shim, &log, &sock);
+    let (bench, _) = workbench(&root);
+    let local = bench.dispatch("db:get", &[]).unwrap()["db"]["hosts"][0].clone();
+    bench.dispatch("db:hosts", &[json!([
+        local,
+        { "id": "key", "name": "Key", "addr": "127.0.0.1", "port": 22, "user": "keyuser", "auth": "key", "password": password },
+        { "id": "agent", "name": "Agent", "addr": "127.0.0.1", "port": 22, "user": "agentuser", "auth": "agent", "password": password }
+    ])]).unwrap();
+    let key_list = bench.dispatch("path:list", &[json!("key"), json!(project.display().to_string())]).unwrap();
+    assert!(key_list["error"].is_null(), "key login should run the remote command: {key_list}");
+    let agent_list = bench.dispatch("path:list", &[json!("agent"), json!(project.display().to_string())]).unwrap();
+    assert!(agent_list["error"].is_null(), "agent login should run the remote command: {agent_list}");
+    let calls = parse_ssh_calls(&fs::read_to_string(&log).unwrap());
+    let key_calls: Vec<_> = calls.iter().filter(|call| call.args.iter().any(|arg| arg.contains("keyuser@"))).collect();
+    let agent_calls: Vec<_> = calls.iter().filter(|call| call.args.iter().any(|arg| arg.contains("agentuser@"))).collect();
+    assert!(!key_calls.is_empty() && !agent_calls.is_empty());
+    for call in &key_calls {
+        assert!(call.args.iter().any(|arg| arg == "IdentitiesOnly=yes"), "{:?}", call.args);
+        let index = call.args.iter().position(|arg| arg == "-i").expect("key login passes -i");
+        assert!(call.args[index + 1].ends_with("id_ed25519"));
+        assert!(call.args.iter().all(|arg| !arg.contains(material) && !arg.contains(password)));
+    }
+    for call in &agent_calls {
+        assert!(call.args.iter().all(|arg| arg != "-i" && arg != "IdentitiesOnly=yes" && !arg.contains(material) && !arg.contains(password)), "{:?}", call.args);
+        assert_eq!(call.sock, sock.display().to_string());
+    }
+    assert!(key_calls.iter().any(|call| call.args.last().is_some_and(|arg| arg.starts_with("'bash' '-lc'"))));
+    assert!(agent_calls.iter().any(|call| call.args.last().is_some_and(|arg| arg.starts_with("'bash' '-lc'"))));
+    let rendered = bench.dispatch("db:get", &[]).unwrap().to_string();
+    assert!(!rendered.contains(password) && !rendered.contains(material) && !rendered.contains("BEGIN OPENSSH PRIVATE KEY"));
+    let stored = fs::read_to_string(bench.database_path()).unwrap();
+    assert!(!stored.contains(password) && !stored.contains(material));
+    let credentials = root.join("data/credentials.json");
+    if credentials.exists() {
+        let text = fs::read_to_string(credentials).unwrap();
+        assert!(!text.contains(password) && !text.contains(material));
+    }
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn windows_remote_script_translates_errors_and_keeps_the_command() {
+    let _env_lock = env_lock();
+    let root = temp_dir("ssh-win");
+    let home = root.join("home");
+    fs::create_dir_all(home.join(".ssh")).unwrap();
+    fs::write(home.join(".ssh/id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----\nWINKEYMATERIAL\n-----END OPENSSH PRIVATE KEY-----\n").unwrap();
+    let (shim, log) = install_ssh_shim(&root);
+    let sock = root.join("agent.sock");
+    let _agent = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    let _env = ssh_env(&home, &shim, &log, &sock);
+    let _os = var_guard("AWB_SSH_OS", "Windows_NT");
+    let (bench, _) = workbench(&root);
+    let local = bench.dispatch("db:get", &[]).unwrap()["db"]["hosts"][0].clone();
+    bench.dispatch("db:hosts", &[json!([
+        local,
+        { "id": "win", "name": "Win", "addr": "127.0.0.1", "port": 22, "user": "win", "auth": "key", "password": "do-not-leak-win" }
+    ])]).unwrap();
+    let saved = bench.dispatch("db:get", &[]).unwrap();
+    assert_eq!(saved["db"]["hosts"][1]["platform"], "windows");
+    assert!(!saved.to_string().contains("do-not-leak-win"));
+    assert!(!saved.to_string().contains("WINKEYMATERIAL"));
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "win", "path": "C:\\项目", "branch": "", "agent": "shell" }])]).unwrap();
+    bench.dispatch("tree:trash", &[json!("p"), json!("O'Brien/note.txt"), json!(true)]).unwrap();
+    let mut settings = bench.dispatch("db:get", &[]).unwrap()["db"]["settings"].clone();
+    settings["language"] = json!("en");
+    bench.dispatch("db:settings", &[settings]).unwrap();
+    bench.dispatch("tree:trash", &[json!("p"), json!("O'Brien/note.txt"), json!(true)]).unwrap();
+    let scripts: Vec<String> = parse_ssh_calls(&fs::read_to_string(&log).unwrap()).iter().filter_map(|call| call.args.last().and_then(|arg| pello_core::ssh::decode_powershell_command(arg))).collect();
+    assert_eq!(scripts.len(), 2, "{scripts:?}");
+    let zh = &scripts[0];
+    assert!(zh.contains("Get-Item") && zh.contains("Remove-Item") && zh.contains("Join-Path") && zh.contains("Get-ChildItem") && zh.contains("Resolve-Path"));
+    assert!(zh.contains("不支持删除符号链接") && zh.contains("文件类型已更改") && zh.contains("目录包含符号链接"));
+    assert!(zh.contains("C:\\项目") && zh.contains("'O''Brien'"));
+    assert!(!zh.contains("Cannot delete symbolic links"));
+    let en = &scripts[1];
+    assert!(en.contains("Get-Item") && en.contains("Remove-Item") && en.contains("Join-Path"));
+    assert!(en.contains("Cannot delete symbolic links") && en.contains("File type has changed") && en.contains("Directory contains symbolic links"));
+    assert!(en.contains("C:\\项目") && en.contains("'O''Brien'"));
+    assert!(!en.contains("不支持删除符号链接") && !en.contains("文件类型已更改") && !en.contains("目录包含符号链接"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn terminal_panes_rename_restore_and_run_state() {
+    let root = temp_dir("terms");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("marker.txt"), "stay").unwrap();
+    let (bench, _) = workbench(&root);
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    bench.dispatch("db:sessions", &[json!("p"), json!([{ "id": "term-a", "kind": "shell", "shell": "bash", "name": "Alpha", "sessionId": "s1" }]), json!("term-a"), json!([{ "id": "s1", "name": "会话一" }]), json!("s1")]).unwrap();
+    let created = bench.dispatch("pty:create", &[json!({ "id": "term-a", "projectId": "p", "kind": "shell", "shell": "bash" })]).unwrap();
+    let born = created["born"].as_u64().unwrap();
+    let idle = wait_terminal(&bench, "term-a", true, "idle");
+    assert_eq!(idle["kind"], "shell");
+    assert!(idle["agentKind"].is_null());
+    let (_, status) = snap_status(&bench, "term-a");
+    assert_eq!(status["color"], "inactive");
+    assert_eq!(status["spinning"], false);
+    bench.dispatch("pty:write", &[json!("term-a"), json!("sleep 2\n"), json!(false)]).unwrap();
+    let running = wait_terminal(&bench, "term-a", false, "running");
+    assert_eq!(running["born"].as_u64(), Some(born));
+    let (_, running_status) = snap_status(&bench, "term-a");
+    assert_eq!(running_status["color"], "inactive");
+    assert_eq!(running_status["spinning"], false);
+    std::thread::sleep(Duration::from_millis(300));
+    let silent = bench.dispatch("pty:snapshot", &[json!("term-a")]).unwrap();
+    assert_eq!(silent["state"], "running");
+    assert_eq!(silent["inputReady"], false, "silence and a live process are not completion");
+    let idle_again = wait_terminal(&bench, "term-a", true, "idle");
+    assert_eq!(idle_again["born"].as_u64(), Some(born));
+    let (_, idle_status) = snap_status(&bench, "term-a");
+    assert_eq!(idle_status["color"], "inactive");
+
+    let right = bench.dispatch("terminal:split", &[json!({ "projectId": "p", "sessionId": "s1", "termId": "term-a", "direction": "right" })]).unwrap();
+    assert_eq!(right["born"].as_u64(), Some(born));
+    assert_eq!(right["tiles"].as_array().unwrap().len(), 2);
+    let blocked = bench.dispatch("terminal:split", &[json!({ "projectId": "p", "sessionId": "s1", "termId": "term-a", "direction": "right" })]).unwrap_err();
+    assert!(blocked.contains("此方向已达到分栏上限"), "{blocked}");
+    assert_eq!(bench.dispatch("pty:snapshot", &[json!("term-a")]).unwrap()["born"].as_u64(), Some(born));
+    bench.dispatch("terminal:split", &[json!({ "projectId": "p", "sessionId": "s1", "termId": "term-a", "direction": "down" })]).unwrap();
+    let other = right["tiles"].as_array().unwrap().iter().find(|tile| tile["id"] != "term-a").unwrap()["id"].as_str().unwrap().to_string();
+    let full = bench.dispatch("terminal:split", &[json!({ "projectId": "p", "sessionId": "s1", "termId": other, "direction": "down" })]).unwrap();
+    assert_eq!(full["tiles"].as_array().unwrap().len(), 4);
+    let overflow = bench.dispatch("terminal:split", &[json!({ "projectId": "p", "sessionId": "s1", "termId": "term-a", "direction": "down" })]).unwrap_err();
+    assert!(overflow.contains("最多支持四个终端分栏"), "{overflow}");
+    for tile in full["tiles"].as_array().unwrap() {
+        let id = tile["id"].as_str().unwrap();
+        assert!(bench.dispatch("pty:snapshot", &[json!(id)]).unwrap()["born"].is_number(), "{id} was closed by a split");
+    }
+    assert_eq!(bench.dispatch("pty:snapshot", &[json!("term-a")]).unwrap()["born"].as_u64(), Some(born));
+    let merged = bench.dispatch("terminal:merge", &[json!({ "projectId": "p", "sessionId": "s1", "termId": "term-a" })]).unwrap();
+    assert_eq!(merged["tiles"].as_array().unwrap().len(), 0);
+    assert_eq!(merged["born"].as_u64(), Some(born));
+    assert_eq!(merged["focus"], "term-a");
+    assert_eq!(bench.dispatch("pty:snapshot", &[json!("term-a")]).unwrap()["born"].as_u64(), Some(born));
+    let renamed = bench.dispatch("terminal:rename", &[json!({ "projectId": "p", "termId": "term-a", "name": "  左侧\u{0001}  " })]).unwrap();
+    assert_eq!(renamed["name"], "左侧");
+    assert_eq!(renamed["focus"], "term-a");
+    assert_eq!(renamed["cancelled"], false);
+    assert_eq!(bench.dispatch("pty:snapshot", &[json!("term-a")]).unwrap()["born"].as_u64(), Some(born));
+    let empty = bench.dispatch("terminal:rename", &[json!({ "projectId": "p", "termId": "term-a", "name": " \u{0001} " })]).unwrap_err();
+    assert!(empty.contains("名称不能为空"), "{empty}");
+    let cancelled = bench.dispatch("terminal:rename", &[json!({ "projectId": "p", "termId": "term-a", "name": "nope", "cancel": true })]).unwrap();
+    assert_eq!(cancelled["cancelled"], true);
+    assert_eq!(cancelled["focus"], "term-a");
+    assert_eq!(cancelled["name"], "左侧");
+    let record = bench.dispatch("db:get", &[]).unwrap();
+    let term = record["db"]["sessions"]["p"].as_array().unwrap().iter().find(|term| term["id"] == "term-a").unwrap();
+    assert_eq!(term["name"], "左侧");
+    assert_eq!(term["kind"], "shell");
+    assert_eq!(record["db"]["projects"][0]["path"], project.display().to_string());
+    assert_eq!(fs::read_to_string(project.join("marker.txt")).unwrap(), "stay");
+    assert!(!project.join("左侧").exists());
+
+    pello_core::pty::save_history(&root.join("data"), "term-r", "上次输出\rline").unwrap();
+    let replayed = bench.dispatch("pty:create", &[json!({ "id": "term-r", "projectId": "p", "kind": "shell", "shell": "bash" })]).unwrap();
+    let replay = replayed["replay"].as_str().unwrap();
+    assert!(replay.starts_with("\u{1b}[38;5;244m── 上次会话记录 ──\u{1b}[0m\r\n上次输出\r\nline\r\n"));
+    assert!(replay.contains("── 会话已恢复，下面连接新进程 ──"));
+    assert_eq!(pello_core::pty::load_history(&root.join("data"), "term-r"), "上次输出\rline");
+
+    let agent = bench.dispatch("pty:create", &[json!({ "id": "agent-1", "projectId": "p", "kind": "claude", "shell": "bash", "agentSessionId": "session-1" })]).unwrap();
+    assert_eq!(agent["agentKind"], "claude");
+    wait_terminal(&bench, "agent-1", true, "idle");
+    let (_, green) = snap_status(&bench, "agent-1");
+    assert_eq!(green["color"], "ready");
+    assert_eq!(green["spinning"], false);
+    bench.dispatch("pty:feed", &[json!("agent-1"), json!("\u{1b}]9;4;1\u{7}")]).unwrap();
+    let (_, progress) = snap_status(&bench, "agent-1");
+    assert_eq!(progress["color"], "busy");
+    assert_eq!(progress["spinning"], true);
+    bench.dispatch("pty:feed", &[json!("agent-1"), json!("\u{1b}]7501;state=idle:app=claude:session=s1\u{7}")]).unwrap();
+    let (native_idle, steady) = snap_status(&bench, "agent-1");
+    assert_eq!(native_idle["agentKind"], "claude");
+    assert_eq!(native_idle["agentSessionId"], "s1");
+    assert_eq!(steady["color"], "ready");
+    assert_eq!(steady["spinning"], false);
+    bench.dispatch("pty:feed", &[json!("agent-1"), json!("\u{1b}]9;4;1\u{7}")]).unwrap();
+    let (_, still_ready) = snap_status(&bench, "agent-1");
+    assert_eq!(still_ready["color"], "ready", "OSC 7501 keeps a later OSC 9;4 from marking the agent busy");
+    bench.dispatch("pty:feed", &[json!("agent-1"), json!("\u{1b}]7501;state=working:app=claude:session=s1\u{7}")]).unwrap();
+    bench.dispatch("pty:feed", &[json!("agent-1"), json!("\u{1b}]9;4;0\u{7}")]).unwrap();
+    bench.dispatch("pty:write", &[json!("agent-1"), json!("\n"), json!(false)]).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    let (working, spinning) = snap_status(&bench, "agent-1");
+    assert_eq!(working["state"], "running");
+    assert_eq!(working["inputReady"], false);
+    assert_eq!(spinning["color"], "busy");
+    assert_eq!(spinning["spinning"], true);
+    post_hook(&bench, "agent-1", "waiting");
+    let (_, hooked) = snap_status(&bench, "agent-1");
+    assert_eq!(hooked["color"], "ready");
+    assert_eq!(hooked["spinning"], false);
+    post_hook(&bench, "agent-1", "working");
+    let (_, hooked_busy) = snap_status(&bench, "agent-1");
+    assert_eq!(hooked_busy["color"], "busy");
+    assert_eq!(hooked_busy["spinning"], true);
+    bench.dispatch("pty:feed", &[json!("agent-1"), json!("\u{1b}]7501;state=idle:app=claude:session=s1\u{7}")]).unwrap();
+    bench.dispatch("pty:feed", &[json!("agent-1"), json!("\u{1b}]7501;state=working:id=child:app=codex\u{7}")]).unwrap();
+    let (child, child_status) = snap_status(&bench, "agent-1");
+    assert_eq!(child["agentKind"], "claude");
+    assert_eq!(child["inputReady"], true);
+    assert_eq!(child_status["color"], "ready");
+    let token = bench.dispatch("terminal:hook", &[json!("agent-1")]).unwrap()["token"].as_str().unwrap().to_string();
+    assert!(!bench.dispatch("db:get", &[]).unwrap().to_string().contains(&token));
+
+    let missing = root.join("missing-dir");
+    bench.dispatch("db:projects", &[json!([
+        { "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" },
+        { "id": "gone", "name": "Gone", "host": "local", "path": missing.display().to_string(), "branch": "", "agent": "shell" }
+    ])]).unwrap();
+    bench.dispatch("db:sessions", &[json!("gone"), json!([{ "id": "term-gone", "kind": "shell", "shell": "bash", "name": "保留", "sessionId": "s2" }]), json!("term-gone"), json!([{ "id": "s2", "name": "会话一" }]), json!("s2")]).unwrap();
+    pello_core::pty::save_history(&root.join("data"), "term-gone", "保留下来的历史").unwrap();
+    let failed = bench.dispatch("pty:create", &[json!({ "id": "term-gone", "projectId": "gone", "kind": "shell", "shell": "bash" })]).unwrap_err();
+    assert!(failed.contains("目录不存在"), "{failed}");
+    assert_eq!(pello_core::pty::load_history(&root.join("data"), "term-gone"), "保留下来的历史");
+    let kept = bench.dispatch("db:get", &[]).unwrap();
+    assert!(kept["db"]["sessions"]["gone"].as_array().unwrap().iter().any(|term| term["id"] == "term-gone"));
+    assert!(bench.dispatch("pty:snapshot", &[json!("term-gone")]).unwrap().is_null());
+    let notice = bench.dispatch("terminal:failure", &[json!("term-gone")]).unwrap();
+    assert_eq!(notice["reconnect"], true);
+    assert!(notice["notice"].as_str().unwrap().contains("重新连接"), "{notice}");
+    let mut settings = kept["db"]["settings"].clone();
+    settings["language"] = json!("en");
+    bench.dispatch("db:settings", &[settings]).unwrap();
+    bench.dispatch("db:sessions", &[json!("gone"), json!([
+        { "id": "term-gone", "kind": "shell", "shell": "bash", "name": "保留", "sessionId": "s2" },
+        { "id": "term-gone-en", "kind": "shell", "shell": "bash", "name": "Kept", "sessionId": "s2" }
+    ]), json!("term-gone"), json!([{ "id": "s2", "name": "会话一" }]), json!("s2")]).unwrap();
+    pello_core::pty::save_history(&root.join("data"), "term-gone-en", "kept history").unwrap();
+    let english = bench.dispatch("pty:create", &[json!({ "id": "term-gone-en", "projectId": "gone", "kind": "shell", "shell": "bash" })]).unwrap_err();
+    assert!(english.contains("Directory does not exist"), "{english}");
+    let english_notice = bench.dispatch("terminal:failure", &[json!("term-gone-en")]).unwrap();
+    assert_eq!(english_notice["reconnect"], true);
+    assert!(english_notice["notice"].as_str().unwrap().contains("Right-click the terminal to reconnect"), "{english_notice}");
+    assert_eq!(pello_core::pty::load_history(&root.join("data"), "term-gone-en"), "kept history");
+    assert!(bench.dispatch("db:get", &[]).unwrap()["db"]["sessions"]["gone"].as_array().unwrap().iter().any(|term| term["id"] == "term-gone-en"));
+    bench.dispatch("pty:close", &[json!("term-a")]).unwrap();
+    bench.dispatch("pty:close", &[json!("term-r")]).unwrap();
+    bench.dispatch("pty:close", &[json!("agent-1")]).unwrap();
+    let _ = fs::remove_dir_all(root);
 }

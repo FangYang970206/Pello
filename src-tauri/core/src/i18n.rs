@@ -60,6 +60,16 @@ const EN: &[(&str, &str)] = &[
     ("SSH 连接失败，未保存机器", "SSH connection failed, so the machine was not saved"),
     ("无法保存项目目录外的文件或符号链接", "Cannot save a file outside the project or through a symbolic link"),
     ("文件不存在", "File does not exist"),
+    ("不支持删除符号链接", "Cannot delete symbolic links"),
+    ("文件类型已更改", "File type has changed"),
+    ("目录包含符号链接", "Directory contains symbolic links"),
+    ("最多支持四个终端分栏", "Up to four terminal panes are supported"),
+    ("此方向已达到分栏上限，请选择另一方向", "Cannot split further in this direction. Choose another direction."),
+    ("终端已关闭", "Terminal is closed"),
+    ("名称不能为空", "Name cannot be empty"),
+    ("── 上次会话记录 ──", "── Previous session history ──"),
+    ("── 会话已恢复，下面连接新进程 ──", "── Session restored; connecting a new process below ──"),
+    ("[无法恢复会话：{{0}}。右键终端可选择重新连接。]", "[Cannot restore session: {{0}}. Right-click the terminal to reconnect.]"),
 ];
 
 pub fn translate(language: &str, source: &str, values: &[impl AsRef<str>]) -> String {
