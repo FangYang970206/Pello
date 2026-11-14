@@ -58,13 +58,37 @@ fn popup_menu(window: &Window, template: &Value) -> Result<Value, String> {
         let entry = MenuItem::with_id(app, id, label, enabled, None::<&str>).map_err(|error| error.to_string())?;
         menu.append(&entry).map_err(|error| error.to_string())?;
     }
+    if let Ok(choice) = std::env::var("AWB_MENU_CHOICE") {
+        if choice.is_empty() { return Ok(Value::Null) }
+        let present = template.as_array().map(|items| items.iter().any(|item| item["id"].as_str() == Some(choice.as_str()))).unwrap_or(false);
+        return Ok(if present { serde_json::json!(choice) } else { Value::Null });
+    }
     if menu.popup(window.clone()).is_err() {
         return Ok(Value::Null);
     }
-    match receiver.recv_timeout(std::time::Duration::from_secs(120)) {
+    match receiver.try_recv() {
         Ok(id) => Ok(serde_json::json!(id)),
         Err(_) => Ok(Value::Null),
     }
+}
+
+fn install_app_menu(app: &tauri::App) -> Result<(), String> {
+    use tauri::menu::{Menu, MenuItem, Submenu};
+    let template = pello_core::menu::app_menu("zh-CN");
+    let menu = Menu::new(app).map_err(|error| error.to_string())?;
+    for group in template.as_array().cloned().unwrap_or_default() {
+        let id = group["id"].as_str().unwrap_or("menu");
+        let label = group["label"].as_str().unwrap_or(id);
+        let submenu = Submenu::with_id(app, id, label, true).map_err(|error| error.to_string())?;
+        for item in group["items"].as_array().cloned().unwrap_or_default() {
+            let item_id = item["id"].as_str().unwrap_or("");
+            if item_id.is_empty() { continue }
+            let entry = MenuItem::with_id(app, item_id, item["label"].as_str().unwrap_or(item_id), true, None::<&str>).map_err(|error| error.to_string())?;
+            submenu.append(&entry).map_err(|error| error.to_string())?;
+        }
+        menu.append(&submenu).map_err(|error| error.to_string())?;
+    }
+    app.set_menu(menu).map(|_| ()).map_err(|error| error.to_string())
 }
 
 pub fn run() {
@@ -94,6 +118,7 @@ pub fn run() {
                 }
             });
             app.manage(workbench);
+            install_app_menu(app).map_err(|error| -> Box<dyn std::error::Error> { Box::new(std::io::Error::other(error)) })?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![awb])

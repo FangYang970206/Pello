@@ -265,7 +265,7 @@ fn read_source(path: &Path, language: &str) -> Result<Value, String> {
 
 fn exists_remote(data: &Path, host: Option<&Value>, root: &str, relative: &str, language: &str) -> Result<bool, String> {
     let payload = json!({ "root": root, "relative": relative }).to_string();
-    let output = run_python(data, host, EXIST_PY, &payload, language)?;
+    let output = run_helper(data, host, "exist", EXIST_PY, &payload, language)?;
     Ok(output.trim() == "yes")
 }
 
@@ -280,7 +280,7 @@ fn stage(data: &Path, host: Option<&Value>, root: &str, parent: &str, items: &[V
             "name": translate(language, "名称无效", &[] as &[String])
         }
     }).to_string();
-    let output = run_python(data, host, STAGE_PY, &payload, language)?;
+    let output = run_helper(data, host, "stage", STAGE_PY, &payload, language)?;
     serde_json::from_str(output.trim()).map_err(|_| translate(language, "远程版本响应无效", &[] as &[String]))
 }
 
@@ -296,7 +296,7 @@ fn publish(data: &Path, host: Option<&Value>, root: &str, parent: &str, staged: 
             "warning": translate(language, "AWB_WARNING:替换已完成，旧对象清理失败，保留于 ", &[] as &[String])
         }
     }).to_string();
-    let output = run_python(data, host, PUBLISH_PY, &payload, language)?;
+    let output = run_helper(data, host, "publish", PUBLISH_PY, &payload, language)?;
     let output = output.trim();
     if let Some(rest) = output.strip_prefix("AWB_WARNING:") { return Ok(Some(rest.to_string())); }
     Ok(None)
@@ -304,7 +304,109 @@ fn publish(data: &Path, host: Option<&Value>, root: &str, parent: &str, staged: 
 
 fn remove_stages(data: &Path, host: Option<&Value>, root: &str, parent: &str, staged: &Value, language: &str) -> Result<(), String> {
     let payload = json!({ "root": root, "parent": parent, "items": staged }).to_string();
-    run_python(data, host, REMOVE_PY, &payload, language).map(|_| ())
+    run_helper(data, host, "remove", REMOVE_PY, &payload, language).map(|_| ())
+}
+
+fn run_helper(data: &Path, host: Option<&Value>, op: &str, script: &str, payload: &str, language: &str) -> Result<String, String> {
+    if host.and_then(|host| host["platform"].as_str()) == Some("windows") {
+        let command = windows_upload_script(op);
+        return ssh::run(data, host.expect("windows host"), &command, Some(payload.as_bytes()), language);
+    }
+    run_python(data, host, script, payload, language)
+}
+
+fn windows_upload_script(op: &str) -> String {
+    format!(r#"$ErrorActionPreference='Stop'
+function Get-AwbEntryVersion([string]$name) {{
+  if(-not (Test-Path -LiteralPath $name)) {{ return 'absent' }}
+  $item=Get-Item -LiteralPath $name -Force -ErrorAction Stop
+  if($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {{ throw 'path contains a link' }}
+  $hash=[Security.Cryptography.SHA256]::Create()
+  try {{
+    if($item.PSIsContainer) {{
+      $parts=New-Object System.Collections.Generic.List[string]
+      foreach($child in (Get-ChildItem -LiteralPath $name -Force | Sort-Object Name)) {{
+        $version=Get-AwbEntryVersion $child.FullName
+        $parts.Add($child.Name); $parts.Add($version)
+      }}
+      $digest=$hash.ComputeHash([Text.Encoding]::UTF8.GetBytes(($parts -join ([char]0))))
+      return 'd:'+[BitConverter]::ToString($digest).Replace('-','').ToLowerInvariant()
+    }}
+    $stream=[IO.File]::Open($name,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    try {{ $digest=$hash.ComputeHash($stream) }} finally {{ $stream.Dispose() }}
+    return 'f:'+[BitConverter]::ToString($digest).Replace('-','').ToLowerInvariant()
+  }} finally {{ $hash.Dispose() }}
+}}
+function Move-AwbEntry([string]$from,[string]$to) {{
+  if((Get-Item -LiteralPath $from -Force).PSIsContainer) {{ [IO.Directory]::Move($from,$to) }} else {{ [IO.File]::Move($from,$to) }}
+}}
+function Remove-AwbStage([string]$name) {{
+  if(-not (Test-Path -LiteralPath $name)) {{ return }}
+  $null=Get-AwbEntryVersion $name
+  Remove-Item -LiteralPath $name -Force -Recurse -ErrorAction Stop
+}}
+function Write-AwbNode($dest, $node) {{
+  if($node.dir) {{
+    New-Item -ItemType Directory -Path $dest -ErrorAction Stop | Out-Null
+    foreach($child in @($node.children)) {{ Write-AwbNode (Join-Path $dest $child.name) $child }}
+  }} else {{
+    [IO.File]::WriteAllBytes($dest, [Convert]::FromBase64String([string]$node.data))
+  }}
+}}
+# AWB_UPLOAD_OP {op}
+$req = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$root = [IO.Path]::GetFullPath([string]$req.root)
+$parent = if([string]::IsNullOrEmpty([string]$req.parent)) {{ $root }} else {{ Join-Path $root (([string]$req.parent) -replace '/','\') }}
+if($parent -ne $root -and -not $parent.StartsWith($root + '\',[StringComparison]::OrdinalIgnoreCase)) {{ throw 'cannot replace the project root' }}
+if('{op}' -eq 'exist') {{
+  $rel = ([string]$req.relative).Trim('/')
+  $path = if([string]::IsNullOrEmpty($rel)) {{ $root }} else {{ Join-Path $root ($rel -replace '/','\') }}
+  if(Test-Path -LiteralPath $path) {{ 'yes' }} else {{ 'no' }}
+  exit 0
+}}
+if('{op}' -eq 'remove') {{
+  foreach($item in @($req.items)) {{
+    $name=[string]$item.stage
+    if(-not $name.StartsWith('.awb-upload-tree-')) {{ continue }}
+    Remove-AwbStage (Join-Path $parent $name)
+  }}
+  'removed'
+  exit 0
+}}
+if('{op}' -eq 'stage') {{
+  $results=New-Object System.Collections.Generic.List[object]
+  foreach($item in @($req.items)) {{
+    $name=[string]$item.name
+    if($name -eq '' -or $name -eq '.' -or $name -eq '..' -or $name.Contains('/') -or $name.Contains('\')) {{ throw 'invalid name' }}
+    $dest=Join-Path $parent $name
+    $expected=Get-AwbEntryVersion $dest
+    $stage='.awb-upload-tree-' + [guid]::NewGuid().ToString()
+    Write-AwbNode (Join-Path $parent $stage) $item
+    $results.Add([pscustomobject]@{{ name=$name; stage=$stage; version=$expected }})
+  }}
+  $results | ConvertTo-Json -Compress
+  exit 0
+}}
+if('{op}' -eq 'publish') {{
+  foreach($item in @($req.items)) {{
+    $dest=Join-Path $parent ([string]$item.name)
+    $stage=Join-Path $parent ([string]$item.stage)
+    if(-not (Test-Path -LiteralPath $stage)) {{ throw 'staged upload is missing' }}
+    if((Get-AwbEntryVersion $dest) -ne [string]$item.version) {{
+      Remove-AwbStage $stage
+      throw 'target changed and the original was kept'
+    }}
+    $backup=Join-Path $parent (([string]$item.stage) -replace 'tree-','backup-',1)
+    $moved=$false
+    if([string]$item.version -ne 'absent') {{ Move-AwbEntry $dest $backup; $moved=$true }}
+    Move-AwbEntry $stage $dest
+    if($moved) {{
+      try {{ Remove-AwbStage $backup }} catch {{ Write-Output ('AWB_WARNING:' + $backup) }}
+    }}
+  }}
+  exit 0
+}}
+"#)
 }
 
 fn run_python(data: &Path, host: Option<&Value>, script: &str, payload: &str, language: &str) -> Result<String, String> {

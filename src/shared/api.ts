@@ -56,6 +56,7 @@ export interface WorkbenchApi {
   saveBranch(projectId: string, branch: string): Promise<Database>
   setUnsavedChanges(dirty: boolean): void
   pickDirectory(): Promise<string | null>
+  picker(request: { op: string; id?: string; hostId?: string; initial?: string; path?: string; query?: string }): Promise<import('./types').DirectoryPickerView | string | null>
   temporaryDirectory(): Promise<string | null>
   configureTemporaryDirectory(root: string): Promise<string>
   createTemporarySession(root?: string): Promise<{ database: Database; projectId: string }>
@@ -109,6 +110,7 @@ export interface WorkbenchApi {
   ptyKill(id: string): Promise<void>
   ptyRestart(id: string): Promise<void>
   ptyClose(id: string): Promise<void>
+  terminalSplit(request: { projectId: string; sessionId: string; termId: string; direction: 'left' | 'right' | 'up' | 'down' }): Promise<{ id: string; born: number; tiles: { id: string; x: number; y: number; width: number; height: number }[] }>
   terminalHistory(id: string): Promise<string>
   exportTerminalHistory(id: string): Promise<void>
   saveTerminalHistory(id: string, text: string): void

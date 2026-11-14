@@ -2,6 +2,7 @@ pub mod files;
 pub mod git;
 pub mod i18n;
 pub mod layout;
+pub mod legacy;
 pub mod menu;
 pub mod picker;
 pub mod search;

@@ -138,6 +138,7 @@ struct Session {
     hook_stop: Arc<AtomicBool>,
     hook_addr: Option<SocketAddr>,
     hook_token: String,
+    root_pid: u32,
 }
 
 impl Manager {
@@ -168,8 +169,11 @@ impl Manager {
         }
         builder.env("AWB_CWD", cwd);
         builder.env("TERM", "xterm-256color");
+        builder.env("PI_PROGRAM_STATUS", "1");
+        if cfg!(windows) { builder.env("PI_HARDWARE_CURSOR", "1"); }
         builder.cwd(cwd);
         let child = pair.slave.spawn_command(builder).map_err(|error| error.to_string())?;
+        let root_pid = child.process_id().unwrap_or(0);
         let reader = pair.master.try_clone_reader().map_err(|error| error.to_string())?;
         let writer = pair.master.take_writer().map_err(|error| error.to_string())?;
         let child = Arc::new(Mutex::new(child));
@@ -178,7 +182,7 @@ impl Manager {
         let resize_master = master.clone();
         let stop: Box<dyn FnOnce() + Send> = Box::new(move || { let _ = stop_child.lock().expect("child").kill(); });
         let resize: Box<dyn Fn(u16, u16) + Send + Sync> = Box::new(move |cols, rows| { let _ = resize_master.lock().expect("master").resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }); });
-        self.start_session(data, id, cwd, kind, shell_id, command, agent_session, restore, language, emit, reader, writer, stop, resize)
+        self.start_session(data, id, cwd, kind, shell_id, command, agent_session, restore, language, emit, reader, writer, stop, resize, root_pid)
     }
 
     pub fn create_remote(&self, data: &Path, id: &str, cwd: &str, kind: &str, shell: &str, command: &str, agent_session: Option<&str>, restore: bool, host: &Value, language: &str, emit: Emit) -> Result<Value, String> {
@@ -187,10 +191,10 @@ impl Manager {
         }
         let shell_id = if host["platform"] == "windows" { "pwsh" } else if shell == "zsh" { "zsh" } else { "bash" };
         let remote = ssh::open_shell(data, host, cwd, language)?;
-        self.start_session(data, id, Path::new(cwd), kind, shell_id, command, agent_session, restore, language, emit, remote.output, remote.input, remote.stop, Box::new(|_, _| {}))
+        self.start_session(data, id, Path::new(cwd), kind, shell_id, command, agent_session, restore, language, emit, remote.output, remote.input, remote.stop, Box::new(|_, _| {}), 0)
     }
 
-    fn start_session(&self, data: &Path, id: &str, cwd: &Path, kind: &str, shell: &str, command: &str, agent_session: Option<&str>, restore: bool, language: &str, emit: Emit, reader: Box<dyn Read + Send>, writer: Box<dyn Write + Send>, stop: Box<dyn FnOnce() + Send>, resize: Box<dyn Fn(u16, u16) + Send + Sync>) -> Result<Value, String> {
+    fn start_session(&self, data: &Path, id: &str, cwd: &Path, kind: &str, shell: &str, command: &str, agent_session: Option<&str>, restore: bool, language: &str, emit: Emit, reader: Box<dyn Read + Send>, writer: Box<dyn Write + Send>, stop: Box<dyn FnOnce() + Send>, resize: Box<dyn Fn(u16, u16) + Send + Sync>, root_pid: u32) -> Result<Value, String> {
         let history = if restore { load_history(data, id) } else { String::new() };
         let replay = if restore { restore_history_text(&history, language) } else { String::new() };
         let (hook_stop, listener, hook_token) = start_hook();
@@ -226,6 +230,7 @@ impl Manager {
         if let Some(listener) = listener {
             std::thread::spawn(move || serve_hook(listener, hook_stop_for_thread, hook_token_for_thread, hook_id, hook_live, hook_emit));
         }
+        let settings_token = hook_token.clone();
         let session = Session {
             live: live.clone(),
             writer: writer.clone(),
@@ -234,7 +239,15 @@ impl Manager {
             hook_stop,
             hook_addr,
             hook_token,
+            root_pid,
         };
+        if kind == "claude" {
+            if let Some(addr) = hook_addr {
+                let file = claude_settings_file(data, addr.port(), &settings_token);
+                let quoted = if shell == "pwsh" || shell == "cmd" { crate::ssh::ps_quote(&file.display().to_string()) } else { crate::ssh::bash_quote(&file.display().to_string()) };
+                live.lock().expect("pty live").command = format!("{command} --settings {quoted}");
+            }
+        }
         self.sessions.lock().expect("pty").insert(id.to_string(), session);
         spawn_reader(id.to_string(), reader, live.clone(), writer.clone(), emit.clone());
         let live_timer = live.clone();
@@ -251,6 +264,9 @@ impl Manager {
         info["history"] = json!(history);
         info["replay"] = json!(replay);
         info["replayed"] = json!(!replay.is_empty());
+        info["launchCommand"] = json!(live.lock().expect("pty live").command);
+        info["rootPid"] = json!(root_pid);
+        info["piProgramStatus"] = json!("1");
         Ok(info)
     }
 
@@ -342,7 +358,32 @@ impl Manager {
         let Some(session) = self.sessions.lock().expect("pty").remove(id) else { return };
         session.hook_stop.store(true, Ordering::Relaxed);
         if let Some(addr) = session.hook_addr { let _ = TcpStream::connect_timeout(&addr, Duration::from_millis(200)); }
-        if let Some(stop) = session.stop.lock().expect("stop").take() { stop(); }
+        let root = session.root_pid;
+        let rows = process_snapshot();
+        let steps = windows_shutdown_plan(&rows, &[root], root != 0 && !rows.is_empty());
+        let mut ended = false;
+        for step in steps {
+            match step {
+                ShutdownStep::KillDescendant(pid) => {
+                    kill_descendant(pid);
+                    record_shutdown(&format!("kill {pid}"));
+                }
+                ShutdownStep::EndRoot(pid) => {
+                    if !ended {
+                        if let Some(stop) = session.stop.lock().expect("stop").take() { stop(); }
+                        ended = true;
+                    }
+                    record_shutdown(&format!("end {pid}"));
+                }
+                ShutdownStep::WaitNativeExit(pid) => {
+                    wait_native(pid);
+                    record_shutdown(&format!("wait {pid}"));
+                }
+            }
+        }
+        if !ended {
+            if let Some(stop) = session.stop.lock().expect("stop").take() { stop(); }
+        }
         session.live.lock().expect("pty live").phase = Phase::Dead;
     }
 
@@ -708,6 +749,69 @@ pub fn prune_history(data: &Path, ids: &[String]) {
         let Some(stem) = name.strip_suffix(".log").or_else(|| name.strip_suffix(".ansi")) else { continue };
         if keep.contains(stem) { continue }
         let _ = std::fs::remove_file(entry.path());
+    }
+}
+
+fn claude_settings_file(data: &Path, port: u16, token: &str) -> PathBuf {
+    let file = data.join(format!("claude-status-{token}.json"));
+    let hook = |state: &str| json!([{ "hooks": [{ "type": "http", "url": format!("http://127.0.0.1:{port}/{token}/{state}"), "timeout": 2 }] }]);
+    let settings = json!({ "hooks": {
+        "SessionStart": hook("waiting"),
+        "UserPromptSubmit": hook("working"),
+        "PreToolUse": hook("working"),
+        "PostToolUse": hook("working"),
+        "Stop": hook("waiting"),
+        "StopFailure": hook("waiting"),
+        "PermissionRequest": hook("waiting"),
+        "Notification": [{ "matcher": "idle_prompt|permission_prompt|elicitation_dialog|auth_success", "hooks": [{ "type": "http", "url": format!("http://127.0.0.1:{port}/{token}/waiting"), "timeout": 2 }] }],
+        "SessionEnd": hook("clear")
+    }});
+    let _ = std::fs::write(&file, settings.to_string());
+    file
+}
+
+fn process_snapshot() -> Vec<ProcessRow> {
+    let mut rows = Vec::new();
+    let Ok(entries) = std::fs::read_dir("/proc") else { return rows };
+    for entry in entries.flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else { continue };
+        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else { continue };
+        let Some(end) = stat.rfind(')') else { continue };
+        let mut fields = stat[end + 1..].split_whitespace();
+        let _state = fields.next();
+        let parent = fields.next().and_then(|value| value.parse().ok()).unwrap_or(0);
+        if pid > 0 && parent > 0 { rows.push(ProcessRow { pid, parent }); }
+    }
+    rows
+}
+
+fn kill_descendant(pid: u32) {
+    if pid <= 1 { return }
+    if cfg!(windows) {
+        let _ = std::process::Command::new("taskkill").args(["/F", "/PID", &pid.to_string()]).status();
+        return;
+    }
+    unsafe { libc::kill(pid as i32, libc::SIGKILL); }
+}
+
+fn wait_native(pid: u32) {
+    if pid == 0 { return }
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let mut status = 0;
+        let result = unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) };
+        if result == pid as i32 || result < 0 || Instant::now() >= deadline { return }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn record_shutdown(line: &str) {
+    if let Ok(path) = std::env::var("AWB_SHUTDOWN_LOG") {
+        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path).ok();
+        if let Some(file) = file.as_mut() {
+            use std::io::Write;
+            let _ = writeln!(file, "{line}");
+        }
     }
 }
 

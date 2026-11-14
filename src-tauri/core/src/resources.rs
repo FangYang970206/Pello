@@ -73,6 +73,27 @@ pub fn targets(data: &Path, custom: &Value) -> Vec<Value> {
     builtin.into_iter().map(target_json).collect()
 }
 
+pub fn save_target(data: &Path, custom: &Value, value: &Value, language: &str) -> Result<(), String> {
+    let id = value["id"].as_str().unwrap_or("");
+    let known = custom.as_array().map(|list| list.iter().any(|item| item["id"].as_str() == Some(id))).unwrap_or(false);
+    if id.is_empty() || !known { return Err(t(language, "仅自定义 Agent 可设置资源路径")) }
+    let format = value["format"].as_str().unwrap_or("standard");
+    if !matches!(format, "standard" | "codex" | "opencode") { return Err(t(language, "不支持的配置格式")) }
+    for key in ["mcpPath", "skillPath", "skillConfigPath"] {
+        if let Some(path) = value.get(key).and_then(|item| item.as_str()) {
+            if !path.is_empty() && !Path::new(path).is_absolute() { return Err(t(language, "请选择绝对路径")) }
+        }
+    }
+    let file = data.join("resource-targets.json");
+    let mut saved = read_text(&file, language).ok().and_then(|text| parse_json_text(&text, language).ok()).unwrap_or_else(|| json!({}));
+    let entry = saved.as_object_mut().ok_or_else(|| t(language, "不支持的配置格式"))?.entry(id).or_insert_with(|| json!({}));
+    if let Some(path) = value.get("mcpPath").and_then(|item| item.as_str()) { entry["mcpPath"] = json!(path); }
+    if let Some(path) = value.get("skillPath").and_then(|item| item.as_str()) { entry["skillPath"] = json!(path); }
+    if let Some(path) = value.get("skillConfigPath").and_then(|item| item.as_str()) { entry["skillConfigPath"] = json!(path); }
+    entry["format"] = json!(format);
+    fs::write(file, saved.to_string()).map_err(|error| error.to_string())
+}
+
 fn apply_saved(target: &mut Target, value: &Value) {
     if let Some(path) = value.get("mcpPath").and_then(|item| item.as_str()) { target.mcp_path = path.to_string(); }
     if let Some(path) = value.get("skillPath").and_then(|item| item.as_str()) { target.skill_path = path.to_string(); }

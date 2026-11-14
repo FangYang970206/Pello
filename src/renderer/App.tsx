@@ -1299,13 +1299,15 @@ export function App() {
                   onSelect={selectTab}
                   onRenameTerm={renameTerm}
                   onNavigateFile={openFile}
-                  onSplitTerm={async (id) => {
+                  onSplitTerm={async (id, direction) => {
                     const term = tabs.find((tab): tab is TermTab => tab.id === id && tab.type === 'term')
                     const target = db?.projects.find((item) => item.id === term?.projectId)
                     if (!term || !target) throw new Error(t("终端已关闭"))
-                    const result = await openTerm(target, term.kind, term.shell, true, undefined, undefined, sessionOf(term))
-                    if (!result) throw new Error(t("分栏终端启动失败"))
-                    return result
+                    const result = await window.awb.terminalSplit({ projectId: target.id, sessionId: sessionOf(term), termId: id, direction })
+                    const tab: TermTab = { id: result.id, type: 'term', projectId: target.id, sessionId: sessionOf(term), kind: term.kind, shell: term.shell, state: term.kind === 'shell' ? 'idle' : 'running', startedAt: term.kind === 'shell' ? null : Date.now(), exitCode: null, inputReady: false, hasRun: term.kind !== 'shell', agentKind: term.kind === 'shell' ? null : term.kind, agentSessionId: term.agentSessionId }
+                    setTabs((list) => (list.some((item) => item.id === result.id) ? list : [...list, tab]))
+                    setActiveMap((map) => ({ ...map, [target.id]: result.id }))
+                    return { id: result.id, tiles: result.tiles }
                   }}
                   onClose={requestClose}
                   onNewTerm={() => (project ? setModal({ type: 'term' }) : setModal({ type: 'project' }))}

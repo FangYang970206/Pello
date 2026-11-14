@@ -5,6 +5,7 @@ use crate::files::{self, default_ignore};
 use crate::git;
 use crate::i18n::{self, translate};
 use crate::layout::{self, Tile};
+use crate::legacy;
 use crate::menu;
 use crate::paths::Paths;
 use crate::picker::Session as Picker;
@@ -22,7 +23,7 @@ use crate::{random_id, uid};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
@@ -42,6 +43,7 @@ pub struct Workbench {
     updates: Mutex<updates::Service>,
     uploads: upload::Service,
     pickers: Mutex<HashMap<String, Picker>>,
+    history_flushed: Mutex<bool>,
     emit: Emit,
 }
 
@@ -59,7 +61,7 @@ impl Workbench {
             db["settings"]["language"] = json!("zh-CN");
         }
         let updates = updates::Service::new(db["settings"]["autoCheckUpdates"] != false);
-        Ok(Self { paths, db: Mutex::new(db), pty: Manager::new(), dirty: Mutex::new(false), content_searches: Mutex::new(HashMap::new()), tree_searches: Mutex::new(HashMap::new()), layouts: Mutex::new(HashMap::new()), restore_failures: Mutex::new(HashMap::new()), preview: preview::Service::new(), resources: resources::Resources::new(), updates: Mutex::new(updates), uploads: upload::Service::new(), pickers: Mutex::new(HashMap::new()), emit })
+        Ok(Self { paths, db: Mutex::new(db), pty: Manager::new(), dirty: Mutex::new(false), content_searches: Mutex::new(HashMap::new()), tree_searches: Mutex::new(HashMap::new()), layouts: Mutex::new(HashMap::new()), restore_failures: Mutex::new(HashMap::new()), preview: preview::Service::new(), resources: resources::Resources::new(), updates: Mutex::new(updates), uploads: upload::Service::new(), pickers: Mutex::new(HashMap::new()), history_flushed: Mutex::new(false), emit })
     }
 
     pub fn database_path(&self) -> std::path::PathBuf { self.paths.data.join("workbench.json") }
@@ -126,6 +128,12 @@ impl Workbench {
             "terminal:history" => Ok(json!(pty::load_history(&self.paths.data, str_arg(args, 0)))),
             "terminal:history-save" => pty::save_history(&self.paths.data, str_arg(args, 0), str_arg(args, 1)).map(|_| Value::Null),
             "terminal:export" => self.export_terminal(str_arg(args, 0), args.get(1).and_then(|value| value.as_str()).unwrap_or(""), &language),
+            "terminal:history-flushed" => {
+                *self.history_flushed.lock().expect("flush") = true;
+                Ok(Value::Null)
+            }
+            "transfer:pick" => self.transfer_pick(args, &language),
+            "transfer:download" => self.transfer_download(args, &language),
             "transfer:drop" => self.transfer_drop(args, &language),
             "transfer:cancel" => self.uploads.cancel(str_arg(args, 0), &language),
             "transfer:retry" => self.transfer_retry(str_arg(args, 0), &language),
@@ -140,7 +148,7 @@ impl Workbench {
             "app:update-install" => Ok(json!(self.update_install())),
             "app:meta" => Ok(json!({ "capture": std::env::var("AWB_CAPTURE").ok().as_deref() == Some("1"), "platform": node_platform(), "shots": std::env::var_os("AWB_SHOTS").is_some() })),
             "app:shot" => Ok(json!(false)),
-            "dialog:directory" => Ok(pick_directory()),
+            "dialog:directory" => self.pick_directory(&language),
             "dialog:picker" => self.picker(args.first().cloned().unwrap_or(json!({})), &language),
             "menu:app" => Ok(menu::app_menu(&language)),
             "menu:project" => self.project_menu(str_arg(args, 0), &language),
@@ -148,9 +156,13 @@ impl Workbench {
             "menu:terminal" => Ok(menu::terminal_menu(&language, args.first().unwrap_or(&Value::Null))),
             "menu:tree" => self.tree_template(str_arg(args, 0), str_arg(args, 1), bool_arg(args, 2).unwrap_or(false), &language),
             "menu:save" => Ok(menu::save_dialog(&language, str_arg(args, 0))),
-            "tree:menu" | "file:menu" | "terminal:menu" => Ok(Value::Null),
+            "tree:menu" => self.tree_template(str_arg(args, 0), str_arg(args, 1), bool_arg(args, 2).unwrap_or(false), &language),
+            "file:menu" => Ok(menu::file_menu(&language, args.first().unwrap_or(&Value::Null))),
+            "terminal:menu" => Ok(menu::terminal_menu(&language, args.first().unwrap_or(&Value::Null))),
             "tree:action" => self.tree_action(str_arg(args, 0), str_arg(args, 1), bool_arg(args, 2).unwrap_or(false), str_arg(args, 3), &language),
             "resources:targets" => Ok(Value::Array(resources::targets(&self.paths.data, &self.custom()))),
+            "resources:target" => resources::save_target(&self.paths.data, &self.custom(), args.first().unwrap_or(&Value::Null), &language).map(|_| Value::Null),
+            "resources:pick" => Ok(menu::choose_open_path(str_arg(args, 0))),
             "resources:list" => resources::list(&self.paths.data, &self.custom(), str_arg(args, 0), str_arg(args, 1), json_usize(args.get(2)), str_arg(args, 3), &language),
             "resources:toggle" => resources::toggle(&self.paths.data, &self.custom(), str_arg(args, 0), str_arg(args, 1), args.get(2).unwrap_or(&Value::Null), args.get(3).and_then(|value| value.as_bool()), &language).map(|_| Value::Null),
             "resources:detail" => resources::detail(&self.paths.data, &self.custom(), str_arg(args, 0), str_arg(args, 1), args.get(2).unwrap_or(&Value::Null), &language),
@@ -164,6 +176,9 @@ impl Workbench {
                 resources::import_skills(&self.resources, &self.paths.data, &self.custom(), str_arg(args, 0), args.get(1).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), names.as_ref(), &language)
             }
             "file:preview-url" => self.preview_url(args, &language),
+            "file:open-html" => self.open_html(str_arg(args, 0), str_arg(args, 1), &language),
+            "file:link" => self.file_link(str_arg(args, 0), str_arg(args, 1), str_arg(args, 2), &language),
+            "tree:reference" => self.tree_reference(str_arg(args, 0), str_arg(args, 1), str_arg(args, 3), str_arg(args, 2), &language),
             "diagram:mermaid" => self.preview.render_mermaid(str_arg(args, 0), &language).map(|svg| json!(svg)),
             "diagram:cancel" => { self.preview.cancel(); Ok(Value::Null) },
             _ => Err(translate(&language, "此功能尚未在 Rust 移植中实现：{{0}}", &[channel.to_string()])),
@@ -524,29 +539,41 @@ impl Workbench {
         let kind = request["kind"].as_str().unwrap_or("shell");
         let shell = request["shell"].as_str().unwrap_or("bash");
         let requested = request["agentSessionId"].as_str().filter(|value| !value.is_empty());
-        if kind != "shell" && requested.is_none() && !pty::load_history(&self.paths.data, &id).is_empty() {
-            return Err(translate(language, "旧远程 Agent 会话缺少原生 ID，原终端历史已保留；未创建空白对话", &[] as &[String]));
-        }
-        let (command, session) = self.resume_launch(&id, kind, shell, requested);
+        let session = self.resolve_legacy(id, kind, project["path"].as_str().unwrap_or(""), requested, true, language)?;
+        let (command, session) = self.resume_launch(id, kind, shell, session.as_deref());
         let restore = self.db.lock().expect("db")["settings"]["restore"] != false;
-        let mut info = self.pty.create_remote(&self.paths.data, &id, project["path"].as_str().unwrap_or(""), kind, shell, &command, session.as_deref(), restore, &host, language, self.emit.clone())?;
+        let mut info = self.pty.create_remote(&self.paths.data, id, project["path"].as_str().unwrap_or(""), kind, shell, &command, session.as_deref(), restore, &host, language, self.emit.clone())?;
         info.as_object_mut().expect("session").remove("type");
-        info["launchCommand"] = json!(command);
+        if info.get("launchCommand").and_then(|value| value.as_str()).unwrap_or("").is_empty() {
+            info["launchCommand"] = json!(command);
+        }
         return Ok(info);
     }
     let kind = request["kind"].as_str().unwrap_or("shell");
     let shell = request["shell"].as_str().unwrap_or("bash");
     let requested = request["agentSessionId"].as_str().filter(|value| !value.is_empty());
-    if kind != "shell" && requested.is_none() && !pty::load_history(&self.paths.data, &id).is_empty() {
-        return Err(translate(language, "无法唯一定位旧 Agent 对话，原终端历史已保留；未创建空白对话", &[] as &[String]));
-    }
-    let (command, session) = self.resume_launch(&id, kind, shell, requested);
+    let session = self.resolve_legacy(id, kind, project["path"].as_str().unwrap_or(""), requested, false, language)?;
+    let (command, session) = self.resume_launch(id, kind, shell, session.as_deref());
     let restore = self.db.lock().expect("db")["settings"]["restore"] != false;
-    let mut info = self.pty.create(&self.paths.data, &id, Path::new(project["path"].as_str().unwrap_or("")), kind, shell, &command, session.as_deref(), restore, language, self.emit.clone())?;
+    let mut info = self.pty.create(&self.paths.data, id, Path::new(project["path"].as_str().unwrap_or("")), kind, shell, &command, session.as_deref(), restore, language, self.emit.clone())?;
     info.as_object_mut().expect("session").remove("type");
-    info["launchCommand"] = json!(command);
+    if info.get("launchCommand").and_then(|value| value.as_str()).unwrap_or("").is_empty() {
+        info["launchCommand"] = json!(command);
+    }
     Ok(info)
 }
+
+    fn resolve_legacy(&self, id: &str, kind: &str, cwd: &str, requested: Option<&str>, remote: bool, language: &str) -> Result<Option<String>, String> {
+        if kind == "shell" { return Ok(None) }
+        if let Some(requested) = requested { return Ok(Some(requested.to_string())) }
+        let history = pty::load_history(&self.paths.data, id);
+        if history.is_empty() { return Ok(None) }
+        if remote { return Err(translate(language, "旧远程 Agent 会话缺少原生 ID，原终端历史已保留；未创建空白对话", &[] as &[String])) }
+        match legacy::locate(kind, cwd, &history, &self.paths.data, id, language)? {
+            Some(found) => Ok(Some(found)),
+            None => Err(translate(language, "无法唯一定位旧 Agent 对话，原终端历史已保留；未创建空白对话", &[] as &[String])),
+        }
+    }
 
 fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&str>) -> (String, Option<String>) {
     if kind == "shell" { return (String::new(), None); }
@@ -737,15 +764,16 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
         let name = str_arg(args, 2);
         let directory = bool_arg(args, 3)?;
         if let Some((host, root)) = self.remote_place(project_id, language)? {
-            if host["platform"] != "windows" {
-                return Err(translate(language, "远程项目的该操作尚未在 Rust 移植中实现", &[] as &[String]));
-            }
             files::validate_entry_name(name, true, language)?;
             let relative_parent = files::clean_relative(parent, language)?;
             let relative = if relative_parent.is_empty() { name.to_string() } else { format!("{relative_parent}/{name}") };
-            let parent_abs = if relative_parent.is_empty() { root.clone() } else { format!("{root}\\{}", relative_parent.replace('/', "\\")) };
-            let dest_abs = format!("{root}\\{}", relative.replace('/', "\\"));
-            let script = ssh::windows_create_script(&root, &parent_abs, &dest_abs, directory, language);
+            let script = if host["platform"] == "windows" {
+                let parent_abs = if relative_parent.is_empty() { root.clone() } else { format!("{root}\\{}", relative_parent.replace('/', "\\")) };
+                let dest_abs = format!("{root}\\{}", relative.replace('/', "\\"));
+                ssh::windows_create_script(&root, &parent_abs, &dest_abs, directory, language)
+            } else {
+                ssh::linux_create_command(&root, &relative_parent, name, directory, language)
+            };
             ssh::run(&self.paths.data, &host, &script, None, language)?;
             return Ok(json!(relative));
         }
@@ -758,12 +786,13 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
         let name = str_arg(args, 2);
         let directory = bool_arg(args, 3)?;
         if let Some((host, root)) = self.remote_place(project_id, language)? {
-            if host["platform"] != "windows" {
-                return Err(translate(language, "远程项目的该操作尚未在 Rust 移植中实现", &[] as &[String]));
-            }
             let relative = files::clean_relative(rel, language)?;
             let parent = relative.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("");
-            let script = ssh::windows_rename_script(&root, &relative, name, parent, directory, language)?;
+            let script = if host["platform"] == "windows" {
+                ssh::windows_rename_script(&root, &relative, name, parent, directory, language)?
+            } else {
+                ssh::linux_rename_command(&root, &relative, name, directory, parent, language)
+            };
             ssh::run(&self.paths.data, &host, &script, None, language)?;
             let next = if parent.is_empty() { name.to_string() } else { format!("{parent}/{name}") };
             return Ok(json!(next));
@@ -777,15 +806,16 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
         let destination = str_arg(args, 2);
         let directory = bool_arg(args, 3)?;
         if let Some((host, root)) = self.remote_place(project_id, language)? {
-            if host["platform"] != "windows" {
-                return Err(translate(language, "远程项目的该操作尚未在 Rust 移植中实现", &[] as &[String]));
-            }
             let relative = files::clean_relative(rel, language)?;
-            let name = relative.rsplit_once('/').map(|(_, name)| name).unwrap_or(&relative);
+            let name = relative.rsplit_once('/').map(|(_, name)| name).unwrap_or(&relative).to_string();
             let parent = files::clean_relative(destination, language)?;
-            let script = ssh::windows_rename_script(&root, &relative, name, &parent, directory, language)?;
+            let script = if host["platform"] == "windows" {
+                ssh::windows_rename_script(&root, &relative, &name, &parent, directory, language)?
+            } else {
+                ssh::linux_rename_command(&root, &relative, &name, directory, &parent, language)
+            };
             ssh::run(&self.paths.data, &host, &script, None, language)?;
-            let next = if parent.is_empty() { name.to_string() } else { format!("{parent}/{name}") };
+            let next = if parent.is_empty() { name } else { format!("{parent}/{name}") };
             return Ok(json!(next));
         }
         self.with_local(project_id, language, |root| files::move_entry(root, rel, destination, directory, language).map(|path| json!(path)))
@@ -993,6 +1023,105 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
             None => Value::Null,
         }
     }
+    fn transfer_pick(&self, args: &[Value], language: &str) -> Result<Value, String> {
+        let kind = str_arg(args, 2);
+        if kind != "files" && kind != "directory" { return Err(translate(language, "导入参数无效", &[] as &[String])) }
+        let paths = menu::choose_open_paths(kind);
+        if paths.is_empty() { return Ok(Value::Null) }
+        let project = str_arg(args, 0);
+        let parent = str_arg(args, 1);
+        let sources = Value::Array(paths.into_iter().map(|path| json!(path)).collect());
+        self.transfer_drop(&[json!(project), json!(parent), sources], language)
+    }
+
+    fn transfer_download(&self, args: &[Value], language: &str) -> Result<Value, String> {
+        let Some((host, root)) = self.remote_place(str_arg(args, 0), language)? else { return Err(translate(language, "请选择远程对象", &[] as &[String])) };
+        let relative = files::clean_relative(str_arg(args, 1), language)?;
+        if relative.is_empty() { return Err(translate(language, "请选择远程对象", &[] as &[String])) }
+        let directory = bool_arg(args, 2).map_err(|_| translate(language, "下载参数无效", &[] as &[String]))?;
+        let name = relative.rsplit('/').next().unwrap_or(&relative);
+        let Some(chosen) = menu::choose_save_path(language, "download")? else { return Ok(Value::Null) };
+        let destination = PathBuf::from(chosen);
+        if destination.as_os_str().is_empty() { return Ok(Value::Null) }
+        if destination.exists() { return Err(translate(language, "目标已存在，请选择新的文件名或目录", &[] as &[String])) }
+        let remote = format!("{root}/{}", relative);
+        let script = if directory {
+            format!("tar -C {} -cf - {}", ssh::bash_quote(&remote.rsplit_once('/').map(|(parent, _)| parent).unwrap_or(&root)), ssh::bash_quote(name))
+        } else {
+            format!("cat -- {}", ssh::bash_quote(&remote))
+        };
+        let bytes = ssh::run(&self.paths.data, &host, &script, None, language).map_err(|_| translate(language, "下载失败", &[] as &[String]))?;
+        if let Some(parent) = destination.parent() { std::fs::create_dir_all(parent).map_err(|error| error.to_string())?; }
+        std::fs::write(&destination, bytes.as_bytes()).map_err(|_| translate(language, "下载失败", &[] as &[String]))?;
+        Ok(json!(destination.display().to_string()))
+    }
+
+    fn open_html(&self, project_id: &str, relative: &str, language: &str) -> Result<Value, String> {
+        let lower = relative.to_ascii_lowercase();
+        if !lower.ends_with(".html") && !lower.ends_with(".htm") { return Err(translate(language, "仅支持在浏览器中预览 HTML 文件", &[] as &[String])) }
+        let url = self.preview_url(&[json!(project_id), json!(relative), Value::Null], language)?;
+        let href = url.as_str().unwrap_or("").to_string();
+        menu::open_external(&href);
+        Ok(json!(href))
+    }
+
+    fn file_link(&self, project_id: &str, source: &str, href: &str, language: &str) -> Result<Value, String> {
+        if href.len() > 8192 { return Err(translate(language, "无效的链接", &[] as &[String])) }
+        let trimmed = href.trim();
+        if trimmed.contains("://") || trimmed.starts_with("//") {
+            if !web_link(trimmed) { return Err(translate(language, "仅支持网页链接和项目内文件链接", &[] as &[String])) }
+            menu::open_external(trimmed);
+            return Ok(Value::Null);
+        }
+        let project = self.project(project_id, language)?;
+        let root = PathBuf::from(project["path"].as_str().unwrap_or(""));
+        let base = root.join(source);
+        let (path_part, anchor) = trimmed.split_once('#').map(|(path, anchor)| (path, Some(anchor.to_string()))).unwrap_or((trimmed, None));
+        let path_part = path_part.split('?').next().unwrap_or("");
+        let decoded = percent_decode(path_part);
+        let joined = if decoded.starts_with('/') { root.join(decoded.trim_start_matches('/')) } else { base.parent().unwrap_or(&root).join(decoded) };
+        let relative = joined.strip_prefix(&root).map_err(|_| translate(language, "仅支持网页链接和项目内文件链接", &[] as &[String]))?;
+        Ok(json!({ "path": relative.to_string_lossy().replace('\\', "/"), "anchor": anchor }))
+    }
+
+    fn tree_reference(&self, project_id: &str, relative: &str, shell: &str, kind: &str, language: &str) -> Result<Value, String> {
+        if relative.chars().any(|ch| (ch as u32) < 32 || ch as u32 == 127) { return Err(translate(language, "此路径包含终端控制字符，无法引用", &[] as &[String])) }
+        let project = self.project(project_id, language)?;
+        let path = PathBuf::from(project["path"].as_str().unwrap_or("")).join(relative);
+        if project["host"] == "local" && !path.is_file() { return Err(translate(language, "请选择文件", &[] as &[String])) }
+        if kind != "shell" { return Ok(json!(path.display().to_string())) }
+        let text = path.display().to_string();
+        let quoted = match shell {
+            "pwsh" => ssh::ps_quote(&text),
+            "cmd" => {
+                if text.contains(['%', '!', '"']) { return Err(translate(language, "此路径无法安全引用到 CMD", &[] as &[String])) }
+                format!("\"{text}\"")
+            }
+            "bash" | "zsh" => ssh::bash_quote(&text.replace('\\', "/")),
+            _ => return Err(translate(language, "不支持此终端", &[] as &[String])),
+        };
+        Ok(json!(quoted))
+    }
+
+    fn pick_directory(&self, language: &str) -> Result<Value, String> {
+        if let Ok(value) = std::env::var("AWB_DIRECTORY") {
+            return Ok(if value.is_empty() { Value::Null } else { json!(value) });
+        }
+        if std::env::var("AWB_SKIP_ZENITY").ok().as_deref() != Some("1") {
+            for program in ["zenity", "kdialog"] {
+                let mut command = std::process::Command::new(program);
+                if program == "zenity" { command.args(["--file-selection", "--directory"]); }
+                else { command.args(["--getexistingdirectory", &std::env::var("HOME").unwrap_or_else(|_| "/".into())]); }
+                if let Ok(output) = command.output() {
+                    if output.status.success() {
+                        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        if !path.is_empty() { return Ok(json!(path)) }
+                    }
+                }
+            }
+        }
+        self.picker(json!({ "op": "open", "hostId": "local", "initial": std::env::var("HOME").unwrap_or_else(|_| "/".into()) }), language)
+    }
 }
 
 fn session_ids(db: &Value) -> Vec<String> {
@@ -1034,15 +1163,30 @@ fn validate_resources(target: &Value, language: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn pick_directory() -> Value {
-    let output = Command::new("zenity").args(["--file-selection", "--directory"]).output();
-    match output {
-        Ok(output) if output.status.success() => {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if path.is_empty() { Value::Null } else { json!(path) }
+
+fn web_link(href: &str) -> bool {
+    let rest = href.strip_prefix("https://").or_else(|| href.strip_prefix("http://"));
+    let Some(rest) = rest else { return false };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    !host.is_empty() && !host.contains('@')
+}
+
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or(""), 16) {
+                out.push(byte);
+                index += 3;
+                continue;
+            }
         }
-        _ => Value::Null,
+        out.push(bytes[index]);
+        index += 1;
     }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn node_platform() -> &'static str {

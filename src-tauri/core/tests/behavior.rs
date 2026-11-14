@@ -483,7 +483,8 @@ fn install_ssh_shim(root: &std::path::Path) -> (PathBuf, PathBuf) {
     fs::create_dir_all(&bin).unwrap();
     let shim = bin.join("ssh");
     let log = root.join("ssh.log");
-    fs::write(&shim, "#!/bin/bash\nlog=\"${AWB_SSH_LOG:?}\"\n{\n  printf 'CALL\\036%s' \"${SSH_AUTH_SOCK-}\"\n  for arg in \"$@\"; do printf '\\036%s' \"$arg\"; done\n  printf '\\n'\n} >> \"$log\"\nlast=\"${@: -1}\"\nkey=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [[ \"$prev\" == -i ]]; then key=\"$arg\"; fi\n  prev=\"$arg\"\ndone\nif [[ -n \"$key\" ]]; then\n  [[ -f \"$key\" ]] || exit 2\n  grep -q \"OPENSSH PRIVATE KEY\" \"$key\" || exit 3\n  printf '%s\\0' \"$@\" | grep -q 'IdentitiesOnly=yes' || exit 4\nelse\n  [[ -S \"${SSH_AUTH_SOCK-}\" ]] || exit 5\nfi\nif [[ \"$last\" == *\"-EncodedCommand \"* ]]; then exit 0; fi\nif [[ \"$last\" == *\"uname -s\"* ]]; then\n  if [[ -n \"${AWB_SSH_OS:-}\" ]]; then printf '%s\\n' \"$AWB_SSH_OS\"; else printf 'Linux\\n'; fi\n  exit 0\nfi\nbash -lc \"$last\"\n").unwrap();
+    fs::write(bin.join("upload-op.py"), include_str!("upload-op.py")).unwrap();
+    fs::write(&shim, "#!/bin/bash\nlog=\"${AWB_SSH_LOG:?}\"\n{\n  printf 'CALL\\036%s' \"${SSH_AUTH_SOCK-}\"\n  for arg in \"$@\"; do printf '\\036%s' \"$arg\"; done\n  printf '\\n'\n} >> \"$log\"\nlast=\"${@: -1}\"\nkey=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [[ \"$prev\" == -i ]]; then key=\"$arg\"; fi\n  prev=\"$arg\"\ndone\nif [[ -n \"$key\" ]]; then\n  [[ -f \"$key\" ]] || exit 2\n  grep -q \"OPENSSH PRIVATE KEY\" \"$key\" || exit 3\n  printf '%s\\0' \"$@\" | grep -q 'IdentitiesOnly=yes' || exit 4\nelse\n  [[ -S \"${SSH_AUTH_SOCK-}\" ]] || exit 5\nfi\nif [[ \"$last\" == *\"-EncodedCommand \"* ]]; then\n  encoded=\"${last##*-EncodedCommand }\"\n  encoded=\"${encoded%% *}\"\n  script=$(printf '%s' \"$encoded\" | base64 -d | iconv -f UTF-16LE -t UTF-8 || true)\n  if [[ \"$script\" == *\"AWB_UPLOAD_OP\"* ]]; then\n    op=$(printf '%s\\n' \"$script\" | sed -n 's/.*AWB_UPLOAD_OP \\([a-z]*\\).*/\\1/p' | head -1)\n    exec python3 \"$(dirname \"$0\")/upload-op.py\" \"$op\"\n  fi\n  exit 0\nfi\nif [[ \"$last\" == *\"uname -s\"* ]]; then\n  if [[ -n \"${AWB_SSH_OS:-}\" ]]; then printf '%s\\n' \"$AWB_SSH_OS\"; else printf 'Linux\\n'; fi\n  exit 0\nfi\nbash -lc \"$last\"\n").unwrap();
     use std::os::unix::fs::PermissionsExt;
     let mut permissions = fs::metadata(&shim).unwrap().permissions();
     permissions.set_mode(0o755);
@@ -1799,5 +1800,400 @@ fn windows_remote_scripts_translate_only_the_fixed_errors() {
     assert!(!search.contains("UNIQUE_QUERY_值"), "{search}");
     assert!(search.contains("Get-ChildItem") && search.contains("ConvertFrom-Json") && search.contains("[Console]::In.ReadToEnd()"));
     assert!(!joined.contains("do-not-leak") && !joined.contains("WINKEYMATERIAL"));
+    let _ = fs::remove_dir_all(root);
+}
+
+fn assert_implemented(value: Result<serde_json::Value, String>) -> serde_json::Value {
+    match value {
+        Ok(value) => value,
+        Err(error) => {
+            assert!(!error.contains("尚未在 Rust 移植中实现") && !error.contains("尚未实现"), "{error}");
+            panic!("{error}");
+        }
+    }
+}
+
+#[test]
+fn wired_channels_do_real_work() {
+    let _lock = env_lock();
+    let root = temp_dir("wired");
+    let project = root.join("project");
+    let remote_root = root.join("remote");
+    fs::create_dir_all(project.join("docs")).unwrap();
+    fs::create_dir_all(&remote_root).unwrap();
+    fs::write(project.join("docs/page.html"), "<p>hello</p>").unwrap();
+    fs::write(project.join("docs/note.txt"), "quoted").unwrap();
+    fs::write(remote_root.join("payload.txt"), "remote-bytes").unwrap();
+    let source = root.join("incoming.txt");
+    fs::write(&source, "picked").unwrap();
+    let home = root.join("home");
+    fs::create_dir_all(home.join(".ssh")).unwrap();
+    fs::write(home.join(".ssh/id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----\nWIREKEY\n-----END OPENSSH PRIVATE KEY-----\n").unwrap();
+    let (shim, log) = install_ssh_shim(&root);
+    let sock = root.join("agent.sock");
+    let _agent = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    let _env = ssh_env(&home, &shim, &log, &sock);
+    let save = root.join("saved-payload.txt");
+    let open_log = root.join("open.log");
+    let _save = var_guard("AWB_SAVE_PATH", save.to_str().unwrap());
+    let _open_log = var_guard("AWB_OPEN_LOG", open_log.to_str().unwrap());
+    let _open_bin = var_guard("AWB_OPEN_BIN", "true");
+    let _pick = var_guard("AWB_PICK_PATHS", source.to_str().unwrap());
+    let (bench, _) = workbench(&root);
+    let local = bench.dispatch("db:get", &[]).unwrap()["db"]["hosts"][0].clone();
+    bench.dispatch("db:hosts", &[json!([local, { "id": "remote", "name": "Remote", "addr": "127.0.0.1", "port": 22, "user": "wire", "auth": "key", "on": true, "platform": "linux" }])]).unwrap();
+    bench.dispatch("db:projects", &[json!([
+        { "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" },
+        { "id": "r", "name": "R", "host": "remote", "path": remote_root.display().to_string(), "branch": "", "agent": "shell" }
+    ])]).unwrap();
+    bench.dispatch("db:custom", &[json!([{ "id": "mine", "name": "Mine", "command": "echo" }])]).unwrap();
+    let picked = assert_implemented(bench.dispatch("transfer:pick", &[json!("p"), json!(""), json!("files")]));
+    assert!(picked.as_str().is_some(), "{picked}");
+    let downloaded = assert_implemented(bench.dispatch("transfer:download", &[json!("r"), json!("payload.txt"), json!(false)]));
+    assert_eq!(fs::read_to_string(downloaded.as_str().unwrap()).unwrap(), "remote-bytes");
+    let opened = assert_implemented(bench.dispatch("file:open-html", &[json!("p"), json!("docs/page.html")]));
+    assert!(opened.as_str().unwrap_or("").contains("page.html"), "{opened}");
+    assert!(fs::read_to_string(&open_log).unwrap().contains("page.html"));
+    let linked = assert_implemented(bench.dispatch("file:link", &[json!("p"), json!("docs/page.html"), json!("note.txt#part")]));
+    assert_eq!(linked["path"], "docs/note.txt");
+    assert_eq!(linked["anchor"], "part");
+    let external = assert_implemented(bench.dispatch("file:link", &[json!("p"), json!("docs/page.html"), json!("https://example.com/docs")]));
+    assert!(external.is_null());
+    let quoted = assert_implemented(bench.dispatch("tree:reference", &[json!("p"), json!("docs/note.txt"), json!("shell"), json!("bash")]));
+    assert!(quoted.as_str().unwrap_or("").contains("note.txt"), "{quoted}");
+    let resource = assert_implemented(bench.dispatch("resources:pick", &[json!("config")]));
+    assert_eq!(resource, json!(source.display().to_string()));
+    assert_implemented(bench.dispatch("resources:target", &[json!({ "id": "mine", "mcpPath": "/tmp/mcp.json", "skillPath": "/tmp/skills", "format": "standard" })]));
+    assert!(fs::read_to_string(root.join("data/resource-targets.json")).unwrap().contains("/tmp/mcp.json"));
+    let builtin = bench.dispatch("resources:target", &[json!({ "id": "claude", "mcpPath": "/tmp/mcp.json", "format": "standard" })]).unwrap_err();
+    assert!(builtin.contains("仅自定义 Agent"));
+    let flushed = assert_implemented(bench.dispatch("terminal:history-flushed", &[]));
+    assert!(flushed.is_null());
+    let rejected = bench.dispatch("file:open-html", &[json!("p"), json!("docs/note.txt")]).unwrap_err();
+    assert!(!rejected.contains("尚未"), "{rejected}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn linux_remote_create_rename_and_move() {
+    let _lock = env_lock();
+    let root = temp_dir("linux-tree");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let home = root.join("home");
+    fs::create_dir_all(home.join(".ssh")).unwrap();
+    fs::write(home.join(".ssh/id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----\nTREEKEY\n-----END OPENSSH PRIVATE KEY-----\n").unwrap();
+    let (shim, log) = install_ssh_shim(&root);
+    let sock = root.join("agent.sock");
+    let _agent = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    let _env = ssh_env(&home, &shim, &log, &sock);
+    let (bench, _) = workbench(&root);
+    let local = bench.dispatch("db:get", &[]).unwrap()["db"]["hosts"][0].clone();
+    bench.dispatch("db:hosts", &[json!([local, { "id": "remote", "name": "Remote", "addr": "127.0.0.1", "port": 22, "user": "tree", "auth": "key", "on": true, "platform": "linux" }])]).unwrap();
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "remote", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    let created = assert_implemented(bench.dispatch("tree:create", &[json!("p"), json!(""), json!("note.txt"), json!(false)]));
+    assert_eq!(created, json!("note.txt"));
+    assert!(project.join("note.txt").is_file());
+    let renamed = assert_implemented(bench.dispatch("tree:rename", &[json!("p"), json!("note.txt"), json!("renamed.txt"), json!(false)]));
+    assert_eq!(renamed, json!("renamed.txt"));
+    assert!(project.join("renamed.txt").is_file());
+    assert_implemented(bench.dispatch("tree:create", &[json!("p"), json!(""), json!("box"), json!(true)]));
+    let moved = assert_implemented(bench.dispatch("tree:move", &[json!("p"), json!("renamed.txt"), json!("box"), json!(false)]));
+    assert_eq!(moved, json!("box/renamed.txt"));
+    assert!(project.join("box/renamed.txt").is_file());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn windows_remote_upload_publishes_with_powershell_and_keeps_the_old_directory() {
+    let _lock = env_lock();
+    let root = temp_dir("win-upload");
+    let project = root.join("project");
+    let sources = root.join("sources");
+    fs::create_dir_all(project.join("same folder")).unwrap();
+    fs::write(project.join("same folder/old-only.txt"), "keep-me").unwrap();
+    fs::create_dir_all(sources.join("same folder")).unwrap();
+    fs::write(sources.join("same folder/note.txt"), "new").unwrap();
+    let home = root.join("home");
+    fs::create_dir_all(home.join(".ssh")).unwrap();
+    fs::write(home.join(".ssh/id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----\nWINUPKEY\n-----END OPENSSH PRIVATE KEY-----\n").unwrap();
+    let (shim, log) = install_ssh_shim(&root);
+    let sock = root.join("agent.sock");
+    let _agent = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    let _env = ssh_env(&home, &shim, &log, &sock);
+    let hold = root.join("hold");
+    let _os = var_guard("AWB_SSH_OS", "Windows_NT");
+    let _hold = var_guard("AWB_UPLOAD_HOLD", hold.to_str().unwrap());
+    let (bench, events) = workbench(&root);
+    let local = bench.dispatch("db:get", &[]).unwrap()["db"]["hosts"][0].clone();
+    bench.dispatch("db:hosts", &[json!([local, { "id": "remote", "name": "Remote", "addr": "127.0.0.1", "port": 22, "user": "up", "auth": "key", "on": true, "platform": "windows" }])]).unwrap();
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "remote", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    let started = assert_implemented(bench.dispatch("transfer:drop", &[json!("p"), json!(""), json!([sources.join("same folder").display().to_string()])]));
+    let id = started.as_str().unwrap().to_string();
+    let ready = hold.with_extension("ready");
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    while !ready.exists() {
+        if std::time::Instant::now() > deadline { panic!("stage did not finish: {}", fs::read_to_string(&log).unwrap_or_default()); }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(fs::read_to_string(project.join("same folder/old-only.txt")).unwrap(), "keep-me");
+    fs::write(hold.with_extension("cancel"), "1").unwrap();
+    let done = wait_upload(&events, &id, "cancelled");
+    assert_eq!(done["payload"]["phase"], "cancelled");
+    assert_eq!(fs::read_to_string(project.join("same folder/old-only.txt")).unwrap(), "keep-me");
+    assert!(fs::read_dir(&project).unwrap().flatten().all(|entry| !entry.file_name().to_string_lossy().starts_with(".awb-upload-")));
+    let scripts: Vec<String> = parse_ssh_calls(&fs::read_to_string(&log).unwrap()).iter().filter_map(|call| call.args.last().and_then(|arg| pello_core::ssh::decode_powershell_command(arg))).collect();
+    let joined = scripts.join("\n");
+    assert!(joined.contains("Get-AwbEntryVersion") && joined.contains("Move-AwbEntry") && joined.contains("Remove-AwbStage"), "decoded={} log={}", scripts.len(), fs::read_to_string(&log).unwrap_or_default().chars().take(500).collect::<String>());
+    assert!(!joined.contains("python3 -c"), "{joined}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn pty_close_kills_the_leaf_before_the_root() {
+    let root = temp_dir("close-order");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let log = root.join("shutdown.log");
+    let _log = var_guard("AWB_SHUTDOWN_LOG", log.to_str().unwrap());
+    let (bench, _) = workbench(&root);
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    let info = bench.dispatch("pty:create", &[json!({ "id": "term-close", "projectId": "p", "kind": "shell", "shell": "bash" })]).unwrap();
+    let root_pid = info["rootPid"].as_u64().unwrap() as u32;
+    wait_terminal(&bench, "term-close", true, "idle");
+    bench.dispatch("pty:write", &[json!("term-close"), json!("sleep 40 &\n"), json!(false)]).unwrap();
+    let sleep_pid = wait_descendant(root_pid, "sleep");
+    bench.dispatch("pty:close", &[json!("term-close")]).unwrap();
+    let text = fs::read_to_string(&log).unwrap_or_default();
+    let kill_at = text.find(&format!("kill {sleep_pid}")).unwrap_or_else(|| panic!("missing leaf kill:\n{text}"));
+    let end_at = text.find(&format!("end {root_pid}")).unwrap_or_else(|| panic!("missing root end:\n{text}"));
+    let wait_at = text.find(&format!("wait {root_pid}")).unwrap_or_else(|| panic!("missing native wait:\n{text}"));
+    assert!(kill_at < end_at && end_at < wait_at, "{text}");
+    assert!(!Path::new(&format!("/proc/{sleep_pid}")).exists());
+    assert!(bench.dispatch("pty:snapshot", &[json!("term-close")]).unwrap().is_null());
+    let _ = fs::remove_dir_all(root);
+}
+
+fn wait_descendant(root: u32, name: &str) -> u32 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    loop {
+        if let Some(pid) = find_descendant(root, name) { return pid }
+        if std::time::Instant::now() > deadline { panic!("no {name} under {root}") }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+}
+
+fn find_descendant(root: u32, name: &str) -> Option<u32> {
+    let mut children: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
+    let mut names = std::collections::HashMap::new();
+    let Ok(entries) = fs::read_dir("/proc") else { return None };
+    for entry in entries.flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else { continue };
+        let Ok(stat) = fs::read_to_string(entry.path().join("stat")) else { continue };
+        let Some(end) = stat.rfind(')') else { continue };
+        let start = stat.find('(').unwrap_or(0);
+        names.insert(pid, stat[start + 1..end].to_string());
+        let mut fields = stat[end + 1..].split_whitespace();
+        let _state = fields.next();
+        let parent = fields.next().and_then(|value| value.parse().ok()).unwrap_or(0);
+        children.entry(parent).or_default().push(pid);
+    }
+    let mut stack = children.get(&root).cloned().unwrap_or_default();
+    while let Some(pid) = stack.pop() {
+        if names.get(&pid).map(|value| value == name).unwrap_or(false) { return Some(pid) }
+        stack.extend(children.get(&pid).cloned().unwrap_or_default());
+    }
+    None
+}
+
+#[test]
+fn context_menus_return_real_items_and_startup_installs_the_bar() {
+    let root = temp_dir("menus");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let (bench, _) = workbench(&root);
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    let tree = assert_implemented(bench.dispatch("tree:menu", &[json!("p"), json!(""), json!(true)]));
+    assert!(tree.as_array().unwrap().iter().any(|item| item["id"] == "create-file"), "{tree}");
+    let file = assert_implemented(bench.dispatch("file:menu", &[json!({ "visual": false, "undo": true, "redo": false, "editable": true })]));
+    assert!(file.as_array().unwrap().iter().any(|item| item["id"] == "save"), "{file}");
+    let terminal = assert_implemented(bench.dispatch("terminal:menu", &[json!({ "horizontal": true, "vertical": false, "merge": false })]));
+    assert!(terminal.as_array().unwrap().iter().any(|item| item["id"] == "export-history"), "{terminal}");
+    let shell = include_str!("../../src/lib.rs");
+    assert!(shell.contains("install_app_menu"));
+    assert!(shell.contains("app.set_menu"));
+    assert!(shell.contains("try_recv()"));
+    assert!(!shell.contains("from_secs(120)"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn local_directory_dialog_continues_into_the_picker() {
+    let _lock = env_lock();
+    let root = temp_dir("picker-local");
+    let project = root.join("project");
+    fs::create_dir_all(project.join("alpha")).unwrap();
+    let _skip = var_guard("AWB_SKIP_ZENITY", "1");
+    let (bench, _) = workbench(&root);
+    let opened = assert_implemented(bench.dispatch("dialog:directory", &[]));
+    assert!(opened["id"].as_str().unwrap_or("").starts_with("pick"), "{opened}");
+    assert!(opened["dirs"].is_array(), "{opened}");
+    assert!(opened.get("path").is_some());
+    let browser = include_str!("../../../src/renderer/DirectoryBrowser.tsx");
+    assert!(browser.contains("picker("));
+    assert!(!browser.contains("listDir("));
+    let dialogs = include_str!("../../../src/renderer/Dialogs.tsx");
+    assert!(dialogs.contains("setBrowsing(true)"));
+    assert!(!dialogs.contains("pickDirectory()"));
+    let temporary = include_str!("../../../src/renderer/TemporarySessionDialog.tsx");
+    assert!(temporary.contains("DirectoryBrowser"));
+    assert!(temporary.contains("hostId=\"local\""));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn pane_split_keeps_the_terminal_and_claude_gets_settings() {
+    let root = temp_dir("split-settings");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let (bench, _) = workbench(&root);
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "claude" }])]).unwrap();
+    let original = bench.dispatch("pty:create", &[json!({ "id": "term-split", "projectId": "p", "kind": "shell", "shell": "bash" })]).unwrap();
+    let born = original["born"].clone();
+    let pid = original["rootPid"].as_u64().unwrap();
+    let environ = fs::read(format!("/proc/{pid}/environ")).unwrap_or_default();
+    let environ = String::from_utf8_lossy(&environ);
+    assert!(environ.contains("PI_PROGRAM_STATUS=1"), "{environ}");
+    wait_terminal(&bench, "term-split", true, "idle");
+    let split = assert_implemented(bench.dispatch("terminal:split", &[json!({ "projectId": "p", "sessionId": "s", "termId": "term-split", "direction": "right" })]));
+    assert_ne!(split["id"], "term-split");
+    assert_eq!(bench.dispatch("pty:snapshot", &[json!("term-split")]).unwrap()["born"], born);
+    assert!(bench.dispatch("pty:snapshot", &[json!(split["id"].as_str().unwrap())]).unwrap()["id"] == split["id"]);
+    let claude = assert_implemented(bench.dispatch("pty:create", &[json!({ "id": "claude-1", "projectId": "p", "kind": "claude", "shell": "bash" })]));
+    let command = claude["launchCommand"].as_str().unwrap_or("");
+    assert!(command.contains("--settings"), "{command}");
+    let settings = command.split("--settings").nth(1).unwrap_or("").trim().trim_matches('\'').trim_matches('"');
+    let body = fs::read_to_string(settings).unwrap_or_else(|error| panic!("{error}: {settings} from {command}"));
+    assert!(body.contains("127.0.0.1") && body.contains("hooks") && body.contains("SessionStart"), "{body}");
+    let app = include_str!("../../../src/renderer/App.tsx");
+    let handler = app.split("onSplitTerm={async").nth(1).unwrap().split("onClose").next().unwrap();
+    assert!(handler.contains("terminalSplit"));
+    assert!(!handler.contains("ptyCreate") && !handler.contains("openTerm"));
+    bench.dispatch("pty:close", &[json!("term-split")]).unwrap();
+    bench.dispatch("pty:close", &[json!(split["id"].as_str().unwrap())]).unwrap();
+    bench.dispatch("pty:close", &[json!("claude-1")]).unwrap();
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn legacy_history_uses_the_unique_message_and_keeps_failures() {
+    let _lock = env_lock();
+    let root = temp_dir("legacy");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let claude = root.join("claude");
+    let marker = "unique-legacy-marker-alpha-one-23456789";
+    let other = "different-legacy-marker-beta-two-987654321";
+    let project_path = fs::canonicalize(&project).unwrap();
+    let session_dir = claude.join("projects").join("one");
+    fs::create_dir_all(&session_dir).unwrap();
+    let cwd = project_path.display().to_string();
+    let row = |id: &str, text: &str| {
+        let value = json!({ "sessionId": id, "cwd": cwd, "message": { "role": "user", "content": text } });
+        format!("{value}\n")
+    };
+    fs::write(session_dir.join("old.jsonl"), row("old-session-id", marker)).unwrap();
+    fs::write(session_dir.join("new.jsonl"), row("new-session-id", other)).unwrap();
+    let _claude = var_guard("CLAUDE_CONFIG_DIR", claude.to_str().unwrap());
+    let (bench, _) = workbench(&root);
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "claude" }])]).unwrap();
+    bench.dispatch("terminal:history-save", &[json!("old-term"), json!(marker)]).unwrap();
+    let resumed = assert_implemented(bench.dispatch("pty:create", &[json!({ "id": "old-term", "projectId": "p", "kind": "claude", "shell": "bash" })]));
+    assert_eq!(resumed["agentSessionId"], "old-session-id");
+    assert!(resumed["launchCommand"].as_str().unwrap_or("").contains("--resume"));
+    assert!(!resumed["launchCommand"].as_str().unwrap_or("").contains("new-session-id"));
+    bench.dispatch("pty:close", &[json!("old-term")]).unwrap();
+    bench.dispatch("terminal:history-save", &[json!("both-term"), json!(format!("{marker}\n{other}"))]).unwrap();
+    let multiple = bench.dispatch("pty:create", &[json!({ "id": "both-term", "projectId": "p", "kind": "claude", "shell": "bash" })]).unwrap_err();
+    assert!(multiple.contains("无法唯一定位旧 Agent 对话"), "{multiple}");
+    assert!(bench.dispatch("pty:snapshot", &[json!("both-term")]).unwrap().is_null());
+    assert!(fs::read_to_string(root.join("data/terminal-history").join(format!("{}.log", pello_core::pty::history_name("both-term")))).unwrap().contains(marker));
+    bench.dispatch("terminal:history-save", &[json!("none-term"), json!("this history matches nothing at all in the store")]).unwrap();
+    let missing = bench.dispatch("pty:create", &[json!({ "id": "none-term", "projectId": "p", "kind": "claude", "shell": "bash" })]).unwrap_err();
+    assert!(missing.contains("无法唯一定位旧 Agent 对话"), "{missing}");
+    assert!(bench.dispatch("pty:snapshot", &[json!("none-term")]).unwrap().is_null());
+    let pi = root.join("pi-sessions");
+    fs::create_dir_all(&pi).unwrap();
+    let original = pi.join("chat.jsonl");
+    fs::write(&original, row("pi-session", marker)).unwrap();
+    let _pi = var_guard("PI_CODING_AGENT_SESSION_DIR", pi.to_str().unwrap());
+    bench.dispatch("terminal:history-save", &[json!("pi-term"), json!(marker)]).unwrap();
+    let copied = assert_implemented(bench.dispatch("pty:create", &[json!({ "id": "pi-term", "projectId": "p", "kind": "pi", "shell": "bash" })]));
+    assert_eq!(copied["agentSessionId"], "pello:directory");
+    let command = copied["launchCommand"].as_str().unwrap_or("");
+    assert!(command.contains("--session-dir") && command.contains("--continue"), "{command}");
+    assert_eq!(fs::read_to_string(&original).unwrap(), row("pi-session", marker));
+    let destination = root.join("data/agent-sessions").join(pello_core::pty::history_name("pi-term")).join("chat.jsonl");
+    assert_eq!(fs::read_to_string(&destination).unwrap(), fs::read_to_string(&original).unwrap());
+    bench.dispatch("pty:close", &[json!("pi-term")]).unwrap();
+    let home = root.join("home");
+    fs::create_dir_all(home.join(".ssh")).unwrap();
+    fs::write(home.join(".ssh/id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----\nLEGACYKEY\n-----END OPENSSH PRIVATE KEY-----\n").unwrap();
+    let (shim, log) = install_ssh_shim(&root);
+    let sock = root.join("agent.sock");
+    let _agent = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    let _env = ssh_env(&home, &shim, &log, &sock);
+    let local = bench.dispatch("db:get", &[]).unwrap()["db"]["hosts"][0].clone();
+    bench.dispatch("db:hosts", &[json!([local, { "id": "remote", "name": "Remote", "addr": "127.0.0.1", "port": 22, "user": "legacy", "auth": "key", "on": true, "platform": "linux" }])]).unwrap();
+    bench.dispatch("db:projects", &[json!([{ "id": "remote-project", "name": "R", "host": "remote", "path": project.display().to_string(), "branch": "", "agent": "claude" }])]).unwrap();
+    bench.dispatch("terminal:history-save", &[json!("remote-term"), json!(marker)]).unwrap();
+    let remote = bench.dispatch("pty:create", &[json!({ "id": "remote-term", "projectId": "remote-project", "kind": "claude", "shell": "bash" })]).unwrap_err();
+    assert!(remote.contains("旧远程 Agent 会话缺少原生 ID"), "{remote}");
+    assert!(bench.dispatch("pty:snapshot", &[json!("remote-term")]).unwrap().is_null());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn git_comparison_base_restores_the_worktree_without_rewriting_head() {
+    let root = temp_dir("git-restore");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let original = "alpha\nmiddle\nomega\n";
+    fs::write(project.join("fixture.txt"), original).unwrap();
+    fs::write(project.join("deleted.txt"), "deleted original\n").unwrap();
+    let git = |args: &[&str]| {
+        let status = std::process::Command::new("git").arg("-C").arg(&project).args(args).status().unwrap();
+        assert!(status.success(), "{args:?}");
+    };
+    git(&["init"]);
+    git(&["config", "user.email", "t@example.com"]);
+    git(&["config", "user.name", "t"]);
+    git(&["add", "."]);
+    git(&["commit", "-m", "base"]);
+    let head = std::process::Command::new("git").arg("-C").arg(&project).args(["rev-parse", "HEAD"]).output().unwrap();
+    let head = String::from_utf8_lossy(&head.stdout).trim().to_string();
+    fs::write(project.join("fixture.txt"), "alpha\nomega\nextra at end\n").unwrap();
+    fs::remove_file(project.join("deleted.txt")).unwrap();
+    let (bench, _) = workbench(&root);
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    let read = bench.dispatch("git:read", &[json!("p"), json!("fixture.txt")]).unwrap();
+    let restored = bench.dispatch("git:write", &[json!("p"), json!("fixture.txt"), json!(original), json!(read["version"].as_str().unwrap())]).unwrap();
+    assert_eq!(restored["text"], original);
+    assert_eq!(fs::read_to_string(project.join("fixture.txt")).unwrap(), original);
+    let after = std::process::Command::new("git").arg("-C").arg(&project).args(["rev-parse", "HEAD"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&after.stdout).trim(), head);
+    let shown = std::process::Command::new("git").arg("-C").arg(&project).args(["show", "HEAD:fixture.txt"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&shown.stdout), original);
+    fs::write(project.join("deleted.txt"), "concurrent creation\n").unwrap();
+    let raced = bench.dispatch("git:write", &[json!("p"), json!("deleted.txt"), json!("deleted original\n"), json!(null)]).unwrap_err();
+    assert!(!raced.contains("尚未"), "{raced}");
+    assert_eq!(fs::read_to_string(project.join("deleted.txt")).unwrap(), "concurrent creation\n");
+    fs::remove_file(project.join("deleted.txt")).unwrap();
+    let recreated = bench.dispatch("git:write", &[json!("p"), json!("deleted.txt"), json!("deleted original\n"), json!(null)]).unwrap();
+    assert_eq!(recreated["text"], "deleted original\n");
+    let shown_deleted = std::process::Command::new("git").arg("-C").arg(&project).args(["show", "HEAD:deleted.txt"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&shown_deleted.stdout), "deleted original\n");
+    let final_head = std::process::Command::new("git").arg("-C").arg(&project).args(["rev-parse", "HEAD"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&final_head.stdout).trim(), head);
     let _ = fs::remove_dir_all(root);
 }

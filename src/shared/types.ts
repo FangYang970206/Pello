@@ -200,6 +200,26 @@ export interface DirListing {
   error?: string
 }
 
+export interface DirectoryPickerView {
+  id: string
+  hostId: string
+  loading: boolean
+  error: string | null
+  path: string
+  parent: string | null
+  address: string
+  query: string
+  selected: string
+  dirs: { name: string; path: string }[]
+  crumbs: string[]
+  canBack: boolean
+  canForward: boolean
+  canConfirm: boolean
+  closed: boolean
+  formPath: string
+  generation: number
+}
+
 export interface HostTest {
   ok: boolean
   os?: string
