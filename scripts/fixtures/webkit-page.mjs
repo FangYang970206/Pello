@@ -22,6 +22,7 @@ const helper = `
     }
     if (/^H[1-6]$/.test(tag)) return 'heading'
     if (tag === 'DIALOG') return 'dialog'
+    if (tag === 'SECTION' && el.getAttribute('aria-label')) return 'region'
     return ''
   }
   function labelledText(el) {
@@ -282,7 +283,9 @@ class WebKitPage {
           const value = await this.invoke(this.mainId, `return { url: location.href, awb: typeof window.awb, text: (document.body && document.body.innerText || '').slice(0, 160) }`)
           last = JSON.stringify(value)
           if (value?.awb === 'object' && !String(value.text).includes('Could not connect')) {
-            await this.invoke(this.mainId, `if (!window.__pageErrors) { window.__pageErrors = []; window.addEventListener('error', (event) => window.__pageErrors.push(String(event.message))); window.addEventListener('unhandledrejection', (event) => window.__pageErrors.push(String(event.reason && event.reason.message || event.reason))) } return true`)
+            await this.invoke(this.mainId, `if (!window.__pageErrors) { window.__pageErrors = []; window.addEventListener('error', (event) => window.__pageErrors.push(String(event.message))); window.addEventListener('unhandledrejection', (event) => window.__pageErrors.push(String(event.reason && event.reason.message || event.reason))) }
+              if (!window.__awbWheelListen) { window.__awbWheelListen = true; window.addEventListener('message', (event) => { if (event.data && event.data.type === 'awb-wheel-target') window.__awbHoverFrame = !!event.data.frame }) }
+              return true`)
             // WebKitGTK does not answer Runtime on sandboxed iframe targets. A bootstrap
             // script is injected into later documents, including the HTML preview frame.
             this.errorTimer = setInterval(() => { void this.pullErrors() }, 100)
@@ -400,6 +403,8 @@ class WebKitPage {
   waitForTimeout(ms) { return sleep(ms) }
 
   keyboard = {
+    down: async (key) => { if (key === 'Control' || key === 'Meta') this.ctrl = true },
+    up: async (key) => { if (key === 'Control' || key === 'Meta') this.ctrl = false },
     press: (combo) => this.invoke(this.mainId, `pressKey(document.activeElement || document.body, ${JSON.stringify(combo)}); return true`),
     type: async (text) => {
       for (const char of text) {
@@ -412,6 +417,61 @@ class WebKitPage {
           return true`)
       }
     },
+  }
+
+  mouse = {
+    wheel: (deltaX, deltaY) => this.evaluate((payload) => {
+      if (window.__awbHoverFrame) {
+        const frame = document.querySelector('iframe')
+        if (frame && frame.contentWindow) {
+          frame.contentWindow.postMessage({ type: 'awb-eval', id: 0, source: `document.documentElement.dispatchEvent(new WheelEvent('wheel', { deltaX: ${payload.deltaX}, deltaY: ${payload.deltaY}, ctrlKey: ${payload.ctrl}, bubbles: true, cancelable: true }))` }, '*')
+          return true
+        }
+      }
+      const target = window.__awbHover && window.__awbHover.isConnected ? window.__awbHover : document.body
+      target.dispatchEvent(new WheelEvent('wheel', { deltaX: payload.deltaX, deltaY: payload.deltaY, deltaMode: 0, ctrlKey: payload.ctrl, bubbles: true, cancelable: true }))
+      return true
+    }, { deltaX, deltaY, ctrl: !!this.ctrl }),
+  }
+
+  clock = {
+    install: ({ time }) => this.evaluate((iso) => {
+      const state = { now: new Date(iso).getTime(), seq: 1, queue: [] }
+      const nativeSet = window.setTimeout.bind(window)
+      const nativeClear = window.clearTimeout.bind(window)
+      window.__awbClock = state
+      window.__awbNativeTimeout = nativeSet
+      const arm = (fn, delay, repeat) => {
+        const wait = Number(delay) || 0
+        if (wait < 1500) return nativeSet(fn, wait)
+        const id = 1_000_000_000 + state.seq++
+        state.queue.push({ id, fn, delay: wait, at: state.now + wait, repeat })
+        return id
+      }
+      window.setTimeout = (fn, delay, ...args) => arm(() => fn(...args), delay, false)
+      window.setInterval = (fn, delay, ...args) => arm(() => fn(...args), delay, true)
+      const clear = (id) => {
+        const before = state.queue.length
+        state.queue = state.queue.filter((item) => item.id !== id)
+        if (state.queue.length === before) nativeClear(id)
+      }
+      window.clearTimeout = clear
+      window.clearInterval = clear
+      Date.now = () => state.now
+      window.__awbAdvance = (ms) => {
+        const target = state.now + ms
+        const due = state.queue.filter((item) => item.at <= target).sort((a, b) => a.at - b.at)
+        state.queue = state.queue.filter((item) => item.at > target)
+        state.now = target
+        for (const item of due) {
+          if (item.repeat) state.queue.push({ id: item.id, fn: item.fn, delay: item.delay, at: state.now + item.delay, repeat: true })
+          item.fn()
+        }
+      }
+      return true
+    }, time.toISOString()),
+    pauseAt: (date) => this.evaluate((iso) => { window.__awbClock.now = new Date(iso).getTime(); return true }, date.toISOString()),
+    fastForward: (ms) => this.evaluate((amount) => { window.__awbAdvance(amount); return true }, ms),
   }
 
   locator(selector) { return new Locator(this, [{ selector }]) }
@@ -464,6 +524,10 @@ class Locator {
     return new Locator(this.page, [...this.steps, { selector }])
   }
 
+  getByRole(role, options = {}) { return new Locator(this.page, [...this.steps, { role, name: options.name, exact: options.exact }]) }
+  getByLabel(name, options = {}) { return new Locator(this.page, [...this.steps, { label: name, exact: options.exact }]) }
+  getByText(text, options = {}) { return new Locator(this.page, [...this.steps, { text, exact: options.exact }]) }
+
   filter(options) {
     const step = {}
     if (options.hasText != null) step.hasText = options.hasText
@@ -497,6 +561,8 @@ class Locator {
     return this.run(`const el = only(steps); el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
       if (${JSON.stringify(button)} === 'right') { el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, view: window })); return true }
       if (typeof el.focus === 'function') el.focus();
+      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, view: window }));
+      el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0, view: window }));
       el.click();
       return true`)
   }
@@ -522,7 +588,33 @@ class Locator {
 
   async hover() {
     await this.waitFor()
-    return this.run(`const el = only(steps); for (const type of ['pointerover', 'mouseover', 'pointerenter', 'mouseenter']) el.dispatchEvent(new MouseEvent(type, { bubbles: type.endsWith('over'), cancelable: true, view: window })); return true`)
+    const framed = await this.run(`const el = only(steps); window.__awbHover = el;
+      const framed = window.parent !== window
+      if (framed) parent.postMessage({ type: 'awb-wheel-target', frame: true }, '*')
+      else window.__awbHoverFrame = false
+      for (const type of ['pointerover', 'mouseover', 'pointerenter', 'mouseenter']) el.dispatchEvent(new MouseEvent(type, { bubbles: type.endsWith('over'), cancelable: true, view: window })); return framed`)
+    if (framed) await new Promise((resolve) => setTimeout(resolve, 50))
+    return true
+  }
+
+  async osWheel(deltaX, deltaY) {
+    const box = await this.run(`const el = only(steps); el.scrollIntoView({ block: 'center', inline: 'center' }); const rect = el.getBoundingClientRect(); return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, dpr: devicePixelRatio, viewport: innerHeight }`)
+    const info = execFileSync('xwininfo', ['-name', 'Pello'], { encoding: 'utf8' })
+    const number = (label) => Number(info.match(new RegExp(`${label}:\\s+(-?\\d+)`))?.[1])
+    const origin = { x: number('Absolute upper-left X'), y: number('Absolute upper-left Y'), height: number('Height') }
+    const menu = origin.height - box.viewport * box.dpr
+    const x = Math.round(origin.x + (box.x + box.width / 2) * box.dpr)
+    const y = Math.round(origin.y + menu + (box.y + Math.min(box.height / 2, 40)) * box.dpr)
+    const down = (deltaY || deltaX) > 0
+    const steps = Math.max(3, Math.round(Math.abs(deltaY || deltaX) / 40))
+    for (let index = 0; index < steps; index += 1) {
+      const args = ['mousemove', String(x), String(y)]
+      if (deltaX) args.push('keydown', 'shift')
+      args.push('click', down ? '5' : '4')
+      if (deltaX) args.push('keyup', 'shift')
+      execFileSync('xdotool', args)
+    }
+    return true
   }
 
   async fill(value) {

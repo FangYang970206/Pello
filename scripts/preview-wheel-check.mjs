@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { _electron as electron } from 'playwright'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 import { installDocumentHarness, documentCommand } from './fixtures/document-harness.mjs'
 
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'pello-wheel-'))
@@ -16,9 +16,11 @@ fs.writeFileSync(path.join(project, 'page.html'), '<!doctype html><html><head><t
 git('init', '-q'); git('add', '.'); git('-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture')
 fs.appendFileSync(path.join(project, 'note.txt'), 'changed\n')
 const original = fs.readFileSync(path.join(project, 'note.txt'), 'utf8')
+const markdownBytes = fs.readFileSync(path.join(project, 'guide.md'))
+const htmlBytes = fs.readFileSync(path.join(project, 'page.html'))
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: { layout: 'balanced', restore: false, confirmKill: false }, projects: [{ id: 'p', name: 'Wheel test', host: 'local', path: project, agent: 'shell' }] }))
 const env = { ...process.env, AWB_USER_DATA: data }; delete env.ELECTRON_RUN_AS_NODE
-const app = await electron.launch({ args: ['.'], env })
+const app = await launchWorkbench({ args: ['.'], env })
 try {
   const page = await app.firstWindow()
   page.setDefaultTimeout(10000)
@@ -118,6 +120,8 @@ try {
   assert.equal(await page.locator('html').evaluate((node) => node.style.getPropertyValue('--editor-size')), '14px')
   assert.equal(await page.locator('html').evaluate((node) => node.style.getPropertyValue('--fs')), '13px')
   assert.equal(fs.readFileSync(path.join(project, 'note.txt'), 'utf8'), original, 'Zooming must not save drafts')
+  assert.deepEqual(fs.readFileSync(path.join(project, 'guide.md')), markdownBytes, 'Opening and zooming Markdown must not rewrite the file')
+  assert.deepEqual(fs.readFileSync(path.join(project, 'page.html')), htmlBytes, 'HTML preview must not rewrite the file')
   assert.deepEqual(errors, [])
   console.log('PASS Ctrl+wheel: source/gutter/highlight, Markdown/source switching, sandbox HTML, both split panes, unified diff, ordinary scroll, instances, drafts and undo')
 } finally {

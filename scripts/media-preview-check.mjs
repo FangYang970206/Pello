@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { _electron as electron } from 'playwright'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 import { loadTypeScript } from './fixtures/load-ts.mjs'
 const { themeVariables } = await loadTypeScript(new URL('../src/shared/themes.ts', import.meta.url))
 
@@ -31,7 +31,7 @@ fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: {
 const original = fs.readFileSync(pdf)
 const env = { ...process.env, AWB_USER_DATA: data }; delete env.ELECTRON_RUN_AS_NODE
 const dpi = Number(process.env.AWB_TEST_DPI || 1)
-const app = await electron.launch({ args: ['.', `--force-device-scale-factor=${dpi}`], env })
+const app = await launchWorkbench({ args: ['.', `--force-device-scale-factor=${dpi}`], env, scale: dpi })
 try {
   const page = await app.firstWindow()
   const errors = []
@@ -128,7 +128,7 @@ try {
   await zoomWheel(120)
   await page.waitForFunction((initial) => Number.parseInt(document.querySelector('.media-scale').textContent) === initial, imageScale)
   assert.equal(await page.locator('.file-content').evaluate((node) => node.style.getPropertyValue('--content-zoom')), '1', 'Media wheel must not also zoom the outer file view')
-  assert.equal(await page.evaluate(() => window.__svgExecuted), undefined)
+  assert.equal(await page.evaluate(() => window.__svgExecuted ?? null), null)
   await open('draft.txt')
   await page.getByRole('textbox', { name: '文件内容', exact: true }).fill('unsaved text')
   await open('课程.pdf'); await page.locator('.pdf-page[data-rendered="true"]').waitFor()
