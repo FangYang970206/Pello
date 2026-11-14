@@ -3,13 +3,14 @@
 
 use crate::files;
 use crate::i18n::translate;
-use fancy_regex::Regex;
 use serde_json::{json, Value};
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 const MAX_MATCHES: usize = 2000;
@@ -30,7 +31,7 @@ pub struct ContentSearch {
     project_id: String,
     identity: String,
     ignored: Vec<String>,
-    pattern: Regex,
+    matcher: Option<JsMatcher>,
     remaining: usize,
     skipped: u64,
     errors: u64,
@@ -57,13 +58,13 @@ pub struct TreeSearch {
 impl ContentSearch {
     pub fn start(root: &Path, project_id: &str, identity: &str, query: &str, sensitive: bool, regex: bool, whole: bool, ignored: &[String], language: &str) -> Result<Self, String> {
         validate_content_query(query, language)?;
-        let pattern = compile_pattern(query, sensitive, regex, whole, language)?;
+        let matcher = JsMatcher::start(query, sensitive, regex, whole, language)?;
         Ok(Self {
             root: root.to_path_buf(),
             project_id: project_id.to_string(),
             identity: identity.to_string(),
             ignored: ignored.to_vec(),
-            pattern,
+            matcher: Some(matcher),
             remaining: MAX_MATCHES,
             skipped: 0,
             errors: 0,
@@ -100,7 +101,7 @@ impl ContentSearch {
             project_id: project_id.to_string(),
             identity: identity.to_string(),
             ignored: Vec::new(),
-            pattern: Regex::new(".").map_err(|error| error.to_string())?,
+            matcher: None,
             remaining: MAX_MATCHES,
             skipped,
             errors,
@@ -205,7 +206,8 @@ impl ContentSearch {
                 return Ok(None);
             }
         };
-        let matches = scan_text(&self.pattern, &text, self.remaining, started, language)?;
+        let matcher = self.matcher.as_mut().ok_or_else(|| translate(language, "内容搜索进程无法启动", &[] as &[String]))?;
+        let matches = matcher.scan(&text, self.remaining, language)?;
         self.remaining = self.remaining.saturating_sub(matches.len());
         let file = if matches.is_empty() { None } else { Some(json!({ "path": relative, "matches": matches })) };
         if self.remaining == 0 {
@@ -373,6 +375,10 @@ walk(root, '')
 print(json.dumps(items), flush=True)
 "#;
 
+pub fn remote_content_shell() -> String {
+    format!("python3 -u -c {}", crate::ssh::bash_quote(LINUX_CONTENT_SEARCH))
+}
+
 pub fn valid_search_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 100 && id.chars().all(|char| char.is_ascii_alphanumeric() || char == '_' || char == '-')
 }
@@ -384,18 +390,6 @@ fn validate_content_query(query: &str, language: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn compile_pattern(query: &str, sensitive: bool, regex: bool, whole: bool, language: &str) -> Result<Regex, String> {
-    let source = if regex { query.to_string() } else { escape_regex(query) };
-    let flags = if sensitive { "" } else { "(?i)" };
-    let invalid = translate(language, "正则表达式无效", &[] as &[String]);
-    Regex::new(&format!("{flags}{source}")).map_err(|_| invalid.clone())?;
-    if whole {
-        Regex::new(&format!(r"{flags}(?<![\p{{L}}\p{{N}}_])(?:{source})(?![\p{{L}}\p{{N}}_])")).map_err(|_| invalid)
-    } else {
-        Regex::new(&format!("{flags}{source}")).map_err(|_| invalid)
-    }
-}
-
 fn escape_regex(query: &str) -> String {
     let mut escaped = String::new();
     for char in query.chars() {
@@ -403,40 +397,6 @@ fn escape_regex(query: &str) -> String {
         escaped.push(char);
     }
     escaped
-}
-
-fn scan_text(pattern: &Regex, text: &str, mut remaining: usize, started: Instant, language: &str) -> Result<Vec<Value>, String> {
-    let mut matches = Vec::new();
-    for (number, original) in text.split('\n').enumerate() {
-        if started.elapsed() >= REGEX_BUDGET {
-            return Err(translate(language, "正则表达式执行超时，请简化表达式", &[] as &[String]));
-        }
-        let line = original.strip_suffix('\r').unwrap_or(original);
-        for found in pattern.find_iter(line) {
-            let found = found.map_err(|_| translate(language, "正则表达式执行超时，请简化表达式", &[] as &[String]))?;
-            let start = byte_to_utf16(line, found.start());
-            let end = byte_to_utf16(line, found.end());
-            matches.push(json!({
-                "line": number + 1,
-                "column": start + 1,
-                "before": utf16_slice(line, start.saturating_sub(80), start),
-                "match": found.as_str(),
-                "after": utf16_slice(line, end, end + 160).trim_end_matches('\r'),
-            }));
-            remaining = remaining.saturating_sub(1);
-            if remaining == 0 { return Ok(matches) }
-        }
-    }
-    Ok(matches)
-}
-
-fn byte_to_utf16(text: &str, byte: usize) -> usize {
-    text.get(..byte).map(|prefix| prefix.encode_utf16().count()).unwrap_or(0)
-}
-
-fn utf16_slice(text: &str, start: usize, end: usize) -> String {
-    if start >= end { return String::new() }
-    String::from_utf16_lossy(&text.encode_utf16().skip(start).take(end - start).collect::<Vec<_>>())
 }
 
 fn list_directory(root: &Path, relative: &str, language: &str) -> Result<Vec<DirEntry>, String> {
@@ -468,3 +428,135 @@ fn read_search_file(root: &Path, relative: &str, language: &str) -> Result<Optio
     }
     Ok(Some(bytes))
 }
+
+struct JsMatcher {
+    child: Child,
+    stdin: ChildStdin,
+    lines: Receiver<String>,
+    source: String,
+    flags: String,
+    whole: bool,
+}
+
+impl Drop for JsMatcher {
+    fn drop(&mut self) { self.kill(); }
+}
+
+impl JsMatcher {
+    fn start(query: &str, sensitive: bool, regex: bool, whole: bool, language: &str) -> Result<Self, String> {
+        let source = if regex { query.to_string() } else { escape_regex(query) };
+        let flags = if sensitive { "gu" } else { "giu" };
+        let script = std::env::temp_dir().join("pello-content-search-worker.js");
+        fs::write(&script, WORKER_JS).map_err(|error| error.to_string())?;
+        let node = std::env::var("AWB_NODE_BIN").unwrap_or_else(|_| "node".into());
+        let mut command = Command::new(node);
+        command.arg(&script);
+        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        #[cfg(unix)]
+        { use std::os::unix::process::CommandExt; command.process_group(0); }
+        let mut child = command.spawn().map_err(|_| translate(language, "内容搜索进程无法启动", &[] as &[String]))?;
+        let stdin = child.stdin.take().ok_or_else(|| translate(language, "内容搜索进程无法启动", &[] as &[String]))?;
+        let stdout = child.stdout.take().ok_or_else(|| translate(language, "内容搜索进程无法启动", &[] as &[String]))?;
+        let (tx, lines) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                match line {
+                    Ok(line) => { if tx.send(line).is_err() { break; } }
+                    Err(_) => break,
+                }
+            }
+        });
+        let mut matcher = Self { child, stdin, lines, source, flags: flags.into(), whole };
+        let payload = json!({ "op": "validate", "source": matcher.source.clone(), "flags": matcher.flags.clone(), "whole": matcher.whole });
+        let response = matcher.roundtrip(&payload, Duration::from_secs(3), language)?;
+        if response["error"] == "syntax" {
+            return Err(translate(language, "正则表达式无效", &[] as &[String]));
+        }
+        if response["ok"] != true {
+            return Err(translate(language, "内容搜索进程无法启动", &[] as &[String]));
+        }
+        Ok(matcher)
+    }
+
+    fn scan(&mut self, text: &str, remaining: usize, language: &str) -> Result<Vec<Value>, String> {
+        let payload = json!({
+            "op": "scan",
+            "source": self.source.clone(),
+            "flags": self.flags.clone(),
+            "whole": self.whole,
+            "text": text,
+            "remaining": remaining,
+        });
+        let response = self.roundtrip(&payload, REGEX_BUDGET, language)?;
+        if response["error"] == "syntax" {
+            return Err(translate(language, "正则表达式无效", &[] as &[String]));
+        }
+        Ok(response["matches"].as_array().cloned().unwrap_or_default())
+    }
+
+    fn roundtrip(&mut self, payload: &Value, timeout: Duration, language: &str) -> Result<Value, String> {
+        let line = serde_json::to_string(payload).map_err(|error| error.to_string())?;
+        writeln!(self.stdin, "{line}").map_err(|_| translate(language, "内容搜索进程无法启动", &[] as &[String]))?;
+        self.stdin.flush().map_err(|_| translate(language, "内容搜索进程无法启动", &[] as &[String]))?;
+        match self.lines.recv_timeout(timeout) {
+            Ok(line) => serde_json::from_str(&line).map_err(|_| translate(language, "正则表达式无效", &[] as &[String])),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                self.kill();
+                Err(translate(language, "正则表达式执行超时，请简化表达式", &[] as &[String]))
+            }
+            Err(_) => Err(translate(language, "内容搜索进程无法启动", &[] as &[String])),
+        }
+    }
+
+    fn kill(&mut self) {
+        #[cfg(unix)]
+        unsafe { libc::kill(-(self.child.id() as i32), libc::SIGKILL); }
+        let _ = self.child.kill();
+    }
+}
+
+const WORKER_JS: &str = r#"
+const fs = require('fs');
+if (process.env.AWB_SEARCH_ARGV) fs.writeFileSync(process.env.AWB_SEARCH_ARGV, JSON.stringify(process.argv));
+function compile(source, flags, whole) {
+  try { new RegExp(source, flags); }
+  catch (error) { return { error: 'syntax' }; }
+  const wrapped = whole ? '(?<![\\p{L}\\p{N}_])(?:' + source + ')(?![\\p{L}\\p{N}_])' : source;
+  try { return { pattern: new RegExp(wrapped, flags) }; }
+  catch (error) { return { error: 'syntax' }; }
+}
+function scan(text, pattern, remaining) {
+  const matches = [];
+  let number = 0;
+  for (const originalLine of String(text).split('\n')) {
+    const line = originalLine.replace(/\r$/, '');
+    number++;
+    for (const match of line.matchAll(pattern)) {
+      const index = match.index || 0;
+      const end = index + match[0].length;
+      matches.push({ line: number, column: index + 1, before: line.slice(Math.max(0, index - 80), index), match: match[0], after: line.slice(end, end + 160).replace(/\r$/, '') });
+      if (--remaining <= 0) break;
+    }
+    if (remaining <= 0) break;
+  }
+  return matches;
+}
+let buf = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => {
+  buf += chunk;
+  let nl;
+  while ((nl = buf.indexOf('\n')) >= 0) {
+    const line = buf.slice(0, nl);
+    buf = buf.slice(nl + 1);
+    if (!line.trim()) continue;
+    let msg;
+    try { msg = JSON.parse(line); }
+    catch (error) { process.stdout.write(JSON.stringify({ error: 'syntax' }) + '\n'); continue; }
+    const compiled = compile(msg.source, msg.flags, !!msg.whole);
+    if (compiled.error) { process.stdout.write(JSON.stringify({ error: 'syntax' }) + '\n'); continue; }
+    if (msg.op === 'validate') { process.stdout.write(JSON.stringify({ ok: true }) + '\n'); continue; }
+    process.stdout.write(JSON.stringify({ matches: scan(msg.text, compiled.pattern, msg.remaining | 0) }) + '\n');
+  }
+});
+"#;

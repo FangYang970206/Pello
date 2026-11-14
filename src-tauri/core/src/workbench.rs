@@ -14,6 +14,7 @@ use crate::shells::{self, installed_agents};
 use crate::ssh;
 use crate::store::{self, apply_saved_settings, host_color, public_host, PlatformInfo};
 use crate::temporary;
+use crate::updates;
 use crate::{random_id, uid};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -35,6 +36,7 @@ pub struct Workbench {
     restore_failures: Mutex<HashMap<String, String>>,
     preview: preview::Service,
     resources: resources::Resources,
+    updates: Mutex<updates::Service>,
     emit: Emit,
 }
 
@@ -51,7 +53,8 @@ impl Workbench {
         if !db["settings"]["language"].is_string() {
             db["settings"]["language"] = json!("zh-CN");
         }
-        Ok(Self { paths, db: Mutex::new(db), pty: Manager::new(), dirty: Mutex::new(false), content_searches: Mutex::new(HashMap::new()), tree_searches: Mutex::new(HashMap::new()), layouts: Mutex::new(HashMap::new()), restore_failures: Mutex::new(HashMap::new()), preview: preview::Service::new(), resources: resources::Resources::new(), emit })
+        let updates = updates::Service::new(db["settings"]["autoCheckUpdates"] != false);
+        Ok(Self { paths, db: Mutex::new(db), pty: Manager::new(), dirty: Mutex::new(false), content_searches: Mutex::new(HashMap::new()), tree_searches: Mutex::new(HashMap::new()), layouts: Mutex::new(HashMap::new()), restore_failures: Mutex::new(HashMap::new()), preview: preview::Service::new(), resources: resources::Resources::new(), updates: Mutex::new(updates), emit })
     }
 
     pub fn database_path(&self) -> std::path::PathBuf { self.paths.data.join("workbench.json") }
@@ -117,10 +120,13 @@ impl Workbench {
             "pty:restart" => self.pty_restart(str_arg(args, 0), &language),
             "terminal:history" => Ok(json!(pty::load_history(&self.paths.data, str_arg(args, 0)))),
             "terminal:history-save" => pty::save_history(&self.paths.data, str_arg(args, 0), str_arg(args, 1)).map(|_| Value::Null),
+            "terminal:export" => self.export_terminal(str_arg(args, 0), args.get(1).and_then(|value| value.as_str()).unwrap_or(""), &language),
             "exec:test" => self.test_exec(args.first().cloned().unwrap_or(json!({})), &language),
             "host:test" => Ok(ssh::test_connection(&self.paths.data, args.first().unwrap_or(&Value::Null), &language)),
-            "app:update-state" | "app:update-check" | "app:update-download" => Ok(json!({ "phase": "unsupported" })),
-            "app:update-install" => Ok(json!(false)),
+            "app:update-state" => Ok(self.updates.lock().expect("updates").state()),
+            "app:update-check" => self.update_check(),
+            "app:update-download" => self.update_download(),
+            "app:update-install" => Ok(json!(self.update_install())),
             "app:meta" => Ok(json!({ "capture": std::env::var("AWB_CAPTURE").ok().as_deref() == Some("1"), "platform": node_platform(), "shots": std::env::var_os("AWB_SHOTS").is_some() })),
             "app:shot" => Ok(json!(false)),
             "dialog:directory" => Ok(pick_directory()),
@@ -163,8 +169,61 @@ impl Workbench {
     }
 
     fn save_settings(&self, settings: Value) -> Result<Value, String> {
-        self.db.lock().expect("db")["settings"] = apply_saved_settings(settings);
+        let settings = apply_saved_settings(settings);
+        self.updates.lock().expect("updates").set_enabled(settings["autoCheckUpdates"] != false);
+        self.db.lock().expect("db")["settings"] = settings;
         self.persist()
+    }
+
+    pub fn poll_updates(&self, now: u64) -> bool {
+        let fired = self.updates.lock().expect("updates").poll(now);
+        if fired {
+            let state = self.updates.lock().expect("updates").state();
+            (self.emit)(json!({ "channel": "app:update", "payload": state }));
+        }
+        fired
+    }
+
+    pub fn update_automatic_checks(&self) -> u64 { self.updates.lock().expect("updates").automatic_checks() }
+    pub fn update_installs_on_quit(&self) -> bool { self.updates.lock().expect("updates").installs_on_quit() }
+
+    fn update_check(&self) -> Result<Value, String> {
+        let state = self.updates.lock().expect("updates").check();
+        (self.emit)(json!({ "channel": "app:update", "payload": state }));
+        Ok(state)
+    }
+
+    fn update_download(&self) -> Result<Value, String> {
+        let started = self.updates.lock().expect("updates").begin_download();
+        if started["phase"] != "downloading" { return Ok(started); }
+        (self.emit)(json!({ "channel": "app:update", "payload": started }));
+        let finished = self.updates.lock().expect("updates").finish_download(&self.paths.data);
+        if finished["phase"] == "downloaded" {
+            (self.emit)(json!({ "channel": "app:update", "payload": { "phase": "downloading", "version": finished["version"], "percent": 100 } }));
+        }
+        (self.emit)(json!({ "channel": "app:update", "payload": finished }));
+        Ok(finished)
+    }
+
+    fn update_install(&self) -> bool {
+        let dirty = *self.dirty.lock().expect("dirty");
+        let started = self.updates.lock().expect("updates").install(&self.paths.data, dirty);
+        let state = self.updates.lock().expect("updates").state();
+        (self.emit)(json!({ "channel": "app:update", "payload": state }));
+        started
+    }
+
+    fn export_terminal(&self, id: &str, destination: &str, language: &str) -> Result<Value, String> {
+        if !self.term_saved(id) { return Err(translate(language, "终端不存在", &[] as &[String])); }
+        let source = self.paths.data.join("terminal-history").join(format!("{}.ansi", pty::history_name(id)));
+        if !source.is_file() { return Err(translate(language, "此终端尚无完整记录", &[] as &[String])); }
+        if destination.is_empty() {
+            return Ok(json!(fs::read_to_string(&source).unwrap_or_default()));
+        }
+        let destination = Path::new(destination);
+        if let Some(parent) = destination.parent() { fs::create_dir_all(parent).map_err(|error| error.to_string())?; }
+        fs::copy(&source, destination).map_err(|error| error.to_string())?;
+        Ok(Value::Null)
     }
 
     fn save_projects(&self, projects: Value) -> Result<Value, String> {
@@ -425,23 +484,43 @@ impl Workbench {
     fn pty_create_inner(&self, request: Value, id: &str, language: &str) -> Result<Value, String> {
         let project = self.project(request["projectId"].as_str().unwrap_or(""), language)?;
         if let Some(host) = self.optional_host(project["host"].as_str().unwrap_or("local"))? {
-            let kind = request["kind"].as_str().unwrap_or("shell");
-            let shell = request["shell"].as_str().unwrap_or("bash");
-            let command = if kind == "shell" { String::new() } else { agent_command(kind, &self.db.lock().expect("db")) };
-            let restore = self.db.lock().expect("db")["settings"]["restore"] != false;
-            let mut info = self.pty.create_remote(&self.paths.data, &id, project["path"].as_str().unwrap_or(""), kind, shell, &command, request["agentSessionId"].as_str(), restore, &host, language, self.emit.clone())?;
-            info.as_object_mut().expect("session").remove("type");
-            return Ok(info);
-        }
         let kind = request["kind"].as_str().unwrap_or("shell");
         let shell = request["shell"].as_str().unwrap_or("bash");
-        let command = if kind == "shell" { String::new() } else { agent_command(kind, &self.db.lock().expect("db")) };
-        let agent_session = request["agentSessionId"].as_str();
+        let requested = request["agentSessionId"].as_str().filter(|value| !value.is_empty());
+        if kind != "shell" && requested.is_none() && !pty::load_history(&self.paths.data, &id).is_empty() {
+            return Err(translate(language, "旧远程 Agent 会话缺少原生 ID，原终端历史已保留；未创建空白对话", &[] as &[String]));
+        }
+        let (command, session) = self.resume_launch(&id, kind, shell, requested);
         let restore = self.db.lock().expect("db")["settings"]["restore"] != false;
-        let mut info = self.pty.create(&self.paths.data, &id, Path::new(project["path"].as_str().unwrap_or("")), kind, shell, &command, agent_session, restore, language, self.emit.clone())?;
+        let mut info = self.pty.create_remote(&self.paths.data, &id, project["path"].as_str().unwrap_or(""), kind, shell, &command, session.as_deref(), restore, &host, language, self.emit.clone())?;
         info.as_object_mut().expect("session").remove("type");
-        Ok(info)
+        info["launchCommand"] = json!(command);
+        return Ok(info);
     }
+    let kind = request["kind"].as_str().unwrap_or("shell");
+    let shell = request["shell"].as_str().unwrap_or("bash");
+    let requested = request["agentSessionId"].as_str().filter(|value| !value.is_empty());
+    if kind != "shell" && requested.is_none() && !pty::load_history(&self.paths.data, &id).is_empty() {
+        return Err(translate(language, "无法唯一定位旧 Agent 对话，原终端历史已保留；未创建空白对话", &[] as &[String]));
+    }
+    let (command, session) = self.resume_launch(&id, kind, shell, requested);
+    let restore = self.db.lock().expect("db")["settings"]["restore"] != false;
+    let mut info = self.pty.create(&self.paths.data, &id, Path::new(project["path"].as_str().unwrap_or("")), kind, shell, &command, session.as_deref(), restore, language, self.emit.clone())?;
+    info.as_object_mut().expect("session").remove("type");
+    info["launchCommand"] = json!(command);
+    Ok(info)
+}
+
+fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&str>) -> (String, Option<String>) {
+    if kind == "shell" { return (String::new(), None); }
+    let base = agent_command(kind, &self.db.lock().expect("db"));
+    let directory = self.paths.data.join("agent-sessions").join(pty::history_name(id));
+    let launch = pty::resume_command(kind, &base, requested, &directory, shell);
+    if launch.0.contains("--session-dir") {
+        let _ = fs::create_dir_all(&directory);
+    }
+    launch
+}
 
     fn pty_restart(&self, id: &str, language: &str) -> Result<Value, String> {
         let Some((cwd, kind, shell, command)) = self.pty.launch_meta(id) else { return Ok(Value::Null) };
@@ -485,7 +564,7 @@ impl Workbench {
         let ignored = self.ignores(project_id);
         let job = if let Some((host, path)) = self.remote_place(project_id, language)? {
             let payload = json!({ "root": path, "query": str_arg(args, 2), "sensitive": sensitive, "regex": regex, "whole": whole, "ignored": ignored });
-            let script = format!("python3 -u -c {}", ssh::bash_quote(search::LINUX_CONTENT_SEARCH));
+            let script = search::remote_content_shell();
             let output = ssh::run(&self.paths.data, &host, &script, Some(payload.to_string().as_bytes()), language)?;
             ContentSearch::from_remote_output(project_id, &identity, &output, language)?
         } else {

@@ -1187,3 +1187,317 @@ fn store_zip(entries: &[ZipEntry<'_>]) -> Vec<u8> {
     out.extend_from_slice(&0u16.to_le_bytes());
     out
 }
+
+fn skill_page(name: &str) -> String {
+    format!("---\nname: {name}\ndescription: Keep notes in this session folder\n---\nSKILL-BODY-KEEP\n")
+}
+
+#[test]
+fn native_skill_switches_edit_agent_overrides_and_leave_skill_md() {
+    let _lock = env_lock();
+    let root = temp_dir("skill-switches");
+    let home = root.join("home");
+    fs::create_dir_all(home.join(".codex/skills/notes")).unwrap();
+    fs::create_dir_all(home.join(".config/opencode/skills/notes")).unwrap();
+    fs::create_dir_all(home.join(".pi/agent/skills/notes")).unwrap();
+    fs::create_dir_all(home.join(".omp/agent/skills/notes")).unwrap();
+    fs::create_dir_all(home.join(".omp/agent/skills/blocked")).unwrap();
+    let body = skill_page("notes");
+    fs::write(home.join(".codex/skills/notes/SKILL.md"), &body).unwrap();
+    fs::write(home.join(".config/opencode/skills/notes/SKILL.md"), &body).unwrap();
+    fs::write(home.join(".pi/agent/skills/notes/SKILL.md"), &body).unwrap();
+    fs::write(home.join(".omp/agent/skills/notes/SKILL.md"), &body).unwrap();
+    fs::write(home.join(".omp/agent/skills/blocked/SKILL.md"), "---\nname: blocked\ndescription: Stopped in the skill file\nenabled: false\n---\nSKILL-BODY-KEEP\n").unwrap();
+    fs::write(home.join(".codex/config.toml"), "# keep-codex\nmodel = \"kept\"\n").unwrap();
+    fs::write(home.join(".config/opencode/opencode.json"), "{\n  // keep-opencode\n  \"permission\": { \"bash\": \"allow\" }\n}\n").unwrap();
+    fs::write(home.join(".pi/agent/settings.json"), "{\n  // keep-pi\n  \"theme\": \"light\"\n}\n").unwrap();
+    fs::write(home.join(".omp/agent/config.yml"), "# keep-omp\ntheme: dark\ndisabledExtensions:\n  - other\n").unwrap();
+    let _home = var_guard("AWB_RESOURCE_HOME", home.to_str().unwrap());
+    let (bench, _) = workbench(&root);
+    let toggle = |agent: &str, enabled: bool| {
+        let listed = bench.dispatch("resources:list", &[json!("skills"), json!(agent), json!(1), json!("")]).unwrap();
+        let item = listed["items"].as_array().unwrap().iter().find(|item| item["name"] == "notes").unwrap().clone();
+        bench.dispatch("resources:toggle", &[json!("skills"), json!(agent), item, json!(enabled)]).unwrap();
+    };
+    toggle("codex", false);
+    let codex = fs::read_to_string(home.join(".codex/config.toml")).unwrap();
+    assert!(codex.contains("# keep-codex") && codex.contains("model = \"kept\""), "{codex}");
+    assert!(codex.contains("[[skills.config]]") && codex.contains("enabled = false"), "{codex}");
+    assert!(!home.join(".codex/skills/notes/SKILL.md.awb-disabled").exists());
+    assert_eq!(fs::read_to_string(home.join(".codex/skills/notes/SKILL.md")).unwrap(), body);
+    let codex_list = bench.dispatch("resources:list", &[json!("skills"), json!("codex"), json!(1), json!("")]).unwrap();
+    assert_eq!(codex_list["items"].as_array().unwrap().iter().find(|item| item["name"] == "notes").unwrap()["enabled"], false);
+    toggle("codex", true);
+    assert!(fs::read_to_string(home.join(".codex/config.toml")).unwrap().contains("enabled = true"));
+    assert_eq!(fs::read_to_string(home.join(".codex/skills/notes/SKILL.md")).unwrap(), body);
+
+    toggle("opencode", false);
+    let opencode = fs::read_to_string(home.join(".config/opencode/opencode.json")).unwrap();
+    assert!(opencode.contains("// keep-opencode") && opencode.contains("\"bash\": \"allow\""), "{opencode}");
+    assert!(opencode.contains("\"notes\"") && opencode.contains("\"deny\""), "{opencode}");
+    assert!(!home.join(".config/opencode/skills/notes/SKILL.md.awb-disabled").exists());
+    assert_eq!(fs::read_to_string(home.join(".config/opencode/skills/notes/SKILL.md")).unwrap(), body);
+    toggle("opencode", true);
+    assert!(fs::read_to_string(home.join(".config/opencode/opencode.json")).unwrap().contains("\"allow\""));
+
+    fs::write(home.join(".config/opencode/opencode.json"), "{\n  \"providers\": {},\n  \"permissions\": [{ \"action\": \"skill\", \"resource\": \"other\", \"effect\": \"allow\" }]\n}\n").unwrap();
+    toggle("opencode", false);
+    let v2 = fs::read_to_string(home.join(".config/opencode/opencode.json")).unwrap();
+    assert!(v2.contains("\"resource\": \"notes\"") || v2.contains("\"resource\":\"notes\""), "{v2}");
+    assert!(v2.contains("\"deny\""), "{v2}");
+    assert_eq!(fs::read_to_string(home.join(".config/opencode/skills/notes/SKILL.md")).unwrap(), body);
+    fs::write(home.join(".config/opencode/opencode.json"), "{\n  \"providers\": {},\n  \"permissions\": \"nope\"\n}\n").unwrap();
+    let invalid = bench.dispatch("resources:list", &[json!("skills"), json!("opencode"), json!(1), json!("")]).unwrap_err();
+    assert!(invalid.contains("OpenCode V2 permissions 必须是数组"), "{invalid}");
+    assert_eq!(fs::read_to_string(home.join(".config/opencode/skills/notes/SKILL.md")).unwrap(), body);
+    fs::write(home.join(".config/opencode/opencode.json"), "{\n  // keep-opencode\n  \"permission\": { \"bash\": \"allow\" }\n}\n").unwrap();
+
+    toggle("pi", false);
+    let pi = fs::read_to_string(home.join(".pi/agent/settings.json")).unwrap();
+    assert!(pi.contains("// keep-pi") && pi.contains("\"theme\": \"light\""), "{pi}");
+    assert!(pi.contains(&format!("-{}", home.join(".pi/agent/skills/notes/SKILL.md").display())), "{pi}");
+    assert!(!home.join(".pi/agent/skills/notes/SKILL.md.awb-disabled").exists());
+    assert_eq!(fs::read_to_string(home.join(".pi/agent/skills/notes/SKILL.md")).unwrap(), body);
+    let pi_list = bench.dispatch("resources:list", &[json!("skills"), json!("pi"), json!(1), json!("")]).unwrap();
+    assert_eq!(pi_list["items"].as_array().unwrap().iter().find(|item| item["name"] == "notes").unwrap()["enabled"], false);
+    toggle("pi", true);
+    assert!(!fs::read_to_string(home.join(".pi/agent/settings.json")).unwrap().contains(".awb-disabled"));
+
+    toggle("omp", false);
+    let omp = fs::read_to_string(home.join(".omp/agent/config.yml")).unwrap();
+    assert!(omp.contains("# keep-omp") && omp.contains("theme: dark") && omp.contains("skill:notes"), "{omp}");
+    assert!(!home.join(".omp/agent/skills/notes/SKILL.md.awb-disabled").exists());
+    assert_eq!(fs::read_to_string(home.join(".omp/agent/skills/notes/SKILL.md")).unwrap(), body);
+    let omp_list = bench.dispatch("resources:list", &[json!("skills"), json!("omp"), json!(1), json!("")]).unwrap();
+    assert_eq!(omp_list["items"].as_array().unwrap().iter().find(|item| item["name"] == "notes").unwrap()["enabled"], false);
+    let blocked = omp_list["items"].as_array().unwrap().iter().find(|item| item["name"] == "blocked").unwrap().clone();
+    let refused = bench.dispatch("resources:toggle", &[json!("skills"), json!("omp"), blocked, json!(true)]).unwrap_err();
+    assert!(refused.contains("此 Skill 受 Oh My Pi 全局筛选或 SKILL.md 停用限制"), "{refused}");
+    assert_eq!(fs::read_to_string(home.join(".omp/agent/skills/blocked/SKILL.md")).unwrap().contains("enabled: false"), true);
+    assert_eq!(fs::read_to_string(home.join(".omp/agent/config.yml")).unwrap(), omp);
+    toggle("omp", true);
+    assert!(!fs::read_to_string(home.join(".omp/agent/config.yml")).unwrap().contains("skill:notes"));
+    assert_eq!(fs::read_to_string(home.join(".omp/agent/skills/notes/SKILL.md")).unwrap(), body);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn mermaid_renders_svg_in_a_hidden_browser_without_node() {
+    let _lock = env_lock();
+    let root = temp_dir("mermaid");
+    let log = root.join("diagram.log");
+    let secret = root.join("secret-data");
+    fs::create_dir_all(&secret).unwrap();
+    let _log = var_guard("AWB_DIAGRAM_LOG", log.to_str().unwrap());
+    let _data = var_guard("AWB_USER_DATA", secret.to_str().unwrap());
+    let (bench, _) = workbench(&root);
+    let svg = bench.dispatch("diagram:mermaid", &[json!("flowchart TD\nA[Hello]-->B[World]")]).unwrap();
+    let svg = svg.as_str().unwrap();
+    assert!(svg.contains("<svg") && svg.contains("Hello"), "{svg}");
+    assert!(!svg.contains("window.awb") && !svg.contains("require("), "{svg}");
+    let recorded = fs::read_to_string(&log).unwrap();
+    assert!(recorded.contains("google-chrome") || recorded.contains("chromium"), "{recorded}");
+    assert!(!recorded.contains("/node\n") && !recorded.lines().any(|line| line.ends_with("/node")), "{recorded}");
+    assert!(!recorded.contains(secret.to_str().unwrap()), "{recorded}");
+    let strict = bench.dispatch("diagram:mermaid", &[json!("flowchart TD\nA[\"<img src=x onerror=alert(1)>\"]")]).unwrap();
+    let strict = strict.as_str().unwrap();
+    assert!(strict.contains("<svg"), "{strict}");
+    assert!(!strict.contains("onerror") && !strict.contains("alert(1)"), "strict mode strips the event handler: {strict}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn updates_stay_manual_and_keep_install_data() {
+    let _lock = env_lock();
+    let root = temp_dir("updates");
+    let feed = root.join("feed");
+    fs::create_dir_all(&feed).unwrap();
+    fs::write(feed.join("latest.yml"), "version: 2.0.0\npath: Pello-2.0.0-win-x64-setup.exe\n").unwrap();
+    fs::write(feed.join("Pello-2.0.0-win-x64-setup.exe"), b"installer-bytes").unwrap();
+    fs::write(feed.join("Pello-2.0.0-win-x64-setup.exe.blockmap"), b"blockmap-bytes").unwrap();
+    let _feed = var_guard("AWB_UPDATE_FEED", feed.to_str().unwrap());
+    let _version = var_guard("AWB_APP_VERSION", "1.0.0");
+    let (bench, events) = workbench(&root);
+    fs::write(root.join("pello.config.json"), "{}\n").unwrap();
+    fs::write(root.join("data").join("keep.txt"), "keep-data").unwrap();
+    assert_eq!(bench.dispatch("app:update-state", &[]).unwrap()["phase"], "idle");
+    assert!(!bench.poll_updates(14_999));
+    assert_eq!(bench.update_automatic_checks(), 0);
+    assert!(bench.poll_updates(15_000));
+    let state = bench.dispatch("app:update-state", &[]).unwrap();
+    assert_eq!(state["phase"], "available");
+    assert_eq!(state["version"], "2.0.0");
+    assert!(!root.join("data/updates/Pello-2.0.0-win-x64-setup.exe").exists(), "automatic checks do not download");
+    assert!(!bench.update_installs_on_quit());
+    let mut settings = bench.dispatch("db:get", &[]).unwrap()["db"]["settings"].clone();
+    settings["autoCheckUpdates"] = json!(false);
+    bench.dispatch("db:settings", &[settings]).unwrap();
+    assert!(!bench.poll_updates(15_000 + 6 * 60 * 60 * 1000));
+    assert_eq!(bench.update_automatic_checks(), 1);
+    let manual = bench.dispatch("app:update-check", &[]).unwrap();
+    assert_eq!(manual["phase"], "available");
+    assert_eq!(bench.update_automatic_checks(), 1);
+    fs::rename(feed.join("Pello-2.0.0-win-x64-setup.exe"), feed.join("missing.exe")).unwrap();
+    let failed = bench.dispatch("app:update-download", &[]).unwrap();
+    assert_eq!(failed["phase"], "error");
+    assert_eq!(failed["failed"], "download");
+    fs::rename(feed.join("missing.exe"), feed.join("Pello-2.0.0-win-x64-setup.exe")).unwrap();
+    let downloaded = bench.dispatch("app:update-download", &[]).unwrap();
+    assert_eq!(downloaded["phase"], "downloaded");
+    assert_eq!(fs::read(root.join("data/updates/Pello-2.0.0-win-x64-setup.exe")).unwrap(), b"installer-bytes");
+    assert_eq!(fs::read(root.join("data/updates/Pello-2.0.0-win-x64-setup.exe.blockmap")).unwrap(), b"blockmap-bytes");
+    assert!(events.lock().unwrap().iter().any(|event| event["channel"] == "app:update" && event["payload"]["percent"] == 100));
+    bench.dispatch("files:dirty", &[json!(true)]).unwrap();
+    assert!(!bench.dispatch("app:update-install", &[]).unwrap().as_bool().unwrap());
+    bench.dispatch("files:dirty", &[json!(false)]).unwrap();
+    assert!(bench.dispatch("app:update-install", &[]).unwrap().as_bool().unwrap());
+    assert!(!bench.update_installs_on_quit());
+    assert_eq!(fs::read_to_string(root.join("data/keep.txt")).unwrap(), "keep-data");
+    assert!(root.join("pello.config.json").is_file());
+    assert!(root.join("data/updates/install-requested").is_file());
+    let (reloaded, _) = workbench(&root);
+    assert_eq!(reloaded.dispatch("db:get", &[]).unwrap()["db"]["settings"]["autoCheckUpdates"], false);
+    assert!(!reloaded.poll_updates(1_000_000));
+    assert_eq!(reloaded.update_automatic_checks(), 0);
+    assert_eq!(reloaded.dispatch("app:update-check", &[]).unwrap()["phase"], "available");
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let nsh = fs::read_to_string(repo.join("assets/installer.nsh")).unwrap();
+    assert!(nsh.contains("$R1 != \"data\"") && nsh.contains("pello.config.json"), "{nsh}");
+    let builder = fs::read_to_string(repo.join("electron-builder.yml")).unwrap();
+    assert!(builder.contains("provider: github") && builder.contains("differentialPackage: true"), "{builder}");
+    assert!(builder.contains("deleteAppDataOnUninstall: false") && builder.contains("setup.${ext}"), "{builder}");
+    let settings_ui = fs::read_to_string(repo.join("src/renderer/AppUpdate.tsx")).unwrap();
+    assert!(settings_ui.contains("app-update-settings") && settings_ui.contains("自动检查更新"));
+    assert!(settings_ui.contains("检查更新") && settings_ui.contains("下载最新版本") && settings_ui.contains("安装并重启"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn agent_resume_uses_each_terminals_session_and_exports_full_history() {
+    let _lock = env_lock();
+    let root = temp_dir("resume");
+    let home = root.join("home");
+    let project = root.join("project");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&project).unwrap();
+    let _home = var_guard("HOME", home.to_str().unwrap());
+    let _resource = var_guard("AWB_RESOURCE_HOME", home.to_str().unwrap());
+    let (bench, _) = workbench(&root);
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    bench.dispatch("db:sessions", &[json!("p"), json!([
+        { "id": "t-claude", "kind": "claude", "shell": "bash", "sessionId": "g1", "agentSessionId": "claude-real" },
+        { "id": "t-codex", "kind": "codex", "shell": "bash", "sessionId": "g2", "agentSessionId": "codex-real" },
+        { "id": "t-open", "kind": "opencode", "shell": "bash", "sessionId": "g1", "agentSessionId": "open-real" },
+        { "id": "t-pi", "kind": "pi", "shell": "bash", "sessionId": "g2", "agentSessionId": "pi-real" },
+        { "id": "t-omp", "kind": "omp", "shell": "bash", "sessionId": "g1", "agentSessionId": "omp-real" }
+    ]), json!("t-claude"), json!([{ "id": "g1", "name": "一组" }, { "id": "g2", "name": "二组" }]), json!("g1")]).unwrap();
+    let saved = bench.dispatch("db:get", &[]).unwrap();
+    assert_eq!(saved["db"]["workSessions"]["p"].as_array().unwrap().len(), 2);
+    let groups = saved["db"].to_string();
+    assert!(groups.contains("一组") && groups.contains("二组") && groups.contains("claude-real") && groups.contains("codex-real"), "{groups}");
+    let claude = bench.dispatch("pty:create", &[json!({ "id": "t-claude", "projectId": "p", "kind": "claude", "shell": "bash", "agentSessionId": "claude-real" })]).unwrap();
+    let codex = bench.dispatch("pty:create", &[json!({ "id": "t-codex", "projectId": "p", "kind": "codex", "shell": "bash", "agentSessionId": "codex-real" })]).unwrap();
+    let open = bench.dispatch("pty:create", &[json!({ "id": "t-open", "projectId": "p", "kind": "opencode", "shell": "bash", "agentSessionId": "open-real" })]).unwrap();
+    let pi = bench.dispatch("pty:create", &[json!({ "id": "t-pi", "projectId": "p", "kind": "pi", "shell": "bash", "agentSessionId": "pi-real" })]).unwrap();
+    let omp = bench.dispatch("pty:create", &[json!({ "id": "t-omp", "projectId": "p", "kind": "omp", "shell": "bash", "agentSessionId": "omp-real" })]).unwrap();
+    assert!(claude["launchCommand"].as_str().unwrap().contains("--resume") && claude["launchCommand"].as_str().unwrap().contains("claude-real"), "{}", claude["launchCommand"]);
+    assert!(!claude["launchCommand"].as_str().unwrap().contains("codex-real"));
+    assert!(codex["launchCommand"].as_str().unwrap().contains("resume") && codex["launchCommand"].as_str().unwrap().contains("codex-real") && codex["launchCommand"].as_str().unwrap().contains("--no-daemon"), "{}", codex["launchCommand"]);
+    assert!(open["launchCommand"].as_str().unwrap().contains("--session") && open["launchCommand"].as_str().unwrap().contains("open-real"), "{}", open["launchCommand"]);
+    assert!(pi["launchCommand"].as_str().unwrap().contains("--session") && pi["launchCommand"].as_str().unwrap().contains("pi-real"), "{}", pi["launchCommand"]);
+    assert!(omp["launchCommand"].as_str().unwrap().contains("--resume") && omp["launchCommand"].as_str().unwrap().contains("omp-real"), "{}", omp["launchCommand"]);
+    let fresh_pi = bench.dispatch("pty:create", &[json!({ "id": "t-pi-new", "projectId": "p", "kind": "pi", "shell": "bash" })]).unwrap();
+    let fresh_omp = bench.dispatch("pty:create", &[json!({ "id": "t-omp-new", "projectId": "p", "kind": "omp", "shell": "bash" })]).unwrap();
+    let pi_dir = root.join("data/agent-sessions").join(pello_core::pty::history_name("t-pi-new"));
+    let omp_dir = root.join("data/agent-sessions").join(pello_core::pty::history_name("t-omp-new"));
+    assert!(pi_dir.is_dir() && omp_dir.is_dir());
+    assert!(fresh_pi["launchCommand"].as_str().unwrap().contains("--session-dir") && fresh_pi["launchCommand"].as_str().unwrap().contains(pi_dir.to_str().unwrap()), "{}", fresh_pi["launchCommand"]);
+    assert!(fresh_omp["launchCommand"].as_str().unwrap().contains(omp_dir.to_str().unwrap()), "{}", fresh_omp["launchCommand"]);
+    assert_eq!(fresh_pi["agentSessionId"], "pello:directory");
+    assert!(!fresh_pi["launchCommand"].as_str().unwrap().contains("pi-real"));
+    assert!(!home.join(".pi").exists() && !home.join(".omp").exists() && !home.join(".codex").exists() && !home.join(".claude").exists());
+    let fresh_claude = bench.dispatch("pty:create", &[json!({ "id": "t-claude-new", "projectId": "p", "kind": "claude", "shell": "bash" })]).unwrap();
+    let fresh_open = bench.dispatch("pty:create", &[json!({ "id": "t-open-new", "projectId": "p", "kind": "opencode", "shell": "bash" })]).unwrap();
+    assert!(fresh_claude["launchCommand"].as_str().unwrap().contains("--session-id"), "{}", fresh_claude["launchCommand"]);
+    assert!(fresh_open["launchCommand"].as_str().unwrap().starts_with("opencode --session "), "{}", fresh_open["launchCommand"]);
+    assert_ne!(fresh_claude["agentSessionId"], "claude-real");
+    assert!(!fresh_open["agentSessionId"].as_str().unwrap().contains("open-real"));
+    let marker = "FULL-HISTORY-MARKER-";
+    let payload = marker.repeat(4_000);
+    bench.dispatch("pty:feed", &[json!("t-claude"), json!(payload)]).unwrap();
+    bench.dispatch("pty:feed", &[json!("t-codex"), json!("OTHER-TERMINAL")] ).unwrap();
+    let exported = root.join("exported.ansi");
+    bench.dispatch("terminal:export", &[json!("t-claude"), json!(exported.display().to_string())]).unwrap();
+    let text = fs::read_to_string(&exported).unwrap();
+    assert!(text.contains(&payload) && !text.contains("OTHER-TERMINAL"), "the export keeps the whole recording");
+    assert!(root.join("data/terminal-history").join(format!("{}.ansi", pello_core::pty::history_name("t-codex"))).is_file());
+    for id in ["t-claude", "t-codex", "t-open", "t-pi", "t-omp", "t-pi-new", "t-omp-new", "t-claude-new", "t-open-new"] {
+        bench.dispatch("pty:close", &[json!(id)]).unwrap();
+    }
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn content_search_regex_matches_javascript_and_stays_off_the_command_line() {
+    let _lock = env_lock();
+    let root = temp_dir("js-search");
+    let project = root.join("project");
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src/note.txt"), "汉字 keeps Pello\n第二行 #token\n").unwrap();
+    fs::write(project.join("src/slow.txt"), format!("{}!\n", "a".repeat(28))).unwrap();
+    let argv = root.join("argv.json");
+    let _argv = var_guard("AWB_SEARCH_ARGV", argv.to_str().unwrap());
+    let (bench, _) = workbench(&root);
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    let query = "UNIQUE_QUERY_TOKEN";
+    bench.dispatch("content:search-start", &[json!("p"), json!("plain"), json!(query), json!(true), json!(true), json!(false)]).unwrap();
+    let recorded = fs::read_to_string(&argv).unwrap();
+    assert!(!recorded.contains(query), "{recorded}");
+    assert!(!pello_core::search::remote_content_shell().contains(query));
+    bench.dispatch("content:search-start", &[json!("p"), json!("han"), json!(r"\p{Script=Han}+"), json!(true), json!(true), json!(false)]).unwrap();
+    let (han, _) = drain_content(&bench, "han");
+    assert!(han.iter().any(|item| item["matches"].as_array().unwrap().iter().any(|found| found["match"] == "汉字")), "{han:?}");
+    bench.dispatch("content:search-start", &[json!("p"), json!("look"), json!(r"(?<=#)\w+"), json!(true), json!(true), json!(false)]).unwrap();
+    let (look, _) = drain_content(&bench, "look");
+    assert!(look.iter().any(|item| item["matches"].as_array().unwrap().iter().any(|found| found["match"] == "token")), "{look:?}");
+    let invalid = bench.dispatch("content:search-start", &[json!("p"), json!("plus"), json!("a++"), json!(true), json!(true), json!(false)]).unwrap_err();
+    assert!(invalid.contains("正则表达式无效"), "{invalid}");
+    bench.dispatch("db:settings", &[json!({ "language": "en" })]).unwrap();
+    assert_eq!(bench.dispatch("content:search-start", &[json!("p"), json!("plus-en"), json!("a++"), json!(true), json!(true), json!(false)]).unwrap_err(), "Invalid regular expression");
+    bench.dispatch("db:settings", &[json!({ "language": "zh-CN" })]).unwrap();
+    bench.dispatch("content:search-start", &[json!("p"), json!("slow"), json!("(a+)+$"), json!(true), json!(true), json!(false)]).unwrap();
+    let timed = bench.dispatch("content:search-next", &[json!("slow")]).unwrap_err();
+    assert!(timed.contains("正则表达式执行超时"), "{timed}");
+    let remote_root = root.join("remote-project");
+    fs::create_dir_all(&remote_root).unwrap();
+    fs::write(remote_root.join("note.txt"), "Pello remote\n").unwrap();
+    let mut child = std::process::Command::new("python3");
+    child.arg("-u").arg("-c").arg(pello_core::search::LINUX_CONTENT_SEARCH);
+    child.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped());
+    let mut child = child.spawn().unwrap();
+    let payload = json!({ "root": remote_root.display().to_string(), "query": "(?<=#bad", "sensitive": true, "regex": true, "whole": false, "ignored": [] }).to_string();
+    assert!(!child.stdin.is_none());
+    use std::io::Write;
+    child.stdin.as_mut().unwrap().write_all(payload.as_bytes()).unwrap();
+    drop(child.stdin.take());
+    let output = child.wait_with_output().unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("\"error\": \"invalid\"") || text.contains("\"error\":\"invalid\""), "{text}");
+    let message = match pello_core::search::ContentSearch::from_remote_output("p", "id", &text, "zh-CN") { Err(error) => error, Ok(_) => panic!("remote syntax error was accepted") };
+    assert!(message.contains("正则表达式无效"), "{message}");
+    let mut slow = std::process::Command::new("python3");
+    slow.arg("-u").arg("-c").arg(pello_core::search::LINUX_CONTENT_SEARCH);
+    slow.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped());
+    let mut slow = slow.spawn().unwrap();
+    fs::write(remote_root.join("slow.txt"), format!("{}!\n", "a".repeat(28))).unwrap();
+    let slow_payload = json!({ "root": remote_root.display().to_string(), "query": "(a+)+$", "sensitive": true, "regex": true, "whole": false, "ignored": [] }).to_string();
+    assert!(!format!("python3 -u -c").contains("(a+)+$"));
+    slow.stdin.as_mut().unwrap().write_all(slow_payload.as_bytes()).unwrap();
+    drop(slow.stdin.take());
+    let slow_output = slow.wait_with_output().unwrap();
+    let slow_text = String::from_utf8_lossy(&slow_output.stdout);
+    assert!(slow_text.contains("timeout"), "{slow_text}");
+    let slow_message = match pello_core::search::ContentSearch::from_remote_output("p", "id", &slow_text, "en") { Err(error) => error, Ok(_) => panic!("remote timeout was accepted") };
+    assert_eq!(slow_message, "Regular expression timed out. Simplify the expression.");
+    let _ = fs::remove_dir_all(root);
+}

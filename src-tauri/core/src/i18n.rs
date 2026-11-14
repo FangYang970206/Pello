@@ -142,6 +142,13 @@ const EN: &[(&str, &str)] = &[
     ("图表渲染超时，请简化图表后重试", "Diagram rendering timed out. Simplify the diagram and retry."),
     ("图表渲染未返回 SVG", "Diagram renderer did not return SVG"),
     ("图表渲染器不可用", "Diagram renderer is unavailable"),
+    ("请先在执行器高级属性中设置 Skill 配置文件或 MCP 配置文件", "Set the Skill or MCP configuration file in the executor's advanced properties first"),
+    ("Oh My Pi YAML 配置存在语法错误", "Oh My Pi YAML configuration has syntax errors"),
+    ("OpenCode V2 permissions 必须是数组", "OpenCode V2 permissions must be an array"),
+    ("此 Skill 受 Oh My Pi 全局筛选或 SKILL.md 停用限制，请先修改对应设置", "This Skill is restricted by Oh My Pi global filters or a disabled SKILL.md. Update those settings first."),
+    ("终端不存在", "Terminal does not exist"),
+    ("此终端尚无完整记录", "No full history is available for this terminal yet"),
+    ("内容搜索进程无法启动", "The content search process could not be started"),
 ];
 
 pub fn translate(language: &str, source: &str, values: &[impl AsRef<str>]) -> String {

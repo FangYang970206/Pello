@@ -116,7 +116,7 @@ pub fn list(data: &Path, custom: &Value, kind: &str, agent: &str, page: usize, q
     } else if kind == "skills" {
         let mut seen = Vec::new();
         for folder in skill_roots(target) {
-            scan_skills(&folder, target, &mut seen, &mut items, &mut errors, language);
+            scan_skills(&folder, target, &mut seen, &mut items, &mut errors, language)?;
         }
     }
     let query = query.to_lowercase();
@@ -213,13 +213,13 @@ fn skill_roots(target: &Target) -> Vec<PathBuf> {
     unique
 }
 
-fn scan_skills(folder: &Path, target: &Target, seen: &mut Vec<PathBuf>, items: &mut Vec<Value>, errors: &mut Vec<String>, language: &str) {
+fn scan_skills(folder: &Path, target: &Target, seen: &mut Vec<PathBuf>, items: &mut Vec<Value>, errors: &mut Vec<String>, language: &str) -> Result<(), String> {
     let real = match folder.canonicalize() {
         Ok(path) => path,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
-        Err(error) => { errors.push(format!("{}: {error}", folder.display())); return; }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => { errors.push(format!("{}: {error}", folder.display())); return Ok(()); }
     };
-    if seen.iter().any(|item| item == &real) { return; }
+    if seen.iter().any(|item| item == &real) { return Ok(()); }
     seen.push(real);
     let file = folder.join("SKILL.md");
     let disabled = PathBuf::from(format!("{}.awb-disabled", file.display()));
@@ -227,21 +227,22 @@ fn scan_skills(folder: &Path, target: &Target, seen: &mut Vec<PathBuf>, items: &
     if source.as_os_str().is_empty() {
         let entries = match fs::read_dir(folder) {
             Ok(entries) => entries,
-            Err(error) => { errors.push(format!("{}: {error}", folder.display())); return; }
+            Err(error) => { errors.push(format!("{}: {error}", folder.display())); return Ok(()); }
         };
         for entry in entries.flatten() {
             let kind = entry.file_type();
-            if kind.as_ref().is_ok_and(|kind| kind.is_dir() || kind.is_symlink()) { scan_skills(&entry.path(), target, seen, items, errors, language); }
+            if kind.as_ref().is_ok_and(|kind| kind.is_dir() || kind.is_symlink()) { scan_skills(&entry.path(), target, seen, items, errors, language)?; }
         }
-        return;
+        return Ok(());
     }
     match skill_info(&source, language) {
         Ok(info) => {
-            let enabled = skill_enabled(target, &file, &info.name, language).unwrap_or(false);
+            let enabled = skill_enabled(target, &file, &info.name, language)?;
             items.push(json!({ "name": info.name, "description": info.description, "path": file.display().to_string(), "enabled": enabled }));
         }
         Err(error) => errors.push(format!("{}: {error}", folder.display())),
     }
+    Ok(())
 }
 
 struct SkillInfo { name: String, description: String }
@@ -290,15 +291,24 @@ fn skill_enabled(target: &Target, file: &Path, name: &str, language: &str) -> Re
     let settings = settings_file(target);
     if settings.as_os_str().is_empty() { return Ok(true); }
     let raw = read_text(&settings, language)?;
-    if target.skill_adapter == "codex" {
-        let entries = toml_skill_entries(&raw);
-        return Ok(entries.into_iter().rev().find(|item| item.0 == file.display().to_string() || item.1.as_deref() == Some(name)).map(|item| item.2).unwrap_or(true));
+    match target.skill_adapter.as_str() {
+        "codex" => {
+            let entries = toml_skill_entries(&raw);
+            Ok(entries.into_iter().rev().find(|item| item.0 == file.display().to_string() || item.1.as_deref() == Some(name)).map(|item| item.2).unwrap_or(true))
+        }
+        "claude" => {
+            let config = parse_json_text(&raw, language)?;
+            Ok(config.get("skillOverrides").and_then(|value| value.get(name)).and_then(|value| value.as_str()) != Some("off"))
+        }
+        "opencode" => opencode_skill_enabled(&raw, name, language),
+        "pi" => {
+            let config = parse_json_text(&raw, language)?;
+            let mark = format!("-{}", file.display());
+            Ok(!config.get("skills").and_then(|value| value.as_array()).is_some_and(|items| items.iter().any(|item| item.as_str() == Some(mark.as_str()))))
+        }
+        "omp" => omp_skill_enabled(&raw, file, name, language),
+        _ => Ok(true),
     }
-    if target.skill_adapter == "claude" {
-        let config = parse_json_text(&raw, language)?;
-        return Ok(config.get("skillOverrides").and_then(|value| value.get(name)).and_then(|value| value.as_str()) != Some("off"));
-    }
-    Ok(true)
 }
 
 fn settings_file(target: &Target) -> PathBuf {
@@ -329,6 +339,301 @@ fn toml_skill_entries(text: &str) -> Vec<(String, Option<String>, bool)> {
     }
     if open { entries.push((path, name, enabled)); }
     entries
+}
+
+fn toggle_codex_skill(settings: &Path, skill_path: &str, enabled: bool, language: &str) -> Result<(), String> {
+    let before = read_text(settings, language)?;
+    let entries = toml_skill_entries(&before);
+    let index = entries.iter().enumerate().rev().find(|(_, (path, _, _))| path == skill_path).map(|(index, _)| index);
+    let next = if let Some(index) = index {
+        set_toml_skill_enabled(&before, index, enabled).map_err(|_| t(language, "MCP 配置已改变"))?
+    } else {
+        let mut next = before.clone();
+        if !next.is_empty() && !next.ends_with('\n') { next.push('\n'); }
+        if !next.is_empty() { next.push('\n'); }
+        next.push_str("[[skills.config]]\n");
+        next.push_str(&format!("path = \"{}\"\n", escape_toml(skill_path)));
+        next.push_str(&format!("enabled = {enabled}\n"));
+        next
+    };
+    atomic_text(settings, &before, &next, language)
+}
+
+fn set_toml_skill_enabled(text: &str, index: usize, enabled: bool) -> Result<String, ()> {
+    let mut lines: Vec<String> = text.lines().map(|line| line.to_string()).collect();
+    let headers: Vec<usize> = lines.iter().enumerate().filter(|(_, line)| line.trim().starts_with("[[skills.config]]")).map(|(index, _)| index).collect();
+    let start = *headers.get(index).ok_or(())?;
+    let mut end = headers.get(index + 1).copied().unwrap_or(lines.len());
+    if let Some(offset) = lines[start + 1..end].iter().position(|line| {
+        let trimmed = line.trim();
+        trimmed.starts_with('[') && !trimmed.starts_with("[[skills.config]]")
+    }) {
+        end = start + 1 + offset;
+    }
+    let value = if enabled { "true" } else { "false" };
+    if let Some(offset) = lines[start..end].iter().position(|line| line.trim().starts_with("enabled")) {
+        let absolute = start + offset;
+        let indent: String = lines[absolute].chars().take_while(|char| char.is_whitespace()).collect();
+        lines[absolute] = format!("{indent}enabled = {value}");
+    } else {
+        lines.insert(end, format!("enabled = {value}"));
+    }
+    let mut next = lines.join("\n");
+    if text.ends_with('\n') || text.is_empty() { next.push('\n'); }
+    Ok(next)
+}
+
+fn escape_toml(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn toggle_opencode_skill(settings: &Path, name: &str, enabled: bool, language: &str) -> Result<(), String> {
+    let before = read_text(settings, language)?;
+    let source = if before.trim().is_empty() { "{\n}\n".to_string() } else { before.clone() };
+    let config = parse_json_text(&source, language)?;
+    let effect = if enabled { "allow" } else { "deny" };
+    let next = if opencode_v2(&config) {
+        if config.get("permissions").is_some_and(|value| !value.is_array()) {
+            return Err(t(language, "OpenCode V2 permissions 必须是数组"));
+        }
+        let mut rules = config.get("permissions").and_then(|value| value.as_array()).cloned().unwrap_or_default();
+        let last_matches = rules.last().is_some_and(|rule| rule.get("action").and_then(|value| value.as_str()) == Some("skill") && rule.get("resource").and_then(|value| value.as_str()) == Some(name));
+        if last_matches {
+            if let Some(rule) = rules.last_mut() { rule["effect"] = json!(effect); }
+        } else {
+            rules.push(json!({ "action": "skill", "resource": name, "effect": effect }));
+        }
+        let raw = serde_json::to_string(&Value::Array(rules)).map_err(|_| t(language, "JSON 配置存在语法错误，请修复后重试"))?;
+        upsert_json(&source, &["permissions"], &raw).map_err(|_| t(language, "JSON 配置存在语法错误，请修复后重试"))?
+    } else {
+        let skill = config.get("permission").and_then(|value| value.get("skill"));
+        if let Some(policy) = skill.and_then(|value| value.as_str()) {
+            let raw = serde_json::to_string(&json!({ "*": policy, name: effect })).map_err(|_| t(language, "JSON 配置存在语法错误，请修复后重试"))?;
+            upsert_json(&source, &["permission", "skill"], &raw).map_err(|_| t(language, "JSON 配置存在语法错误，请修复后重试"))?
+        } else {
+            upsert_json(&source, &["permission", "skill", name], &format!("\"{effect}\"")).map_err(|_| t(language, "JSON 配置存在语法错误，请修复后重试"))?
+        }
+    };
+    parse_json_text(&next, language)?;
+    atomic_text(settings, &before, &next, language)
+}
+
+fn toggle_pi_skill(settings: &Path, skill_path: &str, enabled: bool, language: &str) -> Result<(), String> {
+    let before = read_text(settings, language)?;
+    let source = if before.trim().is_empty() { "{\n}\n".to_string() } else { before.clone() };
+    let config = parse_json_text(&source, language)?;
+    let mark = format!("-{skill_path}");
+    let mut entries = config.get("skills").and_then(|value| value.as_array()).map(|items| items.iter().filter_map(|item| item.as_str().map(|item| item.to_string())).collect()).unwrap_or_else(Vec::new);
+    entries.retain(|entry| entry != &mark);
+    if !enabled { entries.push(mark); }
+    let raw = serde_json::to_string(&entries).map_err(|_| t(language, "JSON 配置存在语法错误，请修复后重试"))?;
+    let next = upsert_json(&source, &["skills"], &raw).map_err(|_| t(language, "JSON 配置存在语法错误，请修复后重试"))?;
+    parse_json_text(&next, language)?;
+    atomic_text(settings, &before, &next, language)
+}
+
+fn toggle_omp_skill(settings: &Path, file: &Path, name: &str, enabled: bool, language: &str) -> Result<(), String> {
+    let before = read_text(settings, language)?;
+    let document = parse_yaml(&before).map_err(|_| t(language, "Oh My Pi YAML 配置存在语法错误"))?;
+    if enabled && omp_blocked(&document, file, name, language)? {
+        return Err(t(language, "此 Skill 受 Oh My Pi 全局筛选或 SKILL.md 停用限制，请先修改对应设置"));
+    }
+    let mut entries = yaml_list(&document, &["disabledExtensions"]);
+    let mark = format!("skill:{name}");
+    entries.retain(|entry| entry != &mark);
+    if !enabled { entries.push(mark); }
+    let next = set_yaml_root_list(&before, "disabledExtensions", &entries);
+    atomic_text(settings, &before, &next, language)
+}
+
+fn opencode_skill_enabled(raw: &str, name: &str, language: &str) -> Result<bool, String> {
+    let config = parse_json_text(raw, language)?;
+    let permission = config.get("permission").and_then(|value| value.get("skill"));
+    let mut enabled = if let Some(policy) = permission.and_then(|value| value.as_str()) { policy != "deny" } else { true };
+    if let Some(rules) = permission.filter(|value| value.is_object()) {
+        for (pattern, policy) in rules.as_object().cloned().unwrap_or_default() {
+            if wildcard_matches(&pattern, name) { enabled = policy.as_str() != Some("deny"); }
+        }
+    }
+    if config.get("permissions").is_some_and(|value| !value.is_array()) {
+        return Err(t(language, "OpenCode V2 permissions 必须是数组"));
+    }
+    if let Some(rules) = config.get("permissions").and_then(|value| value.as_array()) {
+        for rule in rules {
+            let action = rule.get("action").and_then(|value| value.as_str()).unwrap_or("");
+            let resource = rule.get("resource").and_then(|value| value.as_str()).unwrap_or("");
+            if wildcard_matches(action, "skill") && wildcard_matches(resource, name) {
+                enabled = rule.get("effect").and_then(|value| value.as_str()) != Some("deny");
+            }
+        }
+    }
+    Ok(enabled)
+}
+
+fn omp_skill_enabled(raw: &str, file: &Path, name: &str, language: &str) -> Result<bool, String> {
+    let document = parse_yaml(raw).map_err(|_| t(language, "Oh My Pi YAML 配置存在语法错误"))?;
+    Ok(!omp_blocked(&document, file, name, language)? && !yaml_list(&document, &["disabledExtensions"]).iter().any(|entry| entry == &format!("skill:{name}")))
+}
+
+fn omp_blocked(document: &Yaml, file: &Path, name: &str, language: &str) -> Result<bool, String> {
+    let include = yaml_list(document, &["skills", "includeSkills"]);
+    let ignored = yaml_list(document, &["skills", "ignoredSkills"]).iter().any(|pattern| wildcard_matches(pattern, name));
+    let included = include.is_empty() || include.iter().any(|pattern| wildcard_matches(pattern, name));
+    Ok(!front_enabled(file, language)? || yaml_false(document, &["skills", "enabled"]) || ignored || !included)
+}
+
+fn front_enabled(file: &Path, language: &str) -> Result<bool, String> {
+    let text = read_text(file, language)?.trim_start_matches('\u{feff}').to_string();
+    let Some(rest) = text.strip_prefix("---\n").or_else(|| text.strip_prefix("---\r\n")) else { return Ok(true); };
+    let end = rest.find("\n---").unwrap_or(rest.len());
+    for line in rest[..end].lines() {
+        let Some((key, value)) = line.split_once(':') else { continue };
+        if key.trim() != "enabled" { continue; }
+        let value = value.trim();
+        if (value.starts_with('"') && value.ends_with('"')) || (value.starts_with('\'') && value.ends_with('\'')) { return Ok(true); }
+        return Ok(!matches!(value, "false" | "no" | "off" | "False" | "No" | "Off"));
+    }
+    Ok(true)
+}
+
+fn wildcard_matches(pattern: &str, value: &str) -> bool {
+    fn eat(pattern: &[u8], value: &[u8]) -> bool {
+        let mut pattern_index = 0;
+        let mut value_index = 0;
+        let mut star = None;
+        let mut mark = 0;
+        while value_index < value.len() {
+            if pattern_index < pattern.len() && (pattern[pattern_index] == b'?' || pattern[pattern_index] == value[value_index]) {
+                pattern_index += 1;
+                value_index += 1;
+            } else if pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+                star = Some(pattern_index);
+                pattern_index += 1;
+                mark = value_index;
+            } else if let Some(star_at) = star {
+                pattern_index = star_at + 1;
+                mark += 1;
+                value_index = mark;
+            } else {
+                return false;
+            }
+        }
+        while pattern_index < pattern.len() && pattern[pattern_index] == b'*' { pattern_index += 1; }
+        pattern_index == pattern.len()
+    }
+    eat(pattern.as_bytes(), value.as_bytes())
+}
+
+#[derive(Clone)]
+enum Yaml { Map(Vec<(String, Yaml)>), Seq(Vec<Yaml>), Str(String), Null }
+
+fn parse_yaml(text: &str) -> Result<Yaml, ()> {
+    let lines: Vec<(usize, String)> = text.lines().filter_map(|line| {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') { return None; }
+        if line.starts_with('\t') { return None; }
+        let indent = line.chars().take_while(|char| *char == ' ').count();
+        Some((indent, trimmed.to_string()))
+    }).collect();
+    if lines.is_empty() { return Ok(Yaml::Map(Vec::new())); }
+    let (value, next) = parse_yaml_block(&lines, 0, 0)?;
+    if next != lines.len() { return Err(()) }
+    Ok(value)
+}
+
+fn parse_yaml_block(lines: &[(usize, String)], mut index: usize, indent: usize) -> Result<(Yaml, usize), ()> {
+    if index >= lines.len() || lines[index].0 < indent { return Ok((Yaml::Null, index)); }
+    if lines[index].1.starts_with("- ") || lines[index].1 == "-" {
+        let mut items = Vec::new();
+        while index < lines.len() && lines[index].0 == indent && (lines[index].1.starts_with("- ") || lines[index].1 == "-") {
+            let rest = lines[index].1.trim_start_matches("- ").trim();
+            if rest.is_empty() {
+                let (child, next) = parse_yaml_block(lines, index + 1, indent + 2)?;
+                items.push(child);
+                index = next;
+            } else {
+                items.push(Yaml::Str(unyaml(rest)));
+                index += 1;
+            }
+        }
+        return Ok((Yaml::Seq(items), index));
+    }
+    let mut map = Vec::new();
+    while index < lines.len() && lines[index].0 == indent && !lines[index].1.starts_with('-') {
+        let Some((key, value)) = lines[index].1.split_once(':') else { return Err(()) };
+        let key = key.trim().to_string();
+        let value = value.trim();
+        if value.is_empty() {
+            let (child, next) = parse_yaml_block(lines, index + 1, indent + 2)?;
+            map.push((key, child));
+            index = next;
+        } else {
+            map.push((key, Yaml::Str(unyaml(value))));
+            index += 1;
+        }
+    }
+    Ok((Yaml::Map(map), index))
+}
+
+fn unyaml(value: &str) -> String {
+    let value = value.trim();
+    if value.len() >= 2 {
+        let bytes = value.as_bytes();
+        if (bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"') || (bytes[0] == b'\'' && bytes[bytes.len() - 1] == b'\'') {
+            return value[1..value.len() - 1].replace("\\\"", "\"").replace("\\\\", "\\");
+        }
+    }
+    value.to_string()
+}
+
+fn yaml_at<'a>(node: &'a Yaml, path: &[&str]) -> Option<&'a Yaml> {
+    let mut current = node;
+    for key in path {
+        match current {
+            Yaml::Map(entries) => current = entries.iter().rev().find(|(name, _)| name == key).map(|(_, value)| value)?,
+            _ => return None,
+        }
+    }
+    Some(current)
+}
+
+fn yaml_list(node: &Yaml, path: &[&str]) -> Vec<String> {
+    match yaml_at(node, path) {
+        Some(Yaml::Seq(items)) => items.iter().filter_map(|item| match item { Yaml::Str(value) => Some(value.clone()), _ => None }).collect(),
+        Some(Yaml::Str(value)) if value == "[]" || value.is_empty() => Vec::new(),
+        _ => Vec::new(),
+    }
+}
+
+fn yaml_false(node: &Yaml, path: &[&str]) -> bool {
+    matches!(yaml_at(node, path), Some(Yaml::Str(value)) if matches!(value.as_str(), "false" | "no" | "off" | "False" | "No" | "Off"))
+}
+
+fn set_yaml_root_list(text: &str, key: &str, values: &[String]) -> String {
+    let mut lines: Vec<String> = text.split('\n').map(|line| line.to_string()).collect();
+    if lines.last().is_some_and(|line| line.is_empty()) { lines.pop(); }
+    let mut rendered = vec![format!("{key}:")];
+    for value in values {
+        rendered.push(format!("  - \"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"")));
+    }
+    let header = lines.iter().position(|line| !line.starts_with(' ') && !line.starts_with('\t') && line.trim().starts_with(&format!("{key}:")));
+    if let Some(start) = header {
+        let mut end = start + 1;
+        while end < lines.len() {
+            let line = &lines[end];
+            if line.trim().is_empty() || line.starts_with(' ') || line.starts_with('\t') { end += 1; } else { break; }
+        }
+        let mut next = lines[..start].to_vec();
+        next.extend(rendered);
+        next.extend_from_slice(&lines[end..]);
+        lines = next;
+    } else {
+        if lines.last().is_some_and(|line| !line.is_empty()) { lines.push(String::new()); }
+        lines.extend(rendered);
+    }
+    let mut next = lines.join("\n");
+    if !next.ends_with('\n') { next.push('\n'); }
+    next
 }
 
 pub fn toggle(data: &Path, custom: &Value, kind: &str, agent: &str, item: &Value, enabled: Option<bool>, language: &str) -> Result<(), String> {
@@ -394,19 +699,25 @@ fn toggle_mcp(target: &Target, item: &Value, enabled: bool, language: &str) -> R
 
 fn toggle_skill(target: &Target, item: &Value, enabled: bool, language: &str) -> Result<(), String> {
     let file = PathBuf::from(item["path"].as_str().unwrap_or(""));
-    if target.skill_adapter == "claude" {
-        let settings = settings_file(target);
-        let before = read_text(&settings, language)?;
-        let source = if before.trim().is_empty() { "{\n}\n".to_string() } else { before.clone() };
-        let next = upsert_json(&source, &["skillOverrides", item["name"].as_str().unwrap_or("")], if enabled { "\"on\"" } else { "\"off\"" }).map_err(|_| t(language, "JSON 配置存在语法错误，请修复后重试"))?;
-        parse_json_text(&next, language)?;
-        atomic_text(&settings, &before, &next, language)?;
-        return Ok(());
+    let name = item["name"].as_str().unwrap_or("");
+    let settings = settings_file(target);
+    if !target.skill_adapter.is_empty() && target.skill_adapter != "portable" && settings.as_os_str().is_empty() {
+        return Err(t(language, "请先在执行器高级属性中设置 Skill 配置文件或 MCP 配置文件"));
     }
-    if target.skill_adapter != "portable" {
-        // Codex, OpenCode, Pi and Oh My Pi keep their own skill override files.
-        // Renaming SKILL.md would hide the skill from every other agent.
-        return Err(translate(language, "此功能尚未在 Rust 移植中实现：{{0}}", &[format!("skills:{}", target.skill_adapter)]));
+    match target.skill_adapter.as_str() {
+        "claude" => {
+            let before = read_text(&settings, language)?;
+            let source = if before.trim().is_empty() { "{\n}\n".to_string() } else { before.clone() };
+            let next = upsert_json(&source, &["skillOverrides", name], if enabled { "\"on\"" } else { "\"off\"" }).map_err(|_| t(language, "JSON 配置存在语法错误，请修复后重试"))?;
+            parse_json_text(&next, language)?;
+            atomic_text(&settings, &before, &next, language)?;
+            return Ok(());
+        }
+        "codex" => return toggle_codex_skill(&settings, &file.display().to_string(), enabled, language),
+        "opencode" => return toggle_opencode_skill(&settings, name, enabled, language),
+        "pi" => return toggle_pi_skill(&settings, &file.display().to_string(), enabled, language),
+        "omp" => return toggle_omp_skill(&settings, &file, name, enabled, language),
+        _ => {}
     }
     let source = if enabled { PathBuf::from(format!("{}.awb-disabled", file.display())) } else { file.clone() };
     let dest = if enabled { file.clone() } else { PathBuf::from(format!("{}.awb-disabled", file.display())) };

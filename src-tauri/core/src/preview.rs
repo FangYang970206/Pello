@@ -116,8 +116,14 @@ impl Service {
         if generation != self.inner.diagrams.generation.load(Ordering::SeqCst) {
             return Err(translate(language, "图表渲染已取消", &[] as &[String]));
         }
-        let bin = std::env::var("AWB_DIAGRAM_BIN").unwrap_or_else(|_| "pello-diagram".into());
-        let mut command = Command::new(&bin);
+        if let Some(bin) = std::env::var("AWB_DIAGRAM_BIN").ok().filter(|value| !value.is_empty()) {
+            return self.render_external(&bin, source, generation, language);
+        }
+        self.render_browser(source, generation, language)
+    }
+
+    fn render_external(&self, bin: &str, source: &str, generation: u64, language: &str) -> Result<String, String> {
+        let mut command = Command::new(bin);
         command.env_clear();
         if let Some(path) = std::env::var_os("PATH") { command.env("PATH", path); }
         command.args(["--security-level", "strict", "--sandbox", "--no-node", "--no-workbench"]);
@@ -163,6 +169,107 @@ impl Service {
         Ok(svg)
     }
 
+    /// Hidden Chrome process. The page loads mermaid with `securityLevel: 'strict'`
+    /// and has no Node and no workbench preload. Chrome's own sandbox cannot start
+    /// in this container, so the process uses a private profile and a cleared environment.
+    fn render_browser(&self, source: &str, generation: u64, language: &str) -> Result<String, String> {
+        let browser = browser_bin().ok_or_else(|| translate(language, "图表渲染器不可用", &[] as &[String]))?;
+        let library = mermaid_library().ok_or_else(|| translate(language, "图表渲染器不可用", &[] as &[String]))?;
+        let root = std::env::temp_dir().join(format!("pello-diagram-{}", random_id()));
+        fs::create_dir_all(root.join("profile")).map_err(|error| error.to_string())?;
+        std::os::unix::fs::symlink(&library, root.join("mermaid.min.js")).map_err(|error| error.to_string())?;
+        let html = format!(
+            "<!DOCTYPE html><meta charset=\"utf-8\"><body><script src=\"mermaid.min.js\"></script><script>\nconst source = {};\nmermaid.initialize({{ startOnLoad: false, securityLevel: 'strict', theme: 'neutral', suppressErrorRendering: true, maxTextSize: 100000 }});\nmermaid.render('pelloDiagram', source).then((result) => {{ document.documentElement.setAttribute('data-pello-ready', '1'); document.body.innerHTML = result.svg; }}).catch((error) => {{ document.documentElement.setAttribute('data-pello-error', '1'); document.body.textContent = String(error && error.message || error); }});\n</script></body>",
+            serde_json::to_string(source).unwrap_or_else(|_| "\"\"".into())
+        );
+        fs::write(root.join("render.html"), html).map_err(|error| error.to_string())?;
+        let mut command = Command::new(&browser);
+        command.env_clear();
+        if let Some(path) = std::env::var_os("PATH") { command.env("PATH", path); }
+        command.env("HOME", &root);
+        command.env("TMPDIR", &root);
+        command.env("XDG_CONFIG_HOME", root.join("profile"));
+        command.env("XDG_CACHE_HOME", root.join("profile"));
+        command.args([
+            "--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage", "--no-first-run",
+            "--disable-extensions", "--disable-background-networking", "--disable-sync", "--disable-default-apps",
+        ]);
+        command.arg(format!("--user-data-dir={}", root.join("profile").display()));
+        command.args(["--virtual-time-budget=8000", "--dump-dom"]);
+        command.arg(format!("file://{}", root.join("render.html").display()));
+        command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+        #[cfg(unix)]
+        { use std::os::unix::process::CommandExt; command.process_group(0); }
+        if let Ok(log) = std::env::var("AWB_DIAGRAM_LOG") {
+            let args = command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\n");
+            let _ = fs::write(log, format!("argv0={}\n{args}\n", browser.display()));
+        }
+        let mut child = command.spawn().map_err(|_| translate(language, "图表渲染器不可用", &[] as &[String]))?;
+        let mut stdout = child.stdout.take().ok_or_else(|| translate(language, "图表渲染器不可用", &[] as &[String]))?;
+        let buffer = Arc::new(Mutex::new(String::new()));
+        let collect = buffer.clone();
+        let reader = std::thread::spawn(move || {
+            let mut chunk = [0u8; 8192];
+            loop {
+                match stdout.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(size) => collect.lock().expect("diagram").push_str(&String::from_utf8_lossy(&chunk[..size])),
+                }
+            }
+        });
+        {
+            let mut slot = self.inner.diagrams.child.lock().expect("child");
+            if self.inner.diagrams.generation.load(Ordering::SeqCst) != generation {
+                stop_child(&mut child);
+                drop(slot);
+                let _ = reader.join();
+                let _ = fs::remove_dir_all(&root);
+                return Err(translate(language, "图表渲染已取消", &[] as &[String]));
+            }
+            *slot = Some(child);
+        }
+        let started = Instant::now();
+        let svg = loop {
+            if self.inner.diagrams.generation.load(Ordering::SeqCst) != generation {
+                self.stop_diagram();
+                let _ = reader.join();
+                let _ = fs::remove_dir_all(&root);
+                return Err(translate(language, "图表渲染已取消", &[] as &[String]));
+            }
+            if started.elapsed() > Duration::from_secs(15) {
+                self.stop_diagram();
+                let _ = reader.join();
+                let _ = fs::remove_dir_all(&root);
+                return Err(translate(language, "图表渲染超时，请简化图表后重试", &[] as &[String]));
+            }
+            let current = buffer.lock().expect("diagram").clone();
+            if let Some(svg) = extract_svg(&current) {
+                self.stop_diagram();
+                break svg;
+            }
+            if current.contains("data-pello-error") && current.contains("</html>") {
+                self.stop_diagram();
+                let _ = reader.join();
+                let _ = fs::remove_dir_all(&root);
+                return Err(translate(language, "图表渲染未返回 SVG", &[] as &[String]));
+            }
+            let finished = self.inner.diagrams.child.lock().expect("child").as_mut().and_then(|child| child.try_wait().ok()).flatten().is_some();
+            if finished && extract_svg(&buffer.lock().expect("diagram")).is_none() {
+                let _ = reader.join();
+                let _ = fs::remove_dir_all(&root);
+                return Err(translate(language, "图表渲染未返回 SVG", &[] as &[String]));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let _ = reader.join();
+        let _ = self.inner.diagrams.child.lock().expect("child").take();
+        let _ = fs::remove_dir_all(&root);
+        if self.inner.diagrams.generation.load(Ordering::SeqCst) != generation {
+            return Err(translate(language, "图表渲染已取消", &[] as &[String]));
+        }
+        Ok(svg)
+    }
+
     pub fn cancel(&self) {
         self.inner.diagrams.generation.fetch_add(1, Ordering::SeqCst);
         self.stop_diagram();
@@ -188,6 +295,29 @@ impl Service {
 
 impl Drop for Service {
     fn drop(&mut self) { self.inner.alive.store(false, Ordering::SeqCst); self.cancel(); }
+}
+
+fn browser_bin() -> Option<PathBuf> {
+    for candidate in ["/usr/bin/google-chrome-stable", "/usr/bin/google-chrome", "/usr/local/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"] {
+        let path = PathBuf::from(candidate);
+        if path.is_file() { return Some(path); }
+    }
+    None
+}
+
+fn mermaid_library() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("AWB_MERMAID_JS") {
+        let path = PathBuf::from(path);
+        if path.is_file() { return Some(path); }
+    }
+    let compiled = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../node_modules/mermaid/dist/mermaid.min.js");
+    if compiled.is_file() { Some(compiled) } else { None }
+}
+
+fn extract_svg(document: &str) -> Option<String> {
+    let start = document.find("<svg")?;
+    let end = document[start..].find("</svg>")?;
+    Some(document[start..start + end + "</svg>".len()].to_string())
 }
 
 fn stop_child(child: &mut Child) {

@@ -440,7 +440,7 @@ fn handle_chunk(id: &str, live: &Arc<Mutex<Live>>, writer: &Arc<Mutex<Box<dyn Wr
     apply_reports(&mut guard, &activity.reports);
     guard.pending.push_str(&activity.text);
     let (visible, prompts) = drain_prompts(&mut guard.pending);
-    let restore = guard.restore;
+    let _recorded_for_restore = guard.restore;
     let data = guard.data.clone();
     let state_event = if changed { Some(snapshot(id, &guard)) } else { None };
     drop(guard);
@@ -449,8 +449,8 @@ fn handle_chunk(id: &str, live: &Arc<Mutex<Live>>, writer: &Arc<Mutex<Box<dyn Wr
         let mut output = writer.lock().expect("writer");
         for _ in 0..queries { let _ = output.write_all(reply); }
     }
+    if !chunk.is_empty() { let _ = append_ansi(&data, id, chunk); }
     if !visible.is_empty() {
-        if restore { let _ = append_ansi(&data, id, &visible); }
         emit(json!({ "channel": "pty:event", "payload": { "type": "data", "id": id, "data": visible } }));
     }
     if let Some(event) = state_event {
@@ -513,6 +513,35 @@ fn native_agent(app: &str) -> Option<&'static str> {
         "pi" => Some("pi"),
         "omp" | "oh-my-pi" => Some("omp"),
         _ => None,
+    }
+}
+
+pub fn resume_command(kind: &str, command: &str, session: Option<&str>, directory: &Path, shell: &str) -> (String, Option<String>) {
+    let quote = |text: &str| if shell == "pwsh" || shell == "cmd" { crate::ssh::ps_quote(text) } else { crate::ssh::bash_quote(text) };
+    let id = session.and_then(valid_agent_session);
+    match kind {
+        "claude" => {
+            let next = id.clone().unwrap_or_else(crate::random_id);
+            let flag = if id.is_some() { "--resume" } else { "--session-id" };
+            (format!("{command} {flag} {}", quote(&next)), Some(next))
+        }
+        "codex" if id.is_some() => {
+            let id = id.unwrap();
+            (format!("{command} resume {} --no-daemon", quote(&id)), Some(id))
+        }
+        "opencode" => {
+            let next = id.clone().unwrap_or_else(|| format!("ses_{}", crate::random_id().replace('-', "")));
+            (format!("{command} --session {}", quote(&next)), Some(next))
+        }
+        "pi" | "omp" => {
+            if let Some(id) = id.clone().filter(|value| !value.starts_with("pello:")) {
+                let flag = if kind == "pi" { "--session" } else { "--resume" };
+                (format!("{command} {flag} {}", quote(&id)), Some(id))
+            } else {
+                (format!("{command} --session-dir {} --continue", quote(&directory.display().to_string())), Some(id.unwrap_or_else(|| "pello:directory".into())))
+            }
+        }
+        _ => (command.to_string(), id),
     }
 }
 

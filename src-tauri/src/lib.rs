@@ -50,7 +50,16 @@ pub fn run() {
                 eprintln!("{error}");
                 Box::new(std::io::Error::other(error))
             })?;
-            app.manage(Arc::new(workbench));
+            let workbench = Arc::new(workbench);
+            let ticking = workbench.clone();
+            std::thread::spawn(move || {
+                let started = std::time::Instant::now();
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    let _ = ticking.poll_updates(started.elapsed().as_millis() as u64);
+                }
+            });
+            app.manage(workbench);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![awb])

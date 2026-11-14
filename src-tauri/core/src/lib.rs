@@ -11,6 +11,7 @@ pub mod shells;
 pub mod ssh;
 pub mod store;
 pub mod temporary;
+pub mod updates;
 pub mod workbench;
 
 pub fn random_id() -> String {
