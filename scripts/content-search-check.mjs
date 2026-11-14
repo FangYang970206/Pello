@@ -5,7 +5,7 @@ import path from 'node:path'
 import { spawn, execFileSync } from 'node:child_process'
 import { generateKeyPairSync } from 'node:crypto'
 import ssh2 from 'ssh2'
-import { _electron as electron } from 'playwright'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 import { loadTypeScript } from './fixtures/load-ts.mjs'
 
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'pello-content-search-'))
@@ -39,7 +39,7 @@ fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: {
 ] }))
 const env = { ...process.env, AWB_USER_DATA: data }; delete env.ELECTRON_RUN_AS_NODE
 const shots = path.resolve('output/playwright/content-search'); fs.mkdirSync(shots, { recursive: true })
-const app = await electron.launch({ args: ['.'], env })
+const app = await launchWorkbench({ args: ['.'], env })
 let server
 const clients = new Set(), workers = new Set(), pageErrors = []
 try {
@@ -275,7 +275,9 @@ try {
       assert.ok(geometry.height >= 26 && geometry.height <= 29, `Compact content input: ${JSON.stringify(geometry)}`)
       assert.doesNotMatch(await results.innerText(), /已跳过|分布于|Skipped|results in/)
       assert.equal(await results.locator('.content-search-count,.content-search-line').count(), 0)
-      assert.ok(await results.locator('[data-a=content-hit] mark').first().evaluate((node) => node.getBoundingClientRect().width > 0))
+      const mark = results.locator('[data-a=content-hit] mark').first()
+      await mark.waitFor()
+      assert.ok(await mark.evaluate((node) => node.getBoundingClientRect().width > 0))
       const typography = await page.evaluate(() => {
         const read = (node) => { const style = getComputedStyle(node); return { family: style.fontFamily, size: style.fontSize, weight: style.fontWeight } }
         return { normal: read(document.body), query: read(document.querySelector('.project-search-input input')), hit: read(document.querySelector('.content-search-hit')), match: read(document.querySelector('.content-search-hit mark')) }
@@ -313,7 +315,7 @@ try {
 
 // Native Chromium scale factors exercise real DPI layout, separately from viewport width.
 for (const scale of [1, 1.25, 1.5, 2]) {
-  const dpiApp = await electron.launch({ args: ['.', `--force-device-scale-factor=${scale}`], env })
+  const dpiApp = await launchWorkbench({ args: ['.'], env, scale })
   try {
     const page = await dpiApp.firstWindow(); page.setDefaultTimeout(10000)
     await page.evaluate(() => window.awb.winResize(1024, 680))

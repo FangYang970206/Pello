@@ -100,6 +100,7 @@ export interface WorkbenchApi {
   treeAction(projectId: string, rel: string, directory: boolean, action: string): Promise<void>
   treeReference(projectId: string, rel: string, kind: string, shell: ShellKind): Promise<string>
   documentMenu(options: { markdown: boolean; visual: boolean; undo: boolean; redo: boolean; editable: boolean }): Promise<string | null>
+  previewMenu?: () => Promise<string | null>
   documentLink(projectId: string, source: string, href: string): Promise<{ path: string; anchor?: string } | null>
   terminalMenu(options: { horizontal: boolean; vertical: boolean; merge: boolean; reconnect?: boolean }): Promise<string | null>
   onPreviewSource(cb: () => void): () => void

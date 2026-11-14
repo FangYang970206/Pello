@@ -142,6 +142,8 @@ export async function launchWorkbench({ args = ['.'], env = process.env, cwd, sc
     shell: 'tauri',
     menuFile,
     async firstWindow() { return page },
+    windows() { return [page] },
+    process() { return child },
     async evaluate() { throw new Error('Tauri webview has no Electron main process') },
     waitForEvent(name) {
       if (name !== 'close') throw new Error(`Unsupported Tauri event ${name}`)

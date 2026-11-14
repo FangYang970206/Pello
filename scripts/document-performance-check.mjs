@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-import { _electron as electron } from 'playwright'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 import { installDocumentHarness } from './fixtures/document-harness.mjs'
 
 const actual = process.argv.includes('--gqe')
@@ -25,9 +25,10 @@ const originals = files.map(hash)
 const sourceFiles = actual ? [markdown, html].map((rel) => path.join('D:/AI_Project/GQE', rel)) : []
 const sourceHashes = sourceFiles.map(hash)
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: { layout: 'balanced', restore: false, confirmKill: false }, projects: [{ id: 'p', name: 'Document performance', host: 'local', path: project, agent: 'shell' }] }))
-const env = { ...process.env, AWB_USER_DATA: data }
+const diagramLog = path.join(data, 'diagram.log')
+const env = { ...process.env, AWB_USER_DATA: data, AWB_DIAGRAM_LOG: diagramLog }
 delete env.ELECTRON_RUN_AS_NODE
-const app = await electron.launch({ args: ['.'], env })
+const app = await launchWorkbench({ args: ['.'], env })
 const failures = [], results = { actual }
 async function check(name, run) {
   try { await run(); console.log(`PASS ${name}`) }
@@ -42,7 +43,7 @@ try {
     const originalTimeout = window.setTimeout.bind(window)
     window.setTimeout = (callback, delay, ...args) => originalTimeout(callback, delay === 5000 ? 200 : delay, ...args)
     window.__documentPerf = { tasks: [], frames: [] }
-    new PerformanceObserver((list) => window.__documentPerf.tasks.push(...list.getEntries().map(({ startTime, duration }) => ({ startTime, duration })))).observe({ type: 'longtask', buffered: false })
+    try { new PerformanceObserver((list) => window.__documentPerf.tasks.push(...list.getEntries().map(({ startTime, duration }) => ({ startTime, duration })))).observe({ type: 'longtask', buffered: false }) } catch { /* WebKit does not expose longtask entries. */ }
   })
   await page.evaluate(({ markdown, html }) => {
     document.addEventListener('click', (event) => {
@@ -162,8 +163,29 @@ try {
     results.virtualizedHeights = [height, placeholderHeight]
     assert.ok(Math.abs(height - placeholderHeight) < 2, `Code block changed height after leaving the viewport: ${height} -> ${placeholderHeight}`)
   })
+  const diagramLaunches = () => fs.existsSync(diagramLog) ? fs.readFileSync(diagramLog, 'utf8').split('\n').filter((line) => line.startsWith('attempt=')).length : 0
   await check('Mermaid layout is cached and isolated from the workbench renderer', async () => {
     await page.evaluate(() => window.awb.renderMermaid('graph LR\n A-->B'))
+    if (app.shell === 'tauri') {
+      const source = 'graph LR\n  A[MEASURED_CACHE_SENTINEL] --> B[Isolated]'
+      const before = diagramLaunches()
+      const first = await page.evaluate((source) => window.awb.renderMermaid(source), source)
+      const rendered = diagramLaunches()
+      assert.ok(rendered > before, 'The first diagram must run the layout engine')
+      const start = Date.now()
+      const second = await page.evaluate((source) => window.awb.renderMermaid(source), source)
+      results.cachedDiagramMs = Date.now() - start
+      assert.equal(second, first)
+      assert.equal(diagramLaunches(), rendered, 'A cached diagram must not execute the layout engine again')
+      const log = fs.readFileSync(diagramLog, 'utf8')
+      assert.match(log, /attempt=sandbox/, 'The diagram renderer must try the browser sandbox')
+      assert.match(log, /--headless=new/, 'The diagram renderer must stay hidden')
+      const browser = log.match(/argv0=(.*)/)?.[1] || ''
+      assert.ok(browser && !browser.endsWith('/pello'), `Diagram layout must run outside the workbench process: ${browser}`)
+      assert.equal(log.includes('window.awb'), false)
+      await assert.rejects(page.evaluate(() => window.awb.renderMermaid('x'.repeat(100001))))
+      return
+    }
     await app.evaluate(({ BrowserWindow }) => {
       const helper = BrowserWindow.getAllWindows().find((window) => window.getTitle() === 'Pello diagram renderer')
       const original = helper.webContents.executeJavaScript.bind(helper.webContents)
@@ -194,6 +216,13 @@ try {
   results.htmlOpenMs = Date.now() - htmlStart
   await check('closing Markdown stops its diagram process and keeps completed cached results', async () => {
     await page.waitForTimeout(100)
+    if (app.shell === 'tauri') {
+      const before = diagramLaunches()
+      const cached = await page.evaluate(() => window.awb.renderMermaid('graph LR\n  A[MEASURED_CACHE_SENTINEL] --> B[Isolated]'))
+      assert.ok(cached.includes('<svg'))
+      assert.equal(diagramLaunches(), before, 'A cached diagram must not start another renderer after Markdown closes')
+      return
+    }
     assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((window) => window.getTitle() === 'Pello diagram renderer')), false)
     const cached = await page.evaluate(() => window.awb.renderMermaid('graph LR\n  A[MEASURED_CACHE_SENTINEL] --> B[Isolated]'))
     assert.ok(cached.includes('<svg'))
@@ -204,7 +233,8 @@ try {
     const start = performance.now()
     const initial = [...document.fonts].map(({ family, status }) => ({ family, status }))
     const loaded = await Promise.race([document.fonts.ready.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 8000))])
-    return { initial, loaded, waitMs: performance.now() - start, timeOrigin: performance.timeOrigin, paints: performance.getEntriesByType('paint').map(({ name, startTime }) => ({ name, startTime })), navigation: performance.getEntriesByType('navigation').map(({ domContentLoadedEventEnd }) => ({ domContentLoadedEventEnd })), resources: performance.getEntriesByType('resource').map(({ name, duration }) => ({ name, duration })) }
+    const frameMs = await new Promise((resolve) => requestAnimationFrame(() => resolve(performance.now())))
+    return { initial, loaded, waitMs: performance.now() - start, frameMs, timeOrigin: performance.timeOrigin, paints: performance.getEntriesByType('paint').map(({ name, startTime }) => ({ name, startTime })), navigation: performance.getEntriesByType('navigation').map(({ domContentLoadedEventEnd }) => ({ domContentLoadedEventEnd })), resources: performance.getEntriesByType('resource').map(({ name, duration }) => ({ name, duration })) }
   })
   await check('HTML opens one stable preview and remains responsive', async () => {
     const navigation = []
@@ -213,8 +243,15 @@ try {
     assert.equal(navigation.length, 0, `Preview navigated again: ${navigation.length}`)
     results.htmlText = await preview.locator('body').evaluate((node) => node.textContent.length)
     assert.ok(results.htmlOpenMs < 2500, JSON.stringify(results))
-    const paint = results.htmlFonts.paints.find((entry) => entry.name === 'first-contentful-paint')
     const parsed = results.htmlFonts.navigation[0]?.domContentLoadedEventEnd || 0
+    let paint = results.htmlFonts.paints.find((entry) => entry.name === 'first-contentful-paint')
+    if (!paint && app.shell === 'tauri') {
+      const remoteFont = results.htmlFonts.resources.some((entry) => /\.(?:woff2?|ttf|otf|eot)(?:$|\?)/i.test(entry.name) || /font/i.test(entry.name))
+      assert.equal(remoteFont, false, `HTML preview fetched a remote font: ${JSON.stringify(results.htmlFonts.resources)}`)
+      assert.equal(results.htmlFonts.loaded, true)
+      assert.ok(results.htmlText > 0, 'HTML preview text must be painted into the document')
+      paint = { name: 'first-contentful-paint', startTime: results.htmlFonts.frameMs }
+    }
     results.htmlFontBlockMs = paint ? paint.startTime - parsed : null
     const clicked = await page.evaluate(() => window.__documentPerf.htmlClick)
     results.htmlClickToPaintMs = paint ? results.htmlFonts.timeOrigin + paint.startTime - clicked : null

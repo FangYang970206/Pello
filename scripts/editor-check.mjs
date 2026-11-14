@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { _electron as electron } from 'playwright'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'awb-editor-'))
@@ -23,9 +23,9 @@ fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({
   settings: { layout: 'balanced', theme: 'dark', fontSize: 13, defShell: process.platform === 'win32' ? 'pwsh' : 'bash', defAgent: 'shell', restore: false, confirmKill: false },
   projects: [{ id: 'p', name: 'Markdown editor', host: 'local', path: project, agent: 'shell' }]
 }))
-const env = { ...process.env, AWB_USER_DATA: data }
+const env = { ...process.env, AWB_USER_DATA: data, AWB_PREVIEW_URL_DELAY: '500' }
 delete env.ELECTRON_RUN_AS_NODE
-const app = await electron.launch({ args: [root], cwd: root, env })
+const app = await launchWorkbench({ args: [root], cwd: root, env })
 const until = async (predicate, message) => {
   const end = Date.now() + 10000
   while (Date.now() < end) { if (predicate()) return; await new Promise((resolve) => setTimeout(resolve, 50)) }
@@ -133,7 +133,8 @@ try {
   const unrelatedOrigin = await fetch(new URL('assets/module.mjs', url), { headers: { Origin: 'https://example.invalid' } })
   assert.equal(unrelatedOrigin.headers.get('access-control-allow-origin'), null, 'Preview must not grant CORS to unrelated websites')
   assert.equal(await frame.locator('h1').evaluate(() => { try { return !!parent.document } catch { return false } }), false)
-  await app.evaluate(() => { globalThis.__documentMenuCommand = 'source' })
+  if (app.menuFile) fs.writeFileSync(app.menuFile, 'source')
+  else await app.evaluate(() => { globalThis.__documentMenuCommand = 'source' })
   await frame.locator('h1').click({ button: 'right' })
   await source.waitFor()
   assert.ok((await source.inputValue()).includes('浏览器预览'))
@@ -153,7 +154,7 @@ try {
   await documentCommand(app, page, 'mode')
   const beforeLoad = await source.inputValue()
   await source.fill(beforeLoad + '\n\nPending editor load')
-  await app.evaluate(({ ipcMain }, url) => {
+  if (app.shell !== 'tauri') await app.evaluate(({ ipcMain }, url) => {
     ipcMain.removeHandler('file:preview-url')
     ipcMain.handle('file:preview-url', async () => {
       await new Promise((resolve) => setTimeout(resolve, 500))

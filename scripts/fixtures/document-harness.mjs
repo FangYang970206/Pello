@@ -31,4 +31,11 @@ export async function documentCommand(app, page, command) {
   if (app.menuFile) fs.writeFileSync(app.menuFile, command)
   else await app.evaluate((_electron, command) => { globalThis.__documentMenuCommand = command }, command)
   await page.locator('.file-content').dispatchEvent('contextmenu')
+  if (!app.menuFile) return
+  const end = Date.now() + 5000
+  while (Date.now() < end) {
+    if (fs.readFileSync(app.menuFile, 'utf8').trim() !== command) return
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  throw new Error(`document command was not consumed: ${command}`)
 }

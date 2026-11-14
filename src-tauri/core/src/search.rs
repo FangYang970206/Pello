@@ -466,6 +466,7 @@ fn list_directory(root: &Path, relative: &str, language: &str) -> Result<Vec<Dir
             file: file_type.is_file(),
         });
     }
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(entries)
 }
 

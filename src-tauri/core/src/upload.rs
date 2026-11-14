@@ -115,6 +115,8 @@ impl Service {
 }
 
 fn run_job(job: Arc<Job>, data: PathBuf, host: Option<Value>, project_id: String, root: String, parent: String, sources: Vec<String>, dirty: bool, language: String, emit: Emit) {
+    let case_insensitive = host.as_ref().and_then(|item| item["platform"].as_str()) == Some("windows");
+    let mut replaced = Vec::new();
     let outcome = (|| -> Result<(), String> {
         let mut nodes = Vec::new();
         let mut replacing = false;
@@ -123,7 +125,10 @@ fn run_job(job: Arc<Job>, data: PathBuf, host: Option<Value>, project_id: String
             let name = node["name"].as_str().unwrap_or("");
             let relative = if parent.is_empty() { name.to_string() } else { format!("{parent}/{name}") };
             if relative.is_empty() || relative == "." { return Err(translate(&language, "不能替换项目根目录", &[] as &[String])); }
-            if exists_remote(&data, host.as_ref(), &root, &relative, &language)? { replacing = true; }
+            if exists_remote(&data, host.as_ref(), &root, &relative, &language)? {
+                replacing = true;
+                replaced.push(relative);
+            }
             nodes.push(node);
         }
         if job.cancel.load(Ordering::SeqCst) { return Err(translate(&language, "传输已取消", &[] as &[String])); }
@@ -134,7 +139,7 @@ fn run_job(job: Arc<Job>, data: PathBuf, host: Option<Value>, project_id: String
                 "projectId": project_id,
                 "path": parent,
                 "directory": true,
-                "caseInsensitive": host.as_ref().and_then(|host| host["platform"].as_str()) == Some("windows"),
+                "caseInsensitive": case_insensitive,
                 "targets": [{ "projectId": project_id, "path": parent }],
                 "phase": "prepare"
             }}));
@@ -209,7 +214,18 @@ fn run_job(job: Arc<Job>, data: PathBuf, host: Option<Value>, project_id: String
         drop(snapshot);
         emit(json!({ "channel": "transfer:update", "payload": event }));
     }
-    emit(json!({ "channel": "file:replacement", "payload": { "id": job.snapshot.lock().expect("snapshot")["id"], "phase": "finish", "success": job.snapshot.lock().expect("snapshot")["phase"] == "done" } }));
+    let targets = replaced.iter().map(|path| json!({ "projectId": project_id, "path": path })).collect::<Vec<_>>();
+    let primary = targets.first().cloned().unwrap_or_else(|| json!({ "projectId": project_id, "path": parent }));
+    emit(json!({ "channel": "file:replacement", "payload": {
+        "id": job.snapshot.lock().expect("snapshot")["id"],
+        "phase": "finish",
+        "success": job.snapshot.lock().expect("snapshot")["phase"] == "done",
+        "projectId": primary["projectId"],
+        "path": primary["path"],
+        "directory": false,
+        "caseInsensitive": case_insensitive,
+        "targets": targets
+    } }));
 }
 
 fn set_phase(job: &Job, phase: &str, emit: &Emit) {

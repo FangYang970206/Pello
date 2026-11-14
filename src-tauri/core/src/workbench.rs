@@ -190,6 +190,11 @@ impl Workbench {
     fn custom(&self) -> Value { self.db.lock().expect("db")["custom"].clone() }
 
     fn preview_url(&self, args: &[Value], language: &str) -> Result<Value, String> {
+        if let Ok(delay) = std::env::var("AWB_PREVIEW_URL_DELAY") {
+            if let Ok(millis) = delay.parse::<u64>() {
+                if (1..=5_000).contains(&millis) { std::thread::sleep(std::time::Duration::from_millis(millis)); }
+            }
+        }
         let id = str_arg(args, 0).to_string();
         let draft = args.get(2).and_then(|value| value.as_str());
         if let Some((host, path)) = self.remote_place(&id, language)? {

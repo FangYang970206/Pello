@@ -1,12 +1,16 @@
 /** Serialized into the opaque-origin preview. Keep this function self-contained. */
 export function htmlPreviewBridge() {
   const send = (data: object) => parent.postMessage(data, '*')
+  send({ type: 'awb-eval-ready', src: location.href })
   let searchOpen = false
   addEventListener('wheel', (event) => {
     if ((event.ctrlKey || event.metaKey) && !event.altKey && event.deltaY) {
       event.preventDefault(); event.stopPropagation(); send({ type: 'pello-preview-zoom', deltaY: event.deltaY })
     }
   }, { passive: false, capture: true })
+  addEventListener('contextmenu', (event) => {
+    event.preventDefault(); send({ type: 'pello-preview-context' })
+  }, true)
   addEventListener('keydown', (event) => {
     if (event.isComposing) return
     if (((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && ['f', 'h'].includes(event.key.toLowerCase())) || (searchOpen && (event.key === 'F3' || event.key === 'Escape'))) {
@@ -26,7 +30,14 @@ export function htmlPreviewBridge() {
     if (text !== value) { text = value; send({ type: 'pello-preview-text', text }) }
   }
   addEventListener('message', (event) => {
-    if (event.source !== parent || event.data?.type !== 'pello-preview-search') return
+    if (event.source !== parent || !event.data) return
+    if (event.data.type === 'awb-eval-ping') { send({ type: 'awb-eval-ready', id: event.data.id }); return }
+    if (event.data.type === 'awb-eval') {
+      const id = event.data.id
+      try { (0, eval)(event.data.source) } catch (error) { send({ type: 'awb-eval-result', id, ok: false, error: String(error && (error as Error).message || error) }) }
+      return
+    }
+    if (event.data.type !== 'pello-preview-search') return
     searchOpen = !!event.data.open
     collect()
     const ranges: Range[] = []

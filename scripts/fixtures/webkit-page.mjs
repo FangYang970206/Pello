@@ -41,25 +41,31 @@ const helper = `
     }
     return (el.innerText || el.textContent || '').trim()
   }
+  function namePattern(name) {
+    if (name && typeof name === 'object' && name.__re) return new RegExp(name.__re, name.__flags || '')
+    return null
+  }
   function named(el, name, exact) {
     if (name == null) return true
     const value = labelledText(el)
-    return exact ? value === name : value.includes(name)
+    const pattern = namePattern(name)
+    if (pattern) return pattern.test(value)
+    return exact ? value === name : String(value).includes(String(name))
   }
   function byLabel(name, exact) {
+    const pattern = namePattern(name)
+    const matches = (text) => pattern ? pattern.test(text) : exact ? text === name : String(text).includes(String(name))
     const controls = []
     for (const label of document.querySelectorAll('label')) {
       const copy = label.cloneNode(true)
       copy.querySelectorAll('input,select,textarea,button').forEach((node) => node.remove())
       const text = copy.textContent.trim()
-      const match = exact ? text === name : text.includes(name)
-      if (!match) continue
+      if (!matches(text)) continue
       const control = label.htmlFor ? document.getElementById(label.htmlFor) : label.querySelector('input,select,textarea,button')
       if (control) controls.push(control)
     }
     for (const el of document.querySelectorAll('input,select,textarea')) {
-      const label = el.getAttribute('aria-label') || ''
-      if (exact ? label === name : label.includes(name)) controls.push(el)
+      if (matches(el.getAttribute('aria-label') || '')) controls.push(el)
     }
     return [...new Set(controls)]
   }
@@ -73,7 +79,11 @@ const helper = `
   function resolve(steps) {
     let nodes = [document]
     for (const step of steps) {
-      if (Object.prototype.hasOwnProperty.call(step, 'nth')) continue
+      if (Object.prototype.hasOwnProperty.call(step, 'nth')) {
+        const index = step.nth < 0 ? nodes.length + step.nth : step.nth
+        nodes = nodes[index] ? [nodes[index]] : []
+        continue
+      }
       const next = []
       for (const base of nodes) {
         if (step.parent) {
@@ -86,14 +96,15 @@ const helper = `
         else if (step.role) found = [...base.querySelectorAll('*')].filter((el) => roleOf(el) === step.role && named(el, step.name, step.exact))
         else if (step.text != null) found = byText(step.text, step.exact)
         else found = [base]
-        if (step.hasText != null) found = found.filter((el) => (el.innerText || '').includes(step.hasText))
+        if (step.hasText != null) {
+          const pattern = namePattern(step.hasText)
+          found = found.filter((el) => pattern ? pattern.test(el.innerText || '') : (el.innerText || '').includes(step.hasText))
+        }
         if (step.hasSelector) found = found.filter((el) => el.querySelector(step.hasSelector))
         next.push(...found)
       }
       nodes = [...new Set(next)].filter((node) => node && node.nodeType === 1)
     }
-    const nthStep = steps.find((step) => Object.prototype.hasOwnProperty.call(step, 'nth'))
-    if (nthStep) nodes = nodes[nthStep.nth] ? [nodes[nthStep.nth]] : []
     return nodes
   }
   function visible(el) {
@@ -107,6 +118,13 @@ const helper = `
     return nodes[0]
   }
   function setValue(el, value) {
+    if (el.isContentEditable) {
+      el.focus()
+      document.execCommand('selectAll', false, null)
+      document.execCommand('delete', false, null)
+      document.execCommand('insertText', false, value)
+      return
+    }
     const prototype = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype
     Object.getOwnPropertyDescriptor(prototype, 'value').set.call(el, value)
     if (el._valueTracker) el._valueTracker.setValue('__awb_previous__')
@@ -132,6 +150,10 @@ const helper = `
     target.dispatchEvent(new KeyboardEvent('keyup', init))
   }
 `
+
+function packValue(value) {
+  return JSON.stringify(value, (_key, item) => item instanceof RegExp ? { __re: item.source, __flags: item.flags } : item)
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -252,7 +274,9 @@ class WebKitPage {
         try {
           const value = await (async () => { ${body} })();
           let packed = null;
-          try { packed = JSON.parse(JSON.stringify(value)); } catch { packed = null }
+          if (value instanceof Node) packed = true;
+          else if (value === undefined) packed = { __awbUndefined: true };
+          else { try { packed = JSON.parse(JSON.stringify(value)); } catch { packed = null } }
           window.${token} = { done: true, ok: true, value: packed };
         } catch (error) {
           window.${token} = { done: true, ok: false, error: String(error && (error.message || error)) };
@@ -266,6 +290,7 @@ class WebKitPage {
       const value = message.result?.result?.value
       if (value?.done) {
         if (!value.ok) throw new Error(value.error)
+        if (value.value && value.value.__awbUndefined) return undefined
         return value.value
       }
       await sleep(20)
@@ -329,20 +354,19 @@ class WebKitPage {
       window.addEventListener('message', (event) => {
         const data = event.data
         if (!data) return
-        if (data.type === 'awb-eval-ready') window.__awbFrameReady = true
+        if (data.type === 'awb-eval-ready') window.__awbFrameReady = data.id
         if (data.type !== 'awb-eval-result') return
         const slot = window.__awbFrameWait.get(data.id)
         if (slot) slot.result = data
       })
     }
-    window.__awbFrameWait.set(${id}, { result: null })
-    const frame = document.querySelector('iframe')
-    if (!frame || !frame.contentWindow) throw new Error('preview iframe is not mounted')
-    frame.contentWindow.postMessage({ type: 'awb-eval', id: ${id}, source: ${JSON.stringify(source)} }, '*')
+    window.__awbFrameWait.set(${id}, { result: null, sent: false })
     return true`, null, false, limit)
+    const payload = JSON.stringify(source)
     const deadline = Date.now() + limit
     while (Date.now() < deadline) {
       if (this.closed) return null
+      await this.invoke(this.mainId, `const slot = window.__awbFrameWait.get(${id}); const frame = document.querySelector('iframe'); if (!slot || !frame || !frame.contentWindow) return; if (!slot.sent && window.__awbFrameReady === ${id}) { frame.contentWindow.postMessage({ type: 'awb-eval', id: ${id}, source: ${payload} }, '*'); slot.sent = true } else if (!slot.sent) frame.contentWindow.postMessage({ type: 'awb-eval-ping', id: ${id} }, '*')`, null, false, 2000)
       const value = await this.invoke(this.mainId, `return (window.__awbFrameWait.get(${id}) || {}).result || null`, null, false, 2000)
       if (value) {
         if (!value.ok) throw new Error(value.error || 'iframe evaluation failed')
@@ -350,7 +374,8 @@ class WebKitPage {
       }
       await sleep(20)
     }
-    throw new Error('iframe evaluation timed out')
+    const frame = await this.invoke(this.mainId, `const node = document.querySelector('iframe'); return { src: node?.src || '', ready: !!window.__awbFrameReady, error: document.querySelector('.file-error,.toast')?.textContent || '' }`, null, false, 2000).catch((error) => ({ src: '', ready: false, error: String(error) }))
+    throw new Error(`iframe evaluation timed out src=${frame?.src || ''} ready=${frame?.ready} error=${frame?.error || ''}`)
   }
 
   async frameTarget() {
@@ -375,9 +400,25 @@ class WebKitPage {
 
   setDefaultTimeout(timeout) { this.timeout = timeout }
 
+  mainFrame() { return this._mainFrame || (this._mainFrame = { url: () => 'main' }) }
+
   on(event, listener) {
-    if (event !== 'pageerror') throw new Error(`Unsupported page event ${event}`)
-    this.pageErrors.push(listener)
+    if (event === 'pageerror') { this.pageErrors.push(listener); return }
+    if (event === 'framenavigated') { this.watchFrames(listener); return }
+    throw new Error(`Unsupported page event ${event}`)
+  }
+
+  watchFrames(listener) {
+    let seen = ''
+    const timer = setInterval(() => {
+      if (this.closed) { clearInterval(timer); return }
+      void this.evaluate(() => document.querySelector('iframe')?.src || '').then((src) => {
+        if (!seen) { seen = src || 'none'; return }
+        if (src && src !== seen) { seen = src; listener({ url: () => src }) }
+      }).catch(() => clearInterval(timer))
+    }, 80)
+    this.frameTimers = this.frameTimers || []
+    this.frameTimers.push(timer)
   }
 
   context() {
@@ -402,10 +443,32 @@ class WebKitPage {
 
   waitForTimeout(ms) { return sleep(ms) }
 
+  async setViewportSize({ width, height }) {
+    await this.evaluate((size) => window.awb.winResize(size.width, size.height), { width, height })
+    await this.waitForFunction((size) => Math.abs(innerWidth - size.width) <= 4 && Math.abs(innerHeight - size.height) <= 80, { width, height })
+  }
+
   keyboard = {
     down: async (key) => { if (key === 'Control' || key === 'Meta') this.ctrl = true },
     up: async (key) => { if (key === 'Control' || key === 'Meta') this.ctrl = false },
-    press: (combo) => this.invoke(this.mainId, `pressKey(document.activeElement || document.body, ${JSON.stringify(combo)}); return true`),
+    press: (combo) => this.invoke(this.mainId, `const target = document.activeElement || document.body; pressKey(target, ${JSON.stringify(combo)}); if ((${JSON.stringify(combo)}.includes('Control') || ${JSON.stringify(combo)}.includes('Meta')) && target !== window) pressKey(window, ${JSON.stringify(combo)}); return true`),
+    insertText: (text) => this.invoke(this.mainId, `const target = document.activeElement || document.body;
+      if (typeof target.focus === 'function') target.focus();
+      const inserted = document.execCommand && document.execCommand('insertText', false, ${JSON.stringify(text)});
+      if (!inserted) {
+        target.dispatchEvent(new InputEvent('beforeinput', { data: ${JSON.stringify(text)}, inputType: 'insertText', bubbles: true, cancelable: true }));
+        if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) {
+          const start = target.selectionStart ?? target.value.length
+          const end = target.selectionEnd ?? start
+          const next = target.value.slice(0, start) + ${JSON.stringify(text)} + target.value.slice(end)
+          const prototype = target instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+          Object.getOwnPropertyDescriptor(prototype, 'value').set.call(target, next)
+          if (target._valueTracker) target._valueTracker.setValue('__awb_previous__')
+          target.selectionStart = target.selectionEnd = start + ${JSON.stringify(text)}.length
+          target.dispatchEvent(new InputEvent('input', { data: ${JSON.stringify(text)}, inputType: 'insertText', bubbles: true }))
+        }
+      }
+      return true`),
     type: async (text) => {
       for (const char of text) {
         await this.invoke(this.mainId, `const target = document.activeElement || document.body;
@@ -419,7 +482,23 @@ class WebKitPage {
     },
   }
 
+  async screenPoint(x, y) {
+    const metrics = await this.evaluate(() => ({ dpr: devicePixelRatio, viewport: innerHeight }))
+    const info = execFileSync('xwininfo', ['-name', 'Pello'], { encoding: 'utf8' })
+    const number = (label) => Number(info.match(new RegExp(`${label}:\\s+(-?\\d+)`))?.[1])
+    const origin = { x: number('Absolute upper-left X'), y: number('Absolute upper-left Y'), height: number('Height') }
+    const menu = origin.height - metrics.viewport * metrics.dpr
+    return { x: Math.round(origin.x + x * metrics.dpr), y: Math.round(origin.y + menu + y * metrics.dpr) }
+  }
+
   mouse = {
+    move: async (x, y) => {
+      const point = await this.screenPoint(x, y)
+      this.pointer = point
+      execFileSync('xdotool', ['mousemove', String(point.x), String(point.y)])
+    },
+    down: async () => { execFileSync('xdotool', ['mousedown', '1']) },
+    up: async () => { execFileSync('xdotool', ['mouseup', '1']) },
     wheel: (deltaX, deltaY) => this.evaluate((payload) => {
       if (window.__awbHoverFrame) {
         const frame = document.querySelector('iframe')
@@ -494,6 +573,7 @@ class WebKitPage {
     if (this.closed) return
     this.closed = true
     clearInterval(this.errorTimer)
+    for (const timer of this.frameTimers || []) clearInterval(timer)
     for (const [id, resolve] of this.pendingOuter) {
       this.pendingOuter.delete(id)
       resolve({ result: {} })
@@ -516,27 +596,45 @@ class Locator {
   async run(body, arg, hasArg) {
     const located = await this.page.targetFor(this.steps)
     const steps = this.index == null ? located.steps : [...located.steps, { nth: this.index }]
-    return this.page.invoke(located.targetId, `const steps = ${JSON.stringify(steps)}; ${body}`, arg, hasArg)
+    return this.page.invoke(located.targetId, `const steps = ${packValue(steps)}; ${body}`, arg, hasArg)
   }
+
+  childSteps() { return this.index == null ? this.steps : [...this.steps, { nth: this.index }] }
 
   locator(selector) {
-    if (selector === '..') return new Locator(this.page, [...this.steps, { parent: true }], this.index)
-    return new Locator(this.page, [...this.steps, { selector }])
+    if (selector === '..') return new Locator(this.page, [...this.childSteps(), { parent: true }])
+    return new Locator(this.page, [...this.childSteps(), { selector }])
   }
 
-  getByRole(role, options = {}) { return new Locator(this.page, [...this.steps, { role, name: options.name, exact: options.exact }]) }
-  getByLabel(name, options = {}) { return new Locator(this.page, [...this.steps, { label: name, exact: options.exact }]) }
-  getByText(text, options = {}) { return new Locator(this.page, [...this.steps, { text, exact: options.exact }]) }
+  getByRole(role, options = {}) { return new Locator(this.page, [...this.childSteps(), { role, name: options.name, exact: options.exact }]) }
+  getByLabel(name, options = {}) { return new Locator(this.page, [...this.childSteps(), { label: name, exact: options.exact }]) }
+  getByText(text, options = {}) { return new Locator(this.page, [...this.childSteps(), { text, exact: options.exact }]) }
 
   filter(options) {
     const step = {}
     if (options.hasText != null) step.hasText = options.hasText
     if (options.has) step.hasSelector = options.has.steps.map((item) => item.selector).filter(Boolean).join(' ')
-    return new Locator(this.page, [...this.steps, step], this.index)
+    return new Locator(this.page, [...this.childSteps(), step])
   }
 
   nth(index) { return new Locator(this.page, this.steps, index) }
   first() { return this.nth(0) }
+  last() { return this.nth(-1) }
+
+  async isVisible() {
+    const last = await this.run(`const nodes = resolve(steps); return { count: nodes.length, visible: nodes.filter(visible).length }`)
+    if (last.count > 1) throw new Error(`strict mode violation: ${last.count} matches for ${JSON.stringify(this.steps)}`)
+    return last.visible === 1
+  }
+
+  async allTextContents() {
+    return this.run(`return resolve(steps).map((el) => el.textContent || '')`)
+  }
+
+  async scrollIntoViewIfNeeded() {
+    await this.waitFor({ state: 'attached' })
+    return this.run(`const el = only(steps); el.scrollIntoView({ block: 'nearest', inline: 'nearest' }); return true`)
+  }
 
   count() { return this.run(`return resolve(steps).length`) }
 
@@ -560,7 +658,16 @@ class Locator {
     const button = options.button || 'left'
     return this.run(`const el = only(steps); el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
       if (${JSON.stringify(button)} === 'right') { el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, view: window })); return true }
-      if (typeof el.focus === 'function') el.focus();
+      const editable = el.closest('[contenteditable="true"]')
+      if (editable) {
+        editable.focus()
+        const range = document.createRange()
+        range.selectNodeContents(el)
+        range.collapse(false)
+        const selection = window.getSelection()
+        selection.removeAllRanges()
+        selection.addRange(range)
+      } else if (typeof el.focus === 'function') el.focus();
       el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, view: window }));
       el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0, view: window }));
       el.click();
@@ -627,7 +734,7 @@ class Locator {
     return this.run(`setValue(only(steps), ${JSON.stringify(value)}); return true`)
   }
 
-  async inputValue() { return this.run(`return only(steps).value`) }
+  async inputValue() { await this.waitFor(); return this.run(`return only(steps).value`) }
   async isDisabled() { return this.run(`const el = only(steps); return !!el.disabled || el.getAttribute('aria-disabled') === 'true'`) }
   async getAttribute(name) { return this.run(`const el = only(steps); return el.getAttribute(${JSON.stringify(name)})`) }
   async textContent() { return this.run(`return only(steps).textContent`) }

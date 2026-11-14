@@ -98,6 +98,7 @@ const api: WorkbenchApi = {
   treeAction: (projectId, rel, directory, action) => call('tree:action', [projectId, rel, directory, action]),
   treeReference: (projectId, rel, kind, shell) => call('tree:reference', [projectId, rel, kind, shell]),
   documentMenu: (options) => call('file:menu', [options]),
+  previewMenu: () => call('preview:menu'),
   documentLink: (projectId, source, href) => call('file:link', [projectId, source, href]),
   terminalMenu: (options) => call('terminal:menu', [options]),
   onPreviewSource: (callback) => subscribe('file:preview-source', () => callback()),

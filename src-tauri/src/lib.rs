@@ -37,6 +37,21 @@ fn awb(window: Window, state: State<Arc<Workbench>>, channel: String, args: Vec<
             })).map_err(|error| error.to_string())?;
             Ok(Value::Null)
         }
+        "preview:menu" => {
+            let mut language = "zh-CN".to_string();
+            if let Ok(db) = state.dispatch("db:get", &[]) {
+                if let Some(value) = db["db"]["settings"]["language"].as_str() { language = value.to_string(); }
+            }
+            let source = pello_core::i18n::translate(&language, "源码模式", &[] as &[String]);
+            let copy = pello_core::i18n::translate(&language, "复制", &[] as &[String]);
+            let select_all = pello_core::i18n::translate(&language, "全选", &[] as &[String]);
+            let template = serde_json::json!([
+                { "id": "source", "label": source },
+                { "id": "copy", "label": copy },
+                { "id": "selectAll", "label": select_all }
+            ]);
+            popup_menu(&window, &template)
+        }
         "terminal:menu" | "file:menu" | "tree:menu" => {
             let template_channel = match channel.as_str() {
                 "terminal:menu" => "menu:terminal",

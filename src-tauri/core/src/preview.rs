@@ -24,10 +24,12 @@ const DRAFT_LIMIT: usize = 2 * 1024 * 1024;
 /// sandboxed opaque iframe. Only the embedding page can send it.
 const BRIDGE: &str = r#"<script>(function(){
 const send=(data)=>parent.postMessage(data,'*');
+send({type:'awb-eval-ready',src:location.href});
 let searchOpen=false;
 addEventListener('wheel',(event)=>{
   if((event.ctrlKey||event.metaKey)&&!event.altKey&&event.deltaY){event.preventDefault();event.stopPropagation();send({type:'pello-preview-zoom',deltaY:event.deltaY});}
 },{passive:false,capture:true});
+addEventListener('contextmenu',(event)=>{event.preventDefault();send({type:'pello-preview-context'});},true);
 addEventListener('keydown',(event)=>{
   if(event.isComposing)return;
   const key=event.key.toLowerCase();
@@ -49,6 +51,7 @@ const collect=()=>{
 };
 addEventListener('message',(event)=>{
   if(event.source!==parent||!event.data)return;
+  if(event.data.type==='awb-eval-ping'){send({type:'awb-eval-ready',id:event.data.id});return;}
   if(event.data.type==='awb-eval'){
     const id=event.data.id;
     try{(0,eval)(event.data.source);}catch(error){send({type:'awb-eval-result',id,ok:false,error:String(error&&error.message||error)});}
@@ -117,6 +120,7 @@ struct Diagrams {
     generation: AtomicU64,
     child: Mutex<Option<Child>>,
     gate: Mutex<()>,
+    cache: Mutex<Vec<(String, String)>>,
 }
 
 struct Inner {
@@ -134,7 +138,7 @@ impl Service {
             alive: AtomicBool::new(true),
             port: Mutex::new(None),
             projects: Mutex::new(HashMap::new()),
-            diagrams: Diagrams { generation: AtomicU64::new(0), child: Mutex::new(None), gate: Mutex::new(()) },
+            diagrams: Diagrams { generation: AtomicU64::new(0), child: Mutex::new(None), gate: Mutex::new(()), cache: Mutex::new(Vec::new()) },
         }) }
     }
 
@@ -179,15 +183,39 @@ impl Service {
         if source.trim().is_empty() || source.chars().count() > 100_000 {
             return Err(translate(language, "Mermaid 内容为空或超过 100000 字符", &[] as &[String]));
         }
+        if let Some(svg) = self.cached_diagram(source) { return Ok(svg); }
         let _gate = self.inner.diagrams.gate.lock().expect("diagram");
+        if let Some(svg) = self.cached_diagram(source) { return Ok(svg); }
         let generation = self.inner.diagrams.generation.load(Ordering::SeqCst);
         if generation != self.inner.diagrams.generation.load(Ordering::SeqCst) {
             return Err(translate(language, "图表渲染已取消", &[] as &[String]));
         }
-        if let Some(bin) = std::env::var("AWB_DIAGRAM_BIN").ok().filter(|value| !value.is_empty()) {
-            return self.render_external(&bin, source, generation, language);
+        let svg = if let Some(bin) = std::env::var("AWB_DIAGRAM_BIN").ok().filter(|value| !value.is_empty()) {
+            self.render_external(&bin, source, generation, language)?
+        } else {
+            self.render_browser(source, generation, language)?
+        };
+        self.store_diagram(source, &svg);
+        Ok(svg)
+    }
+
+    fn cached_diagram(&self, source: &str) -> Option<String> {
+        let mut cache = self.inner.diagrams.cache.lock().expect("diagram cache");
+        let index = cache.iter().position(|(key, _)| key == source)?;
+        let item = cache.remove(index);
+        let svg = item.1.clone();
+        cache.push(item);
+        Some(svg)
+    }
+
+    fn store_diagram(&self, source: &str, svg: &str) {
+        if svg.len() * 2 > 8_000_000 { return }
+        let mut cache = self.inner.diagrams.cache.lock().expect("diagram cache");
+        cache.retain(|(key, _)| key != source);
+        cache.push((source.to_string(), svg.to_string()));
+        while cache.len() > 32 || cache.iter().map(|(_, item)| item.len() * 2).sum::<usize>() > 8_000_000 {
+            cache.remove(0);
         }
-        self.render_browser(source, generation, language)
     }
 
     fn render_external(&self, bin: &str, source: &str, generation: u64, language: &str) -> Result<String, String> {
@@ -532,14 +560,34 @@ fn respond(mut stream: TcpStream, inner: &Inner) {
         body = format!("{}{BRIDGE}{}", &html[..offset], &html[offset..]).into_bytes();
     }
     let mime = mime_of(&relative);
-    let _ = write_response(&mut stream, 200, mime, &body, &[
-        ("X-Content-Type-Options", "nosniff"),
-        ("Referrer-Policy", "no-referrer"),
-        ("Cache-Control", "no-store"),
-        // The workbench origin and this loopback port differ, so PDF.js can read the bytes.
-        ("Access-Control-Allow-Origin", "*"),
-        ("Access-Control-Expose-Headers", "Accept-Ranges, Content-Encoding, Content-Length, Content-Range"),
-    ], method == "HEAD");
+    let origin = header_value(&text, "origin");
+    let mut extra = vec![
+        ("X-Content-Type-Options".to_string(), "nosniff".to_string()),
+        ("Referrer-Policy".to_string(), "no-referrer".to_string()),
+        ("Cache-Control".to_string(), "no-store".to_string()),
+    ];
+    // Opaque sandbox documents and the workbench page may read project assets.
+    // Any other website is refused, matching the Electron preview server.
+    if let Some(origin) = origin.filter(|value| value == "null" || workbench_origin(value)) {
+        extra.push(("Access-Control-Allow-Origin".to_string(), origin));
+        extra.push(("Vary".to_string(), "Origin".to_string()));
+        extra.push(("Access-Control-Expose-Headers".to_string(), "Accept-Ranges, Content-Encoding, Content-Length, Content-Range".to_string()));
+    }
+    let extra_refs: Vec<(&str, &str)> = extra.iter().map(|(name, value)| (name.as_str(), value.as_str())).collect();
+    let _ = write_response(&mut stream, 200, mime, &body, &extra_refs, method == "HEAD");
+}
+
+fn header_value(text: &str, name: &str) -> Option<String> {
+    text.lines().skip(1).find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        if key.eq_ignore_ascii_case(name) { Some(value.trim().to_string()) } else { None }
+    })
+}
+
+fn workbench_origin(origin: &str) -> bool {
+    let Some(rest) = origin.strip_prefix("http://").or_else(|| origin.strip_prefix("https://")) else { return false };
+    let host = rest.split([':', '/']).next().unwrap_or("");
+    host == "127.0.0.1" || host == "localhost" || host == "tauri.localhost"
 }
 
 fn write_response(stream: &mut TcpStream, status: u16, mime: &str, body: &[u8], extra: &[(&str, &str)], head: bool) -> std::io::Result<()> {
