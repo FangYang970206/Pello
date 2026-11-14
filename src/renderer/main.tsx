@@ -8,5 +8,7 @@ import './styles/workbench.css'
 import './styles/extra.css'
 import { createRoot } from 'react-dom/client'
 import { App } from './App'
+import { installTauriWorkbench } from './tauri-awb'
 
+installTauriWorkbench()
 createRoot(document.getElementById('root')!).render(<App />)

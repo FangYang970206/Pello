@@ -1228,11 +1228,11 @@ export function App() {
     <>
       <div id="app" className={withRight ? 'with-right' : ''} data-panel-side={db?.settings.panelSide || 'right'} style={{ '--right-width': `${rightWidth}px`, '--sidebar-width': `${sidebarWidth}px` } as CSSProperties}>
         <header className="title">
-          <div className="brand">
+          <div className="brand" data-tauri-drag-region>
             <img className="logo" src={appIcon} width="18" height="18" alt="" aria-hidden="true" />
             Pello
           </div>
-          <span className="grow" />
+          <span className="grow" data-tauri-drag-region />
           <div className="wc">
             <button aria-label={t("最小化")} onClick={() => void window.awb.winMin()}>
               <Icon name="minus" className="s" />
