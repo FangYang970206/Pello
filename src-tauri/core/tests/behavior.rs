@@ -1,12 +1,14 @@
 //! Behavior checks for the Rust port. Each test names the Electron behavior it locks in.
 
 use pello_core::paths::{prepare_data_directory, Paths};
+use pello_core::preview::{pdf_wheel, WheelState};
 use pello_core::store::{self, PlatformInfo};
 use pello_core::workbench::Workbench;
 use serde_json::json;
 use std::fs;
-use std::os::unix::fs::symlink;
-use std::path::PathBuf;
+use std::io::{Read, Write};
+use std::os::unix::fs::{symlink, PermissionsExt};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -444,7 +446,7 @@ struct VarGuard {
 
 fn env_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(())).lock().expect("ssh env")
+    LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|error| error.into_inner())
 }
 
 fn var_guard(key: &'static str, value: &str) -> VarGuard {
@@ -782,4 +784,406 @@ fn terminal_panes_rename_restore_and_run_state() {
     bench.dispatch("pty:close", &[json!("term-r")]).unwrap();
     bench.dispatch("pty:close", &[json!("agent-1")]).unwrap();
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn mcp_and_skills_keep_native_config_and_do_not_execute() {
+    let _lock = env_lock();
+    let root = temp_dir("resources");
+    let home = root.join("home");
+    let xdg = root.join("xdg");
+    fs::create_dir_all(home.join(".config/opencode")).unwrap();
+    fs::write(home.join(".config/opencode/opencode.jsonc"), b"{ /* keep */ }\n").unwrap();
+    fs::create_dir_all(home.join(".claude/skills")).unwrap();
+    let _home = var_guard("AWB_RESOURCE_HOME", home.to_str().unwrap());
+    let _xdg = var_guard("XDG_DATA_HOME", xdg.to_str().unwrap());
+    let _open = var_guard("AWB_OPEN_SKILL", "0");
+    let (bench, _) = workbench(&root);
+    let targets = bench.dispatch("resources:targets", &[]).unwrap();
+    let target = |id: &str| targets.as_array().unwrap().iter().find(|item| item["id"] == id).unwrap().clone();
+    assert!(target("claude")["mcpPath"].as_str().unwrap().ends_with("/.claude.json"), "{}", target("claude"));
+    assert!(target("claude")["skillPath"].as_str().unwrap().ends_with("/.claude/skills"));
+    assert_eq!(target("claude")["skillAdapter"], "claude");
+    assert!(target("codex")["mcpPath"].as_str().unwrap().ends_with("/.codex/config.toml"));
+    assert!(target("codex")["skillPath"].as_str().unwrap().ends_with("/.agents/skills"));
+    assert!(target("opencode")["mcpPath"].as_str().unwrap().ends_with("/opencode.jsonc"));
+    assert!(target("pi")["mcpPath"].as_str().unwrap().ends_with("/.pi/agent/mcp.json"));
+    assert!(target("pi")["skillPath"].as_str().unwrap().ends_with("/.pi/agent/skills"));
+    assert!(target("omp")["mcpPath"].as_str().unwrap().ends_with("/.omp/agent/mcp.json"));
+    assert!(target("omp")["skillConfigPath"].as_str().unwrap().ends_with("/.omp/agent/config.yml"));
+
+    let original = "{\n  // keep-theme\n  \"theme\": \"dark\",\n  \"mcpServers\": {\n    \"keep\": { \"command\": \"stay\", \"args\": [] },\n    \"leak\": { \"url\": \"https://user:secret-pass@example.com/mcp?token=abc\", \"headers\": { \"Authorization\": \"Bearer secret-token\" } }\n  }\n}\n";
+    let claude_file = home.join(".claude.json");
+    fs::write(&claude_file, original).unwrap();
+    let codex_file = home.join(".codex/config.toml");
+    fs::create_dir_all(codex_file.parent().unwrap()).unwrap();
+    let codex_original = "# keep this comment\nmodel = \"kept\"\n\n[mcp_servers.keep]\ncommand = \"stay\"\n";
+    fs::write(&codex_file, codex_original).unwrap();
+    let portable = root.join("portable-skills");
+    fs::create_dir_all(&portable).unwrap();
+    bench.dispatch("db:custom", &[json!([{
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
+        "resources": { "mcpPath": root.join("box-mcp.json").display().to_string(), "skillPath": portable.display().to_string(), "format": "standard", "skillAdapter": "portable" }
+    }])]).unwrap();
+
+    let added = bench.dispatch("resources:mcp", &[json!("docs"), json!({ "command": "tool", "args": ["--flag"], "env": { "TOKEN": "mcp-secret-value" } }), json!(["claude", "codex", "missing"])]).unwrap();
+    for (agent, ok) in [("claude", true), ("codex", true), ("missing", false)] {
+        assert_eq!(added.as_array().unwrap().iter().find(|item| item["agent"] == agent).unwrap()["ok"], ok, "{added}");
+    }
+    let claude_now = fs::read_to_string(&claude_file).unwrap();
+    assert!(claude_now.contains("// keep-theme"), "{claude_now}");
+    assert!(claude_now.contains("\"theme\": \"dark\""), "{claude_now}");
+    assert!(claude_now.contains("\"command\": \"stay\""), "{claude_now}");
+    assert!(!claude_now.contains("\"enabled\""), "{claude_now}");
+    assert_eq!(fs::read_to_string(format!("{}.awb-backup", claude_file.display())).unwrap(), original);
+    let codex_now = fs::read_to_string(&codex_file).unwrap();
+    assert!(codex_now.contains("# keep this comment") && codex_now.contains("model = \"kept\"") && codex_now.contains("[mcp_servers.docs]"), "{codex_now}");
+    assert_eq!(fs::read_to_string(format!("{}.awb-backup", codex_file.display())).unwrap(), codex_original);
+    let again = bench.dispatch("resources:mcp", &[json!("docs"), json!({ "command": "other" }), json!(["claude", "codex"])]).unwrap();
+    for item in again.as_array().unwrap() {
+        assert_eq!(item["ok"], false, "{item}");
+        assert!(item["error"].as_str().unwrap().contains("已存在同名"), "{item}");
+    }
+    assert_eq!(fs::read_to_string(&claude_file).unwrap(), claude_now);
+    assert_eq!(fs::read_to_string(&codex_file).unwrap(), codex_now);
+
+    let listed = bench.dispatch("resources:list", &[json!("mcp"), json!("claude"), json!(1), json!("")]).unwrap();
+    assert!(!listed.to_string().contains("secret-pass"), "{listed}");
+    assert!(!listed.to_string().contains("secret-token") && !listed.to_string().contains("mcp-secret-value"), "{listed}");
+    let docs = listed["items"].as_array().unwrap().iter().find(|item| item["name"] == "docs").unwrap().clone();
+    assert_eq!(docs["enabled"], true);
+    assert_eq!(docs["description"], "tool");
+    assert!(docs.get("command").is_none() && docs.get("env").is_none());
+    let leak = listed["items"].as_array().unwrap().iter().find(|item| item["name"] == "leak").unwrap().clone();
+    assert_eq!(leak["description"], "https://example.com/mcp");
+    let detail = bench.dispatch("resources:detail", &[json!("mcp"), json!("claude"), docs.clone()]).unwrap();
+    assert!(detail["content"].as_str().unwrap().contains("********"), "{detail}");
+    assert!(!detail.to_string().contains("mcp-secret-value"), "{detail}");
+    assert!(detail["notice"].as_str().unwrap().contains("已隐藏"));
+    let leak_detail = bench.dispatch("resources:detail", &[json!("mcp"), json!("claude"), leak]).unwrap();
+    assert!(!leak_detail.to_string().contains("secret-pass") && !leak_detail.to_string().contains("secret-token"), "{leak_detail}");
+    assert!(leak_detail["content"].as_str().unwrap().contains("https://example.com/mcp"), "{leak_detail}");
+    assert!(!bench.dispatch("db:get", &[]).unwrap().to_string().contains("mcp-secret-value"));
+    assert!(!fs::read_to_string(root.join("data/workbench.json")).unwrap().contains("mcp-secret-value"));
+
+    bench.dispatch("resources:toggle", &[json!("mcp"), json!("claude"), docs.clone(), json!(false)]).unwrap();
+    let disabled = fs::read_to_string(&claude_file).unwrap();
+    assert!(disabled.contains("// keep-theme") && disabled.contains("\"theme\": \"dark\"") && disabled.contains("awbDisabledMcp"), "{disabled}");
+    assert!(!disabled.contains("\"enabled\""), "{disabled}");
+    assert!(disabled.contains("mcp-secret-value") && disabled.contains("\"command\": \"stay\""));
+    let listed = bench.dispatch("resources:list", &[json!("mcp"), json!("claude"), json!(1), json!("")]).unwrap();
+    let docs = listed["items"].as_array().unwrap().iter().find(|item| item["name"] == "docs").unwrap().clone();
+    assert_eq!(docs["enabled"], false);
+    let planted = disabled.replacen("\"mcpServers\": {", "\"mcpServers\": {\n    \"docs\": { \"command\": \"newer\" },", 1);
+    fs::write(&claude_file, &planted).unwrap();
+    let refused = bench.dispatch("resources:toggle", &[json!("mcp"), json!("claude"), docs, json!(true)]).unwrap_err();
+    assert!(refused.contains("已有同名 MCP"), "{refused}");
+    assert_eq!(fs::read_to_string(&claude_file).unwrap(), planted);
+    assert!(planted.contains("\"command\": \"newer\""));
+
+    let source = root.join("skill-src");
+    let sentinel = root.join("skill-ran");
+    for (name, description) in [("demo-skill", "Copies files only"), ("note-skill", "Second skill")] {
+        let folder = source.join(name);
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("SKILL.md"), format!("---\nname: {name}\ndescription: {description}\n---\nbody\n")).unwrap();
+        fs::write(folder.join("run.sh"), format!("#!/bin/sh\ntouch {}\n", sentinel.display())).unwrap();
+    }
+    let imported = bench.dispatch("resources:skills", &[json!(source.display().to_string()), json!(["claude", "box"]), json!(["demo-skill", "note-skill"])]).unwrap();
+    assert_eq!(imported.as_array().unwrap().len(), 4, "{imported}");
+    for item in imported.as_array().unwrap() {
+        assert_eq!(item["ok"], true, "{item}");
+        assert!(item["name"] == "demo-skill" || item["name"] == "note-skill", "{item}");
+    }
+    assert!(!sentinel.exists(), "imported scripts must not run");
+    assert_eq!(fs::read_to_string(home.join(".claude/skills/demo-skill/run.sh")).unwrap(), fs::read_to_string(source.join("demo-skill/run.sh")).unwrap());
+    let demo_body = fs::read_to_string(home.join(".claude/skills/demo-skill/SKILL.md")).unwrap();
+    let again = bench.dispatch("resources:skills", &[json!(source.display().to_string()), json!(["claude", "box"]), json!(["demo-skill"])]).unwrap();
+    assert!(again.as_array().unwrap().iter().all(|item| item["ok"] == false && item["error"].as_str().unwrap_or("").contains("已存在")), "{again}");
+    assert_eq!(fs::read_to_string(home.join(".claude/skills/demo-skill/SKILL.md")).unwrap(), demo_body);
+
+    let skills = bench.dispatch("resources:list", &[json!("skills"), json!("claude"), json!(1), json!("")]).unwrap();
+    let demo = skills["items"].as_array().unwrap().iter().find(|item| item["name"] == "demo-skill").unwrap().clone();
+    assert_eq!(demo["enabled"], true);
+    assert!(demo["description"].as_str().unwrap().contains("Copies files only"));
+    bench.dispatch("resources:toggle", &[json!("skills"), json!("claude"), demo.clone(), json!(false)]).unwrap();
+    let settings = fs::read_to_string(home.join(".claude/settings.json")).unwrap();
+    assert!(settings.contains("skillOverrides") && settings.contains("\"off\""), "{settings}");
+    assert!(!settings.contains("\"enabled\""), "{settings}");
+    assert_eq!(fs::read_to_string(home.join(".claude/skills/demo-skill/SKILL.md")).unwrap(), demo_body);
+    let opened = bench.dispatch("resources:skill-open", &[json!("claude"), demo]).unwrap();
+    let opened = opened.as_str().unwrap();
+    assert_eq!(fs::canonicalize(opened).unwrap(), fs::canonicalize(home.join(".claude/skills/demo-skill")).unwrap());
+    assert!(fs::read_to_string(Path::new(opened).join("SKILL.md")).unwrap().contains("demo-skill"));
+
+    let box_skills = bench.dispatch("resources:list", &[json!("skills"), json!("box"), json!(1), json!("")]).unwrap();
+    let note = box_skills["items"].as_array().unwrap().iter().find(|item| item["name"] == "note-skill").unwrap().clone();
+    bench.dispatch("resources:toggle", &[json!("skills"), json!("box"), note.clone(), json!(false)]).unwrap();
+    assert!(!portable.join("note-skill/SKILL.md").exists());
+    assert_eq!(fs::read_to_string(portable.join("note-skill/SKILL.md.awb-disabled")).unwrap().contains("note-skill"), true);
+    fs::write(portable.join("note-skill/SKILL.md"), "---\nname: note-skill\ndescription: replacement\n---\nnew\n").unwrap();
+    let refused = bench.dispatch("resources:toggle", &[json!("skills"), json!("box"), note.clone(), json!(true)]).unwrap_err();
+    assert!(refused.contains("目标文件已存在"), "{refused}");
+    assert!(fs::read_to_string(portable.join("note-skill/SKILL.md")).unwrap().contains("replacement"));
+    assert!(portable.join("note-skill/SKILL.md.awb-disabled").is_file());
+    bench.dispatch("resources:skill-delete", &[json!("box"), note]).unwrap();
+    assert!(!portable.join("note-skill").exists());
+    assert!(portable.join("demo-skill/SKILL.md").is_file());
+    assert!(portable.is_dir());
+    let trashed = fs::read_dir(xdg.join("Trash/files")).unwrap().any(|entry| entry.unwrap().file_name().to_string_lossy().contains("note-skill"));
+    assert!(trashed, "the skill moves to trash");
+
+    let outside = root.join("outside-skill");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("SKILL.md"), "---\nname: outside-skill\ndescription: stays outside\n---\nsecret-outside\n").unwrap();
+    symlink(&outside, home.join(".claude/skills/outside-skill")).unwrap();
+    let listed = bench.dispatch("resources:list", &[json!("skills"), json!("claude"), json!(1), json!("")]).unwrap();
+    let outside_item = listed["items"].as_array().unwrap().iter().find(|item| item["name"] == "outside-skill").unwrap().clone();
+    let opened = bench.dispatch("resources:skill-open", &[json!("claude"), outside_item.clone()]).unwrap();
+    assert_eq!(fs::canonicalize(opened.as_str().unwrap()).unwrap(), fs::canonicalize(&outside).unwrap());
+    let refused = bench.dispatch("resources:skill-delete", &[json!("claude"), outside_item]).unwrap_err();
+    assert!(refused.contains("超出") || refused.contains("符号链接"), "{refused}");
+    assert!(fs::read_to_string(outside.join("SKILL.md")).unwrap().contains("secret-outside"));
+    assert!(home.join(".claude/skills").is_dir());
+
+    let slip = root.join("slip.zip");
+    fs::write(&slip, store_zip(&[ZipEntry { name: "../escape.txt", data: b"nope", size: 4 }])).unwrap();
+    let error = bench.dispatch("resources:skills", &[json!(slip.display().to_string()), json!(["box"])]).unwrap_err();
+    assert!(error.contains("不安全路径"), "{error}");
+    assert!(!root.join("escape.txt").exists());
+    assert!(!std::env::temp_dir().join("escape.txt").exists());
+    let bomb = root.join("bomb.zip");
+    fs::write(&bomb, store_zip(&[ZipEntry { name: "bomb/SKILL.md", data: b"", size: 40_000_000 }])).unwrap();
+    let error = bench.dispatch("resources:skills", &[json!(bomb.display().to_string()), json!(["box"])]).unwrap_err();
+    assert!(error.contains("32 MB"), "{error}");
+    assert!(!portable.join("bomb").exists());
+    let packed = root.join("packed.zip");
+    let skill = b"---\nname: packed-skill\ndescription: from zip\n---\nzipped\n";
+    let script = format!("#!/bin/sh\ntouch {}\n", sentinel.display());
+    fs::write(&packed, store_zip(&[
+        ZipEntry { name: "packed/SKILL.md", data: skill, size: skill.len() as u32 },
+        ZipEntry { name: "packed/run.sh", data: script.as_bytes(), size: script.len() as u32 },
+    ])).unwrap();
+    let imported = bench.dispatch("resources:skills", &[json!(packed.display().to_string()), json!(["box"]), json!(["packed-skill"])]).unwrap();
+    assert_eq!(imported[0]["ok"], true, "{imported}");
+    assert!(!sentinel.exists());
+    assert_eq!(fs::read(portable.join("packed-skill/run.sh")).unwrap(), script.as_bytes());
+    let linked_src = root.join("linked-src");
+    fs::create_dir_all(linked_src.join("bad-skill")).unwrap();
+    fs::write(linked_src.join("bad-skill/SKILL.md"), "---\nname: bad-skill\ndescription: link\n---\nno\n").unwrap();
+    symlink(root.join("missing-target"), linked_src.join("bad-skill/link")).unwrap();
+    let error = bench.dispatch("resources:skills", &[json!(linked_src.display().to_string()), json!(["box"])]).unwrap_err();
+    assert!(error.contains("符号链接"), "{error}");
+    assert!(!portable.join("bad-skill").exists());
+    let scan_file = root.join("scan.json");
+    fs::write(&scan_file, br#"{"mcpServers":{"scan":{"command":"echo","env":{"TOKEN":"scan-secret-value"}}}}"#).unwrap();
+    let scanned = bench.dispatch("resources:scan", &[json!("mcp"), json!(scan_file.display().to_string())]).unwrap();
+    assert!(!scanned.to_string().contains("scan-secret-value"), "{scanned}");
+    assert_eq!(scanned[0]["name"], "scan");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn previews_keep_markdown_and_sandbox_project_assets() {
+    let _lock = env_lock();
+    let root = temp_dir("preview");
+    let project = root.join("project");
+    let outside = root.join("outside");
+    fs::create_dir_all(&project).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    let markdown = "---\n# 标题\n\n保持原文\n";
+    fs::write(project.join("note.md"), markdown).unwrap();
+    let stamp = fs::metadata(project.join("note.md")).unwrap().modified().unwrap();
+    let (bench, _) = workbench(&root);
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "path": project.display().to_string(), "host": "local" }])]).unwrap();
+    let read = bench.dispatch("git:read", &[json!("p"), json!("note.md")]).unwrap();
+    assert!(read["text"].as_str().unwrap().contains("保持原文"));
+    assert_eq!(fs::read_to_string(project.join("note.md")).unwrap(), markdown);
+    assert_eq!(fs::metadata(project.join("note.md")).unwrap().modified().unwrap(), stamp);
+
+    let page = "<!doctype html><head></head><body>page</body>";
+    fs::write(project.join("page.html"), page).unwrap();
+    fs::write(project.join("pic.png"), b"\x89PNG\r\n").unwrap();
+    fs::write(project.join("doc.pdf"), b"%PDF-1.4\n").unwrap();
+    for ext in ["jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico", "avif"] {
+        fs::write(project.join(format!("f.{ext}")), b"img").unwrap();
+    }
+    fs::write(outside.join("secret.txt"), b"outside-secret-bytes").unwrap();
+    symlink(outside.join("secret.txt"), project.join("linked.png")).unwrap();
+    let big = project.join("big.pdf");
+    fs::File::create(&big).unwrap().set_len(12_000_001).unwrap();
+
+    let url = bench.dispatch("file:preview-url", &[json!("p"), json!("note.md")]).unwrap();
+    let url = url.as_str().unwrap();
+    assert!(url.starts_with("http://127.0.0.1:"), "{url}");
+    let (status, headers, body) = http("GET", url);
+    assert_eq!(status, 200, "{headers}");
+    assert!(headers.to_ascii_lowercase().contains("nosniff"));
+    assert!(body.contains("保持原文"));
+    assert_eq!(fs::read_to_string(project.join("note.md")).unwrap(), markdown);
+    assert_eq!(fs::metadata(project.join("note.md")).unwrap().modified().unwrap(), stamp);
+
+    let draft_url = bench.dispatch("file:preview-url", &[json!("p"), json!("page.html"), json!("<p>draft only</p>")]).unwrap();
+    let draft_url = draft_url.as_str().unwrap().to_string();
+    let (status, headers, body) = http("GET", &format!("{draft_url}&workbenchWheel=1"));
+    assert_eq!(status, 200, "{headers}");
+    assert!(body.contains("draft only") && body.contains("pello-preview-zoom"), "{body}");
+    assert!(!body.contains("window.awb") && !body.contains("invoke(") && !body.contains("require("), "{body}");
+    assert!(headers.to_ascii_lowercase().contains("nosniff") && headers.to_ascii_lowercase().contains("no-referrer"));
+    assert_eq!(fs::read_to_string(project.join("page.html")).unwrap(), page);
+    let (_, _, plain) = http("GET", &draft_url);
+    assert!(!plain.contains("pello-preview-zoom"));
+    let (status, _, _) = http("POST", &draft_url);
+    assert_eq!(status, 405);
+    assert_eq!(fs::read_to_string(project.join("page.html")).unwrap(), page);
+
+    for (name, mime) in [("pic.png", "image/png"), ("doc.pdf", "application/pdf"), ("f.jpg", "image/jpeg"), ("f.jpeg", "image/jpeg"), ("f.gif", "image/gif"), ("f.webp", "image/webp"), ("f.bmp", "image/bmp"), ("f.svg", "image/svg+xml"), ("f.ico", "image/x-icon"), ("f.avif", "image/avif")] {
+        let before = fs::read(project.join(name)).unwrap();
+        let media = bench.dispatch("file:preview-url", &[json!("p"), json!(name)]).unwrap();
+        let (status, headers, _) = http("GET", media.as_str().unwrap());
+        assert_eq!(status, 200, "{name} {headers}");
+        assert!(headers.to_ascii_lowercase().contains(&mime.to_ascii_lowercase()), "{name} {headers}");
+        assert_eq!(fs::read(project.join(name)).unwrap(), before);
+    }
+    let escaped = bench.dispatch("file:preview-url", &[json!("p"), json!("../outside/secret.txt")]).unwrap_err();
+    assert!(!escaped.contains("outside-secret"), "{escaped}");
+    let linked = bench.dispatch("file:preview-url", &[json!("p"), json!("linked.png")]).unwrap_err();
+    assert!(linked.contains("符号链接"), "{linked}");
+    assert!(!linked.contains("outside-secret"), "{linked}");
+    let oversized = bench.dispatch("file:preview-url", &[json!("p"), json!("big.pdf")]).unwrap_err();
+    assert!(oversized.contains("12 MB"), "{oversized}");
+    assert_eq!(fs::metadata(&big).unwrap().len(), 12_000_001);
+
+    let zoomed = pdf_wheel(WheelState { page: 2, zoom: 1.0, pending: 0.0 }, 5, true, true, -8.0);
+    assert_eq!(zoomed.page, 2);
+    assert!((zoomed.zoom - 1.1).abs() < 0.0001);
+    assert!((pdf_wheel(WheelState { page: 1, zoom: 4.0, pending: 0.0 }, 5, true, true, -8.0).zoom - 4.0).abs() < 0.0001);
+    assert!((pdf_wheel(WheelState { page: 1, zoom: 0.25, pending: 0.0 }, 5, true, true, 8.0).zoom - 0.25).abs() < 0.0001);
+    let holding = pdf_wheel(WheelState { page: 1, zoom: 1.0, pending: 0.0 }, 5, true, false, 30.0);
+    assert_eq!(holding.page, 1);
+    assert_eq!(pdf_wheel(holding, 5, true, false, 40.0).page, 2);
+    assert_eq!(pdf_wheel(WheelState { page: 2, zoom: 1.0, pending: 0.0 }, 5, false, false, 80.0).page, 2);
+    assert_eq!(pdf_wheel(WheelState { page: 1, zoom: 1.0, pending: 0.0 }, 5, true, false, -80.0).page, 1);
+    assert_eq!(pdf_wheel(WheelState { page: 5, zoom: 1.0, pending: 0.0 }, 5, true, false, 80.0).page, 5);
+    let ctrl = pdf_wheel(WheelState { page: 2, zoom: 1.0, pending: 0.0 }, 5, true, true, 80.0);
+    assert_eq!(ctrl.page, 2);
+    assert!(ctrl.zoom < 1.0);
+
+    let log = root.join("diagram.log");
+    let env_log = root.join("diagram.env");
+    let stdin_log = root.join("diagram.stdin");
+    let shim = root.join("diagram.sh");
+    fs::write(&shim, format!("#!/bin/sh\nprintf '%s\\n' \"$0\" \"$@\" > {}\nenv > {}\ninput=$(cat)\nprintf '%s' \"$input\" > {}\ncase \"$input\" in\n  *SLEEP*) i=0; while [ \"$i\" -lt 300 ]; do i=$((i+1)); sleep 0.1; done ;;\nesac\nprintf '<svg xmlns=\"http://www.w3.org/2000/svg\" id=\"diagram\"></svg>'\n", shell_quote(&log), shell_quote(&env_log), shell_quote(&stdin_log))).unwrap();
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+    let _bin = var_guard("AWB_DIAGRAM_BIN", shim.to_str().unwrap());
+    let _secret = var_guard("AWB_USER_DATA", "workbench-secret-token");
+    let source = "flowchart TD\nA[\"$(touch /tmp/pello-should-not-run)\"]";
+    let svg = bench.dispatch("diagram:mermaid", &[json!(source)]).unwrap();
+    assert!(svg.as_str().unwrap().contains("<svg"), "{svg}");
+    let recorded = fs::read_to_string(&log).unwrap();
+    let lines: Vec<&str> = recorded.lines().collect();
+    assert!(lines.iter().any(|line| *line == "--security-level") && lines.iter().any(|line| *line == "strict"), "{recorded}");
+    assert!(lines.iter().any(|line| *line == "--sandbox") && lines.iter().any(|line| *line == "--no-node") && lines.iter().any(|line| *line == "--no-workbench"), "{recorded}");
+    assert!(lines.iter().all(|line| *line != "node" && !line.ends_with("/node")), "{recorded}");
+    assert!(!recorded.contains("flowchart"), "{recorded}");
+    let child_env = fs::read_to_string(&env_log).unwrap();
+    assert!(!child_env.contains("workbench-secret-token") && !child_env.contains("AWB_USER_DATA"), "{child_env}");
+    assert_eq!(fs::read_to_string(&stdin_log).unwrap(), source);
+    assert!(!Path::new("/tmp/pello-should-not-run").exists());
+    fs::remove_file(&log).unwrap();
+    let oversized = bench.dispatch("diagram:mermaid", &[json!("x".repeat(100_001))]).unwrap_err();
+    assert!(oversized.contains("100000"), "{oversized}");
+    assert!(!log.exists());
+    std::thread::scope(|scope| {
+        let handle = scope.spawn(|| bench.dispatch("diagram:mermaid", &[json!("SLEEP")]));
+        std::thread::sleep(Duration::from_millis(200));
+        bench.dispatch("diagram:cancel", &[]).unwrap();
+        let cancelled = handle.join().unwrap().unwrap_err();
+        assert!(cancelled.contains("取消"), "{cancelled}");
+    });
+    assert_eq!(fs::read_to_string(project.join("note.md")).unwrap(), markdown);
+    let _ = fs::remove_dir_all(root);
+}
+
+fn http(method: &str, url: &str) -> (u16, String, String) {
+    let rest = url.trim_start_matches("http://");
+    let (addr, path) = rest.split_once('/').unwrap();
+    let mut stream = None;
+    for _ in 0..50 {
+        if let Ok(connected) = std::net::TcpStream::connect(addr) { stream = Some(connected); break; }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let mut stream = stream.expect("preview server");
+    stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    write!(stream, "{method} /{path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n").unwrap();
+    let mut bytes = Vec::new();
+    let _ = stream.read_to_end(&mut bytes);
+    let text = String::from_utf8_lossy(&bytes);
+    let (head, body) = text.split_once("\r\n\r\n").unwrap_or((text.as_ref(), ""));
+    let status = head.split_whitespace().nth(1).unwrap_or("0").parse().unwrap_or(0);
+    (status, head.to_string(), body.to_string())
+}
+
+fn shell_quote(path: &Path) -> String { format!("'{}'", path.display().to_string().replace('\'', "'\\''")) }
+
+struct ZipEntry<'a> { name: &'a str, data: &'a [u8], size: u32 }
+
+fn store_zip(entries: &[ZipEntry<'_>]) -> Vec<u8> {
+    fn crc(data: &[u8]) -> u32 {
+        let mut value = 0xffff_ffffu32;
+        for byte in data {
+            value ^= *byte as u32;
+            for _ in 0..8 { value = if value & 1 == 1 { (value >> 1) ^ 0xedb8_8320 } else { value >> 1 }; }
+        }
+        !value
+    }
+    let mut local = Vec::new();
+    let mut central = Vec::new();
+    for entry in entries {
+        let checksum = crc(entry.data);
+        let offset = local.len() as u32;
+        local.extend_from_slice(&0x04034b50u32.to_le_bytes());
+        local.extend_from_slice(&20u16.to_le_bytes());
+        local.extend_from_slice(&0u16.to_le_bytes());
+        local.extend_from_slice(&0u16.to_le_bytes());
+        local.extend_from_slice(&0u16.to_le_bytes());
+        local.extend_from_slice(&0u16.to_le_bytes());
+        local.extend_from_slice(&checksum.to_le_bytes());
+        local.extend_from_slice(&(entry.data.len() as u32).to_le_bytes());
+        local.extend_from_slice(&entry.size.to_le_bytes());
+        local.extend_from_slice(&(entry.name.len() as u16).to_le_bytes());
+        local.extend_from_slice(&0u16.to_le_bytes());
+        local.extend_from_slice(entry.name.as_bytes());
+        local.extend_from_slice(entry.data);
+        central.extend_from_slice(&0x02014b50u32.to_le_bytes());
+        central.extend_from_slice(&20u16.to_le_bytes());
+        central.extend_from_slice(&20u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&checksum.to_le_bytes());
+        central.extend_from_slice(&(entry.data.len() as u32).to_le_bytes());
+        central.extend_from_slice(&entry.size.to_le_bytes());
+        central.extend_from_slice(&(entry.name.len() as u16).to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u32.to_le_bytes());
+        central.extend_from_slice(&offset.to_le_bytes());
+        central.extend_from_slice(entry.name.as_bytes());
+    }
+    let start = local.len() as u32;
+    let mut out = local;
+    out.extend_from_slice(&central);
+    out.extend_from_slice(&0x06054b50u32.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+    out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+    out.extend_from_slice(&(central.len() as u32).to_le_bytes());
+    out.extend_from_slice(&start.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out
 }

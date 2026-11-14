@@ -6,7 +6,9 @@ use crate::git;
 use crate::i18n::{self, translate};
 use crate::layout::{self, Tile};
 use crate::paths::Paths;
+use crate::preview;
 use crate::pty::{self, Manager};
+use crate::resources;
 use crate::search::{self, ContentSearch, TreeSearch};
 use crate::shells::{self, installed_agents};
 use crate::ssh;
@@ -31,6 +33,8 @@ pub struct Workbench {
     tree_searches: Mutex<HashMap<String, TreeSearch>>,
     layouts: Mutex<HashMap<String, Vec<Tile>>>,
     restore_failures: Mutex<HashMap<String, String>>,
+    preview: preview::Service,
+    resources: resources::Resources,
     emit: Emit,
 }
 
@@ -47,7 +51,7 @@ impl Workbench {
         if !db["settings"]["language"].is_string() {
             db["settings"]["language"] = json!("zh-CN");
         }
-        Ok(Self { paths, db: Mutex::new(db), pty: Manager::new(), dirty: Mutex::new(false), content_searches: Mutex::new(HashMap::new()), tree_searches: Mutex::new(HashMap::new()), layouts: Mutex::new(HashMap::new()), restore_failures: Mutex::new(HashMap::new()), emit })
+        Ok(Self { paths, db: Mutex::new(db), pty: Manager::new(), dirty: Mutex::new(false), content_searches: Mutex::new(HashMap::new()), tree_searches: Mutex::new(HashMap::new()), layouts: Mutex::new(HashMap::new()), restore_failures: Mutex::new(HashMap::new()), preview: preview::Service::new(), resources: resources::Resources::new(), emit })
     }
 
     pub fn database_path(&self) -> std::path::PathBuf { self.paths.data.join("workbench.json") }
@@ -121,12 +125,36 @@ impl Workbench {
             "app:shot" => Ok(json!(false)),
             "dialog:directory" => Ok(pick_directory()),
             "tree:menu" | "file:menu" | "terminal:menu" => Ok(Value::Null),
-            "resources:targets" => Ok(json!([])),
+            "resources:targets" => Ok(Value::Array(resources::targets(&self.paths.data, &self.custom()))),
+            "resources:list" => resources::list(&self.paths.data, &self.custom(), str_arg(args, 0), str_arg(args, 1), json_usize(args.get(2)), str_arg(args, 3), &language),
+            "resources:toggle" => resources::toggle(&self.paths.data, &self.custom(), str_arg(args, 0), str_arg(args, 1), args.get(2).unwrap_or(&Value::Null), args.get(3).and_then(|value| value.as_bool()), &language).map(|_| Value::Null),
+            "resources:detail" => resources::detail(&self.paths.data, &self.custom(), str_arg(args, 0), str_arg(args, 1), args.get(2).unwrap_or(&Value::Null), &language),
+            "resources:skill-open" => resources::open_skill(&self.paths.data, &self.custom(), str_arg(args, 0), args.get(1).unwrap_or(&Value::Null), &language),
+            "resources:skill-delete" => resources::delete_skill(&self.paths.data, &self.custom(), str_arg(args, 0), args.get(1).unwrap_or(&Value::Null), &language),
+            "resources:mcp" => resources::add_mcp(&self.resources, &self.paths.data, &self.custom(), str_arg(args, 0), args.get(1).unwrap_or(&Value::Null), args.get(2).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), true, &language),
+            "resources:scan" => resources::scan(&self.paths.data, &self.custom(), str_arg(args, 0), str_arg(args, 1), &language),
+            "resources:import-mcp" => resources::import_mcp(&self.resources, &self.paths.data, &self.custom(), str_arg(args, 0), args.get(1).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), args.get(2).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), &language),
+            "resources:skills" => {
+                let names = args.get(2).and_then(|value| value.as_array()).map(|list| list.iter().filter_map(|item| item.as_str().map(|item| item.to_string())).collect::<Vec<_>>());
+                resources::import_skills(&self.resources, &self.paths.data, &self.custom(), str_arg(args, 0), args.get(1).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), names.as_ref(), &language)
+            }
+            "file:preview-url" => self.preview_url(args, &language),
+            "diagram:mermaid" => self.preview.render_mermaid(str_arg(args, 0), &language).map(|svg| json!(svg)),
+            "diagram:cancel" => { self.preview.cancel(); Ok(Value::Null) },
             _ => Err(translate(&language, "此功能尚未在 Rust 移植中实现：{{0}}", &[channel.to_string()])),
         }
     }
 
     fn language(&self) -> String { i18n::language_of(&self.db.lock().expect("db")) }
+
+    fn custom(&self) -> Value { self.db.lock().expect("db")["custom"].clone() }
+
+    fn preview_url(&self, args: &[Value], language: &str) -> Result<Value, String> {
+        let id = str_arg(args, 0).to_string();
+        let root = self.local_root(&id, language)?;
+        let draft = args.get(2).and_then(|value| value.as_str());
+        self.preview.url(&id, &root, str_arg(args, 1), draft, language).map(|url| json!(url))
+    }
 
     fn persist(&self) -> Result<Value, String> {
         let db = self.db.lock().expect("db").clone();
@@ -731,6 +759,10 @@ fn node_platform() -> &'static str {
         "macos" => "darwin",
         other => other,
     }
+}
+
+fn json_usize(value: Option<&Value>) -> usize {
+    value.and_then(|item| item.as_u64().or_else(|| item.as_f64().map(|number| number as u64))).unwrap_or(1) as usize
 }
 
 fn str_arg(args: &[Value], index: usize) -> &str {
