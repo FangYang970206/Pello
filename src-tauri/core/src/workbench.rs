@@ -8,6 +8,7 @@ use crate::paths::Paths;
 use crate::pty::{self, Manager};
 use crate::search::{self, ContentSearch, TreeSearch};
 use crate::shells::{self, installed_agents};
+use crate::ssh;
 use crate::store::{self, apply_saved_settings, host_color, public_host, PlatformInfo};
 use crate::temporary;
 use crate::{random_id, uid};
@@ -23,7 +24,6 @@ type Emit = Arc<dyn Fn(Value) + Send + Sync>;
 pub struct Workbench {
     pub paths: Paths,
     db: Mutex<Value>,
-    passwords: Mutex<HashMap<String, String>>,
     pty: Manager,
     dirty: Mutex<bool>,
     content_searches: Mutex<HashMap<String, ContentSearch>>,
@@ -44,15 +44,26 @@ impl Workbench {
         if !db["settings"]["language"].is_string() {
             db["settings"]["language"] = json!("zh-CN");
         }
-        Ok(Self { paths, db: Mutex::new(db), passwords: Mutex::new(HashMap::new()), pty: Manager::new(), dirty: Mutex::new(false), content_searches: Mutex::new(HashMap::new()), tree_searches: Mutex::new(HashMap::new()), emit })
+        Ok(Self { paths, db: Mutex::new(db), pty: Manager::new(), dirty: Mutex::new(false), content_searches: Mutex::new(HashMap::new()), tree_searches: Mutex::new(HashMap::new()), emit })
     }
 
     pub fn database_path(&self) -> std::path::PathBuf { self.paths.data.join("workbench.json") }
 
+    fn public_database(&self) -> Value {
+        let mut db = self.db.lock().expect("db").clone();
+        if let Some(hosts) = db["hosts"].as_array_mut() {
+            for host in hosts.iter_mut() {
+                if let Some(object) = host.as_object_mut() { object.remove("password"); }
+                host["hasPassword"] = json!(ssh::has_password(&self.paths.data, host));
+            }
+        }
+        db
+    }
+
     pub fn dispatch(&self, channel: &str, args: &[Value]) -> Result<Value, String> {
         let language = self.language();
         match channel {
-            "db:get" => Ok(json!({ "db": self.db.lock().expect("db").clone(), "installed": installed_agents() })),
+            "db:get" => Ok(json!({ "db": self.public_database(), "installed": installed_agents() })),
             "shells:local" => Ok(Value::Array(shells::discover().into_iter().map(|shell| json!({ "id": shell.id, "label": shell.label, "path": shell.path.display().to_string() })).collect())),
             "db:settings" => self.save_settings(args.first().cloned().unwrap_or(json!({}))),
             "db:projects" => self.save_projects(args.first().cloned().unwrap_or(json!([]))),
@@ -64,14 +75,14 @@ impl Workbench {
             "temporary:directory" => Ok(temporary::read_directory(&self.paths.config_file).map(|path| json!(path.display().to_string())).unwrap_or(Value::Null)),
             "temporary:configure" => temporary::write_directory(&self.paths.config_file, Path::new(str_arg(args, 0).trim()), &language).map(|path| json!(path.display().to_string())),
             "temporary:create" => self.create_temporary(args.first().and_then(|value| value.as_str())),
-            "path:check" => self.local_only(&str_arg(args, 0), &language).map(|_| files::check_path(str_arg(args, 1), &language)),
-            "path:list" => self.local_only(&str_arg(args, 0), &language).map(|_| files::list_dir(str_arg(args, 1))),
+            "path:check" => self.path_check(str_arg(args, 0), str_arg(args, 1), &language),
+            "path:list" => self.path_list(str_arg(args, 0), str_arg(args, 1), &language),
             "git:status" => self.git_status(&str_arg(args, 0), &language),
             "git:diff" => self.with_local(&str_arg(args, 0), &language, |root| git::diff(root, str_arg(args, 1), args.get(2).and_then(|value| value.as_bool()).unwrap_or(false), &language)),
             "git:discard" => self.with_local(&str_arg(args, 0), &language, |root| git::discard(root, str_arg(args, 1), args.get(2).and_then(|value| value.as_bool()).unwrap_or(false), &language).map(|_| json!(true))),
-            "git:tree" => self.with_local(&str_arg(args, 0), &language, |root| files::list_tree(root, str_arg(args, 1), &self.ignores(&str_arg(args, 0)), &language)),
-            "git:read" => self.with_local(&str_arg(args, 0), &language, |root| files::read_local(root, str_arg(args, 1), &language)),
-            "git:write" => self.with_local(&str_arg(args, 0), &language, |root| files::write_local(root, str_arg(args, 1), str_arg(args, 2), args.get(3).and_then(|value| value.as_str()), &language)),
+            "git:tree" => self.git_tree(&str_arg(args, 0), str_arg(args, 1), &language),
+            "git:read" => self.git_read(&str_arg(args, 0), str_arg(args, 1), &language),
+            "git:write" => self.git_write(&str_arg(args, 0), str_arg(args, 1), str_arg(args, 2), args.get(3).and_then(|value| value.as_str()), &language),
             "tree:ignore-get" => { self.project(&str_arg(args, 0), &language)?; Ok(Value::Array(self.ignores(&str_arg(args, 0)).into_iter().map(Value::String).collect())) }
             "tree:ignore-set" => self.set_ignores(&str_arg(args, 0), args.get(1).cloned().unwrap_or(json!([])), &language),
             "tree:create" => self.with_local(&str_arg(args, 0), &language, |root| files::create_entry(root, str_arg(args, 1), str_arg(args, 2), bool_arg(args, 3)?, &language).map(|path| json!(path))),
@@ -93,7 +104,7 @@ impl Workbench {
             "terminal:history" => Ok(json!(pty::load_history(&self.paths.data, str_arg(args, 0)))),
             "terminal:history-save" => pty::save_history(&self.paths.data, str_arg(args, 0), str_arg(args, 1)).map(|_| Value::Null),
             "exec:test" => self.test_exec(args.first().cloned().unwrap_or(json!({})), &language),
-            "host:test" => Ok(test_host(args.first().unwrap_or(&Value::Null), &language)),
+            "host:test" => Ok(ssh::test_connection(&self.paths.data, args.first().unwrap_or(&Value::Null), &language)),
             "app:update-state" | "app:update-check" | "app:update-download" => Ok(json!({ "phase": "unsupported" })),
             "app:update-install" => Ok(json!(false)),
             "app:meta" => Ok(json!({ "capture": std::env::var("AWB_CAPTURE").ok().as_deref() == Some("1"), "platform": node_platform(), "shots": std::env::var_os("AWB_SHOTS").is_some() })),
@@ -147,7 +158,7 @@ impl Workbench {
                 let old = current["hosts"].as_array().and_then(|list| list.iter().find(|item| item["id"] == host["id"]));
                 let changed = old.is_none() || ["addr", "port", "user", "auth"].iter().any(|key| old.unwrap().get(*key) != host.get(*key)) || host.get("password").is_some();
                 if changed {
-                    let result = test_host(&host, &language);
+                    let result = ssh::test_connection(&self.paths.data, &host, &language);
                     if result["ok"] != true {
                         return Err(result["error"].as_str().unwrap_or("连接失败").to_string());
                     }
@@ -160,11 +171,10 @@ impl Workbench {
                 host["on"] = json!(true);
                 if host["os"].as_str().unwrap_or("").is_empty() { host["os"] = json!(store::os_label()); }
             }
-            remember_password(&mut self.passwords.lock().expect("passwords"), &host);
+            ssh::remember_password(&self.paths.data, &host);
             host["color"] = json!(host_color(&host["color"]));
             let mut clean = public_host(host);
-            let key = host_identity(&clean);
-            clean["hasPassword"] = json!(self.passwords.lock().expect("passwords").contains_key(&key));
+            clean["hasPassword"] = json!(ssh::has_password(&self.paths.data, &clean));
             next.push(clean);
         }
         self.db.lock().expect("db")["hosts"] = Value::Array(next);
@@ -236,10 +246,6 @@ impl Workbench {
         Ok(std::path::PathBuf::from(project["path"].as_str().unwrap_or("")))
     }
 
-    fn local_only(&self, host_id: &str, language: &str) -> Result<(), String> {
-        if host_id.is_empty() || host_id == "local" { Ok(()) } else { Err(translate(language, "远程项目的该操作尚未在 Rust 移植中实现", &[] as &[String])) }
-    }
-
     fn with_local(&self, project_id: &str, language: &str, run: impl FnOnce(&Path) -> Result<Value, String>) -> Result<Value, String> {
         let root = self.local_root(project_id, language)?;
         run(&root)
@@ -264,6 +270,12 @@ impl Workbench {
     }
 
     fn git_status(&self, project_id: &str, language: &str) -> Result<Value, String> {
+        if let Some((host, path)) = self.remote_place(project_id, language)? {
+            let mut panel = git::status_remote(&self.paths.data, &host, &path, language)?;
+            self.remember_branch(project_id, &panel);
+            if panel.get("untracked").is_none() { panel["untracked"] = json!({}); }
+            return Ok(panel);
+        }
         let root = self.local_root(project_id, language)?;
         let mut panel = git::status(&root, language)?;
         if panel["isRepo"] == true {
@@ -284,11 +296,88 @@ impl Workbench {
         Ok(panel)
     }
 
+    fn remember_branch(&self, project_id: &str, panel: &Value) {
+        if panel["isRepo"] != true { return }
+        let branch = panel["branch"].as_str().unwrap_or("").to_string();
+        if branch.is_empty() { return }
+        let changed = {
+            let mut db = self.db.lock().expect("db");
+            db["projects"].as_array_mut().and_then(|list| list.iter_mut().find(|project| project["id"] == project_id)).is_some_and(|project| {
+                let differs = project["branch"] != branch;
+                if differs { project["branch"] = json!(branch); }
+                differs
+            })
+        };
+        if changed { let _ = self.persist(); }
+    }
+
+    fn git_read(&self, project_id: &str, rel: &str, language: &str) -> Result<Value, String> {
+        if let Some((host, path)) = self.remote_place(project_id, language)? {
+            return git::read_remote(&self.paths.data, &host, &path, rel, language);
+        }
+        files::read_local(&self.local_root(project_id, language)?, rel, language)
+    }
+
+    fn git_write(&self, project_id: &str, rel: &str, text: &str, version: Option<&str>, language: &str) -> Result<Value, String> {
+        if let Some((host, path)) = self.remote_place(project_id, language)? {
+            return git::write_remote(&self.paths.data, &host, &path, rel, text, version, language);
+        }
+        files::write_local(&self.local_root(project_id, language)?, rel, text, version, language)
+    }
+
+    fn git_tree(&self, project_id: &str, rel: &str, language: &str) -> Result<Value, String> {
+        let ignored = self.ignores(project_id);
+        if let Some((host, path)) = self.remote_place(project_id, language)? {
+            return git::list_remote(&self.paths.data, &host, &path, rel, &ignored, language);
+        }
+        files::list_tree(&self.local_root(project_id, language)?, rel, &ignored, language)
+    }
+
+    fn path_check(&self, host_id: &str, input: &str, language: &str) -> Result<Value, String> {
+        let Some(host) = self.optional_host(host_id)? else { return Ok(files::check_path(input, language)) };
+        let value = input.trim();
+        if value.is_empty() { return Ok(json!({ "kind": "empty" })) }
+        if !value.starts_with('/') || value.contains('\0') { return Ok(json!({ "kind": "invalid" })) }
+        let quoted = ssh::bash_quote(value);
+        let exists = ssh::run(&self.paths.data, &host, &format!("if [ -d {quoted} ]; then echo yes; fi"), None, language).unwrap_or_default();
+        if exists.trim() != "yes" { return Ok(json!({ "kind": "missing" })) }
+        let inside = ssh::run(&self.paths.data, &host, &format!("git -C {quoted} rev-parse --is-inside-work-tree"), None, language).unwrap_or_default();
+        if inside.trim() != "true" { return Ok(json!({ "kind": "plain" })) }
+        let branch = ssh::run(&self.paths.data, &host, &format!("git -C {quoted} rev-parse --abbrev-ref HEAD"), None, language).unwrap_or_default();
+        Ok(json!({ "kind": "git", "branch": branch.trim() }))
+    }
+
+    fn path_list(&self, host_id: &str, input: &str, language: &str) -> Result<Value, String> {
+        let Some(host) = self.optional_host(host_id)? else { return Ok(files::list_dir(input)) };
+        let mut current = input.trim().to_string();
+        if current.is_empty() {
+            current = ssh::run(&self.paths.data, &host, "printf %s \"$HOME\"", None, language).unwrap_or_else(|_| "/".into());
+            if current.trim().is_empty() { current = "/".into(); }
+        }
+        let quoted = ssh::bash_quote(current.trim());
+        let script = format!(r#"cd -P -- {quoted} || exit 1; printf '%s\0' "$PWD"; for dir in ./* ./.[!.]* ./..?*; do [ -d "$dir" ] || continue; printf '%s\0' "${{dir#./}}"; done"#);
+        let text = match ssh::run(&self.paths.data, &host, &script, None, language) {
+            Ok(text) => text,
+            Err(error) => return Ok(json!({ "path": current, "parent": Value::Null, "dirs": [], "error": error })),
+        };
+        let mut parts = text.split('\0').filter(|part| !part.is_empty());
+        let path = parts.next().unwrap_or(current.trim()).to_string();
+        let dirs: Vec<Value> = parts.filter(|name| !files::default_ignore().iter().any(|rule| rule == name)).map(|name| json!({ "name": name, "path": format!("{path}/{name}") })).collect();
+        let parent = if path == "/" { Value::Null } else { json!(path.rsplit_once('/').map(|(parent, _)| if parent.is_empty() { "/" } else { parent }).unwrap_or("/")) };
+        Ok(json!({ "path": path, "parent": parent, "dirs": dirs }))
+    }
+
     fn pty_create(&self, request: Value, language: &str) -> Result<Value, String> {
         let id = request["id"].as_str().filter(|id| !id.is_empty()).map(|id| id.to_string()).unwrap_or_else(|| uid("t"));
         let project = self.project(request["projectId"].as_str().unwrap_or(""), language)?;
-        if project["host"] != "local" {
-            return Err(translate(language, "远程项目的该操作尚未在 Rust 移植中实现", &[] as &[String]));
+        if let Some(host) = self.optional_host(project["host"].as_str().unwrap_or("local"))? {
+            let kind = request["kind"].as_str().unwrap_or("shell");
+            let shell = request["shell"].as_str().unwrap_or("bash");
+            let command = if kind == "shell" { String::new() } else { agent_command(kind, &self.db.lock().expect("db")) };
+            let restore = self.db.lock().expect("db")["settings"]["restore"] != false;
+            let mut info = self.pty.create_remote(&self.paths.data, &id, project["path"].as_str().unwrap_or(""), kind, shell, &command, request["agentSessionId"].as_str(), restore, &host, language, self.emit.clone())?;
+            info.as_object_mut().expect("session").remove("type");
+            return Ok(info);
         }
         let kind = request["kind"].as_str().unwrap_or("shell");
         let shell = request["shell"].as_str().unwrap_or("bash");
@@ -340,7 +429,14 @@ impl Workbench {
         let project_id = str_arg(args, 0);
         let (root, identity) = self.search_root(project_id, language)?;
         let ignored = self.ignores(project_id);
-        let job = ContentSearch::start(&root, project_id, &identity, str_arg(args, 2), sensitive, regex, whole, &ignored, language)?;
+        let job = if let Some((host, path)) = self.remote_place(project_id, language)? {
+            let payload = json!({ "root": path, "query": str_arg(args, 2), "sensitive": sensitive, "regex": regex, "whole": whole, "ignored": ignored });
+            let script = format!("python3 -u -c {}", ssh::bash_quote(search::LINUX_CONTENT_SEARCH));
+            let output = ssh::run(&self.paths.data, &host, &script, Some(payload.to_string().as_bytes()), language)?;
+            ContentSearch::from_remote_output(project_id, &identity, &output, language)?
+        } else {
+            ContentSearch::start(&root, project_id, &identity, str_arg(args, 2), sensitive, regex, whole, &ignored, language)?
+        };
         self.content_searches.lock().expect("content").insert(id.to_string(), job);
         Ok(Value::Null)
     }
@@ -384,7 +480,15 @@ impl Workbench {
         let project_id = str_arg(args, 0);
         let (root, identity) = self.search_root(project_id, language)?;
         let ignored = self.ignores(project_id);
-        let job = TreeSearch::start(&root, project_id, &identity, query, &ignored, language)?;
+        let job = if let Some((host, path)) = self.remote_place(project_id, language)? {
+            let payload = json!({ "root": path, "query": query, "ignored": ignored });
+            let script = format!("python3 -u -c {}", ssh::bash_quote(search::LINUX_TREE_SEARCH));
+            let output = ssh::run(&self.paths.data, &host, &script, Some(payload.to_string().as_bytes()), language)?;
+            let items: Vec<Value> = serde_json::from_str(output.trim()).map_err(|error| error.to_string())?;
+            TreeSearch::from_matches(project_id, &identity, items)
+        } else {
+            TreeSearch::start(&root, project_id, &identity, query, &ignored, language)?
+        };
         self.tree_searches.lock().expect("tree").insert(id.to_string(), job);
         Ok(Value::Null)
     }
@@ -418,11 +522,21 @@ impl Workbench {
     fn search_root(&self, project_id: &str, language: &str) -> Result<(std::path::PathBuf, String), String> {
         let project = self.project(project_id, language)?;
         let host = project["host"].as_str().unwrap_or("local");
-        if host != "local" {
-            return Err(translate(language, "远程项目的该操作尚未在 Rust 移植中实现", &[] as &[String]));
-        }
         let path = project["path"].as_str().unwrap_or("").to_string();
         Ok((std::path::PathBuf::from(&path), format!("{host}|{path}")))
+    }
+
+    fn optional_host(&self, host_id: &str) -> Result<Option<Value>, String> {
+        if host_id.is_empty() || host_id == "local" { return Ok(None) }
+        self.db.lock().expect("db")["hosts"].as_array().and_then(|list| list.iter().find(|host| host["id"] == host_id).cloned()).map(Some)
+            .ok_or_else(|| "主机不存在".to_string())
+    }
+
+    fn remote_place(&self, project_id: &str, language: &str) -> Result<Option<(Value, String)>, String> {
+        let project = self.project(project_id, language)?;
+        let host_id = project["host"].as_str().unwrap_or("local");
+        let path = project["path"].as_str().unwrap_or("").to_string();
+        Ok(self.optional_host(host_id)?.map(|host| (host, path)))
     }
 
     fn confirm_identity(&self, project_id: &str, identity: &str, language: &str) -> Result<(), String> {
@@ -473,60 +587,6 @@ fn validate_resources(target: &Value, language: &str) -> Result<(), String> {
         return Err(translate(language, "请选择支持的资源格式", &[] as &[String]));
     }
     Ok(())
-}
-
-fn remember_password(memory: &mut HashMap<String, String>, host: &Value) {
-    if host["auth"] != "password" || host.get("password").is_none() { return }
-    let key = host_identity(host);
-    match host["password"].as_str() {
-        Some(password) if !password.is_empty() => { memory.insert(key, password.to_string()); }
-        _ => { memory.remove(&key); }
-    }
-}
-
-fn host_identity(host: &Value) -> String {
-    let port = host["port"].as_i64().filter(|port| *port > 0).unwrap_or(22);
-    format!("[\"{}\",{},\"{}\"]", host["addr"].as_str().unwrap_or(""), port, host["user"].as_str().unwrap_or(""))
-}
-
-fn test_host(host: &Value, language: &str) -> Value {
-    let addr = host["addr"].as_str().unwrap_or("");
-    let user = host["user"].as_str().unwrap_or("");
-    if addr.is_empty() || user.is_empty() {
-        return json!({ "ok": false, "error": translate(language, "请填写用户和地址", &[] as &[String]) });
-    }
-    if host["auth"] == "password" {
-        return json!({ "ok": false, "error": translate(language, "密码登录的主机校验尚未在 Rust 移植中实现，未保存机器", &[] as &[String]) });
-    }
-    let port = host["port"].as_i64().unwrap_or(22).to_string();
-    let mut command = Command::new("ssh");
-    command.arg("-T").arg("-o").arg("BatchMode=yes").arg("-p").arg(&port)
-        .arg("-o").arg("StrictHostKeyChecking=accept-new")
-        .arg("-o").arg("ConnectTimeout=8")
-        .arg("-o").arg("ServerAliveInterval=15");
-    if host["auth"] != "agent" {
-        if let Some(home) = std::env::var_os("HOME") {
-            let key = Path::new(&home).join(".ssh/id_ed25519");
-            if key.is_file() {
-                command.arg("-o").arg("IdentitiesOnly=yes").arg("-i").arg(key);
-            }
-        }
-    }
-    command.arg(format!("{user}@{addr}")).arg("uname -s 2>/dev/null || ver");
-    match command.output() {
-        Ok(output) if output.status.success() => {
-            let text = String::from_utf8_lossy(&output.stdout);
-            let line = text.lines().filter(|line| !line.trim().is_empty()).last().unwrap_or("").trim();
-            let linux = line.to_ascii_lowercase().contains("linux");
-            json!({ "ok": true, "os": line.chars().take(80).collect::<String>(), "platform": if linux { "linux" } else { "windows" } })
-        }
-        Ok(output) => {
-            let message = String::from_utf8_lossy(&output.stderr);
-            let line = message.lines().filter(|line| !line.trim().is_empty()).last().unwrap_or("连接失败");
-            json!({ "ok": false, "error": line.chars().take(240).collect::<String>() })
-        }
-        Err(error) => json!({ "ok": false, "error": error.to_string() }),
-    }
 }
 
 fn pick_directory() -> Value {

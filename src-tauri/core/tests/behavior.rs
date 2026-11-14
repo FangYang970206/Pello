@@ -339,6 +339,100 @@ fn local_search_skips_dot_directories_limits_matches_and_names_files() {
 
     bench.dispatch("db:projects", &[json!([{ "id": "remote", "name": "R", "host": "ssh-1", "path": "/tmp", "branch": "", "agent": "shell" }])]).unwrap();
     let remote = bench.dispatch("content:search-start", &[json!("remote"), json!("remote-search"), json!("Pello"), json!(true), json!(false), json!(false)]).unwrap_err();
-    assert!(remote.contains("远程") || remote.contains("remote"));
+    assert!(remote.contains("主机不存在"), "{remote}");
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn ssh_password_pins_host_key_and_serves_remote_files() {
+    let password = "s3cret-pass";
+    let fixture = pello_core::ssh::start_fixture(password).expect("ssh fixture");
+    let root = temp_dir("ssh");
+    let project = root.join("project");
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join(".hidden")).unwrap();
+    fs::write(project.join("src/note.txt"), "PelloToken\n").unwrap();
+    fs::write(project.join(".hidden/secret.txt"), "HiddenToken\n").unwrap();
+    let (bench, _) = workbench(&root);
+    let local = bench.dispatch("db:get", &[]).unwrap()["db"]["hosts"][0].clone();
+    let remote_host = json!({
+        "id": "box", "name": "Box", "addr": "127.0.0.1", "port": fixture.port, "user": "me",
+        "auth": "password", "password": password, "color": "blue", "on": false, "os": "", "platform": "linux"
+    });
+    let saved = bench.dispatch("db:hosts", &[json!([local, remote_host])]).expect("password host should connect");
+    let stored = &saved["hosts"][1];
+    assert_eq!(stored["hasPassword"], true);
+    assert!(stored.get("password").is_none());
+    assert_eq!(stored["platform"], "linux");
+    let database = fs::read_to_string(bench.database_path()).unwrap();
+    let credentials = fs::read_to_string(root.join("data/credentials.json")).unwrap();
+    assert!(!database.contains(password), "workbench.json must not contain the password");
+    assert!(!credentials.contains(password), "credentials.json stores ciphertext, not the password");
+    let key_mode = std::os::unix::fs::PermissionsExt::mode(&fs::metadata(root.join("data/credentials.key")).unwrap().permissions()) & 0o777;
+    assert_eq!(key_mode, 0o600);
+    let public = bench.dispatch("db:get", &[]).unwrap();
+    assert!(public["db"]["hosts"][1].get("password").is_none());
+    assert_eq!(public["db"]["hosts"][1]["hasPassword"], true);
+
+    let copied = temp_dir("ssh-restart");
+    assert!(std::process::Command::new("cp").args(["-a", root.join("data").to_str().unwrap(), copied.join("data").to_str().unwrap()]).status().unwrap().success());
+    fs::copy(root.join("pello.config.json"), copied.join("pello.config.json")).ok();
+    let (reloaded, remote_events) = workbench(&copied);
+    let again = reloaded.dispatch("db:get", &[]).unwrap();
+    assert_eq!(again["db"]["hosts"][1]["hasPassword"], true);
+    assert!(again["db"]["hosts"][1].get("password").is_none());
+    reloaded.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "box", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    let read = reloaded.dispatch("git:read", &[json!("p"), json!("src/note.txt")]).unwrap();
+    assert_eq!(read["text"], "PelloToken\n");
+    let version = read["version"].as_str().unwrap().to_string();
+    let written = reloaded.dispatch("git:write", &[json!("p"), json!("src/note.txt"), json!("PelloToken\nupdated\n"), json!(version)]).unwrap();
+    assert_eq!(written["text"], "PelloToken\nupdated\n");
+    assert_eq!(fs::read_to_string(project.join("src/note.txt")).unwrap(), "PelloToken\nupdated\n");
+    let listing = reloaded.dispatch("path:list", &[json!("box"), json!(project.display().to_string())]).unwrap();
+    assert!(listing["dirs"].as_array().unwrap().iter().any(|dir| dir["name"] == "src"));
+    reloaded.dispatch("content:search-start", &[json!("p"), json!("remote-content"), json!("PelloToken"), json!(true), json!(false), json!(false)]).unwrap();
+    let (items, batch) = drain_content(&reloaded, "remote-content");
+    assert_eq!(batch["errors"], 0);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["path"], "src/note.txt");
+    assert_eq!(items[0]["matches"][0]["match"], "PelloToken");
+    reloaded.dispatch("tree:search-start", &[json!("p"), json!("remote-names"), json!("note.txt")]).unwrap();
+    let names = reloaded.dispatch("tree:search-next", &[json!("remote-names")]).unwrap();
+    assert_eq!(names["items"][0]["path"], "src/note.txt");
+    let terminal = reloaded.dispatch("pty:create", &[json!({ "id": "remote-term", "projectId": "p", "kind": "shell", "shell": "bash" })]).unwrap();
+    assert_eq!(terminal["shell"], "bash");
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    let mut idle = false;
+    while std::time::Instant::now() < deadline {
+        let ready = remote_events.lock().unwrap().iter().any(|event| event["payload"]["id"] == "remote-term" && event["payload"]["inputReady"] == true);
+        if ready { idle = true; break }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(idle, "remote shell prompt marker should mark the terminal idle");
+    reloaded.dispatch("pty:close", &[json!("remote-term")]).unwrap();
+
+    let mut settings = reloaded.dispatch("db:get", &[]).unwrap()["db"]["settings"].clone();
+    settings["language"] = json!("en");
+    reloaded.dispatch("db:settings", &[settings]).unwrap();
+    let identity = format!("[\"127.0.0.1\",{}]", fixture.port);
+    fs::write(copied.join("data/ssh-host-keys.json"), format!("{{\"{}\":\"0000\"}}", identity.replace('"', "\\\""))).unwrap();
+    let changed = reloaded.dispatch("host:test", &[again["db"]["hosts"][1].clone()]).unwrap();
+    assert_eq!(changed["ok"], false);
+    assert!(changed["error"].as_str().unwrap_or("").contains("SSH host key has changed"), "{changed}");
+    fs::remove_file(copied.join("data/ssh-host-keys.json")).unwrap();
+    let accepted = reloaded.dispatch("host:test", &[again["db"]["hosts"][1].clone()]).unwrap();
+    assert_eq!(accepted["ok"], true, "{accepted}");
+
+    let bad = json!({
+        "id": "other", "name": "Other", "addr": "127.0.0.1", "port": fixture.port, "user": "me",
+        "auth": "password", "password": "wrong-password", "color": "teal"
+    });
+    let hosts_now = reloaded.dispatch("db:get", &[]).unwrap()["db"]["hosts"].clone();
+    let rejected = reloaded.dispatch("db:hosts", &[json!([hosts_now[0].clone(), hosts_now[1].clone(), bad])]).unwrap_err();
+    assert!(!rejected.is_empty());
+    let remaining = reloaded.dispatch("db:get", &[]).unwrap();
+    assert_eq!(remaining["db"]["hosts"].as_array().unwrap().len(), 2);
+    assert!(remaining["db"].to_string().contains("wrong-password") == false);
+    let _ = fs::remove_dir_all(root);
+    let _ = fs::remove_dir_all(copied);
 }

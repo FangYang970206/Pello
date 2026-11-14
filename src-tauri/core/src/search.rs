@@ -1,6 +1,5 @@
-//! Local file-name and content search. Remote projects stay on the explicit
-//! not-ported error. Limits and skip rules follow `src/main/content-search.ts`
-//! and the tree search in `src/main/index.ts`.
+//! File-name and content search. Local scans follow `src/main/content-search.ts`.
+//! Remote scans run the same Linux worker as `content-search-scripts.ts`.
 
 use crate::files;
 use crate::i18n::translate;
@@ -9,6 +8,7 @@ use serde_json::{json, Value};
 use std::fs::{self, File};
 use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -40,6 +40,7 @@ pub struct ContentSearch {
     stack: Vec<String>,
     current_dir: String,
     current: Vec<DirEntry>,
+    buffered: Option<VecDeque<Value>>,
 }
 
 pub struct TreeSearch {
@@ -50,6 +51,7 @@ pub struct TreeSearch {
     ignored: Vec<String>,
     pending: Vec<String>,
     cancelled: bool,
+    ready: Option<Vec<Value>>,
 }
 
 impl ContentSearch {
@@ -71,6 +73,44 @@ impl ContentSearch {
             stack: vec![String::new()],
             current_dir: String::new(),
             current: Vec::new(),
+            buffered: None,
+        })
+    }
+
+    pub fn from_remote_output(project_id: &str, identity: &str, output: &str, language: &str) -> Result<Self, String> {
+        let mut files = VecDeque::new();
+        let mut skipped = 0u64;
+        let mut errors = 0u64;
+        let mut limited = false;
+        for line in output.lines().filter(|line| !line.trim().is_empty()) {
+            let event: Value = serde_json::from_str(line).map_err(|_| translate(language, "正则表达式无效", &[] as &[String]))?;
+            if let Some(error) = event["error"].as_str() {
+                let message = if error == "timeout" { "正则表达式执行超时，请简化表达式" } else { "正则表达式无效" };
+                return Err(translate(language, message, &[] as &[String]));
+            }
+            skipped += event["skipped"].as_u64().unwrap_or(0);
+            errors += event["errors"].as_u64().unwrap_or(0);
+            limited |= event["limited"].as_bool().unwrap_or(false);
+            if event.get("file").is_some_and(|file| file.is_object()) {
+                files.push_back(event["file"].clone());
+            }
+        }
+        Ok(Self {
+            root: PathBuf::new(),
+            project_id: project_id.to_string(),
+            identity: identity.to_string(),
+            ignored: Vec::new(),
+            pattern: Regex::new(".").map_err(|error| error.to_string())?,
+            remaining: MAX_MATCHES,
+            skipped,
+            errors,
+            limited,
+            done: false,
+            cancelled: false,
+            stack: Vec::new(),
+            current_dir: String::new(),
+            current: Vec::new(),
+            buffered: Some(files),
         })
     }
 
@@ -81,6 +121,18 @@ impl ContentSearch {
     pub fn next(&mut self, language: &str) -> Result<Value, String> {
         if self.cancelled {
             return Ok(self.batch(true, Vec::new()));
+        }
+        if self.buffered.is_some() {
+            let started = Instant::now();
+            let mut items = Vec::new();
+            while items.len() < CONTENT_EVENTS && started.elapsed() < CONTENT_BUDGET {
+                let Some(file) = self.buffered.as_mut().and_then(|files| files.pop_front()) else {
+                    self.done = true;
+                    break;
+                };
+                items.push(file);
+            }
+            return Ok(self.batch(self.done, items));
         }
         let started = Instant::now();
         let mut items = Vec::new();
@@ -180,7 +232,21 @@ impl TreeSearch {
             ignored: ignored.to_vec(),
             pending: vec![String::new()],
             cancelled: false,
+            ready: None,
         })
+    }
+
+    pub fn from_matches(project_id: &str, identity: &str, items: Vec<Value>) -> Self {
+        Self {
+            root: PathBuf::new(),
+            project_id: project_id.to_string(),
+            identity: identity.to_string(),
+            query: String::new(),
+            ignored: Vec::new(),
+            pending: Vec::new(),
+            cancelled: false,
+            ready: Some(items),
+        }
     }
 
     pub fn identity(&self) -> &str { &self.identity }
@@ -190,6 +256,9 @@ impl TreeSearch {
     pub fn next(&mut self, language: &str) -> Result<Value, String> {
         if self.cancelled {
             return Ok(json!({ "items": [], "done": true }));
+        }
+        if let Some(items) = self.ready.take() {
+            return Ok(json!({ "items": items, "done": true }));
         }
         let mut items = Vec::new();
         for _ in 0..TREE_DIRECTORIES {
@@ -212,6 +281,97 @@ impl TreeSearch {
         Ok(json!({ "items": if self.cancelled { Vec::<Value>::new() } else { items }, "done": done }))
     }
 }
+
+pub const LINUX_CONTENT_SEARCH: &str = r#"import os, sys, json, re, stat, signal
+c = json.load(sys.stdin)
+root = os.path.realpath(c['root'])
+source = c['query'] if c.get('regex') else re.escape(c['query'])
+if c.get('whole'): source = r'(?<!\w)(?:' + source + r')(?!\w)'
+try: pattern = re.compile(source, 0 if c['sensitive'] else re.IGNORECASE)
+except re.error:
+    print(json.dumps({'error': 'invalid'}), flush=True); sys.exit(0)
+def timeout(signum, frame): raise TimeoutError()
+signal.signal(signal.SIGALRM, timeout)
+ignored = set(c['ignored'])
+remaining = 2000
+def emit(value):
+    print(json.dumps(value, ensure_ascii=True), flush=True)
+def scan(directory, relative):
+    global remaining
+    try:
+        entries = sorted(os.scandir(directory), key=lambda e: e.name)
+    except OSError:
+        if not relative: raise
+        emit({'errors': 1}); return
+    emit({})
+    for entry in entries:
+        if remaining <= 0: return
+        rel = relative + '/' + entry.name if relative else entry.name
+        try:
+            if entry.is_symlink(): continue
+            if entry.is_dir(follow_symlinks=False):
+                if not entry.name.startswith('.') and entry.name not in ignored:
+                    scan(entry.path, rel)
+                continue
+            if not entry.is_file(follow_symlinks=False): continue
+            real = os.path.realpath(entry.path)
+            if os.path.commonpath([root, real]) != root or real != entry.path: continue
+            fd = os.open(entry.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, 'rb') as f:
+                info = os.fstat(f.fileno())
+                if not stat.S_ISREG(info.st_mode): continue
+                if info.st_size > 2000000:
+                    emit({'skipped': 1}); continue
+                raw = f.read(2000001)
+            if len(raw) > 2000000 or b'\0' in raw:
+                emit({'skipped': 1}); continue
+            try: text = raw.decode('utf-8')
+            except UnicodeDecodeError:
+                emit({'skipped': 1}); continue
+            matches = []
+            if c.get('regex'): signal.setitimer(signal.ITIMER_REAL, 0.5)
+            for number, line in enumerate(text.split('\n'), 1):
+                if line.endswith('\r'): line = line[:-1]
+                for m in pattern.finditer(line):
+                    matches.append({'line': number, 'column': len(line[:m.start()].encode('utf-16-le')) // 2 + 1,
+                        'before': line[max(0, m.start()-80):m.start()], 'match': m.group(), 'after': line[m.end():m.end()+160].rstrip('\r')})
+                    remaining -= 1
+                    if remaining <= 0: break
+                if remaining <= 0: break
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            emit({'file': {'path': rel, 'matches': matches}} if matches else {})
+        except TimeoutError:
+            emit({'error': 'timeout'}); return
+        except OSError:
+            emit({'errors': 1})
+scan(root, '')
+if remaining <= 0: emit({'limited': True})
+"#;
+
+pub const LINUX_TREE_SEARCH: &str = r#"import os, json, sys
+c = json.load(sys.stdin)
+root = os.path.realpath(c['root'])
+query = c['query'].lower()
+ignored = set(c['ignored'])
+items = []
+def walk(directory, relative):
+    try:
+        entries = sorted(os.scandir(directory), key=lambda e: e.name)
+    except OSError:
+        if not relative: raise
+        return
+    for entry in entries:
+        if entry.is_symlink(): continue
+        rel = relative + '/' + entry.name if relative else entry.name
+        if entry.is_dir(follow_symlinks=False):
+            if not entry.name.startswith('.') and entry.name not in ignored:
+                walk(entry.path, rel)
+            continue
+        if entry.is_file(follow_symlinks=False) and query in rel.lower():
+            items.append({'name': entry.name, 'path': rel, 'dir': False})
+walk(root, '')
+print(json.dumps(items), flush=True)
+"#;
 
 pub fn valid_search_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 100 && id.chars().all(|char| char.is_ascii_alphanumeric() || char == '_' || char == '-')

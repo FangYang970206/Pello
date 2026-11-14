@@ -48,6 +48,18 @@ const EN: &[(&str, &str)] = &[
     ("正则表达式执行超时，请简化表达式", "Regular expression timed out. Simplify the expression."),
     ("搜索仍在进行中", "Search is still running"),
     ("项目环境已更改", "Project environment has changed"),
+    ("SSH 连接已取消", "SSH connection cancelled"),
+    ("请填写 SSH 登录密码", "Enter the SSH login password"),
+    ("SSH 连接在认证完成前关闭", "SSH connection closed before authentication completed"),
+    ("SSH 主机密钥已改变", "SSH host key has changed"),
+    ("SSH 连接中断", "SSH connection interrupted"),
+    ("远程命令退出码 {{0}}", "Remote command exited with code {{0}}"),
+    ("SSH 退出码 {{0}}", "SSH exited with code {{0}}"),
+    ("远程命令执行超时", "Remote command timed out"),
+    ("远程输出过大", "Remote output is too large"),
+    ("SSH 连接失败，未保存机器", "SSH connection failed, so the machine was not saved"),
+    ("无法保存项目目录外的文件或符号链接", "Cannot save a file outside the project or through a symbolic link"),
+    ("文件不存在", "File does not exist"),
 ];
 
 pub fn translate(language: &str, source: &str, values: &[impl AsRef<str>]) -> String {

@@ -71,7 +71,7 @@ fn looks_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(8000).any(|byte| *byte == 0)
 }
 
-fn decode_file(bytes: &[u8]) -> Value {
+pub(crate) fn decode_file(bytes: &[u8]) -> Value {
     let binary = looks_binary(bytes) || std::str::from_utf8(bytes).is_err();
     json!({
         "text": if binary { String::new() } else { String::from_utf8_lossy(bytes).into_owned() },
@@ -82,7 +82,7 @@ fn decode_file(bytes: &[u8]) -> Value {
     })
 }
 
-fn missing_file() -> Value {
+pub(crate) fn missing_file() -> Value {
     json!({ "text": "", "binary": false, "missing": true, "version": Value::Null })
 }
 

@@ -2,7 +2,8 @@
 
 use crate::i18n::translate;
 use crate::shells::{self, discover};
-use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
+use crate::ssh;
+use portable_pty::{CommandBuilder, PtySize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -38,8 +39,8 @@ pub struct Manager {
 struct Session {
     live: Arc<Mutex<Live>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    child: Mutex<Box<dyn Child + Send>>,
-    master: Mutex<Box<dyn MasterPty + Send>>,
+    stop: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    resize: Box<dyn Fn(u16, u16) + Send + Sync>,
 }
 
 impl Manager {
@@ -75,6 +76,10 @@ impl Manager {
         let child = pair.slave.spawn_command(builder).map_err(|error| error.to_string())?;
         let reader = pair.master.try_clone_reader().map_err(|error| error.to_string())?;
         let writer = pair.master.take_writer().map_err(|error| error.to_string())?;
+        let child = Arc::new(Mutex::new(child));
+        let master = Arc::new(Mutex::new(pair.master));
+        let stop_child = child.clone();
+        let resize_master = master.clone();
         let live = Arc::new(Mutex::new(Live {
             phase: Phase::Starting,
             state: "running".into(),
@@ -92,11 +97,53 @@ impl Manager {
         let session = Session {
             live: live.clone(),
             writer: Arc::new(Mutex::new(writer)),
-            child: Mutex::new(child),
-            master: Mutex::new(pair.master),
+            stop: Mutex::new(Some(Box::new(move || { let _ = stop_child.lock().expect("child").kill(); }))),
+            resize: Box::new(move |cols, rows| { let _ = resize_master.lock().expect("master").resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }); }),
         };
         self.sessions.lock().expect("pty").insert(id.to_string(), session);
         spawn_reader(id.to_string(), data.to_path_buf(), reader, live.clone(), self.writer(id), emit.clone());
+        let live_timer = live.clone();
+        let writer_timer = self.writer(id);
+        let emit_timer = emit;
+        let id_timer = id.to_string();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(1200));
+            arm(&id_timer, &live_timer, &writer_timer, &emit_timer, true);
+        });
+        let guard = live.lock().expect("pty live");
+        let info = snapshot(id, &guard);
+        drop(guard);
+        Ok(info)
+    }
+
+    pub fn create_remote(&self, data: &Path, id: &str, cwd: &str, kind: &str, shell: &str, command: &str, agent_session: Option<&str>, restore: bool, host: &Value, language: &str, emit: Emit) -> Result<Value, String> {
+        if kind != "shell" && agent_session.unwrap_or("").is_empty() && !load_history(data, id).is_empty() {
+            return Err(translate(language, "无法唯一定位旧 Agent 对话，原终端历史已保留；未创建空白对话", &[] as &[String]));
+        }
+        let shell_id = if host["platform"] == "windows" { "pwsh" } else if shell == "zsh" { "zsh" } else { "bash" };
+        let remote = ssh::open_shell(data, host, cwd, language)?;
+        let live = Arc::new(Mutex::new(Live {
+            phase: Phase::Starting,
+            state: "running".into(),
+            exit_code: None,
+            started_at: Some(now_ms()),
+            input_ready: false,
+            shell: shell_id.into(),
+            kind: kind.into(),
+            command: command.to_string(),
+            cwd: PathBuf::from(cwd),
+            launched: command.is_empty(),
+            last_interrupt: None,
+            restore,
+        }));
+        let session = Session {
+            live: live.clone(),
+            writer: Arc::new(Mutex::new(remote.input)),
+            stop: Mutex::new(Some(remote.stop)),
+            resize: Box::new(|_, _| {}),
+        };
+        self.sessions.lock().expect("pty").insert(id.to_string(), session);
+        spawn_reader(id.to_string(), data.to_path_buf(), remote.output, live.clone(), self.writer(id), emit.clone());
         let live_timer = live.clone();
         let writer_timer = self.writer(id);
         let emit_timer = emit;
@@ -144,7 +191,7 @@ impl Manager {
     pub fn resize(&self, id: &str, cols: u16, rows: u16) {
         let sessions = self.sessions.lock().expect("pty");
         let Some(session) = sessions.get(id) else { return };
-        let _ = session.master.lock().expect("master").resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
+        (session.resize)(cols, rows);
     }
 
     pub fn interrupt(&self, id: &str, emit: &Emit) -> String {
@@ -179,7 +226,7 @@ impl Manager {
 
     pub fn close(&self, id: &str) {
         let Some(session) = self.sessions.lock().expect("pty").remove(id) else { return };
-        let _ = session.child.lock().expect("child").kill();
+        if let Some(stop) = session.stop.lock().expect("stop").take() { stop(); }
         session.live.lock().expect("pty live").phase = Phase::Dead;
     }
 

@@ -1,6 +1,7 @@
 //! Local Git status, diff and discard. Parsing follows `src/main/git.ts`.
 
 use crate::files::{self, count_lines, diff_too_big, read_local, TREE_DEFAULT_IGNORE};
+use base64::Engine;
 use crate::i18n::translate;
 use serde_json::{json, Value};
 use std::path::Path;
@@ -215,4 +216,111 @@ pub fn discard(root: &Path, rel: &str, untracked: bool, language: &str) -> Resul
 
 pub fn show_error(language: &str) -> String {
     translate(language, "远程项目的该操作尚未在 Rust 移植中实现", &[] as &[String])
+}
+
+pub fn read_remote(data: &Path, host: &Value, root: &str, rel: &str, language: &str) -> Result<Value, String> {
+    let Ok(relative) = files::clean_relative(rel, language) else { return Ok(files::missing_file()) };
+    if relative.is_empty() { return Ok(files::missing_file()) }
+    let absolute = join_remote(root, &relative);
+    let quoted = crate::ssh::bash_quote(&absolute);
+    let script = format!("base64 -w 0 {quoted} 2>/dev/null || base64 {quoted}");
+    match crate::ssh::run(data, host, &script, None, language) {
+        Ok(text) => {
+            let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, text.trim()).unwrap_or_default();
+            Ok(files::decode_file(&bytes))
+        }
+        Err(_) => Ok(files::missing_file()),
+    }
+}
+
+pub fn write_remote(data: &Path, host: &Value, root: &str, rel: &str, text: &str, version: Option<&str>, language: &str) -> Result<Value, String> {
+    let relative = files::clean_relative(rel, language)?;
+    if relative.is_empty() || version.is_some_and(|value| value.len() != 64 || !value.chars().all(|char| char.is_ascii_hexdigit())) {
+        return Err(translate(language, "请先读取文件再保存", &[] as &[String]));
+    }
+    let bytes = text.as_bytes();
+    if bytes.len() > 2_000_000 {
+        return Err(translate(language, "文件超过 2 MB，无法在内置编辑器中保存", &[] as &[String]));
+    }
+    let current = read_remote(data, host, root, &relative, language)?;
+    if current["missing"] == true { return Err(translate(language, "文件不存在", &[] as &[String])) }
+    if current["version"] != version.unwrap_or("") { return Err(translate(language, "文件已被其他程序修改，请重新读取后合并更改", &[] as &[String])) }
+    if current["binary"] == true { return Err(translate(language, "只能编辑 UTF-8 文本文件", &[] as &[String])) }
+    let absolute = join_remote(root, &relative);
+    let root_q = crate::ssh::bash_quote(root);
+    let file_q = crate::ssh::bash_quote(&absolute);
+    let version = version.unwrap_or("");
+    let script = format!(r#"set -e
+root=$(cd -P -- {root_q} && pwd)
+file={file_q}
+[ ! -L "$file" ] || {{ echo AWB_UNSAFE_PATH >&2; exit 1; }}
+parent=$(cd -P -- "$(dirname -- "$file")" && pwd)
+root=${{root%/}}
+case "$parent/" in "$root/"*) ;; *) echo AWB_UNSAFE_PATH >&2; exit 1;; esac
+file="$parent/$(basename -- "$file")"
+file_hash() {{ (sha256sum < "$file" 2>/dev/null || shasum -a 256 < "$file") | cut -d ' ' -f 1; }}
+[ "$(file_hash)" = '{version}' ] || {{ echo AWB_CONFLICT >&2; exit 1; }}
+temp=$(mktemp "$parent/.awb-XXXXXX")
+trap 'rm -f -- "$temp"' EXIT
+cp -p -- "$file" "$temp"
+base64 -d > "$temp"
+[ "$(file_hash)" = '{version}' ] || {{ echo AWB_CONFLICT >&2; exit 1; }}
+mv -f -- "$temp" "$file"
+printf saved"#);
+    let payload = base64::engine::general_purpose::STANDARD.encode(bytes);
+    match crate::ssh::run(data, host, &script, Some(payload.as_bytes()), language) {
+        Ok(_) => read_remote(data, host, root, &relative, language),
+        Err(error) if error.contains("AWB_CONFLICT") => Err(translate(language, "文件已被其他程序修改，请重新读取后合并更改", &[] as &[String])),
+        Err(error) if error.contains("AWB_UNSAFE_PATH") => Err(translate(language, "无法保存项目目录外的文件或符号链接", &[] as &[String])),
+        Err(error) => Err(error),
+    }
+}
+
+pub fn list_remote(data: &Path, host: &Value, root: &str, rel: &str, ignored: &[String], language: &str) -> Result<Value, String> {
+    let relative = files::clean_relative(rel, language)?;
+    let absolute = if relative.is_empty() || relative == "." { root.to_string() } else { join_remote(root, &relative) };
+    let quoted = crate::ssh::bash_quote(&absolute);
+    let script = format!(r#"for f in {quoted}/* {quoted}/.[!.]* {quoted}/..?*; do [ -L "$f" ] && continue; [ -e "$f" ] || continue; if [ -d "$f" ]; then printf 'd%s\0' "${{f##*/}}"; elif [ -f "$f" ]; then printf 'f%s\0' "${{f##*/}}"; fi; done"#);
+    let text = crate::ssh::run(data, host, &script, None, language).unwrap_or_default();
+    let mut nodes = Vec::new();
+    for entry in text.split('\0').filter(|entry| !entry.is_empty()) {
+        let dir = entry.starts_with('d');
+        let name = entry[1..].to_string();
+        if dir && ignored.iter().any(|rule| rule == &name) { continue }
+        let path = if relative.is_empty() || relative == "." { name.clone() } else { format!("{relative}/{name}") };
+        nodes.push(json!({ "name": name, "dir": dir, "path": path }));
+    }
+    nodes.sort_by(|left, right| {
+        let left_dir = left["dir"].as_bool().unwrap_or(false);
+        let right_dir = right["dir"].as_bool().unwrap_or(false);
+        right_dir.cmp(&left_dir).then_with(|| left["name"].as_str().unwrap_or("").cmp(right["name"].as_str().unwrap_or("")))
+    });
+    Ok(Value::Array(nodes))
+}
+
+pub fn status_remote(data: &Path, host: &Value, root: &str, language: &str) -> Result<Value, String> {
+    let quoted = crate::ssh::bash_quote(root);
+    let status = crate::ssh::run(data, host, &format!("git -C {quoted} -c core.quotepath=false status --porcelain=v1 -z -uall -b -- ."), None, language).unwrap_or_default();
+    if status.trim().is_empty() {
+        let inside = crate::ssh::run(data, host, &format!("git -C {quoted} rev-parse --is-inside-work-tree"), None, language).unwrap_or_default();
+        if inside.trim() != "true" { return Ok(empty_status()) }
+    }
+    let parsed = parse_status(&status);
+    let nums = crate::ssh::run(data, host, &format!("git -C {quoted} -c core.quotepath=false diff --relative --numstat -z HEAD -- ."), None, language)
+        .or_else(|_| crate::ssh::run(data, host, &format!("git -C {quoted} -c core.quotepath=false diff --relative --numstat -z -- ."), None, language))
+        .map(|text| parse_numstat(&text))
+        .unwrap_or_default();
+    let mut files = Vec::new();
+    let mut untracked = serde_json::Map::new();
+    for file in parsed {
+        untracked.insert(file.path.clone(), json!(file.untracked));
+        let (add, del) = nums.get(&file.path).copied().unwrap_or((0, 0));
+        files.push(json!({ "path": file.path, "st": file.status, "add": add, "del": del }));
+    }
+    let _ = language;
+    Ok(json!({ "isRepo": true, "branch": parse_branch(&status), "files": files, "untracked": untracked }))
+}
+
+fn join_remote(root: &str, relative: &str) -> String {
+    format!("{}/{}", root.trim_end_matches('/'), relative)
 }
