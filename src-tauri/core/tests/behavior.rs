@@ -2197,3 +2197,193 @@ fn git_comparison_base_restores_the_worktree_without_rewriting_head() {
     assert_eq!(String::from_utf8_lossy(&final_head.stdout).trim(), head);
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn same_name_menu_stays_refused() {
+    let root = temp_dir("same-name");
+    let (bench, _) = workbench(&root);
+    for channel in ["transfer:decide", "transfer:keep-both"] {
+        let error = bench.dispatch(channel, &[json!("p"), json!("upload"), json!("overwrite")]).unwrap_err();
+        assert!(error.contains("上传不再询问同名处理"), "{channel} {error}");
+        assert!(!error.contains("尚未"), "{error}");
+    }
+    let _ = fs::remove_dir_all(root);
+}
+
+/// Electron `gitDiscard` in `src/main/git.ts` restores the whole file with
+/// `git restore --source=HEAD --worktree --staged` (or `git checkout HEAD --`)
+/// and removes untracked files with `git clean -f`. It does not apply a hunk
+/// and it does not rewrite the commit. Hunk restore stays on `git:write`.
+#[test]
+fn electron_git_discard_restores_the_whole_file_and_keeps_head() {
+    let root = temp_dir("electron-discard");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("fixture.txt"), "alpha\nmiddle\nomega\n").unwrap();
+    git_commit(&project);
+    let head = head_sha(&project);
+    fs::write(project.join("fixture.txt"), "only the worktree\n").unwrap();
+    fs::write(project.join("extra.txt"), "untracked\n").unwrap();
+    let (bench, _) = workbench(&root);
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    assert_implemented(bench.dispatch("git:discard", &[json!("p"), json!("fixture.txt"), json!(false)]));
+    assert_eq!(fs::read_to_string(project.join("fixture.txt")).unwrap(), "alpha\nmiddle\nomega\n");
+    assert_implemented(bench.dispatch("git:discard", &[json!("p"), json!("extra.txt"), json!(true)]));
+    assert!(!project.join("extra.txt").exists());
+    assert_eq!(head_sha(&project), head);
+    let shown = std::process::Command::new("git").arg("-C").arg(&project).args(["show", "HEAD:fixture.txt"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&shown.stdout), "alpha\nmiddle\nomega\n");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn remote_git_diff_and_discard_match_the_local_commands() {
+    let _lock = env_lock();
+    let remote = remote_linux("remote-git");
+    fs::write(remote.project.join("fixture.txt"), "alpha\nmiddle\nomega\n").unwrap();
+    git_commit(&remote.project);
+    let head = head_sha(&remote.project);
+    fs::write(remote.project.join("fixture.txt"), "alpha\nomega\nextra at end\n").unwrap();
+    fs::write(remote.project.join("extra.txt"), "untracked\n").unwrap();
+    let diff = assert_implemented(remote.bench.dispatch("git:diff", &[json!("p"), json!("fixture.txt"), json!(false)]));
+    assert_eq!(diff["st"], "M");
+    assert_eq!(diff["before"], "alpha\nmiddle\nomega\n");
+    assert_eq!(diff["after"], "alpha\nomega\nextra at end\n");
+    assert_eq!(diff["binary"], false);
+    let added = assert_implemented(remote.bench.dispatch("git:diff", &[json!("p"), json!("extra.txt"), json!(true)]));
+    assert_eq!(added["st"], "A");
+    assert_eq!(added["before"], "");
+    assert_eq!(added["after"], "untracked\n");
+    assert_implemented(remote.bench.dispatch("git:discard", &[json!("p"), json!("fixture.txt"), json!(false)]));
+    assert_eq!(fs::read_to_string(remote.project.join("fixture.txt")).unwrap(), "alpha\nmiddle\nomega\n");
+    assert_implemented(remote.bench.dispatch("git:discard", &[json!("p"), json!("extra.txt"), json!(true)]));
+    assert!(!remote.project.join("extra.txt").exists());
+    assert_eq!(head_sha(&remote.project), head);
+    let _ = fs::remove_dir_all(&remote.root);
+}
+
+#[test]
+fn remote_hunk_restore_writes_the_comparison_base_without_rewriting_head() {
+    let _lock = env_lock();
+    let remote = remote_linux("remote-hunk");
+    let original = "alpha\nmiddle\nomega\n";
+    fs::write(remote.project.join("fixture.txt"), original).unwrap();
+    fs::write(remote.project.join("deleted.txt"), "deleted original\n").unwrap();
+    git_commit(&remote.project);
+    let head = head_sha(&remote.project);
+    fs::write(remote.project.join("fixture.txt"), "alpha\nomega\nextra at end\n").unwrap();
+    fs::remove_file(remote.project.join("deleted.txt")).unwrap();
+    let read = assert_implemented(remote.bench.dispatch("git:read", &[json!("p"), json!("fixture.txt")]));
+    let restored = assert_implemented(remote.bench.dispatch("git:write", &[json!("p"), json!("fixture.txt"), json!(original), json!(read["version"].as_str().unwrap())]));
+    assert_eq!(restored["text"], original);
+    assert_eq!(fs::read_to_string(remote.project.join("fixture.txt")).unwrap(), original);
+    assert_eq!(head_sha(&remote.project), head);
+    let shown = std::process::Command::new("git").arg("-C").arg(&remote.project).args(["show", "HEAD:fixture.txt"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&shown.stdout), original);
+    fs::write(remote.project.join("deleted.txt"), "concurrent creation\n").unwrap();
+    let raced = remote.bench.dispatch("git:write", &[json!("p"), json!("deleted.txt"), json!("deleted original\n"), json!(null)]).unwrap_err();
+    assert!(!raced.contains("尚未"), "{raced}");
+    assert_eq!(fs::read_to_string(remote.project.join("deleted.txt")).unwrap(), "concurrent creation\n");
+    fs::remove_file(remote.project.join("deleted.txt")).unwrap();
+    let recreated = assert_implemented(remote.bench.dispatch("git:write", &[json!("p"), json!("deleted.txt"), json!("deleted original\n"), json!(null)]));
+    assert_eq!(recreated["text"], "deleted original\n");
+    let shown_deleted = std::process::Command::new("git").arg("-C").arg(&remote.project).args(["show", "HEAD:deleted.txt"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&shown_deleted.stdout), "deleted original\n");
+    assert_eq!(head_sha(&remote.project), head);
+    let _ = fs::remove_dir_all(&remote.root);
+}
+
+#[test]
+fn remote_preview_url_serves_the_sandbox_without_writing_the_draft() {
+    let _lock = env_lock();
+    let remote = remote_linux("remote-preview");
+    let _open = var_guard("AWB_OPEN_BIN", "true");
+    let page = "<!doctype html><head></head><body>remote page</body>";
+    fs::write(remote.project.join("page.html"), page).unwrap();
+    let stamp = fs::metadata(remote.project.join("page.html")).unwrap().modified().unwrap();
+    let outside = remote.root.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("secret.txt"), b"outside-secret-bytes").unwrap();
+    symlink(outside.join("secret.txt"), remote.project.join("linked.html")).unwrap();
+    let big = remote.project.join("big.html");
+    fs::File::create(&big).unwrap().set_len(12_000_001).unwrap();
+
+    let url = assert_implemented(remote.bench.dispatch("file:preview-url", &[json!("p"), json!("page.html")]));
+    let url = url.as_str().unwrap();
+    assert!(url.starts_with("http://127.0.0.1:"), "{url}");
+    let (status, _headers, body) = http("GET", url);
+    assert_eq!(status, 200);
+    assert!(body.contains("remote page"), "{body}");
+    assert_eq!(fs::read_to_string(remote.project.join("page.html")).unwrap(), page);
+
+    let draft_url = assert_implemented(remote.bench.dispatch("file:preview-url", &[json!("p"), json!("page.html"), json!("<p>draft only</p>")]));
+    let draft_url = draft_url.as_str().unwrap();
+    let (status, _headers, body) = http("GET", draft_url);
+    assert_eq!(status, 200);
+    assert!(body.contains("draft only"), "{body}");
+    assert!(!body.contains("remote page"), "{body}");
+    assert_eq!(fs::read_to_string(remote.project.join("page.html")).unwrap(), page);
+    assert_eq!(fs::metadata(remote.project.join("page.html")).unwrap().modified().unwrap(), stamp);
+
+    let opened = assert_implemented(remote.bench.dispatch("file:open-html", &[json!("p"), json!("page.html")]));
+    let opened = opened.as_str().unwrap();
+    assert!(opened.starts_with("http://127.0.0.1:") && opened.contains("page.html"), "{opened}");
+    let (status, _headers, body) = http("GET", opened);
+    assert_eq!(status, 200);
+    assert!(body.contains("remote page"), "{body}");
+    let refused = remote.bench.dispatch("file:open-html", &[json!("p"), json!("note.txt")]).unwrap_err();
+    assert!(refused.contains("仅支持在浏览器中预览 HTML 文件"), "{refused}");
+
+    let escaped = remote.bench.dispatch("file:preview-url", &[json!("p"), json!("../outside/secret.txt")]).unwrap_err();
+    assert!(!escaped.contains("outside-secret") && !escaped.contains("尚未"), "{escaped}");
+    let linked = remote.bench.dispatch("file:preview-url", &[json!("p"), json!("linked.html")]).unwrap_err();
+    assert!(linked.contains("符号链接"), "{linked}");
+    assert!(!linked.contains("outside-secret"), "{linked}");
+    let oversized = remote.bench.dispatch("file:preview-url", &[json!("p"), json!("big.html")]).unwrap_err();
+    assert!(oversized.contains("12 MB"), "{oversized}");
+    let _ = fs::remove_dir_all(&remote.root);
+}
+
+fn git_commit(project: &Path) {
+    let git = |args: &[&str]| {
+        let status = std::process::Command::new("git").arg("-C").arg(project).args(args).status().unwrap();
+        assert!(status.success(), "{args:?}");
+    };
+    git(&["init"]);
+    git(&["config", "user.email", "t@example.com"]);
+    git(&["config", "user.name", "t"]);
+    git(&["add", "."]);
+    git(&["commit", "-m", "base"]);
+}
+
+fn head_sha(project: &Path) -> String {
+    let head = std::process::Command::new("git").arg("-C").arg(project).args(["rev-parse", "HEAD"]).output().unwrap();
+    assert!(head.status.success());
+    String::from_utf8_lossy(&head.stdout).trim().to_string()
+}
+
+struct RemoteLinux {
+    root: PathBuf,
+    project: PathBuf,
+    bench: Workbench,
+    _env: Vec<VarGuard>,
+    _agent: std::os::unix::net::UnixListener,
+}
+
+fn remote_linux(name: &str) -> RemoteLinux {
+    let root = temp_dir(name);
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let home = root.join("home");
+    fs::create_dir_all(home.join(".ssh")).unwrap();
+    fs::write(home.join(".ssh/id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----\nREMOTEKEY\n-----END OPENSSH PRIVATE KEY-----\n").unwrap();
+    let (shim, log) = install_ssh_shim(&root);
+    let sock = root.join("agent.sock");
+    let agent = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    let env = ssh_env(&home, &shim, &log, &sock);
+    let (bench, _) = workbench(&root);
+    let local = bench.dispatch("db:get", &[]).unwrap()["db"]["hosts"][0].clone();
+    bench.dispatch("db:hosts", &[json!([local, { "id": "remote", "name": "Remote", "addr": "127.0.0.1", "port": 22, "user": "git", "auth": "key", "on": true, "platform": "linux" }])]).unwrap();
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "remote", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    RemoteLinux { root, project, bench, _env: env, _agent: agent }
+}

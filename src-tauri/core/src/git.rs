@@ -191,15 +191,19 @@ pub fn diff(root: &Path, rel: &str, untracked: bool, language: &str) -> Result<V
     let rel = files::clean_relative(rel, language)?;
     let work = read_local(root, &rel, language)?;
     let before = if untracked { String::new() } else { git(root, &["show", &format!("HEAD:{rel}")]).unwrap_or_default() };
+    Ok(diff_body(&rel, untracked, &work, before))
+}
+
+fn diff_body(rel: &str, untracked: bool, work: &Value, before: String) -> Value {
     if work["binary"] == true {
-        return Ok(json!({ "path": rel, "st": if untracked { "A" } else { "M" }, "before": "", "after": "", "binary": true, "tooBig": false }));
+        return json!({ "path": rel, "st": if untracked { "A" } else { "M" }, "before": "", "after": "", "binary": true, "tooBig": false });
     }
     let after = if work["missing"] == true { String::new() } else { work["text"].as_str().unwrap_or("").to_string() };
     let status = if work["missing"] == true && !untracked { "D" } else if untracked { "A" } else { "M" };
     if diff_too_big(&before, &after) {
-        return Ok(json!({ "path": rel, "st": status, "before": "", "after": "", "binary": false, "tooBig": true }));
+        return json!({ "path": rel, "st": status, "before": "", "after": "", "binary": false, "tooBig": true });
     }
-    Ok(json!({ "path": rel, "st": status, "before": before, "after": after, "binary": false, "tooBig": false }))
+    json!({ "path": rel, "st": status, "before": before, "after": after, "binary": false, "tooBig": false })
 }
 
 pub fn discard(root: &Path, rel: &str, untracked: bool, language: &str) -> Result<(), String> {
@@ -210,6 +214,42 @@ pub fn discard(root: &Path, rel: &str, untracked: bool, language: &str) -> Resul
     }
     if git(root, &["restore", "--source=HEAD", "--worktree", "--staged", "--", &rel]).is_err() {
         git(root, &["checkout", "HEAD", "--", &rel])?;
+    }
+    Ok(())
+}
+
+fn git_remote(data: &Path, host: &Value, root: &str, args: &[&str], language: &str) -> Result<String, String> {
+    let mut command = if host["platform"] == "windows" {
+        format!("[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); git -C {} -c core.quotepath=false", crate::ssh::ps_quote(root))
+    } else {
+        format!("git -C {} -c core.quotepath=false", crate::ssh::bash_quote(root))
+    };
+    for arg in args {
+        command.push(' ');
+        command.push_str(&if host["platform"] == "windows" { crate::ssh::ps_quote(arg) } else { crate::ssh::bash_quote(arg) });
+    }
+    crate::ssh::run(data, host, &command, None, language)
+}
+
+/// Remote `git show` plus the worktree read. The JSON matches local `diff`.
+pub fn diff_remote(data: &Path, host: &Value, root: &str, rel: &str, untracked: bool, language: &str) -> Result<Value, String> {
+    let rel = files::clean_relative(rel, language)?;
+    let work = read_remote(data, host, root, &rel, language)?;
+    let before = if untracked { String::new() } else { git_remote(data, host, root, &["show", &format!("HEAD:{rel}")], language).unwrap_or_default() };
+    Ok(diff_body(&rel, untracked, &work, before))
+}
+
+/// Electron `gitDiscard`: untracked files use `git clean -f`, tracked files use
+/// `git restore --source=HEAD --worktree --staged` and fall back to `git checkout`.
+/// The commit object is not rewritten.
+pub fn discard_remote(data: &Path, host: &Value, root: &str, rel: &str, untracked: bool, language: &str) -> Result<(), String> {
+    let rel = files::clean_relative(rel, language)?;
+    if untracked {
+        git_remote(data, host, root, &["clean", "-f", "--", &rel], language)?;
+        return Ok(());
+    }
+    if git_remote(data, host, root, &["restore", "--source=HEAD", "--worktree", "--staged", "--", &rel], language).is_err() {
+        git_remote(data, host, root, &["checkout", "HEAD", "--", &rel], language)?;
     }
     Ok(())
 }
@@ -252,6 +292,9 @@ pub fn write_remote(data: &Path, host: &Value, root: &str, rel: &str, text: &str
     if bytes.len() > 2_000_000 {
         return Err(translate(language, "文件超过 2 MB，无法在内置编辑器中保存", &[] as &[String]));
     }
+    if version.is_none() {
+        return create_remote_missing(data, host, root, &relative, bytes, language);
+    }
     let current = read_remote(data, host, root, &relative, language)?;
     if current["missing"] == true { return Err(translate(language, "文件不存在", &[] as &[String])) }
     if current["version"] != version.unwrap_or("") { return Err(translate(language, "文件已被其他程序修改，请重新读取后合并更改", &[] as &[String])) }
@@ -292,6 +335,48 @@ printf saved"#);
         Err(error) if error.contains("AWB_UNSAFE_PATH") => Err(translate(language, "无法保存项目目录外的文件或符号链接", &[] as &[String])),
         Err(error) => Err(error),
     }
+}
+
+/// Electron `createMissingFile`: Linux uses `os.link`, so a file created concurrently is left in place.
+fn create_remote_missing(data: &Path, host: &Value, root: &str, relative: &str, bytes: &[u8], language: &str) -> Result<Value, String> {
+    let mut parts: Vec<&str> = relative.split('/').filter(|part| !part.is_empty()).collect();
+    let name = parts.pop().ok_or_else(|| translate(language, "请先读取文件再保存", &[] as &[String]))?;
+    files::validate_entry_name(name, host["platform"] == "windows", language)?;
+    let parent = parts.join("/");
+    let payload = base64::engine::general_purpose::STANDARD.encode(bytes);
+    if host["platform"] == "windows" {
+        let walk = parts.iter().map(|part| format!("$walk=Join-Path $walk {}; if ((Get-Item -LiteralPath $walk -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {{ throw 'AWB_UNSAFE_PATH' }}", crate::ssh::ps_quote(part))).collect::<Vec<_>>().join("; ");
+        let script = format!("$ErrorActionPreference='Stop'; $root=(Resolve-Path -LiteralPath {} -ErrorAction Stop).Path.TrimEnd('\\')+'\\'; $file=[IO.Path]::GetFullPath((Join-Path $root {})); if (-not $file.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)) {{ throw 'AWB_UNSAFE_PATH' }}; $walk=$root.TrimEnd('\\'); {walk}; $temp=Join-Path (Split-Path -LiteralPath $file) ('.awb-create-' + [guid]::NewGuid().ToString() + '.tmp'); try {{ [IO.File]::WriteAllBytes($temp, [Convert]::FromBase64String([Console]::In.ReadToEnd())); [IO.File]::Move($temp, $file) }} catch {{ if (Test-Path -LiteralPath $temp) {{ Remove-Item -LiteralPath $temp -Force }}; throw }}", crate::ssh::ps_quote(root), crate::ssh::ps_quote(&relative.replace('/', "\\")));
+        crate::ssh::run(data, host, &script, Some(payload.as_bytes()), language).map_err(|error| if error.contains("AWB_UNSAFE_PATH") { translate(language, "无法保存项目目录外的文件或符号链接", &[] as &[String]) } else { error })?;
+    } else {
+        let script = r#"import os, sys, uuid, base64
+root, relative, name = sys.argv[1:]
+flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+parent = os.open(root, flags)
+try:
+    for part in relative.split("/") if relative else []:
+        nxt = os.open(part, flags | os.O_NOFOLLOW, dir_fd=parent)
+        os.close(parent)
+        parent = nxt
+    temp = ".awb-create-" + uuid.uuid4().hex + ".tmp"
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o666, dir_fd=parent)
+    try:
+        os.write(fd, base64.b64decode(sys.stdin.read()))
+    finally:
+        os.close(fd)
+    try:
+        os.link(temp, name, src_dir_fd=parent, dst_dir_fd=parent)
+    finally:
+        os.unlink(temp, dir_fd=parent)
+finally:
+    os.close(parent)
+"#;
+        let command = format!("python3 -c {} {} {} {}", crate::ssh::bash_quote(script), crate::ssh::bash_quote(root), crate::ssh::bash_quote(&parent), crate::ssh::bash_quote(name));
+        crate::ssh::run(data, host, &command, Some(payload.as_bytes()), language)?;
+    }
+    let written = read_remote(data, host, root, relative, language)?;
+    if written["missing"] == true { return Err(translate(language, "文件不存在", &[] as &[String])) }
+    Ok(written)
 }
 
 pub fn list_remote(data: &Path, host: &Value, root: &str, rel: &str, ignored: &[String], language: &str) -> Result<Value, String> {

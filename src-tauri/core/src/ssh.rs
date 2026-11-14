@@ -24,7 +24,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-const MAX_OUTPUT: usize = 12_000_000;
+/// Base64 of a 12 MB preview is 16 MB. The cap stays above that so a legal asset is not rejected as oversized output.
+const MAX_OUTPUT: usize = 16_000_100;
 
 pub fn bash_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))

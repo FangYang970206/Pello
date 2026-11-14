@@ -95,8 +95,8 @@ impl Workbench {
             "path:check" => self.path_check(str_arg(args, 0), str_arg(args, 1), &language),
             "path:list" => self.path_list(str_arg(args, 0), str_arg(args, 1), &language),
             "git:status" => self.git_status(&str_arg(args, 0), &language),
-            "git:diff" => self.with_local(&str_arg(args, 0), &language, |root| git::diff(root, str_arg(args, 1), args.get(2).and_then(|value| value.as_bool()).unwrap_or(false), &language)),
-            "git:discard" => self.with_local(&str_arg(args, 0), &language, |root| git::discard(root, str_arg(args, 1), args.get(2).and_then(|value| value.as_bool()).unwrap_or(false), &language).map(|_| json!(true))),
+            "git:diff" => self.git_diff_command(args, &language),
+            "git:discard" => self.git_discard_command(args, &language),
             "git:tree" => self.git_tree(&str_arg(args, 0), str_arg(args, 1), &language),
             "git:read" => self.git_read(&str_arg(args, 0), str_arg(args, 1), &language),
             "git:write" => self.git_write(&str_arg(args, 0), str_arg(args, 1), str_arg(args, 2), args.get(3).and_then(|value| value.as_str()), &language),
@@ -191,9 +191,33 @@ impl Workbench {
 
     fn preview_url(&self, args: &[Value], language: &str) -> Result<Value, String> {
         let id = str_arg(args, 0).to_string();
-        let root = self.local_root(&id, language)?;
         let draft = args.get(2).and_then(|value| value.as_str());
+        if let Some((host, path)) = self.remote_place(&id, language)? {
+            return self.preview.url_remote(&id, &self.paths.data, &host, &path, str_arg(args, 1), draft, language).map(|url| json!(url));
+        }
+        let root = self.local_root(&id, language)?;
         self.preview.url(&id, &root, str_arg(args, 1), draft, language).map(|url| json!(url))
+    }
+
+    fn git_diff_command(&self, args: &[Value], language: &str) -> Result<Value, String> {
+        let id = str_arg(args, 0);
+        let relative = str_arg(args, 1);
+        let untracked = args.get(2).and_then(|value| value.as_bool()).unwrap_or(false);
+        if let Some((host, path)) = self.remote_place(id, language)? {
+            return git::diff_remote(&self.paths.data, &host, &path, relative, untracked, language);
+        }
+        self.with_local(id, language, |root| git::diff(root, relative, untracked, language))
+    }
+
+    fn git_discard_command(&self, args: &[Value], language: &str) -> Result<Value, String> {
+        let id = str_arg(args, 0);
+        let relative = str_arg(args, 1);
+        let untracked = args.get(2).and_then(|value| value.as_bool()).unwrap_or(false);
+        if let Some((host, path)) = self.remote_place(id, language)? {
+            git::discard_remote(&self.paths.data, &host, &path, relative, untracked, language)?;
+            return Ok(json!(true));
+        }
+        self.with_local(id, language, |root| git::discard(root, relative, untracked, language).map(|_| json!(true)))
     }
 
     fn persist(&self) -> Result<Value, String> {

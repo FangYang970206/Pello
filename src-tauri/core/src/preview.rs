@@ -4,7 +4,8 @@
 use crate::files::clean_relative;
 use crate::i18n::translate;
 use crate::random_id;
-use serde_json::json;
+use crate::ssh;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
@@ -59,7 +60,14 @@ pub fn pdf_wheel(state: WheelState, pages: i32, at_edge: bool, ctrl: bool, delta
 }
 
 struct Draft { token: String, text: String }
-struct Project { token: String, root: PathBuf, drafts: HashMap<String, Draft>, language: String }
+
+#[derive(Clone)]
+enum Source {
+    Local(PathBuf),
+    Remote { data: PathBuf, host: Value, root: String },
+}
+
+struct Project { token: String, source: Source, drafts: HashMap<String, Draft>, language: String }
 
 struct Diagrams {
     generation: AtomicU64,
@@ -92,15 +100,31 @@ impl Service {
         if let Some(draft) = draft {
             if !is_html(&relative) || draft.len() > DRAFT_LIMIT { return Err(translate(language, "预览草稿必须为 2 MB 以内的 HTML", &[] as &[String])); }
         }
+        self.publish(project_id, &format!("{project_id}:{}", root.display()), Source::Local(root.to_path_buf()), &relative, draft, language)
+    }
+
+    /// Remote HTML and assets are read over SSH into the same loopback server. The draft stays in memory.
+    pub fn url_remote(&self, project_id: &str, data: &Path, host: &Value, root: &str, rel: &str, draft: Option<&str>, language: &str) -> Result<String, String> {
+        let relative = normalize_rel(rel, language)?;
+        let _ = read_remote_asset(data, host, root, &relative, language)?;
+        if let Some(draft) = draft {
+            if !is_html(&relative) || draft.len() > DRAFT_LIMIT { return Err(translate(language, "预览草稿必须为 2 MB 以内的 HTML", &[] as &[String])); }
+        }
+        let source = Source::Remote { data: data.to_path_buf(), host: host.clone(), root: root.to_string() };
+        let identity = format!("{project_id}:{}:{root}", host["id"].as_str().unwrap_or(""));
+        self.publish(project_id, &identity, source, &relative, draft, language)
+    }
+
+    fn publish(&self, _project_id: &str, identity: &str, source: Source, relative: &str, draft: Option<&str>, language: &str) -> Result<String, String> {
         let port = self.ensure(language)?;
-        let identity = format!("{project_id}:{}", root.display());
         let mut projects = self.inner.projects.lock().expect("preview");
-        let entry = projects.entry(identity).or_insert_with(|| Project { token: random_id(), root: root.to_path_buf(), drafts: HashMap::new(), language: language.to_string() });
+        let entry = projects.entry(identity.to_string()).or_insert_with(|| Project { token: random_id(), source: source.clone(), drafts: HashMap::new(), language: language.to_string() });
         entry.language = language.to_string();
+        entry.source = source;
         let mut query = String::new();
         if let Some(draft) = draft {
             let token = random_id();
-            entry.drafts.insert(relative.clone(), Draft { token: token.clone(), text: draft.to_string() });
+            entry.drafts.insert(relative.to_string(), Draft { token: token.clone(), text: draft.to_string() });
             query = format!("?draft={token}");
         }
         let encoded = relative.split('/').map(encode_component).collect::<Vec<_>>().join("/");
@@ -443,11 +467,11 @@ fn respond(mut stream: TcpStream, inner: &Inner) {
         return;
     };
     let language = project.language.clone();
-    let root = project.root.clone();
+    let source = project.source.clone();
     let draft = query_value(query, "draft").and_then(|token| project.drafts.get(&relative).filter(|draft| draft.token == token).map(|draft| draft.text.clone()));
     drop(projects);
     let bytes = if let Some(draft) = draft { draft.into_bytes() } else {
-        match read_asset(&root, &relative, &language) {
+        match read_source(&source, &relative, &language) {
             Ok(bytes) => bytes,
             Err(_) => {
                 let message = translate(&language, "资源不存在或不可访问", &[] as &[String]);
@@ -482,6 +506,46 @@ fn query_value(query: &str, key: &str) -> Option<String> {
         let (name, value) = pair.split_once('=')?;
         if name == key { Some(decode_component(value)) } else { None }
     })
+}
+
+fn read_source(source: &Source, relative: &str, language: &str) -> Result<Vec<u8>, String> {
+    match source {
+        Source::Local(root) => read_asset(root, relative, language),
+        Source::Remote { data, host, root } => read_remote_asset(data, host, root, relative, language),
+    }
+}
+
+fn read_remote_asset(data: &Path, host: &Value, root: &str, relative: &str, language: &str) -> Result<Vec<u8>, String> {
+    let script = if host["platform"] == "windows" {
+        let parts: Vec<&str> = relative.split('/').filter(|part| !part.is_empty()).collect();
+        let walk = parts.iter().map(|part| format!("$walk=Join-Path $walk {}; if ((Get-Item -LiteralPath $walk -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {{ throw 'AWB_LINK' }}", ssh::ps_quote(part))).collect::<Vec<_>>().join("; ");
+        format!("$ErrorActionPreference='Stop'; $root=(Resolve-Path -LiteralPath {} -ErrorAction Stop).Path.TrimEnd('\\')+'\\'; $file=[IO.Path]::GetFullPath((Join-Path $root {})); if (-not $file.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)) {{ throw 'AWB_OUT' }}; $walk=$root.TrimEnd('\\'); {walk}; $len=(Get-Item -LiteralPath $file).Length; if ($len -gt 12000000) {{ throw 'AWB_BIG' }}; [Convert]::ToBase64String([IO.File]::ReadAllBytes($file))", ssh::ps_quote(root), ssh::ps_quote(&relative.replace('/', "\\")))
+    } else {
+        let file = format!("{}/{}", root.trim_end_matches('/'), relative);
+        format!(r#"root=$(cd -P -- {root_q} && pwd) || exit 1
+file={file_q}
+if [ -L "$file" ]; then printf 'AWB_LINK\n' >&2; exit 1; fi
+parent=$(cd -P -- "$(dirname -- "$file")" && pwd) || exit 1
+root=${{root%/}}
+case "$parent/" in
+  "$root/"*) ;;
+  *) printf 'AWB_OUT\n' >&2; exit 1 ;;
+esac
+size=$(wc -c < "$file") || exit 1
+if [ "$size" -gt 12000000 ]; then printf 'AWB_BIG\n' >&2; exit 1; fi
+base64 -w 0 "$file" 2>/dev/null || base64 "$file""#, root_q = ssh::bash_quote(root), file_q = ssh::bash_quote(&file))
+    };
+    let text = ssh::run(data, host, &script, None, language).map_err(|error| remote_asset_error(&error, language))?;
+    let compact: String = text.chars().filter(|char| !char.is_whitespace()).collect();
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, compact).map_err(|_| translate(language, "资源不存在或不可访问", &[] as &[String]))?;
+    if bytes.len() as u64 > PREVIEW_LIMIT { return Err(translate(language, "预览资源超过 12 MB", &[] as &[String])) }
+    Ok(bytes)
+}
+
+fn remote_asset_error(error: &str, language: &str) -> String {
+    if error.contains("AWB_LINK") { return translate(language, "符号链接不可预览", &[] as &[String]) }
+    if error.contains("AWB_BIG") { return translate(language, "预览资源超过 12 MB", &[] as &[String]) }
+    translate(language, "资源不存在或不可访问", &[] as &[String])
 }
 
 pub fn read_asset(root: &Path, rel: &str, language: &str) -> Result<Vec<u8>, String> {
