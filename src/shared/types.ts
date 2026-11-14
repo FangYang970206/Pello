@@ -337,3 +337,8 @@ export interface AppUpdateState {
   percent?: number
   failed?: 'check' | 'download' | 'install'
 }
+export type ContentSearchMatch = { line: number; column: number; before: string; match: string; after: string }
+export type ContentSearchFile = { path: string; matches: ContentSearchMatch[] }
+export type ContentSearchBatch = { items: ContentSearchFile[]; done: boolean; limited: boolean; skipped: number; errors: number }
+export type SearchLocation = { line: number; column: number; query: string; sensitive: boolean; id: string }
+export type ProjectSearchOptions = { sensitive: boolean; regex?: boolean; whole?: boolean }

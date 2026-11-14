@@ -5,15 +5,18 @@ import { SourceHighlight } from './SourceHighlight'
 import { mediaKind } from '../shared/media'
 import { useContentZoom } from './usePreviewWheel'
 import { DocumentSearch, useDocumentSearch } from './DocumentSearch'
-import { clearSearchHighlights, highlightMatches } from './document-search'
+import { clearSearchHighlights, highlightMatches, revealSearchRect } from './document-search'
 import type { SearchAdapter } from './search-types'
+import type { SearchLocation } from '../shared/types'
+import { textMatches } from '../shared/search'
 
 const MarkdownEditor = lazy(() => import('./MarkdownEditor'))
 const MediaPreview = lazy(() => import('./MediaPreview'))
 
-export function FilePane({ path, anchor, onNavigate, document, onEdit, onSave, onReload, onHistory, onCompose, onToggleRight }: {
+export function FilePane({ path, anchor, location, onNavigate, document, onEdit, onSave, onReload, onHistory, onCompose, onToggleRight }: {
   path: string
   anchor?: string
+  location?: SearchLocation
   onNavigate: (path: string, anchor?: string) => void
   document: DocumentDraft | null
   rightOpen: boolean
@@ -40,6 +43,8 @@ export function FilePane({ path, anchor, onNavigate, document, onEdit, onSave, o
   const source = useRef<HTMLTextAreaElement>(null)
   const richSearch = useRef<SearchAdapter | null>(null)
   const [renderedText, setRenderedText] = useState('')
+  const located = useRef('')
+  const [locationError, setLocationError] = useState('')
   const search = useDocumentSearch({ root: content, text: (markdown || html) && visual ? renderedText : document?.draft || '',
     revision: `${visual}:${preview.url || ''}`,
     enabled: !readonly,
@@ -63,6 +68,33 @@ export function FilePane({ path, anchor, onNavigate, document, onEdit, onSave, o
       field.dispatchEvent(new Event('scroll'))
     }
   })
+  useEffect(() => {
+    if (!location) { setLocationError(''); return }
+    if (readonly || located.current === location.id) return
+    // Project results refer to source lines, including Markdown/HTML syntax.
+    // Use the existing draft and editor; switching mode never writes the file.
+    if ((markdown || html) && visual) { setVisual(false); return }
+    const field = source.current
+    if (!field || !document) return
+    located.current = location.id
+    const lines = document.draft.split('\n')
+    const expected = lines.slice(0, location.line - 1).reduce((total, line) => total + line.length + 1, 0) + location.column - 1
+    const matches = textMatches(document.draft, location.query, location.sensitive)
+    const match = location.query ? matches.reduce<(typeof matches)[number] | null>((best, value) => !best || Math.abs(value.from - expected) < Math.abs(best.from - expected) ? value : best, null) : { from: Math.min(expected, document.draft.length), to: Math.min(expected, document.draft.length) }
+    setLocationError(match ? '' : t("搜索结果已变化，请重新搜索"))
+    if (!match) return
+    field.focus({ preventScroll: true })
+    field.setSelectionRange(match.from, match.to)
+    if (highlight.current) {
+      highlight.current.scrollTop = field.scrollTop
+      highlight.current.scrollLeft = field.scrollLeft
+      const range = highlightMatches(highlight.current, [match], 0)
+      if (range) revealSearchRect(field, range.getBoundingClientRect())
+      highlight.current.scrollTop = field.scrollTop
+      highlight.current.scrollLeft = field.scrollLeft
+    }
+    field.dispatchEvent(new Event('scroll'))
+  }, [location, readonly, markdown, html, visual, document])
   useEffect(() => () => clearSearchHighlights(), [])
   useEffect(() => {
     const receive = (event: MessageEvent) => {
@@ -100,6 +132,7 @@ export function FilePane({ path, anchor, onNavigate, document, onEdit, onSave, o
     else if (command) format.current?.(command)
   }
   return <>
+    {locationError ? <div className="file-error" role="status">{locationError}</div> : null}
     {document?.error ? <div className="file-error" role="alert">{document.error}</div> : null}
     <div className="file-content editor-surface" tabIndex={-1} ref={content} style={{ '--content-zoom': zoom } as React.CSSProperties}
       onContextMenu={(event) => { event.preventDefault(); void contextMenu() }}

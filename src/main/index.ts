@@ -1,5 +1,6 @@
 import './app-paths'
 import { createAppUpdates } from './app-updates'
+import { ContentSearch } from './content-search'
 import { UpdateScheduler } from './update-scheduler'
 import { t } from '../shared/i18n'
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, shell, type MenuItemConstructorOptions } from 'electron'
@@ -74,6 +75,7 @@ let hasUnsavedChanges = false
 let allowWindowClose = false
 let closingWindow = false
 const treeSearches = new Map<string, { projectId: string; query: string; pending: string[]; cancelled: boolean; ignored: Set<string> }>()
+const contentSearches = new Map<string, { projectId: string; identity: string; search: ContentSearch }>()
 const treeIgnored = (projectId: string) => new Set(db().treeIgnores?.[projectId] ?? TREE_DEFAULT_IGNORE)
 
 function fileWriteKey(target: ReturnType<typeof targetFor>, relative: string, missing = false): string {
@@ -361,6 +363,8 @@ function createWindow(): void {
     })
   })
   win.on('closed', () => {
+    for (const value of contentSearches.values()) value.search.cancel()
+    contentSearches.clear()
     disposeDiagramRenderer()
     win = null
   })
@@ -664,6 +668,30 @@ function registerIpc(): void {
     const destination = treePath(target, parent).full
     if (!fs.statSync(destination).isDirectory()) throw new Error(t("目标不是目录"))
     return transfers.start(sources, destination, projectId)
+  })
+  ipcMain.handle('content:search-start', (_e, projectId: string, id: string, query: string, sensitive: boolean, regex = false, whole = false) => {
+    const { target, host } = projectTarget(projectId)
+    if (typeof id !== 'string' || !/^[\w-]{1,100}$/.test(id)) throw new Error(t("搜索参数无效"))
+    // One active content search per project; stale requests cannot accumulate workers.
+    for (const [key, value] of contentSearches) if (value.projectId === projectId || key === id) { value.search.cancel(); contentSearches.delete(key) }
+    contentSearches.set(id, { projectId, identity: uploadIdentity(target, host), search: new ContentSearch(target, query, sensitive, treeIgnored(projectId), regex, whole) })
+  })
+  ipcMain.handle('content:search-cancel', (_e, id: string) => {
+    contentSearches.get(id)?.search.cancel(); contentSearches.delete(id)
+  })
+  ipcMain.handle('content:search-next', async (_e, id: string) => {
+    const value = contentSearches.get(id)
+    if (!value) return { items: [], done: true, limited: false, skipped: 0, errors: 0 }
+    try {
+      const { target, host } = projectTarget(value.projectId)
+      if (uploadIdentity(target, host) !== value.identity) throw new Error(t("项目环境已更改"))
+      const batch = await value.search.next()
+      if (contentSearches.get(id) !== value) return { ...batch, items: [], done: true }
+      const fresh = projectTarget(value.projectId)
+      if (uploadIdentity(fresh.target, fresh.host) !== value.identity) throw new Error(t("项目环境已更改"))
+      if (batch.done && contentSearches.get(id) === value) contentSearches.delete(id)
+      return batch
+    } catch (error) { value.search.cancel(); if (contentSearches.get(id) === value) contentSearches.delete(id); throw error }
   })
   ipcMain.handle('tree:search-start', (_e, projectId: string, id: string, query: string) => {
     projectTarget(projectId)

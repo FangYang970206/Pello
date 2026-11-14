@@ -44,7 +44,7 @@ export function useDocumentSearch({ root, text, replace, replaceRanges, reveal, 
     const keydown = (event: KeyboardEvent) => {
       if (!enabled || !root.current || root.current.closest('[inert]') || document.querySelector('dialog[open],[role=dialog][aria-modal=true]') || event.isComposing || event.defaultPrevented) return
       const target = event.target instanceof Element ? event.target : null
-      if (target?.closest('.xterm,.settings')) return
+      if (target?.closest('.xterm,.settings,.project-search')) return
       const modifier = (event.ctrlKey || event.metaKey) && !event.altKey
       const key = event.key.toLowerCase()
       if (modifier && (key === 'f' || key === 'h') && !event.shiftKey) {

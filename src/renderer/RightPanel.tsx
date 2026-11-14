@@ -1,11 +1,12 @@
 import { t } from '../shared/i18n'
-import type { GitFile, GitPanel, Host, Project, TransferSnapshot, TreeNode } from '../shared/types'
+import type { GitFile, GitPanel, Host, Project, ProjectSearchOptions, SearchLocation, TransferSnapshot, TreeNode } from '../shared/types'
 import { hostDisplayName } from '../shared/types'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Icon } from './icons'
 import type { TermTab } from './Workspace'
 import { FileOperationDialog } from './FileOperationDialog'
 import { UploadStatus } from './UploadStatus'
+import { ContentSearchResults } from './ContentSearchResults'
 
 function MoveEntryDialog({ projectId, path, directory, onCancel, onMove }: { projectId: string; path: string; directory: boolean; onCancel: () => void; onMove: (parent: string) => Promise<void> }) {
   const [parent, setParent] = useState('')
@@ -96,6 +97,11 @@ export function RightPanel({
   openDirs,
   queries,
   setQueries,
+  contentQueries,
+  setContentQueries,
+  searchFocus,
+  searchOptions,
+  setSearchOptions,
   selections,
   setSelections,
   scrollPositions,
@@ -121,7 +127,7 @@ export function RightPanel({
 }: {
   project: Project
   host: Host
-  mode: 'files' | 'changes'
+  mode: 'files' | 'changes' | 'search'
   files: GitFile[]
   loaded: boolean
   isRepo: boolean
@@ -134,6 +140,11 @@ export function RightPanel({
   openDirs: Record<string, boolean>
   queries: Record<string, string>
   setQueries: React.Dispatch<React.SetStateAction<Record<string, string>>>
+  contentQueries: Record<string, string>
+  setContentQueries: React.Dispatch<React.SetStateAction<Record<string, string>>>
+  searchFocus: { mode: 'files' | 'search'; sequence: number }
+  searchOptions: Record<string, ProjectSearchOptions>
+  setSearchOptions: React.Dispatch<React.SetStateAction<Record<string, ProjectSearchOptions>>>
   selections: Record<string, { path: string; dir: boolean }>
   setSelections: React.Dispatch<React.SetStateAction<Record<string, { path: string; dir: boolean }>>>
   scrollPositions: React.RefObject<Record<string, number>>
@@ -141,10 +152,10 @@ export function RightPanel({
   placement?: 'left' | 'right'
   onResize: (width: number) => void
   activePath?: string
-  onMode: (mode: 'files' | 'changes') => void
+  onMode: (mode: 'files' | 'changes' | 'search') => void
   onToggleDir: (path: string) => void
   onOpenDiff: (path: string) => void
-  onOpenFile: (path: string) => void
+  onOpenFile: (path: string, anchor?: string, location?: SearchLocation) => void
   onRevealFile: (projectId: string, path: string) => Promise<boolean>
   onTreeRulesChanged: () => void
   referenceTerms: TermTab[]
@@ -161,8 +172,15 @@ export function RightPanel({
   const [repositoryFilter, setRepositoryFilter] = useState('')
   const [rescanning, setRescanning] = useState(false)
   const [treeError, setTreeError] = useState('')
-  const [searchOpen, setSearchOpen] = useState(false)
   const searchInput = useRef<HTMLInputElement>(null)
+  const contentInput = useRef<HTMLInputElement>(null)
+  const searchButton = useRef<HTMLButtonElement>(null)
+  const sensitive = searchOptions[project.id]?.sensitive || false
+  const regex = searchOptions[project.id]?.regex || false
+  const whole = searchOptions[project.id]?.whole || false
+  function updateSearch(options: Partial<ProjectSearchOptions>) {
+    setSearchOptions((current) => ({ ...current, [project.id]: { sensitive, regex, whole, ...options } }))
+  }
   const [conflictBatch, setConflictBatch] = useState<Record<string, boolean>>({})
   function transferPath(destination: string): string {
     const value = destination.replaceAll('\\', '/')
@@ -182,27 +200,22 @@ export function RightPanel({
     if (transferList.current) transferList.current.scrollTop = transferList.current.scrollHeight
   }, [project.id, latestTransferId])
   const query = queries[project.id] || ''
-  const searchVisible = searchOpen || !!query.trim()
-  const searchActive = mode === 'files' && searchVisible
+  const contentQuery = contentQueries[project.id] || ''
   const searching = useRef(false)
-  useEffect(() => { if (searchOpen && mode === 'files') searchInput.current?.focus() }, [searchOpen, mode, project.id])
-  function toggleSearch() {
-    if (searchVisible) {
-      setSearchOpen(false)
-      if (query) setQueries((current) => ({ ...current, [project.id]: '' }))
-    } else setSearchOpen(true)
-  }
-  function searchAction() {
-    if (mode !== 'files') {
-      onMode('files')
-      setSearchOpen(true)
-      return
+  useLayoutEffect(() => {
+    if (mode === searchFocus.mode && searchFocus.sequence) {
+      const input = mode === 'files' ? searchInput.current : contentInput.current
+      input?.focus(); input?.select()
     }
-    toggleSearch()
+  }, [searchFocus, mode, project.id])
+  useEffect(() => { if (mode === 'search') contentInput.current?.focus() }, [mode])
+  function searchAction() {
+    onMode('search')
+    contentInput.current?.focus()
   }
   const [search, setSearch] = useState<{ projectId: string; query: string; items: TreeNode[]; loading: boolean; error: string }>({ projectId: '', query: '', items: [], loading: false, error: '' })
   useEffect(() => {
-    if (!query.trim()) return
+    if (!query.trim() || mode !== 'files') return
     let cancelled = false
     const id = crypto.randomUUID()
     setSearch({ projectId: project.id, query, items: [], loading: true, error: '' })
@@ -223,7 +236,7 @@ export function RightPanel({
       })()
     }, 250)
     return () => { cancelled = true; window.clearTimeout(timer); void window.awb.treeSearchCancel(id) }
-  }, [project.id, query])
+  }, [project.id, query, mode])
   const selection = selections[project.id]
   function parentOf(file: string) { const index = file.lastIndexOf('/'); return index < 0 ? '' : file.slice(0, index) }
   function dragDirectory(element: EventTarget | null): string {
@@ -446,17 +459,42 @@ export function RightPanel({
         </>
       )
     }
+  } else if (mode === 'search') {
+    body = <>
+      <div className="project-search" role="search" aria-label={t("内容搜索区域")} onKeyDown={(event) => {
+        if (event.nativeEvent.isComposing) return
+        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); searchButton.current?.focus() }
+        else if (event.key === 'Enter' && event.target === contentInput.current) { event.preventDefault(); window.document.querySelector<HTMLButtonElement>('[data-a="content-hit"]')?.focus() }
+      }}>
+        <div className="project-search-input">
+          <input ref={contentInput} aria-label={t("搜索内容")} placeholder={t("搜索")} maxLength={500} value={contentQuery} onChange={(event) => setContentQueries((current) => ({ ...current, [project.id]: event.target.value }))} />
+          <div className="project-search-options" role="group" aria-label={t("搜索选项")}>
+            <button className="ib" aria-label={t("区分大小写")} title={t("区分大小写")} aria-pressed={sensitive} onClick={() => updateSearch({ sensitive: !sensitive })}><Icon name="match-case" /></button>
+            <button className="ib" aria-label={t("全字匹配")} title={t("全字匹配")} aria-pressed={whole} onClick={() => updateSearch({ whole: !whole })}><Icon name="whole-word" /></button>
+            <button className="ib" aria-label={t("使用正则表达式")} title={t("使用正则表达式")} aria-pressed={regex} onClick={() => updateSearch({ regex: !regex })}><Icon name="regex" /></button>
+          </div>
+        </div>
+      </div>
+      {contentQuery.trim() ? <ContentSearchResults projectId={project.id} query={contentQuery} sensitive={sensitive} regex={regex} whole={whole} onOpen={(path, location) => onOpenFile(path, undefined, location)} />
+        : <div className="rlist"><p className="repository-help">{t("输入搜索词以搜索项目文件内容")}</p></div>}
+    </>
   } else {
     body = (
       <>
         {treeError ? <p role="alert" className="repository-help bad">{treeError}</p> : null}
-        {searchVisible ? <label className="repository-filter"><span className="vh">{t("搜索文件")}</span><input ref={searchInput} className="sel" aria-label={t("搜索文件")} placeholder={t("搜索文件名或路径")} value={query} onChange={(event) => {
-          const value = event.target.value
-          if (value.trim() && !searching.current && treeList.current) scrollPositions.current[project.id] = treeList.current.scrollTop
-          if (value.trim()) clearRestore.current = null
-          searching.current = !!value.trim()
-          setQueries((current) => ({ ...current, [project.id]: value }))
-        }} /></label> : null}
+        <div className="project-search file-name-search" role="search" aria-label={t("文件搜索区域")}>
+          <input ref={searchInput} className="tx" aria-label={t("搜索文件")} maxLength={500} value={query} onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing) return
+            if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setQueries((current) => ({ ...current, [project.id]: '' })); treeList.current?.focus() }
+            else if (event.key === 'Enter') { event.preventDefault(); window.document.querySelector<HTMLButtonElement>('[data-a="search-file"]')?.focus() }
+          }} onChange={(event) => {
+            const value = event.target.value
+            if (value.trim() && !searching.current && treeList.current) scrollPositions.current[project.id] = treeList.current.scrollTop
+            if (value.trim()) clearRestore.current = null
+            searching.current = !!value.trim()
+            setQueries((current) => ({ ...current, [project.id]: value }))
+          }} />
+        </div>
         {dropTarget !== null ? <div className="tree-drop-hint" role="status">{host.id !== 'local' ? t("松开以上传") : <>{t("复制到 · ")}{project.path}{dropTarget ? `${host.platform === 'windows' ? '\\' : '/'}${dropTarget.replaceAll('/', host.platform === 'windows' ? '\\' : '/')}` : ''}</>}</div> : null}
         {query.trim() ? <div className="rlist" role="group" aria-label={t("文件搜索结果")} tabIndex={0} {...dropHandlers} onContextMenu={treeBackgroundContext} onKeyDown={treeBackgroundKey}>
           {search.projectId === project.id && search.query === query ? <>
@@ -504,7 +542,7 @@ export function RightPanel({
               <Icon name="changes" className="s" />
             </button>
           </div>
-          <button className={`ib ${searchActive ? 'on' : ''}`} data-a="file-search" aria-label={searchActive ? t("关闭文件搜索") : t("显示文件搜索")} aria-pressed={searchActive} title={searchActive ? t("关闭文件搜索") : t("搜索文件")} onClick={searchAction}><Icon name="search" /></button>
+          <button ref={searchButton} className={`ib ${mode === 'search' ? 'on' : ''}`} data-a="file-search" aria-label={t("搜索内容")} aria-pressed={mode === 'search'} title={t("搜索内容")} onClick={searchAction}><Icon name="search" /></button>
         </div>
         <span className="grow" />
         <button className="ib" data-a="right" title={t("收起面板")} aria-label={t("收起文件面板")} onClick={onCollapse}>

@@ -1,6 +1,6 @@
 import { t } from '../shared/i18n'
 import { useEffect, useRef, useState } from 'react'
-import type { AgentInfo, FileDiff, ProcState, Project, ShellKind, ThemeName } from '../shared/types'
+import type { AgentInfo, FileDiff, ProcState, Project, SearchLocation, ShellKind, ThemeName } from '../shared/types'
 import { resolveAgent, shellLabel, shellLetter } from '../shared/types'
 import { Icon, Mark } from './icons'
 import { TerminalPane } from './TerminalPane'
@@ -29,7 +29,7 @@ export type TermTab = {
   agentSessionId?: string
 }
 export type DiffTab = { id: string; type: 'diff'; projectId: string; path: string; dirty?: boolean }
-export type FileTab = { id: string; type: 'file'; projectId: string; path: string; dirty?: boolean; anchor?: string }
+export type FileTab = { id: string; type: 'file'; projectId: string; path: string; dirty?: boolean; anchor?: string; location?: SearchLocation }
 export type Tab = TermTab | DiffTab | FileTab
 
 export function Workspace({
@@ -329,6 +329,7 @@ export function Workspace({
               key={`${shown.projectId}:${shown.path}`}
               path={shown.path}
               anchor={shown.anchor}
+              location={shown.location}
               onNavigate={onNavigateFile}
               document={preview?.path === shown.path ? preview : null}
               onEdit={(text) => onEditFile(shown.id, text)}

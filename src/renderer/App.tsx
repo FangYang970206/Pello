@@ -73,10 +73,13 @@ export function App() {
   const [temporaryBusy, setTemporaryBusy] = useState(false)
   const temporaryPending = useRef<Database['projects'][number] | null>(null)
   const temporaryStarting = useRef(false)
-  const [rmode, setRmode] = useState<'files' | 'changes'>('changes')
+  const [rmode, setRmode] = useState<'files' | 'changes' | 'search'>('changes')
   const [dmode, setDmode] = useState<'unified' | 'split'>('unified')
   const [openDirs, setOpenDirs] = useState<Record<string, boolean>>({})
   const [treeQueries, setTreeQueries] = useState<Record<string, string>>({})
+  const [contentQueries, setContentQueries] = useState<Record<string, string>>({})
+  const [panelSearchFocus, setPanelSearchFocus] = useState({ mode: 'files' as 'files' | 'search', sequence: 0 })
+  const [projectSearchOptions, setProjectSearchOptions] = useState<Record<string, import('../shared/types').ProjectSearchOptions>>({})
   const [treeSelections, setTreeSelections] = useState<Record<string, { path: string; dir: boolean }>>({})
   const treeScrollPositions = useRef<Record<string, number>>({})
   const openDirsRef = useRef(openDirs)
@@ -957,13 +960,13 @@ export function App() {
     setActiveMap((map) => ({ ...map, [project.id]: id }))
   }
 
-  function openFile(rel: string, anchor?: string) {
+  function openFile(rel: string, anchor?: string, location?: import('../shared/types').SearchLocation) {
     if (!project) return
     const opened = tabs.find((tab) => tab.type === 'file' && tab.projectId === project.id && tab.path === rel)
-    if (opened) { setTabs((list) => list.map((tab) => tab.id === opened.id ? { ...tab, anchor } : tab)); selectTab(opened.id); return }
+    if (opened) { setTabs((list) => list.map((tab) => tab.id === opened.id ? { ...tab, anchor, location } : tab)); selectTab(opened.id); return }
     if (replacementAt(project.id, rel)) { toast(t("此目录正在替换，完成后可打开文件")); return }
     const id = uid('f')
-    setTabs((list) => [...list, { id, type: 'file', projectId: project.id, path: rel, anchor }])
+    setTabs((list) => [...list, { id, type: 'file', projectId: project.id, path: rel, anchor, location }])
     setActiveMap((map) => ({ ...map, [project.id]: id }))
   }
 
@@ -1131,6 +1134,20 @@ export function App() {
     else if (key === 'w' && active) requestClose(active.id)
     else if (key === 's' && active && active.type !== 'term') void saveFile(active)
   }
+
+  useEffect(() => {
+    const onSearchKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || !event.ctrlKey || event.altKey || event.metaKey || route !== 'work' || !project || modalRef.current || document.querySelector('dialog[open],[role=dialog][aria-modal=true]')) return
+      const key = event.key.toLowerCase()
+      const mode = key === 'e' && !event.shiftKey ? 'files' : key === 'f' && event.shiftKey ? 'search' : null
+      if (!mode) return
+      event.preventDefault(); event.stopPropagation()
+      setRight(true); setRmode(mode)
+      setPanelSearchFocus((current) => ({ mode, sequence: current.sequence + 1 }))
+    }
+    window.addEventListener('keydown', onSearchKey, true)
+    return () => window.removeEventListener('keydown', onSearchKey, true)
+  })
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -1330,6 +1347,11 @@ export function App() {
                     openDirs={openDirs}
                     queries={treeQueries}
                     setQueries={setTreeQueries}
+                    contentQueries={contentQueries}
+                    setContentQueries={setContentQueries}
+                    searchFocus={panelSearchFocus}
+                    searchOptions={projectSearchOptions}
+                    setSearchOptions={setProjectSearchOptions}
                     selections={treeSelections}
                     setSelections={setTreeSelections}
                     scrollPositions={treeScrollPositions}

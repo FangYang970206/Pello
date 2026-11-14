@@ -86,6 +86,9 @@ export interface WorkbenchApi {
   treeSearchStart(projectId: string, id: string, query: string): Promise<void>
   treeSearchNext(id: string): Promise<{ items: TreeNode[]; done: boolean }>
   treeSearchCancel(id: string): Promise<void>
+  contentSearchStart(projectId: string, id: string, query: string, sensitive: boolean, regex?: boolean, whole?: boolean): Promise<void>
+  contentSearchNext(id: string): Promise<import('./types').ContentSearchBatch>
+  contentSearchCancel(id: string): Promise<void>
   gitRead(projectId: string, rel: string): Promise<FileContent>
   gitWrite(projectId: string, rel: string, text: string, version: string | null): Promise<FileContent>
   previewUrl(projectId: string, rel: string, draft?: string): Promise<string>

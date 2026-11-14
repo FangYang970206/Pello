@@ -1,4 +1,7 @@
 const PATHS = {
+  'match-case': 'M3 18 8 6l5 12M5 14h6M16 10c4-2 5 0 5 2v6M21 13h-3a2.5 2.5 0 0 0 0 5h3',
+  'whole-word': 'M2 7v12h20V7M6 13l2-6 2 6M6.8 11h2.4M13 7v6h2a1.5 1.5 0 0 0 0-3h-2M13 7h2a1.5 1.5 0 0 1 0 3',
+  regex: 'M15 4v10M10.7 6.5l8.6 5M10.7 11.5l8.6-5M5 17h2v2H5z',
   up: 'M12 20V4M5 11l7-7 7 7',
   home: 'M3 10l9-7 9 7M5 9v12h14V9M9 21v-8h6v8',
   download: 'M12 3v12M7 10l5 5 5-5M4 16v4h16v-4',

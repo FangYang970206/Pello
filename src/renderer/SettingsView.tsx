@@ -351,6 +351,8 @@ export function SettingsView({
       [t("新建终端"), 'Ctrl T'],
       [t("关闭标签"), 'Ctrl W'],
       [t("切换文件面板"), 'Ctrl B'],
+      [t("搜索文件"), 'Ctrl E'],
+      [t("搜索内容"), 'Ctrl Shift F'],
       [t("打开设置"), 'Ctrl ,'],
       [t("保存当前文件"), 'Ctrl S'],
       [t("撤销文件编辑"), 'Ctrl Z'],

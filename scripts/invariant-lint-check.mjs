@@ -59,7 +59,7 @@ const cases = [
   ['AWB041', 'src/main/temporary-sessions.ts', 'path.isAbsolute(configured)', 'true'],
   ['AWB042', 'src/renderer/Workspace.tsx', 'visible={workspaceVisible && visible}', 'visible={visible}'],
   ['AWB042', 'src/renderer/TerminalPane.tsx', 'scrollToLine(saved.viewport)', 'scrollToBottom()'],
-  ['AWB043', 'src/renderer/App.tsx', 'function openFile(rel: string, anchor?: string) {', 'function openFile(rel: string, anchor?: string) { const pinned = false;'],
+  ['AWB043', 'src/renderer/App.tsx', "function openFile(rel: string, anchor?: string, location?: import('../shared/types').SearchLocation) {", "function openFile(rel: string, anchor?: string, location?: import('../shared/types').SearchLocation) { const pinned = false;"],
   ['AWB044', 'src/renderer/styles/markdown.css', '.markdown-outline{position:absolute;', '.markdown-outline{position:sticky;'],
   ['AWB044', 'src/renderer/ProjectSidebar.tsx', "onProjectAction(project.id, 'reveal')", 'onCreateEntry(project.id, false)'],
   ['AWB045', 'src/renderer/MarkdownEditor.tsx', 'view.nodeDOM(position)', "root.querySelector('h1')"],
@@ -122,7 +122,17 @@ const cases = [
   ['AWB073', 'src/renderer/styles/extra.css', 'container: editor / inline-size', 'container: none'],
   ['AWB073', 'src/renderer/styles/extra.css', 'width: clamp(272px,60cqi,420px)', 'width: 420px'],
   ['AWB073', 'src/renderer/styles/extra.css', '.media-zoom { min-width: 0; flex-wrap: wrap; }', '.media-zoom { min-width: 0; flex-wrap: nowrap; }'],
-  ['AWB073', 'AGENTS.md', '日常自适应检查', '界面检查']
+  ['AWB073', 'AGENTS.md', '日常自适应检查', '界面检查'],
+  ['AWB074', 'src/main/content-search.ts', 'this.controller.abort()', 'void 0'],
+  ['AWB074', 'src/main/content-search.ts', 'treePath(target, rel)', 'unsafePath(target, rel)'],
+  ['AWB074', 'src/renderer/RightPanel.tsx', 'file-name-search', 'missing-name-search'],
+  ['AWB074', 'src/renderer/RightPanel.tsx', 'project-search-options', 'missing-search-options'],
+  ['AWB074', 'src/renderer/ContentSearchResults.tsx', 'contentSearchCancel(id)', 'noSearchCancel(id)'],
+  ['AWB075', 'src/main/search-matcher.ts', 'new Worker(', 'unsafeWorker('],
+  ['AWB075', 'src/renderer/SettingsView.tsx', "'Ctrl Shift F'", "'F12'"],
+  ['AWB076', 'src/renderer/ContentSearchResults.tsx', '<summary title={file.path}>', '<summary title={file.path}><span className="content-search-count">1</span>'],
+  ['AWB076', 'src/renderer/styles/extra.css', '.file-name-search .tx { width: 100%; height: 24px;', '.file-name-search .tx { width: 100%; height: 36px;'],
+  ['AWB076', 'src/renderer/styles/extra.css', '.content-search-hit mark {', '.content-search-hit mark { font-weight: 600;']
 ]
 for (const [id, file, before, after] of cases) {
   const mutated = new Map(files)

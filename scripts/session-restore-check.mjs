@@ -107,7 +107,7 @@ try {
   assert.equal(await page.locator('.sidebar-projects .project-pin').count(), 1)
 
   // Changes is a Git icon without a count; search stays visible in both
-  // modes and opens the file view with a collapsed search field.
+  // modes and opens content search; the file view has an always-visible name field.
   const modes = page.locator('.right .rh .seg.plain-seg button')
   assert.equal((await modes.nth(0).innerText()).trim(), '')
   assert.equal((await modes.nth(1).innerText()).trim(), '')
@@ -121,9 +121,10 @@ try {
   assert.equal(await page.locator('[data-a=file-search]').count(), 1)
   assert.equal(await page.getByLabel('搜索文件', { exact: true }).count(), 0)
   assert.equal((await page.locator('[data-a=file-search]').innerText()).trim(), '')
-  await page.locator('[data-a=file-search]').click()
+  await page.locator('[data-a=rmode][data-id=files]').click()
   const search = page.getByLabel('搜索文件', { exact: true })
   await search.waitFor()
+  assert.equal(await search.getAttribute('placeholder'), null, 'Filename search has no placeholder')
   assert.equal(await page.locator('[data-a=rmode][data-id=files]').getAttribute('aria-checked'), 'true')
   await search.fill('secret')
   await page.getByText('没有匹配的文件').waitFor()
@@ -132,6 +133,7 @@ try {
   await search.fill('')
   await page.locator('[data-a=file-search]').click()
   assert.equal(await page.getByLabel('搜索文件', { exact: true }).count(), 0)
+  assert.equal(await page.getByRole('textbox', { name: '搜索内容', exact: true }).count(), 1)
 
   // Split diff behavior is covered by diff-editor-check.mjs.
 
@@ -181,7 +183,7 @@ try {
 
   // Search never enters dot folders, including after a restart.
   await page.locator('[data-a=rmode][data-id=files]').click()
-  await page.locator('[data-a=file-search]').click()
+  await page.locator('[data-a=rmode][data-id=files]').click()
   const search = page.getByLabel('搜索文件', { exact: true })
   await search.fill('secret')
   await page.getByText('没有匹配的文件').waitFor()

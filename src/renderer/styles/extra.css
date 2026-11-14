@@ -249,6 +249,32 @@ kbd {
 .media-error { margin: auto; padding: 24px; text-align: center; max-width: 65ch; overflow-wrap: anywhere; }
 .repository-filter { display: block; padding: 8px 12px; }
 .repository-filter .sel { width: 100%; }
+.project-search { flex: none; min-width: 0; padding: 6px 10px; font: var(--ui-size,13px)/1.5 var(--ui); }
+.project-search.file-name-search { padding-block: 3px; }
+.file-name-search .tx { width: 100%; height: 24px; padding-inline: 6px; background: var(--panel); font: inherit; line-height: 20px; }
+.project-search-input { display: flex; align-items: center; min-width: 0; padding: 1px; border: 1px solid var(--line); border-radius: var(--r1); background: var(--panel); }
+.project-search-input:focus-within { border-color: var(--accent); }
+.project-search-input input { flex: 1; min-width: 64px; width: 0; height: 24px; padding: 0 6px; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; }
+.project-search-options { display: flex; flex: none; gap: 0; }
+.project-search-options .ib { flex: none; width: 22px; height: 22px; border-radius: var(--r1); }
+.project-search-options .ib svg { width: 16px; height: 16px; }
+.project-search-options .ib[aria-pressed=true] { color: var(--accent); background: var(--sel); }
+.project-search-options .ib:hover { color: var(--text); background: var(--hover); }
+.content-search-summary { display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 0 6px; color: var(--muted); font: inherit; }
+.content-search-summary>span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.content-search-summary .ib { flex: none; }
+.content-search-file { margin-top: 4px; }
+.content-search-file summary { display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 4px 6px; color: var(--text); cursor: pointer; border-radius: var(--r1); font-size: var(--ui-size,13px); }
+.content-search-file summary::before { content: ''; width: 6px; height: 6px; flex: none; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(-45deg); margin-right: 4px; }
+.content-search-file[open] summary::before { transform: rotate(45deg); }
+.content-search-file summary:hover,.content-search-hit:hover { background: var(--hover); }
+.content-search-file summary .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.content-search-hit { display: flex; align-items: baseline; gap: 8px; width: 100%; min-height: 28px; padding: 2px 6px 2px 16px; color: var(--text); font: inherit; text-align: left; border-radius: var(--r1); }
+.content-search-snippet { display: flex; flex: 1; min-width: 0; overflow: hidden; white-space: pre; }
+.content-search-before { flex: 0 1 auto; max-width: 30%; overflow: hidden; text-overflow: ellipsis; }
+.content-search-after { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.content-search-hit mark { flex: 0 1 auto; min-width: 0; overflow: hidden; color: var(--text); background: var(--sel); font: inherit; }
+.content-search-results .repository-help { overflow-wrap: anywhere; font: inherit; }
 .repository-group { border-bottom: 1px solid var(--line); }
 .repository-group summary { display: flex; gap: 8px; align-items: center; padding: 8px; cursor: pointer; color: var(--text); }
 .repository-group summary .grow { overflow-wrap: anywhere; }
