@@ -36,9 +36,14 @@ git('init', '-q'); git('add', '.'); git('-c', 'user.name=fixture', '-c', 'user.e
 fs.writeFileSync(path.join(project, 'diff.txt'), 'needle work\nneedle common\n')
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: { layout: 'balanced', restore: false, confirmKill: false }, projects: [{ id: 'p', name: 'Document search', path: project, host: 'local', agent: 'shell' }] }))
 const env = { ...process.env, AWB_USER_DATA: data }; delete env.ELECTRON_RUN_AS_NODE
-const app = await electron.launch({ args: ['.'], env })
+const dpi = Number(process.env.AWB_TEST_DPI || 1)
+const app = await electron.launch({ args: ['.', `--force-device-scale-factor=${dpi}`], env })
 try {
   const page = await app.firstWindow(); page.setDefaultTimeout(8000)
+  const resize = async (width, height) => {
+    await page.evaluate(([width, height]) => window.awb.winResize(width, height), [width, height])
+    await page.waitForFunction(([width, height]) => innerWidth === width && innerHeight === height, [width, height])
+  }
   await installDocumentHarness(app, page, false)
   const errors = []; page.on('pageerror', (error) => errors.push(error.message))
   await page.evaluate(() => {
@@ -56,13 +61,22 @@ try {
     const geometry = await page.locator('.document-search').evaluate((node) => {
       const surface = node.closest('.editor-surface'), panel = node.getBoundingClientRect(), bounds = surface.getBoundingClientRect()
       const input = node.querySelector('input'), box = input.getBoundingClientRect()
+      const controls = [...node.querySelectorAll('input,button,select')].map((control) => {
+        const rect = control.getBoundingClientRect()
+        return rect.left >= panel.left && rect.right <= panel.right && rect.top >= panel.top && rect.bottom <= panel.bottom && rect.height >= 22
+      })
+      const scope = node.querySelector('.document-search-scope select')
       return { position: getComputedStyle(node).position, right: bounds.right - panel.right, top: panel.top - bounds.top,
-        inside: panel.left >= bounds.left && panel.bottom <= bounds.bottom, width: panel.width,
+        inside: panel.left >= bounds.left && panel.bottom <= bounds.bottom, width: panel.width, hostWidth: bounds.width,
+        inputWidth: box.width, font: Number.parseFloat(getComputedStyle(input).fontSize), controls: controls.every(Boolean),
+        scopeFits: !scope || scope.parentElement.getBoundingClientRect().height <= scope.getBoundingClientRect().height + 1,
         reachable: input.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)) }
     })
     assert.equal(geometry.position, 'absolute', 'Find/replace must overlay the editor')
-    assert.ok(Math.abs(geometry.right - 12) < 1 && Math.abs(geometry.top - 4) < 1, `Search must stay at the editor top-right: ${JSON.stringify(geometry)}`)
+    assert.ok(Math.abs(geometry.right - (geometry.hostWidth <= 640 ? 8 : 12)) < 1 && Math.abs(geometry.top - 4) < 1, `Search must stay at the editor top-right: ${JSON.stringify(geometry)}`)
     assert.ok(geometry.inside && geometry.width <= 421 && geometry.reachable, 'Floating search must fit and stay clickable above editor content')
+    assert.ok(geometry.controls && geometry.scopeFits && geometry.inputWidth >= 64 && geometry.font >= 11, `Compact search must preserve usable fields, controls and readable text: ${JSON.stringify(geometry)}`)
+    return geometry
   }
 
   await open('note.txt'); await source.waitFor()
@@ -188,9 +202,11 @@ try {
   const shots = path.resolve('.cache/document-search-shots'); fs.mkdirSync(shots, { recursive: true })
   await page.keyboard.press('Control+h'); await query.fill('unified-edit')
   for (const theme of ['light', 'dark']) for (const [width, height] of [[1024, 680], [1440, 900]]) {
-    await page.setViewportSize({ width, height })
+    await resize(width, height)
     await page.evaluate(({ theme, variables }) => { document.documentElement.dataset.theme = theme; for (const [key, value] of Object.entries(variables)) document.documentElement.style.setProperty(key, value) }, { theme, variables: themeVariables(theme) })
     assert.ok(await page.locator('.document-search').evaluate((node) => node.scrollWidth <= node.clientWidth), 'Search must fit both window sizes')
+    const ratio = await page.locator('.document-search').evaluate((node) => node.getBoundingClientRect().width / node.closest('.editor-surface').getBoundingClientRect().width)
+    if (width === 1024) assert.ok(ratio <= .7, `A narrow editor must retain reading space beside search, got ${(ratio * 100).toFixed(1)}% coverage`)
     await floating()
     const beforeScroll = await page.locator('.document-search').boundingBox()
     await page.locator('.diff-unified').evaluate((node) => { node.scrollTop = node.scrollHeight })
@@ -207,6 +223,41 @@ try {
   await page.getByRole('textbox', { name: 'Find', exact: true }).fill('unified-edit')
   await page.getByRole('button', { name: 'Replace all', exact: true }).waitFor()
   assert.ok(await page.locator('.document-search').evaluate((node) => node.scrollWidth <= node.clientWidth))
+  await close()
+  await resize(1024, 680)
+  const divider = page.locator('.right-resize')
+  for (let step = 0; step < 20; step++) await divider.press('ArrowLeft')
+  const compactSearch = async (kind) => {
+    for (const size of [12, 16]) {
+      await page.evaluate((size) => document.documentElement.style.setProperty('--ui-size', `${size}px`), size)
+      await page.keyboard.press('Control+h')
+      await page.locator('.document-search input').first().fill('missing-long-phrase')
+      const geometry = await floating()
+      assert.ok(geometry.hostWidth <= 321 && geometry.width <= 273, `${kind}: narrow pane must use compact search independently of window width`)
+      if (size === 16) await page.screenshot({ path: path.join(shots, `compact-${kind}-${dpi}x.png`) })
+      assert.equal(await page.locator('.search-count').getAttribute('title'), 'No matches', 'Hover retains the complete status text')
+      // Stress the count column without generating millions of document search ranges.
+      await page.locator('.search-count').evaluate((node) => { node.textContent = '1000000 / 1000000' })
+      await floating()
+      await close()
+    }
+  }
+  for (const mode of ['split', 'unified']) {
+    await page.click(`[data-a=dmode][data-id=${mode}]`)
+    await compactSearch(mode)
+  }
+  await page.click('[data-a=rmode][data-id=files]')
+  for (const [name, kind] of [['note.txt', 'source'], ['guide.md', 'markdown'], ['page.html', 'html'], ['sample.pdf', 'pdf']]) {
+    await open(name)
+    if (kind === 'html') await documentCommand(app, page, 'mode')
+    if (kind === 'pdf') await page.locator('.pdf-page[data-rendered=true]').waitFor()
+    await compactSearch(kind)
+  }
+  for (let step = 0; step < 20; step++) await divider.press('ArrowRight')
+  await page.keyboard.press('Control+f')
+  assert.ok((await floating()).width >= 320, 'Widening the editor must restore search width without reopening the file')
+  assert.ok(Math.abs(await page.evaluate(() => devicePixelRatio) - dpi) < .01, 'Exercise the requested actual device scale')
+  console.log(`PASS responsive search across source/Markdown/HTML/PDF/split/unified, real panel resizing, English no-match labels, UI 12/16 and ${dpi}x DPI`)
   await close(); await page.click('[data-a=settings]')
   await page.keyboard.press('Control+f'); assert.equal(await page.locator('.document-search').count(), 0, 'Search shortcuts must not activate behind settings')
   assert.equal(await page.evaluate(() => window.__loadingPreviewShown), false)

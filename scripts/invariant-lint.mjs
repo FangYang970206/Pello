@@ -244,6 +244,9 @@ export function checkInvariants(files) {
     'AWB072', 'src/renderer/MarkdownEditor.tsx', '查找和上下导航定位实际匹配文字，使用所属视口并保留长文档及虚拟代码块回归')
   require(search.includes('useDocumentSearch') && search.includes('event.isComposing') && sidebarCss.includes('.document-search { position: absolute;') && sidebarCss.includes('.editor-surface { position: relative;') && files.get('src/renderer/MarkdownEditor.tsx')?.includes('tr.insertText(value, position(match.from)') && files.get('src/renderer/SettingsView.tsx')?.includes("'Ctrl F'") && !media.includes('正在加载预览') && !files.get('src/renderer/FilePane.tsx')?.includes('正在加载预览') && scripts.check?.includes('scripts/document-search-check.mjs'),
     'AWB071', 'src/renderer/DocumentSearch.tsx', '搜索替换悬浮在编辑器内且保留行为回归，Markdown 通过模型替换，快捷键列入设置，预览不显示加载文字')
+  const containers = postcss.parse(sidebarCss).nodes.filter((node) => node.type === 'atrule' && node.name === 'container')
+  require(declarations('.editor-surface').get('container') === 'editor / inline-size' && /width:\s*clamp\([^;]*cqi/.test(sidebarCss) && containers.some((node) => node.params.startsWith('editor ')) && containers.some((node) => node.params.startsWith('media ')) && declarations('.media-zoom').get('flex-wrap') === 'wrap' && files.get('AGENTS.md')?.includes('日常自适应检查'),
+    'AWB073', 'src/renderer/styles/extra.css', '搜索按实际编辑区宽度收窄，媒体工具栏允许换行，窄容器检查纳入日常开发约定')
   return errors
 }
 

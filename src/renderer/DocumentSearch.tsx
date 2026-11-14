@@ -80,6 +80,7 @@ export type DocumentSearchState = ReturnType<typeof useDocumentSearch>
 
 export function DocumentSearch({ search, scope }: { search: DocumentSearchState; scope?: React.ReactNode }) {
   if (!search.open) return null
+  const count = search.query ? search.matches.length ? `${search.active + 1} / ${search.matches.length}` : t("无匹配") : '0 / 0'
   return <div className="document-search" data-replaceable={search.canExpand} role="search" aria-label={t("文档搜索")} onKeyDown={(event) => event.stopPropagation()} onCompositionStart={(event) => event.stopPropagation()} onCompositionEnd={(event) => event.stopPropagation()}>
     {search.canExpand ? <button className="ib search-expand" aria-label={search.expanded ? t("收起替换") : t("展开替换")} title={search.expanded ? t("收起替换") : t("展开替换")} aria-expanded={search.expanded} onClick={search.toggleReplace}><Icon name="chev" /></button> : null}
     <div className="document-search-row">
@@ -87,7 +88,7 @@ export function DocumentSearch({ search, scope }: { search: DocumentSearchState;
       <input ref={search.input} className="tx search-query" aria-label={t("查找内容")} placeholder={t("查找内容")} value={search.query} onChange={(event) => search.setQuery(event.target.value)} />
       <button className={`ib search-case${search.sensitive ? ' on' : ''}`} aria-label={t("区分大小写")} title={t("区分大小写")} aria-pressed={search.sensitive} onClick={() => search.setSensitive(!search.sensitive)}>Aa</button>
       </div>
-      <span className="search-count" role="status" aria-live="polite">{search.query ? search.matches.length ? `${search.active + 1} / ${search.matches.length}` : t("无匹配") : '0 / 0'}</span>
+      <span className="search-count" role="status" aria-live="polite" title={count}>{count}</span>
       <button className="ib" aria-label={t("上一个匹配")} title={t("上一个匹配")} disabled={!search.matches.length} onClick={() => search.move(-1)}><Icon name="up" /></button>
       <button className="ib search-next" aria-label={t("下一个匹配")} title={t("下一个匹配")} disabled={!search.matches.length} onClick={() => search.move(1)}><Icon name="up" /></button>
       <button className="ib" aria-label={t("关闭搜索")} title={t("关闭搜索")} onClick={search.close}><Icon name="x" /></button>

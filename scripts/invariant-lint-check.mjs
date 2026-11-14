@@ -118,7 +118,11 @@ const cases = [
   ['AWB071', 'src/renderer/SettingsView.tsx', "'Ctrl F'", "'Ctrl G'"],
   ['AWB071', 'src/renderer/styles/extra.css', '.document-search { position: absolute;', '.document-search { position: relative;'],
   ['AWB071', 'src/renderer/styles/extra.css', '.editor-surface { position: relative;', '.editor-surface { position: static;'],
-  ['AWB072', 'src/renderer/MarkdownEditor.tsx', 'revealSearchRect(scroller', 'skipSearchReveal(scroller']
+  ['AWB072', 'src/renderer/MarkdownEditor.tsx', 'revealSearchRect(scroller', 'skipSearchReveal(scroller'],
+  ['AWB073', 'src/renderer/styles/extra.css', 'container: editor / inline-size', 'container: none'],
+  ['AWB073', 'src/renderer/styles/extra.css', 'width: clamp(272px,60cqi,420px)', 'width: 420px'],
+  ['AWB073', 'src/renderer/styles/extra.css', '.media-zoom { min-width: 0; flex-wrap: wrap; }', '.media-zoom { min-width: 0; flex-wrap: nowrap; }'],
+  ['AWB073', 'AGENTS.md', '日常自适应检查', '界面检查']
 ]
 for (const [id, file, before, after] of cases) {
   const mutated = new Map(files)

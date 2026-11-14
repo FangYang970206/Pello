@@ -30,7 +30,8 @@ fs.writeFileSync(path.join(data, 'draft.txt'), 'original')
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: { layout: 'balanced', restore: false, confirmKill: false }, projects: [{ id: 'p', name: 'GQE media', host: 'local', path: data, agent: 'shell' }] }))
 const original = fs.readFileSync(pdf)
 const env = { ...process.env, AWB_USER_DATA: data }; delete env.ELECTRON_RUN_AS_NODE
-const app = await electron.launch({ args: ['.'], env })
+const dpi = Number(process.env.AWB_TEST_DPI || 1)
+const app = await electron.launch({ args: ['.', `--force-device-scale-factor=${dpi}`], env })
 try {
   const page = await app.firstWindow()
   const errors = []
@@ -103,7 +104,8 @@ try {
   await page.locator('.pdf-page[data-rendered="true"]').waitFor()
   const shots = path.resolve('.cache/media-preview-shots'); fs.mkdirSync(shots, { recursive: true })
   for (const theme of ['light', 'dark']) for (const [width, height] of [[1024, 680], [1440, 900]]) {
-    await page.setViewportSize({ width, height })
+    await page.evaluate(([width, height]) => window.awb.winResize(width, height), [width, height])
+    await page.waitForFunction(([width, height]) => innerWidth === width && innerHeight === height, [width, height])
     await page.evaluate(({ theme, variables }) => { document.documentElement.dataset.theme = theme; for (const [key, value] of Object.entries(variables)) document.documentElement.style.setProperty(key, value) }, { theme, variables: themeVariables(theme) })
     await page.getByRole('button', { name: '适应窗口', exact: true }).click()
     await page.locator('.pdf-page[data-rendered="true"]').waitFor()
@@ -137,5 +139,23 @@ try {
   assert.equal(await page.evaluate(() => window.awb.previewUrl('p', 'oversize.pdf').then(() => false, () => true)), true)
   assert.equal(await page.evaluate(() => window.awb.previewUrl('p', '../outside.pdf').then(() => false, () => true)), true)
   assert.deepEqual(errors, [], 'Media previews must not throw in the renderer')
-  console.log('PASS PDF/image previews: GQE copies, decoded pixels, wheel paging and boundaries, enlarged-page scrolling, Ctrl+wheel zoom, zoom/fit, corrupt files, inert SVG, tabs/drafts, read-only originals, four layouts')
+  await page.click('[data-a=settings]'); await page.click('[data-a=sec][data-id=general]')
+  await page.getByLabel('应用语言', { exact: true }).selectOption('en')
+  await page.click('[data-a=back]')
+  await page.evaluate(() => window.awb.winResize(1024, 680))
+  await page.waitForFunction(() => innerWidth === 1024 && innerHeight === 680)
+  await page.evaluate(() => document.documentElement.style.setProperty('--ui-size', '16px'))
+  const divider = page.locator('.right-resize')
+  for (let step = 0; step < 20; step++) await divider.press('ArrowLeft')
+  for (const name of ['课程.pdf', '矢量.svg']) {
+    await open(name)
+    await page.locator('.media-toolbar').waitFor()
+    assert.ok(await page.locator('.media-preview').evaluate((node) => node.clientWidth <= 321), 'Exercise a genuinely narrow editor at the same window size')
+    assert.ok(await page.locator('.media-toolbar').evaluate((node) => node.scrollWidth <= node.clientWidth), 'PDF/image actions must fit a 320px editor with English labels and large UI text')
+    await page.getByRole('button', { name: 'Actual size', exact: true }).click()
+    await page.getByRole('button', { name: 'Fit to window', exact: true }).click()
+    await page.screenshot({ path: path.join(shots, `compact-${name.endsWith('pdf') ? 'pdf' : 'image'}.png`) })
+  }
+  assert.ok(Math.abs(await page.evaluate(() => devicePixelRatio) - dpi) < .01, 'Media checks must use the requested device scale')
+  console.log(`PASS PDF/image previews: GQE copies, decoded pixels, wheel paging and boundaries, enlarged-page scrolling, Ctrl+wheel zoom, zoom/fit, corrupt files, inert SVG, tabs/drafts, read-only originals, four layouts and narrow English/large-font toolbars at ${dpi}x DPI`)
 } finally { await app.evaluate(({ dialog }) => { dialog.showMessageBoxSync = () => 1 }).catch(() => {}); await app.close() }

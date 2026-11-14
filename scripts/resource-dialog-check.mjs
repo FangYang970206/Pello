@@ -48,6 +48,7 @@ try {
     for (const [width, height] of [[1440, 900], [1024, 680]]) {
       await page.evaluate(([width, height]) => window.awb.winResize(width, height), [width, height])
       await page.waitForFunction((width) => innerWidth === width, width)
+      await page.evaluate((size) => document.documentElement.style.setProperty('--ui-size', `${size}px`), width === 1024 ? 16 : 12)
       await section('skills')
       const inspect = page.getByRole('button', { name: '查看 long-skill 详情', exact: true })
       await inspect.click(); await aligned(true)
