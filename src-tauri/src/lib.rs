@@ -29,7 +29,41 @@ fn awb(window: Window, state: State<Arc<Workbench>>, channel: String, args: Vec<
             window.set_size(tauri::Size::Logical(tauri::LogicalSize { width, height })).map_err(|error| error.to_string())?;
             Ok(Value::Null)
         }
+        "terminal:menu" | "file:menu" | "tree:menu" => {
+            let template_channel = match channel.as_str() {
+                "terminal:menu" => "menu:terminal",
+                "file:menu" => "menu:file",
+                _ => "menu:tree",
+            };
+            let template = state.dispatch(template_channel, &args)?;
+            popup_menu(&window, &template)
+        }
         _ => state.dispatch(&channel, &args),
+    }
+}
+
+fn popup_menu(window: &Window, template: &Value) -> Result<Value, String> {
+    use tauri::menu::{ContextMenu, Menu, MenuItem};
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    window.on_menu_event(move |_window, event| {
+        let _ = sender.send(event.id.0.clone());
+    });
+    let app = window.app_handle();
+    let menu = Menu::new(app).map_err(|error| error.to_string())?;
+    for item in template.as_array().cloned().unwrap_or_default() {
+        let id = item["id"].as_str().unwrap_or("");
+        if id.is_empty() { continue; }
+        let label = item["label"].as_str().unwrap_or(id);
+        let enabled = item["enabled"].as_bool().unwrap_or(true);
+        let entry = MenuItem::with_id(app, id, label, enabled, None::<&str>).map_err(|error| error.to_string())?;
+        menu.append(&entry).map_err(|error| error.to_string())?;
+    }
+    if menu.popup(window.clone()).is_err() {
+        return Ok(Value::Null);
+    }
+    match receiver.recv_timeout(std::time::Duration::from_secs(120)) {
+        Ok(id) => Ok(serde_json::json!(id)),
+        Err(_) => Ok(Value::Null),
     }
 }
 

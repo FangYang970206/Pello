@@ -170,10 +170,12 @@ impl Service {
     }
 
     /// Hidden Chrome process. The page loads mermaid with `securityLevel: 'strict'`
-    /// and has no Node and no workbench preload. Chrome's own sandbox cannot start
-    /// in this container, so the process uses a private profile and a cleared environment.
+    /// and has no Node and no workbench preload. Chrome's sandbox is the first
+    /// path. `--no-sandbox` is used only after that process fails to start.
     fn render_browser(&self, source: &str, generation: u64, language: &str) -> Result<String, String> {
-        let browser = browser_bin().ok_or_else(|| translate(language, "图表渲染器不可用", &[] as &[String]))?;
+        let browser = std::env::var_os("AWB_CHROME_BIN").map(PathBuf::from).filter(|path| path.is_file())
+            .or_else(browser_bin)
+            .ok_or_else(|| translate(language, "图表渲染器不可用", &[] as &[String]))?;
         let library = mermaid_library().ok_or_else(|| translate(language, "图表渲染器不可用", &[] as &[String]))?;
         let root = std::env::temp_dir().join(format!("pello-diagram-{}", random_id()));
         fs::create_dir_all(root.join("profile")).map_err(|error| error.to_string())?;
@@ -183,30 +185,61 @@ impl Service {
             serde_json::to_string(source).unwrap_or_else(|_| "\"\"".into())
         );
         fs::write(root.join("render.html"), html).map_err(|error| error.to_string())?;
-        let mut command = Command::new(&browser);
+        let mut sandboxed = true;
+        let svg = loop {
+            match self.browser_attempt(&browser, &root, generation, language, sandboxed) {
+                Ok(svg) => break svg,
+                Err(BrowserFailure::Sandbox) if sandboxed => sandboxed = false,
+                Err(BrowserFailure::Sandbox) => {
+                    let _ = fs::remove_dir_all(&root);
+                    return Err(translate(language, "图表渲染器不可用", &[] as &[String]));
+                }
+                Err(BrowserFailure::Message(message)) => {
+                    let _ = fs::remove_dir_all(&root);
+                    return Err(message);
+                }
+            }
+        };
+        let _ = fs::remove_dir_all(&root);
+        if self.inner.diagrams.generation.load(Ordering::SeqCst) != generation {
+            return Err(translate(language, "图表渲染已取消", &[] as &[String]));
+        }
+        Ok(svg)
+    }
+
+    fn browser_attempt(&self, browser: &Path, root: &Path, generation: u64, language: &str, sandboxed: bool) -> Result<String, BrowserFailure> {
+        let mut command = Command::new(browser);
         command.env_clear();
         if let Some(path) = std::env::var_os("PATH") { command.env("PATH", path); }
-        command.env("HOME", &root);
-        command.env("TMPDIR", &root);
-        command.env("XDG_CONFIG_HOME", root.join("profile"));
-        command.env("XDG_CACHE_HOME", root.join("profile"));
-        command.args([
-            "--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage", "--no-first-run",
-            "--disable-extensions", "--disable-background-networking", "--disable-sync", "--disable-default-apps",
-        ]);
-        command.arg(format!("--user-data-dir={}", root.join("profile").display()));
+        let profile = root.join(if sandboxed { "profile" } else { "profile-fallback" });
+        let _ = fs::create_dir_all(&profile);
+        command.env("HOME", root);
+        command.env("TMPDIR", root);
+        command.env("XDG_CONFIG_HOME", &profile);
+        command.env("XDG_CACHE_HOME", &profile);
+        command.args(["--headless=new", "--disable-gpu", "--no-first-run", "--disable-extensions", "--disable-background-networking", "--disable-sync", "--disable-default-apps"]);
+        if !sandboxed {
+            command.args(["--no-sandbox", "--disable-dev-shm-usage"]);
+        }
+        command.arg(format!("--user-data-dir={}", profile.display()));
         command.args(["--virtual-time-budget=8000", "--dump-dom"]);
         command.arg(format!("file://{}", root.join("render.html").display()));
-        command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+        command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
         #[cfg(unix)]
         { use std::os::unix::process::CommandExt; command.process_group(0); }
         if let Ok(log) = std::env::var("AWB_DIAGRAM_LOG") {
             let args = command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\n");
-            let _ = fs::write(log, format!("argv0={}\n{args}\n", browser.display()));
+            let mode = if sandboxed { "sandbox" } else { "fallback" };
+            let _ = fs::OpenOptions::new().create(true).append(true).open(log).and_then(|mut file| {
+                use std::io::Write;
+                write!(file, "attempt={mode}\nargv0={}\n{args}\n", browser.display())
+            });
         }
-        let mut child = command.spawn().map_err(|_| translate(language, "图表渲染器不可用", &[] as &[String]))?;
-        let mut stdout = child.stdout.take().ok_or_else(|| translate(language, "图表渲染器不可用", &[] as &[String]))?;
+        let mut child = command.spawn().map_err(|_| BrowserFailure::Message(translate(language, "图表渲染器不可用", &[] as &[String])))?;
+        let mut stdout = child.stdout.take().ok_or_else(|| BrowserFailure::Message(translate(language, "图表渲染器不可用", &[] as &[String])))?;
+        let mut stderr = child.stderr.take();
         let buffer = Arc::new(Mutex::new(String::new()));
+        let errors = Arc::new(Mutex::new(String::new()));
         let collect = buffer.clone();
         let reader = std::thread::spawn(move || {
             let mut chunk = [0u8; 8192];
@@ -217,56 +250,85 @@ impl Service {
                 }
             }
         });
+        let collect_errors = errors.clone();
+        let error_reader = std::thread::spawn(move || {
+            let Some(mut stderr) = stderr.take() else { return };
+            let mut chunk = [0u8; 2048];
+            loop {
+                match stderr.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(size) => {
+                        let mut text = collect_errors.lock().expect("diagram");
+                        if text.len() < 8192 { text.push_str(&String::from_utf8_lossy(&chunk[..size])); }
+                    }
+                }
+            }
+        });
         {
             let mut slot = self.inner.diagrams.child.lock().expect("child");
             if self.inner.diagrams.generation.load(Ordering::SeqCst) != generation {
                 stop_child(&mut child);
                 drop(slot);
                 let _ = reader.join();
-                let _ = fs::remove_dir_all(&root);
-                return Err(translate(language, "图表渲染已取消", &[] as &[String]));
+                let _ = error_reader.join();
+                return Err(BrowserFailure::Message(translate(language, "图表渲染已取消", &[] as &[String])));
             }
             *slot = Some(child);
         }
         let started = Instant::now();
+        let probe = Duration::from_millis(2000);
         let svg = loop {
             if self.inner.diagrams.generation.load(Ordering::SeqCst) != generation {
                 self.stop_diagram();
                 let _ = reader.join();
-                let _ = fs::remove_dir_all(&root);
-                return Err(translate(language, "图表渲染已取消", &[] as &[String]));
-            }
-            if started.elapsed() > Duration::from_secs(15) {
-                self.stop_diagram();
-                let _ = reader.join();
-                let _ = fs::remove_dir_all(&root);
-                return Err(translate(language, "图表渲染超时，请简化图表后重试", &[] as &[String]));
+                let _ = error_reader.join();
+                return Err(BrowserFailure::Message(translate(language, "图表渲染已取消", &[] as &[String])));
             }
             let current = buffer.lock().expect("diagram").clone();
             if let Some(svg) = extract_svg(&current) {
                 self.stop_diagram();
                 break svg;
             }
+            let stderr_text = errors.lock().expect("diagram").clone();
+            let finished = self.inner.diagrams.child.lock().expect("child").as_mut().and_then(|child| child.try_wait().ok()).flatten().is_some();
+            if finished {
+                std::thread::sleep(Duration::from_millis(40));
+                let current = buffer.lock().expect("diagram").clone();
+                if let Some(svg) = extract_svg(&current) {
+                    self.stop_diagram();
+                    break svg;
+                }
+                self.stop_diagram();
+                let _ = reader.join();
+                let _ = error_reader.join();
+                let _ = self.inner.diagrams.child.lock().expect("child").take();
+                if sandboxed { return Err(BrowserFailure::Sandbox); }
+                return Err(BrowserFailure::Message(translate(language, "图表渲染未返回 SVG", &[] as &[String])));
+            }
+            if sandboxed && sandbox_cannot_start(&stderr_text, current.is_empty(), started.elapsed() >= probe) {
+                self.stop_diagram();
+                let _ = reader.join();
+                let _ = error_reader.join();
+                let _ = self.inner.diagrams.child.lock().expect("child").take();
+                return Err(BrowserFailure::Sandbox);
+            }
+            if started.elapsed() > Duration::from_secs(15) {
+                self.stop_diagram();
+                let _ = reader.join();
+                let _ = error_reader.join();
+                return Err(BrowserFailure::Message(translate(language, "图表渲染超时，请简化图表后重试", &[] as &[String])));
+            }
             if current.contains("data-pello-error") && current.contains("</html>") {
                 self.stop_diagram();
                 let _ = reader.join();
-                let _ = fs::remove_dir_all(&root);
-                return Err(translate(language, "图表渲染未返回 SVG", &[] as &[String]));
-            }
-            let finished = self.inner.diagrams.child.lock().expect("child").as_mut().and_then(|child| child.try_wait().ok()).flatten().is_some();
-            if finished && extract_svg(&buffer.lock().expect("diagram")).is_none() {
-                let _ = reader.join();
-                let _ = fs::remove_dir_all(&root);
-                return Err(translate(language, "图表渲染未返回 SVG", &[] as &[String]));
+                let _ = error_reader.join();
+                return Err(BrowserFailure::Message(translate(language, "图表渲染未返回 SVG", &[] as &[String])));
             }
             std::thread::sleep(Duration::from_millis(20));
         };
         let _ = reader.join();
+        let _ = error_reader.join();
         let _ = self.inner.diagrams.child.lock().expect("child").take();
-        let _ = fs::remove_dir_all(&root);
-        if self.inner.diagrams.generation.load(Ordering::SeqCst) != generation {
-            return Err(translate(language, "图表渲染已取消", &[] as &[String]));
-        }
         Ok(svg)
     }
 
@@ -295,6 +357,20 @@ impl Service {
 
 impl Drop for Service {
     fn drop(&mut self) { self.inner.alive.store(false, Ordering::SeqCst); self.cancel(); }
+}
+
+enum BrowserFailure {
+    Sandbox,
+    Message(String),
+}
+
+/// The sandbox path failed to start. A slow renderer that already produced
+/// output is not this case, and `--no-sandbox` is not the first command.
+fn sandbox_cannot_start(stderr: &str, silent: bool, probe_elapsed: bool) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    let hinted = ["sandbox", "namespace", "zygote", "setuid"].iter().any(|word| lower.contains(word));
+    if hinted { return true }
+    probe_elapsed && silent && stderr.is_empty()
 }
 
 fn browser_bin() -> Option<PathBuf> {

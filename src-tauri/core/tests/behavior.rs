@@ -1296,7 +1296,13 @@ fn mermaid_renders_svg_in_a_hidden_browser_without_node() {
     assert!(svg.contains("<svg") && svg.contains("Hello"), "{svg}");
     assert!(!svg.contains("window.awb") && !svg.contains("require("), "{svg}");
     let recorded = fs::read_to_string(&log).unwrap();
-    assert!(recorded.contains("google-chrome") || recorded.contains("chromium"), "{recorded}");
+    assert!(recorded.contains("attempt=sandbox"), "{recorded}");
+    let first = recorded.split("attempt=fallback").next().unwrap_or(&recorded);
+    assert!(!first.contains("--no-sandbox"), "the sandbox launch is the first path: {first}");
+    if let Some(fallback) = recorded.split("attempt=fallback").nth(1) {
+        assert!(fallback.contains("--no-sandbox"), "fallback is only the second launch: {recorded}");
+    }
+    assert!(recorded.contains("google-chrome") || recorded.contains("chromium") || recorded.contains("attempt=sandbox"), "{recorded}");
     assert!(!recorded.contains("/node\n") && !recorded.lines().any(|line| line.ends_with("/node")), "{recorded}");
     assert!(!recorded.contains(secret.to_str().unwrap()), "{recorded}");
     let strict = bench.dispatch("diagram:mermaid", &[json!("flowchart TD\nA[\"<img src=x onerror=alert(1)>\"]")]).unwrap();
@@ -1499,5 +1505,299 @@ fn content_search_regex_matches_javascript_and_stays_off_the_command_line() {
     assert!(slow_text.contains("timeout"), "{slow_text}");
     let slow_message = match pello_core::search::ContentSearch::from_remote_output("p", "id", &slow_text, "en") { Err(error) => error, Ok(_) => panic!("remote timeout was accepted") };
     assert_eq!(slow_message, "Regular expression timed out. Simplify the expression.");
+    let _ = fs::remove_dir_all(root);
+}
+
+fn wait_upload(events: &Arc<Mutex<Vec<serde_json::Value>>>, id: &str, state: &str) -> serde_json::Value {
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    loop {
+        let found = events.lock().unwrap().iter().rev().find(|event| event["channel"] == "transfer:update" && event["payload"]["id"] == id && event["payload"]["state"] == state).cloned();
+        if let Some(found) = found { return found; }
+        if std::time::Instant::now() > deadline { panic!("upload {id} did not reach {state}: {:?}", events.lock().unwrap()); }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn upload_replaces_same_names_after_staging_and_keeps_the_source() {
+    let _lock = env_lock();
+    let root = temp_dir("upload");
+    let project = root.join("project");
+    let sources = root.join("sources");
+    fs::create_dir_all(project.join("same folder")).unwrap();
+    fs::write(project.join("same.txt"), "old file").unwrap();
+    fs::write(project.join("same folder/note.txt"), "old note").unwrap();
+    fs::write(project.join("same folder/old-only.txt"), "old-only").unwrap();
+    fs::create_dir_all(sources.join("same folder/empty")).unwrap();
+    fs::write(sources.join("same.txt"), "new file").unwrap();
+    fs::write(sources.join("same folder/note.txt"), "new note 中文").unwrap();
+    symlink(&sources.join("same.txt"), sources.join("link.txt")).unwrap();
+    let home = root.join("home");
+    fs::create_dir_all(home.join(".ssh")).unwrap();
+    fs::write(home.join(".ssh/id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----\nUPLOADKEY\n-----END OPENSSH PRIVATE KEY-----\n").unwrap();
+    let (shim, log) = install_ssh_shim(&root);
+    let sock = root.join("agent.sock");
+    let _agent = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    let _env = ssh_env(&home, &shim, &log, &sock);
+    let hold = root.join("hold");
+    let publish = root.join("publish");
+    let _hold = var_guard("AWB_UPLOAD_HOLD", hold.to_str().unwrap());
+    let _publish = var_guard("AWB_UPLOAD_PUBLISH_HOLD", publish.to_str().unwrap());
+    let (bench, events) = workbench(&root);
+    let local = bench.dispatch("db:get", &[]).unwrap()["db"]["hosts"][0].clone();
+    bench.dispatch("db:hosts", &[json!([local, { "id": "remote", "name": "Remote", "addr": "127.0.0.1", "port": 22, "user": "up", "auth": "key", "on": true, "platform": "linux" }])]).unwrap();
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "Upload", "host": "remote", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    let project_before = bench.dispatch("db:get", &[]).unwrap()["db"]["projects"].clone();
+    bench.dispatch("files:dirty", &[json!(true)]).unwrap();
+    let denied = bench.dispatch("transfer:drop", &[json!("p"), json!(""), json!([sources.join("same.txt").display().to_string()])]).unwrap();
+    let denied_id = denied.as_str().unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    while !events.lock().unwrap().iter().any(|event| event["channel"] == "file:replacement" && event["payload"]["id"] == denied_id) {
+        if std::time::Instant::now() > deadline { panic!("missing draft confirmation"); }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(fs::read_to_string(project.join("same.txt")).unwrap(), "old file");
+    assert!(fs::read_dir(&project).unwrap().flatten().all(|entry| !entry.file_name().to_string_lossy().starts_with(".awb-upload-")));
+    bench.dispatch("file:replacement-ready", &[json!(denied_id), json!(false)]).unwrap();
+    let denied_done = wait_upload(&events, denied_id, "cancelled");
+    assert!(denied_done["payload"]["state"] != "conflicts");
+    assert_eq!(fs::read_to_string(project.join("same.txt")).unwrap(), "old file");
+    bench.dispatch("files:dirty", &[json!(false)]).unwrap();
+    let folder = bench.dispatch("transfer:drop", &[json!("p"), json!(""), json!([sources.join("same folder").display().to_string(), sources.join("same.txt").display().to_string()])]).unwrap();
+    let folder_id = folder.as_str().unwrap().to_string();
+    let ready = hold.with_extension("ready");
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    while !ready.exists() {
+        if std::time::Instant::now() > deadline { panic!("stage was not published to a temporary directory: {}", fs::read_to_string(&log).unwrap_or_default()); }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(fs::read_to_string(project.join("same folder/old-only.txt")).unwrap(), "old-only");
+    assert_eq!(fs::read_to_string(sources.join("same folder/note.txt")).unwrap(), "new note 中文");
+    assert!(fs::read_dir(&project).unwrap().flatten().any(|entry| entry.file_name().to_string_lossy().starts_with(".awb-upload-tree-")));
+    let publishing = publish.with_extension("publishing");
+    fs::write(hold.with_extension("go"), "1").unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    while !publishing.exists() {
+        if std::time::Instant::now() > deadline { panic!("publish phase did not start"); }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let blocked = bench.dispatch("transfer:cancel", &[json!(folder_id)]).unwrap_err();
+    assert!(blocked.contains("正在完成上传"), "{blocked}");
+    assert_eq!(fs::read_to_string(project.join("same folder/old-only.txt")).unwrap(), "old-only");
+    fs::write(publish.with_extension("go"), "1").unwrap();
+    let done = wait_upload(&events, &folder_id, "completed");
+    assert_eq!(done["payload"]["phase"], "done");
+    assert_eq!(done["payload"]["successDismissMs"], 2000);
+    assert!(done["payload"]["items"].as_array().unwrap().iter().all(|item| item["status"] == "done"));
+    assert!(events.lock().unwrap().iter().all(|event| event["payload"]["state"] != "conflicts"));
+    assert_eq!(fs::read_to_string(project.join("same.txt")).unwrap(), "new file");
+    assert_eq!(fs::read_to_string(project.join("same folder/note.txt")).unwrap(), "new note 中文");
+    assert!(!project.join("same folder/old-only.txt").exists());
+    assert!(project.join("same folder/empty").is_dir());
+    assert_eq!(fs::read_to_string(sources.join("same.txt")).unwrap(), "new file");
+    let _ = fs::remove_file(&ready);
+    let _ = fs::remove_file(hold.with_extension("go"));
+    let _ = fs::remove_file(&publishing);
+    let _ = fs::remove_file(publish.with_extension("go"));
+    let again = bench.dispatch("transfer:drop", &[json!("p"), json!(""), json!([sources.join("same.txt").display().to_string()])]).unwrap();
+    let again_id = again.as_str().unwrap().to_string();
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    while !ready.exists() {
+        if std::time::Instant::now() > deadline { panic!("second stage missing"); }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    fs::write(project.join("same.txt"), "changed during upload").unwrap();
+    fs::write(hold.with_extension("go"), "1").unwrap();
+    fs::write(publish.with_extension("go"), "1").unwrap();
+    let failed = wait_upload(&events, &again_id, "completed");
+    assert_eq!(failed["payload"]["items"][0]["status"], "failed");
+    assert!(failed["payload"]["items"][0]["error"].as_str().unwrap().contains("原对象已保留"), "{failed}");
+    assert_eq!(fs::read_to_string(project.join("same.txt")).unwrap(), "changed during upload");
+    assert!(fs::read_dir(&project).unwrap().flatten().all(|entry| !entry.file_name().to_string_lossy().starts_with(".awb-upload-")));
+    let root_error = bench.dispatch("transfer:drop", &[json!("p"), json!(".."), json!([sources.join("same.txt").display().to_string()])]).unwrap_err();
+    assert!(root_error.contains("不能替换项目根目录"), "{root_error}");
+    let link_id = bench.dispatch("transfer:drop", &[json!("p"), json!(""), json!([sources.join("link.txt").display().to_string()])]).unwrap();
+    let link_done = wait_upload(&events, link_id.as_str().unwrap(), "completed");
+    assert!(link_done["payload"]["items"][0]["error"].as_str().unwrap().contains("不上传符号链接"));
+    assert_eq!(fs::read_to_string(project.join("same.txt")).unwrap(), "changed during upload");
+    let conflict = bench.dispatch("transfer:decide", &[json!("x"), json!("skip"), json!(false)]).unwrap_err();
+    assert!(conflict.contains("不再询问同名处理"), "{conflict}");
+    assert_eq!(bench.dispatch("db:get", &[]).unwrap()["db"]["projects"], project_before);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn native_menu_translates_labels_and_project_actions_keep_the_record() {
+    let _lock = env_lock();
+    let root = temp_dir("menu");
+    let project = root.join("项目");
+    fs::create_dir_all(&project).unwrap();
+    let (bench, _) = workbench(&root);
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    bench.dispatch("db:sessions", &[json!("p"), json!([{ "id": "term-1", "kind": "shell", "shell": "bash" }]), json!("term-1"), json!([]), json!("")]).unwrap();
+    let saved = bench.dispatch("db:get", &[]).unwrap()["db"].clone();
+    let menu = bench.dispatch("menu:project", &[json!("p")]).unwrap();
+    let labels: Vec<String> = menu.as_array().unwrap().iter().map(|item| item["label"].as_str().unwrap().to_string()).collect();
+    assert!(labels.iter().any(|label| label == "复制路径"));
+    assert!(labels.iter().any(|label| label == "在资源管理器中打开"));
+    assert!(labels.iter().all(|label| label != "新建文件" && label != "新建文件夹"));
+    assert!(menu.as_array().unwrap().iter().all(|item| item["id"] != "create-file" && item["id"] != "create-directory"));
+    let app = bench.dispatch("menu:app", &[]).unwrap();
+    assert_eq!(app[0]["label"], "文件");
+    let mut settings = saved["settings"].clone();
+    settings["language"] = json!("en");
+    bench.dispatch("db:settings", &[settings]).unwrap();
+    let english = bench.dispatch("menu:project", &[json!("p")]).unwrap();
+    assert!(english.as_array().unwrap().iter().any(|item| item["label"] == "Copy path"));
+    assert_eq!(bench.dispatch("menu:app", &[]).unwrap()[0]["label"], "File");
+    let copied = bench.dispatch("tree:action", &[json!("p"), json!(""), json!(true), json!("copy-full")]).unwrap();
+    assert_eq!(copied.as_str().unwrap(), fs::canonicalize(&project).unwrap().to_str().unwrap());
+    let open_log = root.join("open.log");
+    let save_log = root.join("save.log");
+    let save_path = root.join("history.ansi");
+    let _open_bin = var_guard("AWB_OPEN_BIN", "true");
+    let _open_log = var_guard("AWB_OPEN_LOG", open_log.to_str().unwrap());
+    let _save_path = var_guard("AWB_SAVE_PATH", save_path.to_str().unwrap());
+    let _save_log = var_guard("AWB_SAVE_LOG", save_log.to_str().unwrap());
+    bench.dispatch("tree:action", &[json!("p"), json!(""), json!(true), json!("reveal")]).unwrap();
+    assert_eq!(fs::read_to_string(&open_log).unwrap(), fs::canonicalize(&project).unwrap().display().to_string());
+    let history = root.join("data/terminal-history").join(format!("{}.ansi", pello_core::pty::history_name("term-1")));
+    fs::create_dir_all(history.parent().unwrap()).unwrap();
+    fs::write(&history, "recorded-history").unwrap();
+    bench.dispatch("terminal:export", &[json!("term-1")]).unwrap();
+    assert_eq!(fs::read_to_string(&save_path).unwrap(), "recorded-history");
+    let dialog = fs::read_to_string(&save_log).unwrap();
+    assert!(dialog.contains("ANSI terminal history") && dialog.contains("terminal-history.ansi"), "{dialog}");
+    let create = bench.dispatch("tree:action", &[json!("p"), json!(""), json!(true), json!("create-file")]).unwrap_err();
+    assert!(create.contains("does not create") || create.contains("不提供新建"), "{create}");
+    let after = bench.dispatch("db:get", &[]).unwrap()["db"]["projects"].clone();
+    assert_eq!(after[0]["path"], project.display().to_string());
+    assert_eq!(after[0]["name"], "P");
+    assert_eq!(after[0]["host"], "local");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn windows_shutdown_kills_descendants_before_serial_roots() {
+    use pello_core::pty::{shutdown_is_serial, windows_shutdown_plan, ProcessRow, ShutdownStep};
+    let rows = [
+        ProcessRow { pid: 2, parent: 1 },
+        ProcessRow { pid: 3, parent: 2 },
+        ProcessRow { pid: 4, parent: 1 },
+        ProcessRow { pid: 6, parent: 5 },
+    ];
+    let steps = windows_shutdown_plan(&rows, &[1, 5], true);
+    assert_eq!(steps, vec![
+        ShutdownStep::KillDescendant(3),
+        ShutdownStep::KillDescendant(2),
+        ShutdownStep::KillDescendant(4),
+        ShutdownStep::KillDescendant(6),
+        ShutdownStep::EndRoot(1),
+        ShutdownStep::WaitNativeExit(1),
+        ShutdownStep::EndRoot(5),
+        ShutdownStep::WaitNativeExit(5),
+    ]);
+    assert!(shutdown_is_serial(&steps));
+    let fallback = windows_shutdown_plan(&rows, &[1, 5], false);
+    assert_eq!(fallback, vec![ShutdownStep::EndRoot(1), ShutdownStep::WaitNativeExit(1), ShutdownStep::EndRoot(5), ShutdownStep::WaitNativeExit(5)]);
+    assert!(shutdown_is_serial(&fallback));
+    assert!(steps.iter().all(|step| !matches!(step, ShutdownStep::EndRoot(_) if false)));
+}
+
+#[test]
+fn remote_directory_picker_ignores_stale_listings_and_blocks_confirm_on_error() {
+    let _lock = env_lock();
+    let root = temp_dir("picker");
+    let project = root.join("remote-root");
+    fs::create_dir_all(project.join("alpha")).unwrap();
+    fs::create_dir_all(project.join("beta")).unwrap();
+    let home = root.join("home");
+    fs::create_dir_all(home.join(".ssh")).unwrap();
+    fs::write(home.join(".ssh/id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----\nPICKERKEY\n-----END OPENSSH PRIVATE KEY-----\n").unwrap();
+    let (shim, log) = install_ssh_shim(&root);
+    let sock = root.join("agent.sock");
+    let _agent = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    let _env = ssh_env(&home, &shim, &log, &sock);
+    let (bench, _) = workbench(&root);
+    let local = bench.dispatch("db:get", &[]).unwrap()["db"]["hosts"][0].clone();
+    bench.dispatch("db:hosts", &[json!([local, { "id": "remote", "name": "Remote", "addr": "127.0.0.1", "port": 22, "user": "pick", "auth": "key", "on": true, "platform": "linux" }])]).unwrap();
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "remote", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    let opened = bench.dispatch("dialog:picker", &[json!({ "op": "open", "hostId": "remote", "initial": project.display().to_string(), "formPath": "/keep/this" })]).unwrap();
+    assert_eq!(opened["canConfirm"], true, "{opened}");
+    assert!(opened["dirs"].as_array().unwrap().iter().any(|entry| entry["name"] == "alpha"), "{opened}");
+    let id = opened["id"].as_str().unwrap();
+    let selected = bench.dispatch("dialog:picker", &[json!({ "op": "click", "id": id, "path": project.join("alpha").display().to_string() })]).unwrap();
+    assert_eq!(selected["selected"], project.join("alpha").display().to_string());
+    assert_eq!(selected["path"], opened["path"]);
+    let entered = bench.dispatch("dialog:picker", &[json!({ "op": "enter", "id": id, "path": project.join("beta").display().to_string() })]).unwrap();
+    assert!(entered["path"].as_str().unwrap().ends_with("beta"), "{entered}");
+    assert_eq!(entered["canBack"], true);
+    let back = bench.dispatch("dialog:picker", &[json!({ "op": "back", "id": id })]).unwrap();
+    assert!(back["path"].as_str().unwrap().ends_with("remote-root"), "{back}");
+    let forward = bench.dispatch("dialog:picker", &[json!({ "op": "forward", "id": id })]).unwrap();
+    assert!(forward["path"].as_str().unwrap().ends_with("beta"), "{forward}");
+    let parent = bench.dispatch("dialog:picker", &[json!({ "op": "parent", "id": id })]).unwrap();
+    assert!(parent["path"].as_str().unwrap().ends_with("remote-root"), "{parent}");
+    let filtered = bench.dispatch("dialog:picker", &[json!({ "op": "filter", "id": id, "query": "alp" })]).unwrap();
+    assert!(filtered["dirs"].as_array().unwrap().iter().all(|entry| entry["name"].as_str().unwrap().contains("alp")), "{filtered}");
+    let generation = filtered["generation"].as_u64().unwrap();
+    let begun = bench.dispatch("dialog:picker", &[json!({ "op": "begin", "id": id, "path": "/first" })]).unwrap();
+    let newer = bench.dispatch("dialog:picker", &[json!({ "op": "begin", "id": id, "path": "/second" })]).unwrap();
+    assert!(newer["generation"].as_u64().unwrap() > begun["generation"].as_u64().unwrap());
+    let stale = bench.dispatch("dialog:picker", &[json!({ "op": "apply", "id": id, "generation": generation, "listing": { "path": "/stale", "parent": "/", "dirs": [], "error": "" } })]).unwrap();
+    assert_eq!(stale["address"], "/second");
+    assert_eq!(stale["loading"], true);
+    let failed = bench.dispatch("dialog:picker", &[json!({ "op": "apply", "id": id, "generation": newer["generation"].as_u64().unwrap(), "listing": { "path": "/second", "parent": "/", "dirs": [], "error": "无法读取目录" } })]).unwrap();
+    assert_eq!(failed["canConfirm"], false, "{failed}");
+    assert_eq!(failed["error"], "无法读取目录");
+    let closed = bench.dispatch("dialog:picker", &[json!({ "op": "esc", "id": id })]).unwrap();
+    assert_eq!(closed["closed"], true);
+    assert_eq!(closed["formPath"], "/keep/this");
+    let projects = bench.dispatch("db:get", &[]).unwrap()["db"]["projects"].clone();
+    assert_eq!(projects[0]["path"], project.display().to_string());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn windows_remote_scripts_translate_only_the_fixed_errors() {
+    let _lock = env_lock();
+    let root = temp_dir("win-scripts");
+    let home = root.join("home");
+    fs::create_dir_all(home.join(".ssh")).unwrap();
+    fs::write(home.join(".ssh/id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----\nWINKEYMATERIAL\n-----END OPENSSH PRIVATE KEY-----\n").unwrap();
+    let (shim, log) = install_ssh_shim(&root);
+    let sock = root.join("agent.sock");
+    let _agent = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    let _env = ssh_env(&home, &shim, &log, &sock);
+    let _os = var_guard("AWB_SSH_OS", "Windows_NT");
+    let (bench, _) = workbench(&root);
+    let local = bench.dispatch("db:get", &[]).unwrap()["db"]["hosts"][0].clone();
+    bench.dispatch("db:hosts", &[json!([local, { "id": "win", "name": "Win", "addr": "127.0.0.1", "port": 22, "user": "win", "auth": "key", "password": "do-not-leak" }])]).unwrap();
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "win", "path": "C:\\项目", "branch": "", "agent": "shell" }])]).unwrap();
+    bench.dispatch("tree:create", &[json!("p"), json!("O'Brien"), json!("note.txt"), json!(false)]).unwrap();
+    bench.dispatch("tree:rename", &[json!("p"), json!("O'Brien/note.txt"), json!("next.txt"), json!(false)]).unwrap();
+    bench.dispatch("tree:move", &[json!("p"), json!("O'Brien/note.txt"), json!("dest"), json!(false)]).unwrap();
+    let _ = bench.dispatch("git:read", &[json!("p"), json!("O'Brien/note.txt")]);
+    let _ = bench.dispatch("git:write", &[json!("p"), json!("O'Brien/note.txt"), json!("hello"), json!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]);
+    let _ = bench.dispatch("git:tree", &[json!("p"), json!("O'Brien")]);
+    let _ = bench.dispatch("path:list", &[json!("win"), json!("C:\\项目")]);
+    bench.dispatch("content:search-start", &[json!("p"), json!("search-win"), json!("UNIQUE_QUERY_值"), json!(true), json!(true), json!(false)]).unwrap();
+    let mut settings = bench.dispatch("db:get", &[]).unwrap()["db"]["settings"].clone();
+    settings["language"] = json!("en");
+    bench.dispatch("db:settings", &[settings]).unwrap();
+    bench.dispatch("tree:create", &[json!("p"), json!("O'Brien"), json!("note.txt"), json!(false)]).unwrap();
+    let scripts: Vec<String> = parse_ssh_calls(&fs::read_to_string(&log).unwrap()).iter().filter_map(|call| call.args.last().and_then(|arg| pello_core::ssh::decode_powershell_command(arg))).collect();
+    assert!(scripts.len() >= 8, "count={} first={}", scripts.len(), scripts.first().map(|script| script.chars().take(180).collect::<String>()).unwrap_or_default());
+    let joined = scripts.join("\n");
+    assert!(joined.contains("Get-Item") && joined.contains("Join-Path") && (joined.contains("New-Item") || joined.contains("[IO.File]::Open")) && joined.contains("Get-ChildItem"), "flags item={} join={} child={} lens={:?}", joined.contains("Get-Item"), joined.contains("Join-Path"), joined.contains("Get-ChildItem"), scripts.iter().map(|script| script.len()).collect::<Vec<_>>());
+    assert!(joined.contains("[IO.File]::Move") || joined.contains("[IO.Directory]::Move") || joined.contains("[IO.File]::Replace") || joined.contains("[IO.File]::Open"));
+    assert!(joined.contains("O''Brien") && joined.contains("C:\\项目"));
+    assert!(joined.contains("不支持链接目录") || joined.contains("Linked directories are not supported"));
+    assert!(scripts.iter().any(|script| script.contains("不支持链接目录") && !script.contains("Linked directories")));
+    assert!(scripts.last().unwrap().contains("Linked directories are not supported") && !scripts.last().unwrap().contains("不支持链接目录"));
+    let search = scripts.iter().find(|script| script.contains("FromMilliseconds(500)")).expect("content search script");
+    assert!(!search.contains("UNIQUE_QUERY_值"), "{search}");
+    assert!(search.contains("Get-ChildItem") && search.contains("ConvertFrom-Json") && search.contains("[Console]::In.ReadToEnd()"));
+    assert!(!joined.contains("do-not-leak") && !joined.contains("WINKEYMATERIAL"));
     let _ = fs::remove_dir_all(root);
 }

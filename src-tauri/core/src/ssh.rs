@@ -226,6 +226,73 @@ pub fn remove_remote_script(platform: &str, root: &str, relative: &str, director
     Ok(format!("p=$(cd -P -- {} && pwd) || exit 1; {walk}; {kind} || {{ echo {changed} >&2; exit 1; }}; {remove}", bash_quote(root)))
 }
 
+fn ps_error(language: &str, source: &str) -> String {
+    ps_quote(&translate(language, source, &[] as &[String]))
+}
+
+/// Windows remote scripts. Only the fixed error text is translated and quoted.
+pub fn windows_create_script(root: &str, parent_abs: &str, dest_abs: &str, directory: bool, language: &str) -> String {
+    let illegal = ps_error(language, "非法路径");
+    let link = ps_error(language, "不支持链接目录");
+    let make = if directory {
+        "New-Item -ItemType Directory -Path $dest -ErrorAction Stop | Out-Null"
+    } else {
+        "$f=[IO.File]::Open($dest,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None); $f.Dispose()"
+    };
+    format!("$ErrorActionPreference='Stop'; $root=(Resolve-Path -LiteralPath {} -ErrorAction Stop).Path.TrimEnd('\\'); $parent=[IO.Path]::GetFullPath({}).TrimEnd('\\'); if ($parent -ne $root -and -not $parent.StartsWith($root+'\\',[StringComparison]::OrdinalIgnoreCase)) {{ throw {illegal} }}; $walk=$root; if ($parent -ne $root) {{ foreach ($part in $parent.Substring($root.Length+1).Split('\\')) {{ $walk=Join-Path $walk $part; if ((Get-Item -LiteralPath $walk -Force -ErrorAction Stop).Attributes -band [IO.FileAttributes]::ReparsePoint) {{ throw {link} }} }} }}; $dest={}; {make}", ps_quote(root), ps_quote(parent_abs), ps_quote(dest_abs))
+}
+
+pub fn windows_rename_script(root: &str, relative: &str, name: &str, destination_parent: &str, directory: bool, language: &str) -> Result<String, String> {
+    let parts: Vec<&str> = relative.split('/').filter(|part| !part.is_empty()).collect();
+    if parts.is_empty() { return Err(translate(language, "不能重命名项目根目录", &[] as &[String])); }
+    let link = ps_error(language, "不支持通过符号链接重命名");
+    let changed = ps_error(language, "文件类型已更改");
+    let unsafe_dir = ps_error(language, "目标不是安全目录");
+    let kept = ps_error(language, "重命名失败，原对象保留于 ");
+    let walk = parts.iter().map(|part| format!("$walk=Join-Path $walk {}; $item=Get-Item -LiteralPath $walk -Force -ErrorAction Stop; if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {{ throw {link} }}", ps_quote(part))).collect::<Vec<_>>().join("; ");
+    let target_walk = destination_parent.split('/').filter(|part| !part.is_empty()).map(|part| format!("$parent=Join-Path $parent {}; $parentItem=Get-Item -LiteralPath $parent -Force -ErrorAction Stop; if (($parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or -not $parentItem.PSIsContainer) {{ throw {unsafe_dir} }}", ps_quote(part))).collect::<Vec<_>>().join("; ");
+    let flag = if directory { "true" } else { "false" };
+    let move_cmd = if directory { "[IO.Directory]::Move" } else { "[IO.File]::Move" };
+    let temporary = format!(".awb-rename-{}", crate::random_id());
+    let target_stmt = if target_walk.is_empty() { String::new() } else { format!("{target_walk}; ") };
+    Ok(format!("$ErrorActionPreference='Stop'; $root=(Resolve-Path -LiteralPath {} -ErrorAction Stop).Path; $walk=$root; {walk}; if ($item.PSIsContainer -ne ${flag}) {{ throw {changed} }}; $parent=$root; {target_stmt}$dest=Join-Path $parent {}; if ([String]::Equals($walk,$dest,[StringComparison]::OrdinalIgnoreCase)) {{ $temp=Join-Path $parent {}; {move_cmd}($walk,$temp); try {{ {move_cmd}($temp,$dest) }} catch {{ try {{ {move_cmd}($temp,$walk) }} catch {{ throw ({kept}+$temp) }}; throw }} }} else {{ {move_cmd}($walk,$dest) }}", ps_quote(root), ps_quote(name), ps_quote(&temporary)))
+}
+
+pub fn windows_home_dir_script(language: &str) -> String {
+    let missing = ps_error(language, "目录不存在");
+    format!("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $dir=Get-Item -LiteralPath $env:USERPROFILE -Force; if (-not $dir.PSIsContainer) {{ throw {missing} }}; @{{ path=$dir.FullName; dirs=@(Get-ChildItem -LiteralPath $dir.FullName -Directory -Force -ErrorAction Stop | ForEach-Object {{ $_.Name }}) }} | ConvertTo-Json -Compress")
+}
+
+pub fn windows_dir_script(path: &str, language: &str) -> String {
+    let missing = ps_error(language, "目录不存在");
+    format!("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $dir=Get-Item -LiteralPath {} -Force; if (-not $dir.PSIsContainer) {{ throw {missing} }}; @{{ path=$dir.FullName; dirs=@(Get-ChildItem -LiteralPath $dir.FullName -Directory -Force -ErrorAction Stop | ForEach-Object {{ $_.Name }}) }} | ConvertTo-Json -Compress", ps_quote(path))
+}
+
+pub fn windows_read_script(root: &str, relative: &str, language: &str) -> String {
+    let illegal = ps_error(language, "非法路径");
+    let link = ps_error(language, "符号链接不可预览");
+    let parts: Vec<&str> = relative.split('/').filter(|part| !part.is_empty()).collect();
+    let walk = parts.iter().map(|part| format!("$walk=Join-Path $walk {}; if ((Get-Item -LiteralPath $walk -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {{ throw {link} }}", ps_quote(part))).collect::<Vec<_>>().join("; ");
+    format!("$ErrorActionPreference='Stop'; $root=(Resolve-Path -LiteralPath {} -ErrorAction Stop).Path.TrimEnd('\\')+'\\'; $file=[IO.Path]::GetFullPath((Join-Path $root {})); if (-not $file.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)) {{ throw {illegal} }}; $walk=$root.TrimEnd('\\'); {walk}; [Convert]::ToBase64String([IO.File]::ReadAllBytes($file))", ps_quote(root), ps_quote(&relative.replace('/', "\\")))
+}
+
+pub fn windows_write_script(root: &str, relative: &str, language: &str) -> String {
+    let illegal = ps_error(language, "非法路径");
+    let link = ps_error(language, "符号链接不可预览");
+    let changed = ps_error(language, "文件已被其他程序修改，请重新读取后合并更改");
+    let parts: Vec<&str> = relative.split('/').filter(|part| !part.is_empty()).collect();
+    let walk = parts.iter().map(|part| format!("$walk=Join-Path $walk {}; if ((Get-Item -LiteralPath $walk -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {{ throw {link} }}", ps_quote(part))).collect::<Vec<_>>().join("; ");
+    format!("$ErrorActionPreference='Stop'; $root=(Resolve-Path -LiteralPath {} -ErrorAction Stop).Path.TrimEnd('\\')+'\\'; $file=[IO.Path]::GetFullPath((Join-Path $root {})); if (-not $file.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)) {{ throw {illegal} }}; $walk=$root.TrimEnd('\\'); {walk}; $temp=Join-Path (Split-Path -LiteralPath $file) ('.awb-write-' + [guid]::NewGuid().ToString() + '.tmp'); try {{ [IO.File]::WriteAllBytes($temp, [Convert]::FromBase64String([Console]::In.ReadToEnd())); [IO.File]::Replace($temp, $file, $null) }} catch {{ if (Test-Path -LiteralPath $temp) {{ Remove-Item -LiteralPath $temp -Force }}; throw {changed} }}", ps_quote(root), ps_quote(&relative.replace('/', "\\")))
+}
+
+pub fn windows_tree_script(root: &str, relative: &str, language: &str) -> String {
+    let link = ps_error(language, "目录包含符号链接");
+    let unsafe_dir = ps_error(language, "路径不是安全目录");
+    let parts: Vec<&str> = relative.split('/').filter(|part| !part.is_empty()).collect();
+    let walk = parts.iter().map(|part| format!("$walk=Join-Path $walk {}; $item=Get-Item -LiteralPath $walk -Force -ErrorAction Stop; if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or -not $item.PSIsContainer) {{ throw {unsafe_dir} }}", ps_quote(part))).collect::<Vec<_>>().join("; ");
+    format!("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $walk=(Resolve-Path -LiteralPath {} -ErrorAction Stop).Path; {walk}; foreach($item in @(Get-ChildItem -LiteralPath $walk -Force -ErrorAction Stop)) {{ if($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {{ throw {link} }}; $name=$item.Name; @{{ path=$name; dir=[bool]$item.PSIsContainer }} | ConvertTo-Json -Compress }}", ps_quote(root), )
+}
+
 fn exec_command(data: &Path, host: &Value, command: &str, input: Option<&[u8]>, language: &str) -> Result<String, String> {
     if host["auth"] == "password" {
         let password = password_of(data, host).ok_or_else(|| translate(language, "请填写 SSH 登录密码", &[] as &[String]))?;

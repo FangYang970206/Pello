@@ -5,7 +5,9 @@ use crate::files::{self, default_ignore};
 use crate::git;
 use crate::i18n::{self, translate};
 use crate::layout::{self, Tile};
+use crate::menu;
 use crate::paths::Paths;
+use crate::picker::Session as Picker;
 use crate::preview;
 use crate::pty::{self, Manager};
 use crate::resources;
@@ -15,6 +17,7 @@ use crate::ssh;
 use crate::store::{self, apply_saved_settings, host_color, public_host, PlatformInfo};
 use crate::temporary;
 use crate::updates;
+use crate::upload;
 use crate::{random_id, uid};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -37,6 +40,8 @@ pub struct Workbench {
     preview: preview::Service,
     resources: resources::Resources,
     updates: Mutex<updates::Service>,
+    uploads: upload::Service,
+    pickers: Mutex<HashMap<String, Picker>>,
     emit: Emit,
 }
 
@@ -54,7 +59,7 @@ impl Workbench {
             db["settings"]["language"] = json!("zh-CN");
         }
         let updates = updates::Service::new(db["settings"]["autoCheckUpdates"] != false);
-        Ok(Self { paths, db: Mutex::new(db), pty: Manager::new(), dirty: Mutex::new(false), content_searches: Mutex::new(HashMap::new()), tree_searches: Mutex::new(HashMap::new()), layouts: Mutex::new(HashMap::new()), restore_failures: Mutex::new(HashMap::new()), preview: preview::Service::new(), resources: resources::Resources::new(), updates: Mutex::new(updates), emit })
+        Ok(Self { paths, db: Mutex::new(db), pty: Manager::new(), dirty: Mutex::new(false), content_searches: Mutex::new(HashMap::new()), tree_searches: Mutex::new(HashMap::new()), layouts: Mutex::new(HashMap::new()), restore_failures: Mutex::new(HashMap::new()), preview: preview::Service::new(), resources: resources::Resources::new(), updates: Mutex::new(updates), uploads: upload::Service::new(), pickers: Mutex::new(HashMap::new()), emit })
     }
 
     pub fn database_path(&self) -> std::path::PathBuf { self.paths.data.join("workbench.json") }
@@ -95,9 +100,9 @@ impl Workbench {
             "git:write" => self.git_write(&str_arg(args, 0), str_arg(args, 1), str_arg(args, 2), args.get(3).and_then(|value| value.as_str()), &language),
             "tree:ignore-get" => { self.project(&str_arg(args, 0), &language)?; Ok(Value::Array(self.ignores(&str_arg(args, 0)).into_iter().map(Value::String).collect())) }
             "tree:ignore-set" => self.set_ignores(&str_arg(args, 0), args.get(1).cloned().unwrap_or(json!([])), &language),
-            "tree:create" => self.with_local(&str_arg(args, 0), &language, |root| files::create_entry(root, str_arg(args, 1), str_arg(args, 2), bool_arg(args, 3)?, &language).map(|path| json!(path))),
-            "tree:rename" => self.with_local(&str_arg(args, 0), &language, |root| files::rename_entry(root, str_arg(args, 1), str_arg(args, 2), bool_arg(args, 3)?, &language).map(|path| json!(path))),
-            "tree:move" => self.with_local(&str_arg(args, 0), &language, |root| files::move_entry(root, str_arg(args, 1), str_arg(args, 2), bool_arg(args, 3)?, &language).map(|path| json!(path))),
+            "tree:create" => self.tree_create(args, &language),
+            "tree:rename" => self.tree_rename(args, &language),
+            "tree:move" => self.tree_move(args, &language),
             "tree:trash" => self.trash(args, &language),
             "content:search-start" => self.content_start(args, &language),
             "content:search-cancel" => { self.content_cancel(str_arg(args, 0)); Ok(Value::Null) }
@@ -121,6 +126,12 @@ impl Workbench {
             "terminal:history" => Ok(json!(pty::load_history(&self.paths.data, str_arg(args, 0)))),
             "terminal:history-save" => pty::save_history(&self.paths.data, str_arg(args, 0), str_arg(args, 1)).map(|_| Value::Null),
             "terminal:export" => self.export_terminal(str_arg(args, 0), args.get(1).and_then(|value| value.as_str()).unwrap_or(""), &language),
+            "transfer:drop" => self.transfer_drop(args, &language),
+            "transfer:cancel" => self.uploads.cancel(str_arg(args, 0), &language),
+            "transfer:retry" => self.transfer_retry(str_arg(args, 0), &language),
+            "transfer:dismiss" => self.uploads.dismiss(str_arg(args, 0)),
+            "transfer:decide" | "transfer:keep-both" => Err(translate(&language, "上传不再询问同名处理", &[] as &[String])),
+            "file:replacement-ready" => { self.uploads.confirm(str_arg(args, 0), args.get(1).and_then(|value| value.as_bool()).unwrap_or(false)); Ok(Value::Null) }
             "exec:test" => self.test_exec(args.first().cloned().unwrap_or(json!({})), &language),
             "host:test" => Ok(ssh::test_connection(&self.paths.data, args.first().unwrap_or(&Value::Null), &language)),
             "app:update-state" => Ok(self.updates.lock().expect("updates").state()),
@@ -130,7 +141,15 @@ impl Workbench {
             "app:meta" => Ok(json!({ "capture": std::env::var("AWB_CAPTURE").ok().as_deref() == Some("1"), "platform": node_platform(), "shots": std::env::var_os("AWB_SHOTS").is_some() })),
             "app:shot" => Ok(json!(false)),
             "dialog:directory" => Ok(pick_directory()),
+            "dialog:picker" => self.picker(args.first().cloned().unwrap_or(json!({})), &language),
+            "menu:app" => Ok(menu::app_menu(&language)),
+            "menu:project" => self.project_menu(str_arg(args, 0), &language),
+            "menu:file" => Ok(menu::file_menu(&language, args.first().unwrap_or(&Value::Null))),
+            "menu:terminal" => Ok(menu::terminal_menu(&language, args.first().unwrap_or(&Value::Null))),
+            "menu:tree" => self.tree_template(str_arg(args, 0), str_arg(args, 1), bool_arg(args, 2).unwrap_or(false), &language),
+            "menu:save" => Ok(menu::save_dialog(&language, str_arg(args, 0))),
             "tree:menu" | "file:menu" | "terminal:menu" => Ok(Value::Null),
+            "tree:action" => self.tree_action(str_arg(args, 0), str_arg(args, 1), bool_arg(args, 2).unwrap_or(false), str_arg(args, 3), &language),
             "resources:targets" => Ok(Value::Array(resources::targets(&self.paths.data, &self.custom()))),
             "resources:list" => resources::list(&self.paths.data, &self.custom(), str_arg(args, 0), str_arg(args, 1), json_usize(args.get(2)), str_arg(args, 3), &language),
             "resources:toggle" => resources::toggle(&self.paths.data, &self.custom(), str_arg(args, 0), str_arg(args, 1), args.get(2).unwrap_or(&Value::Null), args.get(3).and_then(|value| value.as_bool()), &language).map(|_| Value::Null),
@@ -217,10 +236,15 @@ impl Workbench {
         if !self.term_saved(id) { return Err(translate(language, "终端不存在", &[] as &[String])); }
         let source = self.paths.data.join("terminal-history").join(format!("{}.ansi", pty::history_name(id)));
         if !source.is_file() { return Err(translate(language, "此终端尚无完整记录", &[] as &[String])); }
-        if destination.is_empty() {
-            return Ok(json!(fs::read_to_string(&source).unwrap_or_default()));
-        }
-        let destination = Path::new(destination);
+        let destination = if destination.is_empty() {
+            match menu::choose_save_path(language, "history")? {
+                Some(path) => path,
+                None => return Ok(Value::Null),
+            }
+        } else {
+            destination.to_string()
+        };
+        let destination = Path::new(&destination);
         if let Some(parent) = destination.parent() { fs::create_dir_all(parent).map_err(|error| error.to_string())?; }
         fs::copy(&source, destination).map_err(|error| error.to_string())?;
         Ok(Value::Null)
@@ -446,6 +470,19 @@ impl Workbench {
 
     fn path_list(&self, host_id: &str, input: &str, language: &str) -> Result<Value, String> {
         let Some(host) = self.optional_host(host_id)? else { return Ok(files::list_dir(input)) };
+        if host["platform"] == "windows" {
+            let current = input.trim();
+            let script = if current.is_empty() { ssh::windows_home_dir_script(language) } else { ssh::windows_dir_script(current, language) };
+            let text = match ssh::run(&self.paths.data, &host, &script, None, language) {
+                Ok(text) => text,
+                Err(error) => return Ok(json!({ "path": current, "parent": Value::Null, "dirs": [], "error": error })),
+            };
+            let parsed: Value = serde_json::from_str(text.trim()).unwrap_or(json!({}));
+            let path = parsed["path"].as_str().unwrap_or(current).to_string();
+            let dirs = parsed["dirs"].as_array().cloned().unwrap_or_default().into_iter().filter_map(|name| name.as_str().map(|name| json!({ "name": name, "path": format!("{path}\\{name}") }))).collect::<Vec<_>>();
+            let parent = if path.len() <= 3 { Value::Null } else { json!(path.rsplit_once('\\').map(|(parent, _)| parent).unwrap_or(&path)) };
+            return Ok(json!({ "path": path, "parent": parent, "dirs": dirs }));
+        }
         let mut current = input.trim().to_string();
         if current.is_empty() {
             current = ssh::run(&self.paths.data, &host, "printf %s \"$HOME\"", None, language).unwrap_or_else(|_| "/".into());
@@ -564,7 +601,7 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
         let ignored = self.ignores(project_id);
         let job = if let Some((host, path)) = self.remote_place(project_id, language)? {
             let payload = json!({ "root": path, "query": str_arg(args, 2), "sensitive": sensitive, "regex": regex, "whole": whole, "ignored": ignored });
-            let script = search::remote_content_shell();
+            let script = if host["platform"] == "windows" { search::windows_content_script().to_string() } else { search::remote_content_shell() };
             let output = ssh::run(&self.paths.data, &host, &script, Some(payload.to_string().as_bytes()), language)?;
             ContentSearch::from_remote_output(project_id, &identity, &output, language)?
         } else {
@@ -692,6 +729,182 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
             return Ok(Value::Null);
         }
         self.with_local(project_id, language, |root| files::trash_entry(root, &relative, directory, language).map(|_| Value::Null))
+    }
+
+    fn tree_create(&self, args: &[Value], language: &str) -> Result<Value, String> {
+        let project_id = str_arg(args, 0);
+        let parent = str_arg(args, 1);
+        let name = str_arg(args, 2);
+        let directory = bool_arg(args, 3)?;
+        if let Some((host, root)) = self.remote_place(project_id, language)? {
+            if host["platform"] != "windows" {
+                return Err(translate(language, "远程项目的该操作尚未在 Rust 移植中实现", &[] as &[String]));
+            }
+            files::validate_entry_name(name, true, language)?;
+            let relative_parent = files::clean_relative(parent, language)?;
+            let relative = if relative_parent.is_empty() { name.to_string() } else { format!("{relative_parent}/{name}") };
+            let parent_abs = if relative_parent.is_empty() { root.clone() } else { format!("{root}\\{}", relative_parent.replace('/', "\\")) };
+            let dest_abs = format!("{root}\\{}", relative.replace('/', "\\"));
+            let script = ssh::windows_create_script(&root, &parent_abs, &dest_abs, directory, language);
+            ssh::run(&self.paths.data, &host, &script, None, language)?;
+            return Ok(json!(relative));
+        }
+        self.with_local(project_id, language, |root| files::create_entry(root, parent, name, directory, language).map(|path| json!(path)))
+    }
+
+    fn tree_rename(&self, args: &[Value], language: &str) -> Result<Value, String> {
+        let project_id = str_arg(args, 0);
+        let rel = str_arg(args, 1);
+        let name = str_arg(args, 2);
+        let directory = bool_arg(args, 3)?;
+        if let Some((host, root)) = self.remote_place(project_id, language)? {
+            if host["platform"] != "windows" {
+                return Err(translate(language, "远程项目的该操作尚未在 Rust 移植中实现", &[] as &[String]));
+            }
+            let relative = files::clean_relative(rel, language)?;
+            let parent = relative.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("");
+            let script = ssh::windows_rename_script(&root, &relative, name, parent, directory, language)?;
+            ssh::run(&self.paths.data, &host, &script, None, language)?;
+            let next = if parent.is_empty() { name.to_string() } else { format!("{parent}/{name}") };
+            return Ok(json!(next));
+        }
+        self.with_local(project_id, language, |root| files::rename_entry(root, rel, name, directory, language).map(|path| json!(path)))
+    }
+
+    fn tree_move(&self, args: &[Value], language: &str) -> Result<Value, String> {
+        let project_id = str_arg(args, 0);
+        let rel = str_arg(args, 1);
+        let destination = str_arg(args, 2);
+        let directory = bool_arg(args, 3)?;
+        if let Some((host, root)) = self.remote_place(project_id, language)? {
+            if host["platform"] != "windows" {
+                return Err(translate(language, "远程项目的该操作尚未在 Rust 移植中实现", &[] as &[String]));
+            }
+            let relative = files::clean_relative(rel, language)?;
+            let name = relative.rsplit_once('/').map(|(_, name)| name).unwrap_or(&relative);
+            let parent = files::clean_relative(destination, language)?;
+            let script = ssh::windows_rename_script(&root, &relative, name, &parent, directory, language)?;
+            ssh::run(&self.paths.data, &host, &script, None, language)?;
+            let next = if parent.is_empty() { name.to_string() } else { format!("{parent}/{name}") };
+            return Ok(json!(next));
+        }
+        self.with_local(project_id, language, |root| files::move_entry(root, rel, destination, directory, language).map(|path| json!(path)))
+    }
+
+    fn transfer_drop(&self, args: &[Value], language: &str) -> Result<Value, String> {
+        let project_id = str_arg(args, 0).to_string();
+        let parent = str_arg(args, 1).to_string();
+        let sources = args.get(2).and_then(|value| value.as_array()).map(|list| list.iter().filter_map(|item| item.as_str().map(|item| item.to_string())).collect::<Vec<_>>()).unwrap_or_default();
+        let project = self.project(&project_id, language)?;
+        let root = project["path"].as_str().unwrap_or("").to_string();
+        let host = self.optional_host(project["host"].as_str().unwrap_or("local"))?;
+        let dirty = *self.dirty.lock().expect("dirty");
+        self.uploads.start(self.paths.data.clone(), host, project_id, root, parent, sources, dirty, language.to_string(), self.emit.clone())
+    }
+
+    fn transfer_retry(&self, id: &str, language: &str) -> Result<Value, String> {
+        let project_id = self.uploads.project_id(id).unwrap_or_default();
+        let host = if project_id.is_empty() { None } else { self.optional_host(self.project(&project_id, language)?["host"].as_str().unwrap_or("local"))? };
+        self.uploads.retry(self.paths.data.clone(), host, language.to_string(), self.emit.clone(), id)
+    }
+
+    fn project_menu(&self, project_id: &str, language: &str) -> Result<Value, String> {
+        let project = self.project(project_id, language)?;
+        let before = project.clone();
+        let local = project["host"].as_str().unwrap_or("local") == "local" || project["host"].as_str().unwrap_or("").is_empty();
+        let menu = menu::project_menu(language, local);
+        let after = self.project(project_id, language)?;
+        if before != after { return Err(translate(language, "项目记录被意外修改", &[] as &[String])); }
+        Ok(menu)
+    }
+
+    fn tree_template(&self, project_id: &str, rel: &str, directory: bool, language: &str) -> Result<Value, String> {
+        let project = self.project(project_id, language)?;
+        let local = project["host"].as_str().unwrap_or("local") == "local" || project["host"].as_str().unwrap_or("").is_empty();
+        let root = files::clean_relative(rel, language).unwrap_or_default().is_empty();
+        Ok(menu::tree_menu(language, directory, local, root))
+    }
+
+    fn tree_action(&self, project_id: &str, rel: &str, _directory: bool, action: &str, language: &str) -> Result<Value, String> {
+        let before = self.project(project_id, language)?;
+        let root = before["path"].as_str().unwrap_or("");
+        let relative = files::clean_relative(rel, language).unwrap_or_default();
+        let local = before["host"].as_str().unwrap_or("local") == "local" || before["host"].as_str().unwrap_or("").is_empty();
+        let full = if relative.is_empty() {
+            if local { fs::canonicalize(root).map(|path| path.display().to_string()).unwrap_or_else(|_| root.to_string()) } else { root.to_string() }
+        } else if root.contains('\\') {
+            format!("{}\\{}", root.trim_end_matches('\\'), relative.replace('/', "\\"))
+        } else {
+            format!("{}/{}", root.trim_end_matches('/'), relative)
+        };
+        let result = match action {
+            "copy-full" => Ok(json!(full)),
+            "copy-relative" => Ok(json!(if relative.is_empty() { "." } else { &relative })),
+            "reveal" if local => menu::reveal_path(Path::new(&full), language).map(|_| json!(full)),
+            "reveal" => Err(translate(language, "远程项目不支持本机打开", &[] as &[String])),
+            "create-file" | "create-directory" => Err(translate(language, "项目菜单不提供新建文件或文件夹", &[] as &[String])),
+            _ => Err(translate(language, "不支持此操作", &[] as &[String])),
+        }?;
+        let after = self.project(project_id, language)?;
+        if before != after { return Err(translate(language, "项目记录被意外修改", &[] as &[String])); }
+        Ok(result)
+    }
+
+    fn picker(&self, request: Value, language: &str) -> Result<Value, String> {
+        let op = request["op"].as_str().unwrap_or("");
+        if op == "open" {
+            let id = uid("pick");
+            let host_id = request["hostId"].as_str().unwrap_or("").to_string();
+            let initial = request["initial"].as_str().unwrap_or("").to_string();
+            let form_path = request["formPath"].as_str().unwrap_or("").to_string();
+            let mut session = Picker::open(id.clone(), host_id.clone(), initial.clone(), form_path);
+            let generation = session.navigate(initial, None);
+            let listing = self.path_list(&host_id, session.address.as_str(), language).unwrap_or_else(|error| json!({ "path": session.address, "parent": Value::Null, "dirs": [], "error": error }));
+            session.apply(generation, listing);
+            let view = session.view();
+            self.pickers.lock().expect("picker").insert(id, session);
+            return Ok(view);
+        }
+        let id = request["id"].as_str().unwrap_or("").to_string();
+        let mut pickers = self.pickers.lock().expect("picker");
+        let Some(session) = pickers.get_mut(&id) else { return Err(translate(language, "目录选择器已关闭", &[] as &[String])); };
+        if op == "esc" {
+            let form = session.esc();
+            return Ok(json!({ "closed": true, "formPath": form }));
+        }
+        if op == "confirm" {
+            return Ok(json!(session.confirm()));
+        }
+        if op == "begin" {
+            session.navigate(request["path"].as_str().unwrap_or("").to_string(), None);
+            return Ok(session.view());
+        }
+        if op == "click" { session.click(request["path"].as_str().unwrap_or("")); return Ok(session.view()); }
+        if op == "filter" { session.filter(request["query"].as_str().unwrap_or("").to_string()); return Ok(session.view()); }
+        if op == "apply" {
+            let generation = request["generation"].as_u64().unwrap_or(0);
+            session.apply(generation, request["listing"].clone());
+            return Ok(session.view());
+        }
+        let host_id = session.host_id.clone();
+        let generation = match op {
+            "enter" => session.enter(request["path"].as_str().unwrap_or("")),
+            "back" => session.back(),
+            "forward" => session.forward(),
+            "parent" => session.parent(),
+            "home" => Some(session.home()),
+            "go" => Some(session.navigate(request["path"].as_str().unwrap_or("").to_string(), None)),
+            _ => None,
+        };
+        if let Some(generation) = generation {
+            let address = session.address.clone();
+            drop(pickers);
+            let listing = self.path_list(&host_id, &address, language).unwrap_or_else(|error| json!({ "path": address, "parent": Value::Null, "dirs": [], "error": error }));
+            let mut pickers = self.pickers.lock().expect("picker");
+            if let Some(session) = pickers.get_mut(&id) { session.apply(generation, listing); }
+            return Ok(pickers.get(&id).map(|session| session.view()).unwrap_or(Value::Null));
+        }
+        Ok(session.view())
     }
 
     fn term_saved(&self, id: &str) -> bool {

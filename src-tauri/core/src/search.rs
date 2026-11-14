@@ -379,6 +379,60 @@ pub fn remote_content_shell() -> String {
     format!("python3 -u -c {}", crate::ssh::bash_quote(LINUX_CONTENT_SEARCH))
 }
 
+/// Windows content search. The query arrives on stdin. The script text does not contain it.
+pub fn windows_content_script() -> &'static str {
+    r#"$ErrorActionPreference='Stop'
+[Console]::InputEncoding=[Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+$c=[Console]::In.ReadToEnd() | ConvertFrom-Json
+$root=(Resolve-Path -LiteralPath $c.root).Path.TrimEnd('\')
+$options=[Text.RegularExpressions.RegexOptions]::CultureInvariant
+if (-not $c.sensitive) { $options=$options -bor [Text.RegularExpressions.RegexOptions]::IgnoreCase }
+$source=if ($c.regex) { $c.query } else { [regex]::Escape($c.query) }
+if ($c.whole) { $source='(?<![\p{L}\p{N}_])(?:'+$source+')(?![\p{L}\p{N}_])' }
+try { $pattern=[regex]::new($source,$options,[TimeSpan]::FromMilliseconds(500)) }
+catch { [Console]::WriteLine('{"error":"invalid"}'); exit 0 }
+$script:remaining=2000
+function Emit($value) { [Console]::WriteLine(($value | ConvertTo-Json -Depth 8 -Compress)) }
+function Scan($directory,$relative) {
+    try { $entries=@(Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop | Sort-Object Name) }
+    catch { if (-not $relative) { throw }; Emit @{errors=1}; return }
+    foreach ($entry in $entries) {
+        if ($script:remaining -le 0) { return }
+        if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+        $rel=if ($relative) { $relative+'/'+$entry.Name } else { $entry.Name }
+        if ($entry.PSIsContainer) {
+            if (-not $entry.Name.StartsWith('.') -and $entry.Name -cnotin $c.ignored) { Scan $entry.FullName $rel }
+            continue
+        }
+        try {
+            $walk=$root
+            foreach ($part in $rel.Split('/')) { $walk=Join-Path $walk $part }
+            if ((Get-Item -LiteralPath $walk -Force).Length -gt 2000000) { Emit @{skipped=1}; continue }
+            $raw=[IO.File]::ReadAllBytes($walk)
+            $text=[Text.Encoding]::UTF8.GetString($raw)
+            $matches=@()
+            $number=0
+            foreach ($line in $text.Split("`n")) {
+                $number++
+                $item=$line.TrimEnd("`r")
+                foreach ($m in $pattern.Matches($item)) {
+                    $matches += @{ line=$number; column=$m.Index+1; before=$item.Substring([Math]::Max(0,$m.Index-80), [Math]::Min($m.Index,80)); match=$m.Value; after=$item.Substring($m.Index+$m.Length, [Math]::Min(160, $item.Length-($m.Index+$m.Length))) }
+                    $script:remaining--
+                    if ($script:remaining -le 0) { break }
+                }
+                if ($script:remaining -le 0) { break }
+            }
+            if ($matches.Count) { Emit @{ file=@{ path=$rel; matches=$matches } } }
+        } catch [System.Text.RegularExpressions.RegexMatchTimeoutException] { Emit @{error='timeout'}; return }
+        catch { Emit @{errors=1} }
+    }
+}
+Scan $root ''
+if ($script:remaining -le 0) { Emit @{limited=$true} }
+"#
+}
+
 pub fn valid_search_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 100 && id.chars().all(|char| char.is_ascii_alphanumeric() || char == '_' || char == '-')
 }

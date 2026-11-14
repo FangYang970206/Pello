@@ -710,3 +710,70 @@ pub fn prune_history(data: &Path, ids: &[String]) {
         let _ = std::fs::remove_file(entry.path());
     }
 }
+
+/// One row from a single Windows process snapshot.
+#[derive(Clone, Copy)]
+pub struct ProcessRow {
+    pub pid: u32,
+    pub parent: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ShutdownStep {
+    /// Descendants, deepest first. These are not ConPTY roots.
+    KillDescendant(u32),
+    /// A PTY root. Native teardown starts only after earlier steps finish.
+    EndRoot(u32),
+    /// Wait for that root's ConPTY exit callback before the next root.
+    WaitNativeExit(u32),
+}
+
+/// Windows close: one snapshot, leaves before parents, then each root serially.
+/// `taskkill` is not paired with native teardown of the same root.
+pub fn windows_shutdown_plan(rows: &[ProcessRow], roots: &[u32], snapshot_ok: bool) -> Vec<ShutdownStep> {
+    if !snapshot_ok {
+        return roots.iter().flat_map(|root| [ShutdownStep::EndRoot(*root), ShutdownStep::WaitNativeExit(*root)]).collect();
+    }
+    let mut children: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
+    for row in rows {
+        if row.pid == 0 || row.parent == 0 { continue; }
+        children.entry(row.parent).or_default().push(row.pid);
+    }
+    let root_set: std::collections::HashSet<u32> = roots.iter().copied().collect();
+    let mut descendants = Vec::new();
+    fn visit(pid: u32, children: &std::collections::HashMap<u32, Vec<u32>>, roots: &std::collections::HashSet<u32>, out: &mut Vec<u32>) {
+        for child in children.get(&pid).into_iter().flatten() {
+            if roots.contains(child) { continue; }
+            visit(*child, children, roots, out);
+            out.push(*child);
+        }
+    }
+    for root in roots {
+        visit(*root, &children, &root_set, &mut descendants);
+    }
+    let mut steps: Vec<ShutdownStep> = descendants.into_iter().map(ShutdownStep::KillDescendant).collect();
+    for root in roots {
+        steps.push(ShutdownStep::EndRoot(*root));
+        steps.push(ShutdownStep::WaitNativeExit(*root));
+    }
+    steps
+}
+
+pub fn shutdown_is_serial(steps: &[ShutdownStep]) -> bool {
+    let mut awaiting: Option<u32> = None;
+    for step in steps {
+        match step {
+            ShutdownStep::EndRoot(pid) => {
+                if awaiting.is_some() { return false; }
+                awaiting = Some(*pid);
+            }
+            ShutdownStep::WaitNativeExit(pid) => {
+                if awaiting != Some(*pid) { return false; }
+                awaiting = None;
+            }
+            ShutdownStep::KillDescendant(_) if awaiting.is_some() => return false,
+            ShutdownStep::KillDescendant(_) => {}
+        }
+    }
+    awaiting.is_none()
+}

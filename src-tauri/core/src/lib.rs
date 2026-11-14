@@ -2,6 +2,8 @@ pub mod files;
 pub mod git;
 pub mod i18n;
 pub mod layout;
+pub mod menu;
+pub mod picker;
 pub mod search;
 pub mod paths;
 pub mod preview;
@@ -12,6 +14,7 @@ pub mod ssh;
 pub mod store;
 pub mod temporary;
 pub mod updates;
+pub mod upload;
 pub mod workbench;
 
 pub fn random_id() -> String {

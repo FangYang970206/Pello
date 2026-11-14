@@ -221,6 +221,16 @@ pub fn show_error(language: &str) -> String {
 pub fn read_remote(data: &Path, host: &Value, root: &str, rel: &str, language: &str) -> Result<Value, String> {
     let Ok(relative) = files::clean_relative(rel, language) else { return Ok(files::missing_file()) };
     if relative.is_empty() { return Ok(files::missing_file()) }
+    if host["platform"] == "windows" {
+        let script = crate::ssh::windows_read_script(root, &relative, language);
+        return match crate::ssh::run(data, host, &script, None, language) {
+            Ok(text) => {
+                let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, text.trim()).unwrap_or_default();
+                Ok(files::decode_file(&bytes))
+            }
+            Err(_) => Ok(files::missing_file()),
+        };
+    }
     let absolute = join_remote(root, &relative);
     let quoted = crate::ssh::bash_quote(&absolute);
     let script = format!("base64 -w 0 {quoted} 2>/dev/null || base64 {quoted}");
@@ -246,6 +256,14 @@ pub fn write_remote(data: &Path, host: &Value, root: &str, rel: &str, text: &str
     if current["missing"] == true { return Err(translate(language, "文件不存在", &[] as &[String])) }
     if current["version"] != version.unwrap_or("") { return Err(translate(language, "文件已被其他程序修改，请重新读取后合并更改", &[] as &[String])) }
     if current["binary"] == true { return Err(translate(language, "只能编辑 UTF-8 文本文件", &[] as &[String])) }
+    if host["platform"] == "windows" {
+        let script = crate::ssh::windows_write_script(root, &relative, language);
+        let payload = base64::engine::general_purpose::STANDARD.encode(bytes);
+        return match crate::ssh::run(data, host, &script, Some(payload.as_bytes()), language) {
+            Ok(_) => read_remote(data, host, root, &relative, language),
+            Err(_) => Err(translate(language, "文件已被其他程序修改，请重新读取后合并更改", &[] as &[String])),
+        };
+    }
     let absolute = join_remote(root, &relative);
     let root_q = crate::ssh::bash_quote(root);
     let file_q = crate::ssh::bash_quote(&absolute);
@@ -278,6 +296,20 @@ printf saved"#);
 
 pub fn list_remote(data: &Path, host: &Value, root: &str, rel: &str, ignored: &[String], language: &str) -> Result<Value, String> {
     let relative = files::clean_relative(rel, language)?;
+    if host["platform"] == "windows" {
+        let script = crate::ssh::windows_tree_script(root, &relative, language);
+        let text = crate::ssh::run(data, host, &script, None, language).unwrap_or_default();
+        let mut nodes = Vec::new();
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            let Ok(entry) = serde_json::from_str::<Value>(line) else { continue };
+            let dir = entry["dir"].as_bool().unwrap_or(false);
+            let name = entry["path"].as_str().unwrap_or(entry["name"].as_str().unwrap_or("")).to_string();
+            if name.is_empty() || (dir && ignored.iter().any(|rule| rule == &name)) { continue }
+            let path = if relative.is_empty() || relative == "." { name.clone() } else { format!("{relative}/{name}") };
+            nodes.push(json!({ "name": name, "dir": dir, "path": path }));
+        }
+        return Ok(Value::Array(nodes));
+    }
     let absolute = if relative.is_empty() || relative == "." { root.to_string() } else { join_remote(root, &relative) };
     let quoted = crate::ssh::bash_quote(&absolute);
     let script = format!(r#"for f in {quoted}/* {quoted}/.[!.]* {quoted}/..?*; do [ -L "$f" ] && continue; [ -e "$f" ] || continue; if [ -d "$f" ]; then printf 'd%s\0' "${{f##*/}}"; elif [ -f "$f" ]; then printf 'f%s\0' "${{f##*/}}"; fi; done"#);
