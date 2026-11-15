@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { _electron as electron } from 'playwright'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'awb-resource-dialog-')), home = path.join(data, 'home')
 const root = path.join(home, '.claude/skills'), shots = path.resolve('.cache/resource-layout')
@@ -13,12 +13,28 @@ for (const name of ['long-skill', 'delete-me', 'untouched']) {
   fs.writeFileSync(path.join(root, name, 'support.txt'), 'Keep supporting files')
 }
 fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ mcpServers: { 'fixture-mcp': { url: 'https://example.invalid/mcp' } } }))
+const tauri = process.env.AWB_SHELL === 'tauri'
+const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`
+const openLog = path.join(data, 'open.log')
+const trashLog = path.join(data, 'trash.log')
+const openFail = path.join(data, 'open-fail')
+const trashFail = path.join(data, 'trash-fail')
+const trashGo = path.join(data, 'trash-go')
+const readLog = (file) => fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').map((line) => line.trim()).filter(Boolean) : []
+if (tauri) {
+  const openBin = path.join(data, 'open-bin.sh')
+  const trashBin = path.join(data, 'trash-bin.sh')
+  fs.writeFileSync(openBin, `#!/bin/sh\nprintf '%s\\n' "$1" >> ${quote(openLog)}\nif [ -f ${quote(openFail)} ]; then echo 'Fixture open failed' >&2; exit 1; fi\nexit 0\n`)
+  fs.writeFileSync(trashBin, `#!/bin/sh\nprintf '%s\\n' "$1" >> ${quote(trashLog)}\nif [ -f ${quote(trashFail)} ]; then echo 'Fixture trash failed' >&2; exit 1; fi\nwhile [ ! -f ${quote(trashGo)} ]; do sleep 0.05; done\nrm -f ${quote(trashGo)}\nexit 0\n`)
+  fs.chmodSync(openBin, 0o755); fs.chmodSync(trashBin, 0o755); fs.writeFileSync(trashFail, '')
+}
 const env = { ...process.env, AWB_USER_DATA: data, AWB_RESOURCE_HOME: home }; delete env.ELECTRON_RUN_AS_NODE
-const app = await electron.launch({ args: ['.'], env })
+if (tauri) { env.AWB_OPEN_BIN = path.join(data, 'open-bin.sh'); env.AWB_TRASH_BIN = path.join(data, 'trash-bin.sh') }
+const app = await launchWorkbench({ args: ['.'], env })
 try {
   const page = await app.firstWindow()
   await page.emulateMedia({ reducedMotion: 'reduce' })
-  await app.evaluate(({ shell }) => {
+  if (app.shell !== 'tauri') await app.evaluate(({ shell }) => {
     globalThis.__resourceOps = { opened: [], deleted: [], failOpen: false, failDelete: true }
     shell.openPath = async (folder) => { globalThis.__resourceOps.opened.push(folder); return globalThis.__resourceOps.failOpen ? 'Fixture open failed' : '' }
     shell.trashItem = async (folder) => {
@@ -51,7 +67,7 @@ try {
       await page.evaluate((size) => document.documentElement.style.setProperty('--ui-size', `${size}px`), width === 1024 ? 16 : 12)
       await section('skills')
       const inspect = page.getByRole('button', { name: '查看 long-skill 详情', exact: true })
-      await inspect.click(); await aligned(true)
+      await inspect.click(); await page.getByRole('dialog').waitFor(); await aligned(true)
       await page.screenshot({ path: path.join(shots, `skill-detail-${theme}-${width}.png`) })
       for (let i = 0; i < 5; i++) {
         await page.keyboard.press('Tab')
@@ -64,14 +80,14 @@ try {
       await page.mouse.click(point.x, point.y)
       await page.getByRole('dialog').waitFor({ state: 'detached' })
       assert.equal(await inspect.evaluate((element) => element === document.activeElement), true, 'Backdrop dismissal returns focus to the detail button')
-      await page.getByRole('button', { name: '添加 Skill', exact: true }).click(); await aligned()
+      await page.getByRole('button', { name: '添加 Skill', exact: true }).click(); await page.getByRole('dialog').waitFor(); await aligned()
       await page.screenshot({ path: path.join(shots, `skill-add-${theme}-${width}.png`) })
       await page.keyboard.press('Escape')
       await section('mcp')
-      await page.getByRole('button', { name: '添加 MCP', exact: true }).click(); await aligned()
+      await page.getByRole('button', { name: '添加 MCP', exact: true }).click(); await page.getByRole('dialog').waitFor(); await aligned()
       await page.screenshot({ path: path.join(shots, `mcp-add-${theme}-${width}.png`) })
       await page.keyboard.press('Escape')
-      await page.getByRole('button', { name: '查看 fixture-mcp 详情', exact: true }).click(); await aligned()
+      await page.getByRole('button', { name: '查看 fixture-mcp 详情', exact: true }).click(); await page.getByRole('dialog').waitFor(); await aligned()
       await page.screenshot({ path: path.join(shots, `mcp-detail-${theme}-${width}.png`) })
       await page.keyboard.press('Escape')
     }
@@ -91,31 +107,38 @@ try {
   assert.equal(menuStyle.overflow, false, 'Two menu items should fit without a needless scrollbar')
   await page.screenshot({ path: path.join(shots, 'skill-menu.png') })
   await page.getByRole('menuitem', { name: '在资源管理器打开', exact: true }).click()
-  assert.deepEqual(await app.evaluate(() => globalThis.__resourceOps.opened), [path.join(root, 'delete-me')])
-  await app.evaluate(() => { globalThis.__resourceOps.failOpen = true })
+  const opened = async () => app.shell === 'tauri' ? readLog(openLog) : app.evaluate(() => globalThis.__resourceOps.opened)
+  const removed = async () => app.shell === 'tauri' ? readLog(trashLog) : app.evaluate(() => globalThis.__resourceOps.deleted)
+  const skillDir = fs.realpathSync(path.join(root, 'delete-me'))
+  assert.deepEqual((await opened()).map((item) => fs.realpathSync(item)), [skillDir])
+  if (app.shell === 'tauri') fs.writeFileSync(openFail, '')
+  else await app.evaluate(() => { globalThis.__resourceOps.failOpen = true })
   await trigger.click(); await page.getByRole('menuitem', { name: '在资源管理器打开', exact: true }).click()
   await page.getByRole('alert').filter({ hasText: 'Fixture open failed' }).waitFor()
   const original = await page.evaluate(() => window.awb.resourceList('skills', 'claude', 1, 'delete-me'))
   await trigger.click(); await page.getByRole('menuitem', { name: '删除', exact: true }).click()
   await page.getByRole('dialog', { name: '删除 Skill', exact: true }).getByRole('button', { name: '取消', exact: true }).click()
   assert.equal(await trigger.evaluate((element) => element === document.activeElement), true)
-  assert.deepEqual(await app.evaluate(() => globalThis.__resourceOps.deleted), [])
+  assert.deepEqual(await removed(), [])
   await trigger.click(); await page.getByRole('menuitem', { name: '删除', exact: true }).click()
   const confirm = page.getByRole('dialog', { name: '删除 Skill', exact: true })
   await confirm.getByRole('button', { name: '删除', exact: true }).click()
   await confirm.getByRole('alert').filter({ hasText: 'Fixture trash failed' }).waitFor()
   assert.ok(fs.existsSync(path.join(root, 'delete-me/SKILL.md')))
-  await app.evaluate(() => { globalThis.__resourceOps.failDelete = false })
+  if (app.shell === 'tauri') fs.rmSync(trashFail, { force: true })
+  else await app.evaluate(() => { globalThis.__resourceOps.failDelete = false })
   await confirm.getByRole('button', { name: '删除', exact: true }).click()
   assert.equal(await confirm.getByRole('button', { name: '正在删除…', exact: true }).isDisabled(), true)
   await page.waitForTimeout(150)
-  assert.deepEqual(await app.evaluate(() => globalThis.__resourceOps.deleted), [path.join(root, 'delete-me'), path.join(root, 'delete-me')])
+  const deletedPaths = await removed()
+  assert.deepEqual(deletedPaths.map((item) => fs.realpathSync(item)), [skillDir, skillDir])
   fs.mkdirSync(path.join(data, 'trash'))
   fs.renameSync(path.join(root, 'delete-me'), path.join(data, 'trash/delete-me'))
-  await app.evaluate(() => globalThis.__completeTrash())
+  if (app.shell === 'tauri') fs.writeFileSync(trashGo, '')
+  else await app.evaluate(() => globalThis.__completeTrash())
   await confirm.waitFor({ state: 'detached' })
   await trigger.waitFor({ state: 'detached' })
-  assert.deepEqual(await app.evaluate(() => globalThis.__resourceOps.deleted), [path.join(root, 'delete-me'), path.join(root, 'delete-me')])
+  assert.deepEqual(await removed(), deletedPaths)
   assert.equal(fs.readFileSync(path.join(data, 'trash/delete-me/support.txt'), 'utf8'), 'Keep supporting files')
   assert.ok(fs.existsSync(path.join(root, 'untouched/SKILL.md')))
   assert.equal(await page.evaluate((item) => window.awb.deleteSkill('claude', item).then(() => false, () => true), original.items[0]), true)

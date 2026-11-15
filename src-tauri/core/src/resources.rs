@@ -849,7 +849,9 @@ pub fn skill_directory(data: &Path, custom: &Value, agent: &str, item: &Value, r
 pub fn open_skill(data: &Path, custom: &Value, agent: &str, item: &Value, language: &str) -> Result<Value, String> {
     let folder = skill_directory(data, custom, agent, item, false, language)?;
     let real = fs::canonicalize(&folder).unwrap_or(folder);
-    if std::env::var("AWB_OPEN_SKILL").ok().as_deref() != Some("0") {
+    if std::env::var_os("AWB_OPEN_BIN").is_some() || std::env::var_os("AWB_OPEN_LOG").is_some() {
+        crate::menu::reveal_path(&real, language)?;
+    } else if std::env::var("AWB_OPEN_SKILL").ok().as_deref() != Some("0") {
         let _ = std::process::Command::new("xdg-open").arg(&real).spawn();
     }
     Ok(json!(real.display().to_string()))
@@ -862,6 +864,14 @@ pub fn delete_skill(data: &Path, custom: &Value, agent: &str, item: &Value, lang
 }
 
 fn trash_path(path: &Path) -> Result<(), String> {
+    if let Ok(program) = std::env::var("AWB_TRASH_BIN") {
+        let output = std::process::Command::new(program).arg(path).output().map_err(|error| error.to_string())?;
+        if output.status.success() { return Ok(()) }
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = if !stderr.is_empty() { stderr } else { stdout };
+        return Err(if detail.is_empty() { "无法移入回收站".into() } else { detail });
+    }
     let home = home_dir();
     let data_home = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".local").join("share"));
     let files = data_home.join("Trash").join("files");
@@ -959,6 +969,7 @@ fn mcp_value(target: &Target, config: &Value, enabled: bool, v2: bool, parked: b
         value.insert("type".into(), json!("http"));
         value.insert("url".into(), json!(url));
         if let Some(headers) = config.get("headers") { value.insert("headers".into(), headers.clone()); }
+        if !enabled && !parked { value.insert("enabled".into(), json!(false)); }
     } else {
         value.insert("command".into(), config.get("command").cloned().unwrap_or(json!("")));
         value.insert("args".into(), config.get("args").cloned().unwrap_or_else(|| json!([])));
@@ -1059,7 +1070,7 @@ pub fn scan(data: &Path, custom: &Value, kind: &str, source: &str, language: &st
     if kind == "skills" {
         let _ = (data, custom);
         let (staging, skills) = stage_skills(Path::new(source), language)?;
-        let listed = skills.iter().map(|skill| json!({ "name": skill.name, "description": skill.description, "path": skill.relative })).collect::<Vec<_>>();
+        let listed = skills.iter().map(|skill| json!({ "id": skill.name, "name": skill.name, "description": skill.description, "path": skill.relative })).collect::<Vec<_>>();
         let _ = remove_tree(&staging);
         return Ok(Value::Array(listed));
     }
@@ -1097,6 +1108,10 @@ fn read_mcp_import(source: &Path, language: &str) -> Result<Vec<ImportEntry>, St
     let mut entries = Vec::new();
     if name.ends_with(".toml") {
         for (server, value) in toml_servers(&text) { entries.push(import_entry(&server, &value, "$.mcp_servers")); }
+    } else if name.ends_with(".yaml") || name.ends_with(".yml") {
+        let config = yaml_to_json(&parse_yaml(&text).map_err(|_| t(language, "配置语法有误，请检查 JSON、JSONC、TOML 或 YAML 格式"))?);
+        if !config.is_object() { return Err(t(language, "MCP 配置的根节点必须是对象")); }
+        collect_mcp(&config, "$", &mut entries);
     } else {
         let config = parse_json_text(&text, language).map_err(|_| t(language, "配置语法有误，请检查 JSON、JSONC、TOML 或 YAML 格式"))?;
         collect_mcp(&config, "$", &mut entries);
@@ -1142,6 +1157,10 @@ fn import_entry(name: &str, value: &Value, location: &str) -> ImportEntry {
 
 fn normalize_import(value: &Value) -> Result<Value, String> {
     let object = value.as_object().ok_or_else(|| "服务器配置必须是对象".to_string())?;
+    if object.get("args").is_some_and(|item| !item.as_array().is_some_and(|list| list.iter().all(|item| item.is_string()))) { return Err("args 必须是字符串数组".into()); }
+    for key in ["enabled", "disabled"] {
+        if object.get(key).is_some_and(|item| !item.is_boolean()) { return Err(format!("{key} 必须是布尔值")); }
+    }
     let supported = ["name", "description", "type", "command", "args", "env", "environment", "url", "headers", "http_headers", "enabled", "disabled"];
     if let Some(extra) = object.keys().find(|key| !supported.contains(&key.as_str())) { return Err(format!("包含需要手动适配的字段：{extra}")); }
     if let Some(url) = object.get("url").and_then(|item| item.as_str()) {
@@ -1151,13 +1170,42 @@ fn normalize_import(value: &Value) -> Result<Value, String> {
         if let Some(headers) = headers { config["headers"] = headers.clone(); }
         return Ok(config);
     }
-    let command = object.get("command").and_then(|item| item.as_str()).ok_or_else(|| "stdio MCP 缺少有效 command".to_string())?;
+    let (command, mut args) = if let Some(list) = object.get("command").and_then(|item| item.as_array()) {
+        let command = list.first().and_then(|item| item.as_str()).ok_or_else(|| "stdio MCP 缺少有效 command".to_string())?.to_string();
+        let extra = list.iter().skip(1).cloned().collect::<Vec<_>>();
+        if extra.iter().any(|item| !item.is_string()) { return Err("args 必须是字符串数组".into()); }
+        (command, extra)
+    } else {
+        (object.get("command").and_then(|item| item.as_str()).ok_or_else(|| "stdio MCP 缺少有效 command".to_string())?.to_string(), Vec::new())
+    };
     if command.trim().is_empty() { return Err("stdio MCP 缺少有效 command".into()); }
-    let args = object.get("args").cloned().unwrap_or_else(|| json!([]));
-    if !args.as_array().is_some_and(|list| list.iter().all(|item| item.is_string())) { return Err("args 必须是字符串数组".into()); }
+    if let Some(given) = object.get("args").and_then(|item| item.as_array()) { args.extend(given.iter().cloned()); }
     let mut config = json!({ "command": command, "args": args });
     if let Some(env) = object.get("env").or_else(|| object.get("environment")) { config["env"] = env.clone(); }
     Ok(config)
+}
+
+fn yaml_to_json(node: &Yaml) -> Value {
+    match node {
+        Yaml::Map(entries) => {
+            let mut map = serde_json::Map::new();
+            for (key, value) in entries { map.insert(key.clone(), yaml_to_json(value)); }
+            Value::Object(map)
+        }
+        Yaml::Seq(items) => Value::Array(items.iter().map(yaml_to_json).collect()),
+        Yaml::Null => Value::Null,
+        Yaml::Str(value) => yaml_scalar(value),
+    }
+}
+
+fn yaml_scalar(value: &str) -> Value {
+    if value == "true" || value == "false" { return json!(value == "true"); }
+    if value.starts_with('[') && value.ends_with(']') {
+        let inner = &value[1..value.len() - 1];
+        let items = if inner.trim().is_empty() { Vec::new() } else { inner.split(',').map(|item| json!(unyaml(item.trim()))).collect() };
+        return Value::Array(items);
+    }
+    json!(value)
 }
 
 struct StagedSkill { folder: PathBuf, name: String, description: String, relative: String }

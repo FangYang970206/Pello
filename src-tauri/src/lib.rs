@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager, State, Window};
 
 #[tauri::command]
-fn awb(window: Window, state: State<Arc<Workbench>>, channel: String, args: Vec<Value>) -> Result<Value, String> {
+async fn awb(window: Window, state: State<'_, Arc<Workbench>>, channel: String, args: Vec<Value>) -> Result<Value, String> {
     match channel.as_str() {
         "win:min" => {
             window.minimize().map_err(|error| error.to_string())?;

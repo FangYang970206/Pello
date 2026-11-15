@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { zipSync, strToU8 } from 'fflate'
-import { _electron as electron } from 'playwright'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'awb-import-ui-')), home = path.join(data, 'home')
 // The first visual pass explicitly starts dark; fresh profiles now default light.
@@ -16,12 +16,14 @@ fs.writeFileSync(path.join(source, 'group/deep/inner/SKILL.md'), skill('folder-i
 fs.writeFileSync(path.join(source, 'group/deep/inner/references/guide.md'), 'Support file')
 fs.writeFileSync(archive, zipSync({ 'root/SKILL.md': strToU8(skill('zip-outer')), 'root/deep/child/SKILL.md': strToU8(skill('zip-inner')) }))
 fs.writeFileSync(config, '{// imported configuration\n"mcpServers":{"file-server":{"command":"node","args":["not-executed.js"],"env":{"TOKEN":"never-display-secret"}},"disabled-http":{"url":"https://example.invalid/mcp?token=never-display-secret","disabled":true},"needs-review":{"command":"node","cwd":"advanced-field-needs-review"}},"projects":{"fixture":{"mcpServers":{"project-server":{"command":"node"}}}}}')
+const pickFile = path.join(data, 'pick.txt')
 const env = { ...process.env, AWB_USER_DATA: data, AWB_RESOURCE_HOME: home }
 delete env.ELECTRON_RUN_AS_NODE
-const app = await electron.launch({ args: ['.'], env })
+if (process.env.AWB_SHELL === 'tauri') env.AWB_PICK_FILE = pickFile
+const app = await launchWorkbench({ args: ['.'], env })
 try {
   const page = await app.firstWindow()
-  const choose = (file) => app.evaluate(({ dialog }, file) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [file] }) }, file)
+  const choose = (file) => app.shell === 'tauri' ? fs.writeFileSync(pickFile, file) : app.evaluate(({ dialog }, file) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [file] }) }, file)
   await page.click('[data-a=settings]'); await page.click('[data-a=sec][data-id=skills]')
   await page.getByRole('button', { name: '添加 Skill', exact: true }).click()
   await choose(source); await page.getByRole('button', { name: '选择文件夹', exact: true }).click()

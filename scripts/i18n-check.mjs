@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import ts from 'typescript'
-import { _electron as electron } from 'playwright'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 import { loadTypeScript } from './fixtures/load-ts.mjs'
 import { installDocumentHarness } from './fixtures/document-harness.mjs'
 
@@ -50,7 +50,7 @@ const env = { ...process.env, AWB_USER_DATA: data }
 delete env.ELECTRON_RUN_AS_NODE
 const shots = path.resolve('output/playwright/i18n')
 fs.mkdirSync(shots, { recursive: true })
-let app = await electron.launch({ args: ['.'], env })
+let app = await launchWorkbench({ args: ['.'], env })
 let page
 try {
   page = await app.firstWindow()
@@ -77,7 +77,7 @@ try {
   assert.equal(await page.locator('.temporary-group [data-a=side-session]').count(), 0)
   await page.locator('[data-a=temporary-toggle]').press('ArrowRight')
   await session('old-temp-a').click()
-  await page.waitForFunction(() => window.__awbBuffer('term-old-temp-a').includes('>'))
+  await page.waitForFunction((windows) => { const text = window.__awbBuffer('term-old-temp-a'); return typeof text === 'string' && (windows ? text.includes('>') : text.includes('$')) }, process.platform === 'win32')
   await page.evaluate(() => { window.__localeTerminal = document.querySelector('[data-term="term-old-temp-a"] .xterm') })
   await session('old-temp-a').dblclick()
   await rename('临时排查 $&')
@@ -153,12 +153,25 @@ try {
   assert.equal(await input.inputValue(), '   ')
   await input.press('Escape')
   assert.equal(await tab('term-old-temp-a').evaluate((node) => node === document.activeElement), true)
-  await app.evaluate(({ Menu }) => {
-    Menu.prototype.popup = function (options) { globalThis.__localeMenuLabels = this.items.map((item) => item.label); this.getMenuItemById('rename')?.click(); options?.callback?.() }
-  })
-  await tab('term-old-temp-a').click({ button: 'right' })
+  let menuLabels
+  if (app.menuFile) {
+    fs.rmSync(`${app.menuFile}.json`, { force: true })
+    fs.writeFileSync(app.menuFile, 'rename')
+    await tab('term-old-temp-a').click({ button: 'right' })
+    const end = Date.now() + 5000
+    while (Date.now() < end) {
+      if (fs.existsSync(`${app.menuFile}.json`)) { menuLabels = JSON.parse(fs.readFileSync(`${app.menuFile}.json`, 'utf8')).map((item) => item.label); break }
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+  } else {
+    await app.evaluate(({ Menu }) => {
+      Menu.prototype.popup = function (options) { globalThis.__localeMenuLabels = this.items.map((item) => item.label); this.getMenuItemById('rename')?.click(); options?.callback?.() }
+    })
+    await tab('term-old-temp-a').click({ button: 'right' })
+    menuLabels = await app.evaluate(() => globalThis.__localeMenuLabels)
+  }
   await rename('Renamed terminal 中文', 'button')
-  assert.ok((await app.evaluate(() => globalThis.__localeMenuLabels)).includes('Rename terminal'))
+  assert.ok(menuLabels.includes('Rename terminal'))
   const error = await page.evaluate(async () => { try { await window.awb.configureTemporaryDirectory('relative') } catch (error) { return String(error) } })
   assert.ok(error.includes('Choose an absolute directory for temporary sessions'), 'Main-process errors follow the selected language')
   // Cancellation creates neither a UUID folder nor a project record.
@@ -187,7 +200,8 @@ try {
   }
   await page.locator('[data-a=preview][data-id="AGENTS.md"]').waitFor()
   for (const theme of ['dark', 'light']) for (const size of [[1440, 900], [1024, 680]]) {
-    await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setContentSize(...size), size)
+    if (app.shell === 'tauri') await page.setViewportSize({ width: size[0], height: size[1] })
+    else await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setContentSize(...size), size)
     await page.click('[data-a=settings]'); await page.click('[data-a=sec][data-id=look]'); await page.click(`[data-a=theme][data-id=${theme}]`)
     await page.waitForFunction((theme) => document.documentElement.dataset.palette === theme, theme)
     await page.screenshot({ path: path.join(shots, `${theme}-${size[0]}-settings.png`) })
@@ -200,7 +214,7 @@ try {
   await page.evaluate(() => window.awb.ptyWrite('term-old-temp-a', 'echo PELLO_LOCALE_HISTORY\r'))
   await page.waitForFunction(() => window.__awbBuffer('term-old-temp-a').includes('PELLO_LOCALE_HISTORY'))
   await app.close()
-  app = await electron.launch({ args: ['.'], env }); page = await app.firstWindow(); page.setDefaultTimeout(15000)
+  app = await launchWorkbench({ args: ['.'], env }); page = await app.firstWindow(); page.setDefaultTimeout(15000)
   await page.waitForFunction(() => document.documentElement.lang === 'en')
   await session('old-temp-a').click(); await tab('term-old-temp-a').click()
   assert.ok((await tab('term-old-temp-a').textContent()).includes('Renamed terminal 中文'))

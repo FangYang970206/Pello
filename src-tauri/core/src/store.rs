@@ -134,8 +134,8 @@ pub fn save_database(file: &Path, db: &Value) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
     let temporary = PathBuf::from(format!("{}.tmp", file.display()));
-    fs::write(&temporary, serde_json::to_string_pretty(db).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
-    fs::rename(&temporary, file).map_err(|error| error.to_string())?;
+    fs::write(&temporary, serde_json::to_string_pretty(db).map_err(|error| error.to_string())?).map_err(|error| format!("{}: {error}", temporary.display()))?;
+    fs::rename(&temporary, file).map_err(|error| format!("{}: {error}", temporary.display()))?;
     Ok(())
 }
 

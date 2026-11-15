@@ -153,12 +153,13 @@ export async function launchWorkbench({ args = ['.'], env = process.env, cwd, sc
       })
     },
     async close() {
-      page.close()
-      if (child.exitCode === null) child.kill('SIGTERM')
+      try { await page.evaluate(() => window.awb.winClose()) } catch { /* The page can already be gone. */ }
       await new Promise((resolve) => {
-        if (child.exitCode !== null) resolve()
-        else child.once('exit', () => resolve())
+        if (child.exitCode !== null || child.signalCode) { resolve(); return }
+        const timer = setTimeout(() => { child.kill('SIGTERM'); resolve() }, 8000)
+        child.once('exit', () => { clearTimeout(timer); resolve() })
       })
+      try { page.close() } catch { /* The inspector socket closes with the process. */ }
       fs.rmSync(menuFile, { force: true })
     },
   }

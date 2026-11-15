@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { _electron as electron } from 'playwright'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 import { zipSync, strToU8 } from 'fflate'
 
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'awb-resources-ui-')), home = path.join(data, 'home')
@@ -14,8 +14,10 @@ for (let i = 0; i < 14; i++) {
 const archive = path.join(data, 'new-skill.zip')
 fs.writeFileSync(archive, zipSync({ 'new-skill/SKILL.md': strToU8('---\nname: new-skill\ndescription: Imported skill\n---\nBody') }))
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ plugins: [{ id: 'legacy', name: 'Old fake plugin' }], custom: [{ id: 'user', name: 'Custom Agent', cmd: 'node', args: '', shell: 'pwsh', letter: 'U', color: '#7fb2ff', env: [] }] }))
+const pickFile = path.join(data, 'pick.txt')
 const env = { ...process.env, AWB_USER_DATA: data, AWB_RESOURCE_HOME: home }; delete env.ELECTRON_RUN_AS_NODE
-const app = await electron.launch({ args: ['.'], env })
+if (process.env.AWB_SHELL === 'tauri') env.AWB_PICK_FILE = pickFile
+const app = await launchWorkbench({ args: ['.'], env })
 try {
   const page = await app.firstWindow()
   await page.click('[data-a=settings]')
@@ -39,6 +41,7 @@ try {
   await page.getByRole('checkbox', { name: 'Custom Agent', exact: true }).check()
   await page.getByRole('button', { name: '添加到所选 Agent', exact: true }).click()
   await page.getByRole('status').filter({ hasText: 'Claude Code · 添加成功' }).waitFor()
+  await page.getByRole('tabpanel').getByText('ui-fixture', { exact: true }).waitFor()
   assert.equal(await page.getByRole('tabpanel').getByText('ui-fixture', { exact: true }).count(), 1)
   assert.equal(await page.getByRole('tabpanel').locator('small').count(), 0, 'List rows should show names only')
   const toggle = page.getByRole('switch', { name: '启用 ui-fixture', exact: true })
@@ -71,7 +74,8 @@ try {
   await page.getByLabel('搜索 Skill', { exact: true }).fill('')
   await page.getByRole('button', { name: '添加 Skill', exact: true }).click()
   await page.getByRole('dialog', { name: '添加 Skill', exact: true }).waitFor()
-  await app.evaluate(({ dialog }, archive) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [archive] }) }, archive)
+  if (app.shell === 'tauri') fs.writeFileSync(pickFile, archive)
+  else await app.evaluate(({ dialog }, archive) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [archive] }) }, archive)
   await page.getByRole('button', { name: '选择 ZIP 压缩包', exact: true }).click()
   await page.getByRole('checkbox', { name: 'Pi', exact: true }).check()
   await page.getByRole('button', { name: '添加到所选 Agent', exact: true }).click()

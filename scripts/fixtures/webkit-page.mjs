@@ -479,7 +479,15 @@ class WebKitPage {
     return { newCDPSession: async () => { throw new Error('This WebKit inspector has no Chrome input domain') } }
   }
 
-  emulateMedia() { return Promise.resolve() }
+  emulateMedia(options = {}) {
+    if (options.reducedMotion !== 'reduce') return Promise.resolve()
+    return this.evaluate(() => {
+      const style = document.createElement('style')
+      style.setAttribute('data-awb-reduced-motion', '')
+      style.textContent = '*{animation:none!important;transition:none!important}'
+      document.documentElement.appendChild(style)
+    })
+  }
 
   async evaluate(fn, arg) {
     const hasArg = arguments.length > 1
@@ -555,6 +563,11 @@ class WebKitPage {
     },
     down: async () => { execFileSync('xdotool', ['mousedown', '1']) },
     up: async () => { execFileSync('xdotool', ['mouseup', '1']) },
+    click: async (x, y) => {
+      const point = await this.screenPoint(x, y)
+      this.pointer = point
+      execFileSync('xdotool', ['mousemove', String(point.x), String(point.y), 'click', '1'])
+    },
     wheel: (deltaX, deltaY) => this.evaluate((payload) => {
       if (window.__awbHoverFrame) {
         const frame = document.querySelector('iframe')
@@ -798,6 +811,9 @@ class Locator {
   async inputValue() { await this.waitFor(); return this.run(`return only(steps).value`) }
   async isDisabled() { return this.run(`const el = only(steps); return !!el.disabled || el.getAttribute('aria-disabled') === 'true'`) }
   async isChecked() { return this.run(`return !!only(steps).checked`) }
+  async check() {
+    if (!(await this.isChecked())) await this.click()
+  }
   async getAttribute(name) { return this.run(`const el = only(steps); return el.getAttribute(${JSON.stringify(name)})`) }
   async textContent() { return this.run(`return only(steps).textContent`) }
   async innerText() { return this.run(`return only(steps).innerText`) }

@@ -131,6 +131,10 @@ pub fn choose_open_paths(kind: &str) -> Vec<String> {
     if let Ok(raw) = std::env::var("AWB_PICK_PATHS") {
         return raw.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect();
     }
+    if let Ok(file) = std::env::var("AWB_PICK_FILE") {
+        let raw = fs::read_to_string(file).unwrap_or_default();
+        return raw.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect();
+    }
     let mut command = Command::new("zenity");
     command.arg("--file-selection");
     if kind == "directory" || kind == "folder" { command.arg("--directory"); }
@@ -168,6 +172,13 @@ pub fn reveal_path(path: &Path, language: &str) -> Result<(), String> {
             return Ok(());
         }
     }
-    let status = Command::new(&program).arg(path).status().map_err(|error| error.to_string())?;
-    if status.success() { Ok(()) } else { Err(translate(language, "无法在资源管理器中打开", &[] as &[String])) }
+    let output = Command::new(&program).arg(path).output().map_err(|error| error.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = if !stderr.is_empty() { stderr } else { stdout };
+        Err(if detail.is_empty() { translate(language, "无法在资源管理器中打开", &[] as &[String]) } else { detail })
+    }
 }

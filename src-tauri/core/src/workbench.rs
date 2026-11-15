@@ -292,9 +292,18 @@ impl Workbench {
 
     fn save_settings(&self, settings: Value) -> Result<Value, String> {
         let settings = apply_saved_settings(settings);
+        let previous = self.db.lock().expect("db")["settings"].clone();
+        let previous_updates = previous["autoCheckUpdates"] != false;
         self.updates.lock().expect("updates").set_enabled(settings["autoCheckUpdates"] != false);
         self.db.lock().expect("db")["settings"] = settings;
-        self.persist()
+        match self.persist() {
+            Ok(db) => Ok(db),
+            Err(error) => {
+                self.updates.lock().expect("updates").set_enabled(previous_updates);
+                self.db.lock().expect("db")["settings"] = previous;
+                Err(error)
+            }
+        }
     }
 
     pub fn poll_updates(&self, now: u64) -> bool {
