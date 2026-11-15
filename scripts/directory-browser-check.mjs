@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { _electron as electron } from 'playwright'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 import { loadTypeScript } from './fixtures/load-ts.mjs'
 const { themeVariables } = await loadTypeScript(new URL('../src/shared/themes.ts', import.meta.url))
 
@@ -10,11 +10,11 @@ const data = fs.mkdtempSync(path.join(os.tmpdir(), 'awb-directory-browser-'))
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ hosts: [
   { id: 'wsl-fixture', name: 'WSL fixture', addr: 'localhost', port: 22, user: 'tester', auth: 'key', on: true, os: 'Linux', platform: 'linux' }
 ] }))
-const env = { ...process.env, AWB_USER_DATA: data }
+const env = { ...process.env, AWB_USER_DATA: data, AWB_PATH_FIXTURE: '1' }
 delete env.ELECTRON_RUN_AS_NODE
-const app = await electron.launch({ args: ['.'], env })
+const app = await launchWorkbench({ args: ['.'], env })
 try {
-  await app.evaluate(({ ipcMain }) => {
+  if (app.shell !== 'tauri') await app.evaluate(({ ipcMain }) => {
     ipcMain.removeHandler('path:list')
     ipcMain.handle('path:list', async (_event, _host, input) => {
       if (input === '/slow') await new Promise((resolve) => setTimeout(resolve, 500))

@@ -24,6 +24,14 @@ struct Job {
     decision_cv: Condvar,
     retry: Mutex<Vec<String>>,
     parent: Mutex<String>,
+    aliases: Vec<Value>,
+    block: Mutex<Option<ReplacementBlock>>,
+}
+
+struct ReplacementBlock {
+    targets: Vec<Value>,
+    directory: bool,
+    case_insensitive: bool,
 }
 
 pub struct Service {
@@ -33,7 +41,7 @@ pub struct Service {
 impl Service {
     pub fn new() -> Self { Self { jobs: Mutex::new(std::collections::HashMap::new()) } }
 
-    pub fn start(&self, data: PathBuf, host: Option<Value>, project_id: String, root: String, parent: String, sources: Vec<String>, dirty: bool, language: String, emit: Emit) -> Result<Value, String> {
+    pub fn start(&self, data: PathBuf, host: Option<Value>, project_id: String, root: String, parent: String, sources: Vec<String>, aliases: Vec<Value>, dirty: bool, language: String, emit: Emit) -> Result<Value, String> {
         if sources.is_empty() { return Err(translate(&language, "请选择文件或文件夹", &[] as &[String])); }
         let parent = normalize_parent(&parent, &language)?;
         if parent == "." { return Err(translate(&language, "不能替换项目根目录", &[] as &[String])); }
@@ -61,10 +69,12 @@ impl Service {
             decision_cv: Condvar::new(),
             retry: Mutex::new(sources.clone()),
             parent: Mutex::new(parent.clone()),
+            aliases: aliases.clone(),
+            block: Mutex::new(None),
         });
         self.jobs.lock().expect("uploads").insert(id.clone(), job.clone());
         let jobs = self.jobs.lock().expect("uploads").get(&id).cloned().unwrap();
-        thread::spawn(move || run_job(jobs, data, host, project_id, root, parent, sources, dirty, language, emit));
+        thread::spawn(move || run_job(jobs, data, host, project_id, root, parent, sources, aliases, dirty, language, emit));
         Ok(json!(id))
     }
 
@@ -91,9 +101,14 @@ impl Service {
         let sources = job.retry.lock().expect("retry").clone();
         if sources.is_empty() { return Err(translate(&language, "没有可重试的失败项", &[] as &[String])); }
         let parent = job.parent.lock().expect("parent").clone();
+        let aliases = job.aliases.clone();
         let project_id = snapshot["projectId"].as_str().unwrap_or("").to_string();
         let root = snapshot["destination"].as_str().unwrap_or("").to_string();
-        self.start(data, host, project_id, root, parent, sources, false, language, emit)
+        self.start(data, host, project_id, root, parent, sources, aliases, false, language, emit)
+    }
+
+    pub fn write_blocked(&self, project_id: &str, rel: &str) -> bool {
+        self.jobs.lock().expect("uploads").values().any(|job| replacement_blocks(job, project_id, rel))
     }
 
     pub fn project_id(&self, id: &str) -> Option<String> {
@@ -114,9 +129,9 @@ impl Service {
     }
 }
 
-fn run_job(job: Arc<Job>, data: PathBuf, host: Option<Value>, project_id: String, root: String, parent: String, sources: Vec<String>, dirty: bool, language: String, emit: Emit) {
+fn run_job(job: Arc<Job>, data: PathBuf, host: Option<Value>, project_id: String, root: String, parent: String, sources: Vec<String>, aliases: Vec<Value>, dirty: bool, language: String, emit: Emit) {
     let case_insensitive = host.as_ref().and_then(|item| item["platform"].as_str()) == Some("windows");
-    let mut replaced = Vec::new();
+    let mut replaced: Vec<(String, bool)> = Vec::new();
     let outcome = (|| -> Result<(), String> {
         let mut nodes = Vec::new();
         let mut replacing = false;
@@ -127,24 +142,29 @@ fn run_job(job: Arc<Job>, data: PathBuf, host: Option<Value>, project_id: String
             if relative.is_empty() || relative == "." { return Err(translate(&language, "不能替换项目根目录", &[] as &[String])); }
             if exists_remote(&data, host.as_ref(), &root, &relative, &language)? {
                 replacing = true;
-                replaced.push(relative);
+                replaced.push((relative, node["dir"].as_bool().unwrap_or(false)));
             }
             nodes.push(node);
         }
         if job.cancel.load(Ordering::SeqCst) { return Err(translate(&language, "传输已取消", &[] as &[String])); }
-        if dirty && replacing {
+        if replacing {
+            let (targets, directory) = replacement_targets(&project_id, &root, &replaced, &aliases, case_insensitive);
+            *job.block.lock().expect("block") = Some(ReplacementBlock { targets: targets.clone(), directory, case_insensitive });
+            if dirty {
             set_phase(&job, "confirming", &emit);
+            let primary = targets.first().cloned().unwrap_or_else(|| json!({ "projectId": project_id, "path": parent }));
             emit(json!({ "channel": "file:replacement", "payload": {
                 "id": job.snapshot.lock().expect("snapshot")["id"],
-                "projectId": project_id,
-                "path": parent,
-                "directory": true,
+                "projectId": primary["projectId"],
+                "path": primary["path"],
+                "directory": directory,
                 "caseInsensitive": case_insensitive,
-                "targets": [{ "projectId": project_id, "path": parent }],
+                "targets": targets,
                 "phase": "prepare"
             }}));
             if !wait_decision(&job) {
                 return Err(translate(&language, "覆盖已取消，原文件和草稿已保留", &[] as &[String]));
+            }
             }
         }
         set_phase(&job, "transferring", &emit);
@@ -214,7 +234,8 @@ fn run_job(job: Arc<Job>, data: PathBuf, host: Option<Value>, project_id: String
         drop(snapshot);
         emit(json!({ "channel": "transfer:update", "payload": event }));
     }
-    let targets = replaced.iter().map(|path| json!({ "projectId": project_id, "path": path })).collect::<Vec<_>>();
+    *job.block.lock().expect("block") = None;
+    let (targets, directory) = replacement_targets(&project_id, &root, &replaced, &aliases, case_insensitive);
     let primary = targets.first().cloned().unwrap_or_else(|| json!({ "projectId": project_id, "path": parent }));
     emit(json!({ "channel": "file:replacement", "payload": {
         "id": job.snapshot.lock().expect("snapshot")["id"],
@@ -222,10 +243,59 @@ fn run_job(job: Arc<Job>, data: PathBuf, host: Option<Value>, project_id: String
         "success": job.snapshot.lock().expect("snapshot")["phase"] == "done",
         "projectId": primary["projectId"],
         "path": primary["path"],
-        "directory": false,
+        "directory": directory,
         "caseInsensitive": case_insensitive,
         "targets": targets
     } }));
+}
+
+fn replacement_blocks(job: &Job, project_id: &str, rel: &str) -> bool {
+    let guard = job.block.lock().expect("block");
+    let Some(block) = guard.as_ref() else { return false };
+    block.targets.iter().any(|target| {
+        if target["projectId"].as_str() != Some(project_id) { return false }
+        let path = target["path"].as_str().unwrap_or("");
+        let (path, rel) = if block.case_insensitive { (path.to_lowercase(), rel.to_lowercase()) } else { (path.to_string(), rel.to_string()) };
+        rel == path || (block.directory && (path.is_empty() || rel.starts_with(&format!("{path}/"))))
+    })
+}
+
+fn replacement_targets(project_id: &str, root: &str, replaced: &[(String, bool)], aliases: &[Value], case_insensitive: bool) -> (Vec<Value>, bool) {
+    let mut targets = Vec::new();
+    let directory = replaced.iter().any(|(_, dir)| *dir);
+    for (relative, dir) in replaced {
+        targets.push(json!({ "projectId": project_id, "path": relative }));
+        let full = format!("{}/{}", root.trim_end_matches(['/', '\\']), relative);
+        for alias in aliases {
+            let Some(path) = alias_replacement(alias["path"].as_str().unwrap_or(""), &full, *dir, case_insensitive) else { continue };
+            targets.push(json!({ "projectId": alias["id"], "path": path }));
+        }
+    }
+    (targets, directory)
+}
+
+fn alias_replacement(alias_root: &str, full: &str, directory: bool, case_insensitive: bool) -> Option<String> {
+    if let Some(path) = remote_relative(alias_root, full, case_insensitive) {
+        if !path.is_empty() { return Some(path); }
+    } else if directory && remote_relative(full, alias_root, case_insensitive).is_some_and(|nested| !nested.is_empty()) {
+        return Some(String::new());
+    }
+    None
+}
+
+fn remote_relative(root: &str, full: &str, case_insensitive: bool) -> Option<String> {
+    let root = root.trim_end_matches(['/', '\\']);
+    let full = full.trim_end_matches(['/', '\\']);
+    if case_insensitive {
+        if full.eq_ignore_ascii_case(root) { return Some(String::new()); }
+        let prefix = format!("{root}/");
+        if full.len() > prefix.len() && full[..prefix.len()].eq_ignore_ascii_case(&prefix) {
+            return Some(full[prefix.len()..].replace('\\', "/"));
+        }
+        return None;
+    }
+    if full == root { return Some(String::new()); }
+    full.strip_prefix(&format!("{root}/")).map(|value| value.replace('\\', "/"))
 }
 
 fn set_phase(job: &Job, phase: &str, emit: &Emit) {

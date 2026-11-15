@@ -56,7 +56,7 @@ export interface WorkbenchApi {
   saveBranch(projectId: string, branch: string): Promise<Database>
   setUnsavedChanges(dirty: boolean): void
   pickDirectory(): Promise<string | null>
-  picker(request: { op: string; id?: string; hostId?: string; initial?: string; path?: string; query?: string }): Promise<import('./types').DirectoryPickerView | string | null>
+  picker(request: { op: string; id?: string; hostId?: string; initial?: string; path?: string; query?: string; stage?: boolean; generation?: number }): Promise<import('./types').DirectoryPickerView | string | null>
   temporaryDirectory(): Promise<string | null>
   configureTemporaryDirectory(root: string): Promise<string>
   createTemporarySession(root?: string): Promise<{ database: Database; projectId: string }>

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { _electron as electron } from 'playwright'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 import { installDocumentHarness } from './fixtures/document-harness.mjs'
 
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'awb-file-dialog-'))
@@ -22,7 +22,7 @@ for (const scale of baseline ? [1] : [1, 1.25, 1.5, 2]) for (const theme of base
   fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: { layout: 'balanced', theme, restore: false }, projects: [{ id: 'p', name: '文件弹窗验证', host: 'local', path: project, agent: 'shell' }] }))
   const env = { ...process.env, AWB_USER_DATA: data }
   delete env.ELECTRON_RUN_AS_NODE
-  const app = await electron.launch({ args: [`--force-device-scale-factor=${scale}`, '.'], env })
+  const app = await launchWorkbench({ args: [`--force-device-scale-factor=${scale}`, '.'], env, scale })
   try {
     const page = await app.firstWindow()
     page.setDefaultTimeout(10000)
@@ -32,7 +32,8 @@ for (const scale of baseline ? [1] : [1, 1.25, 1.5, 2]) for (const theme of base
       await page.evaluate(({ width, height }) => window.awb.winResize(width, height), { width, height })
       await page.waitForFunction(({ width, height }) => innerWidth === width && innerHeight === height, { width, height })
       const open = async (action, row, name) => {
-        await app.evaluate((_electron, command) => { globalThis.__documentMenuCommand = command }, action)
+        if (app.menuFile) fs.writeFileSync(app.menuFile, action)
+        else await app.evaluate((_electron, command) => { globalThis.__documentMenuCommand = command }, action)
         await row.focus()
         await row.dispatchEvent('contextmenu')
         const dialog = page.getByRole('dialog', { name, exact: true })
@@ -79,7 +80,8 @@ for (const scale of baseline ? [1] : [1, 1.25, 1.5, 2]) for (const theme of base
       await task.getByRole('button', { name: '关闭', exact: true }).click()
       const uploadId = `upload-layout-${theme}-${width}-${scale}`
       const upload = { id: uploadId, projectId: 'p', direction: 'upload', state: 'running', phase: 'transferring', current: filename, destination: `${project}/${'中文长目录/'.repeat(12)}`, bytes: 1048576, total: 4194304, overallBytes: 5242880, overallTotal: 10485760, items: [] }
-      await app.evaluate(({ BrowserWindow }, upload) => BrowserWindow.getAllWindows()[0].webContents.send('transfer:update', upload), upload)
+      if (app.shell === 'tauri') await page.evaluate((upload) => window.__TAURI_INTERNALS__.invoke('awb', { channel: 'transfer:inject', args: [upload] }), upload)
+      else await app.evaluate(({ BrowserWindow }, upload) => BrowserWindow.getAllWindows()[0].webContents.send('transfer:update', upload), upload)
       const uploading = page.locator('.upload-status').last()
       await uploading.getByText('上传中', { exact: true }).waitFor()
       assert.equal(await uploading.getByRole('progressbar').count(), 0)
@@ -93,7 +95,8 @@ for (const scale of baseline ? [1] : [1, 1.25, 1.5, 2]) for (const theme of base
       assert.ok(!uploadBounds.overflow && uploadBounds.left >= 0 && uploadBounds.right <= width && uploadBounds.top >= 0 && uploadBounds.bottom <= height, JSON.stringify(uploadBounds))
       assert.ok(uploadBounds.bottom - uploadBounds.top <= 36, JSON.stringify(uploadBounds))
       await page.screenshot({ path: path.join(captures, `${theme}-${width}-${scale}-upload-status.png`), animations: 'disabled' })
-      await app.evaluate(({ BrowserWindow }, upload) => BrowserWindow.getAllWindows()[0].webContents.send('transfer:update', { ...upload, state: 'completed' }), upload)
+      if (app.shell === 'tauri') await page.evaluate((upload) => window.__TAURI_INTERNALS__.invoke('awb', { channel: 'transfer:inject', args: [{ ...upload, state: 'completed' }] }), upload)
+      else await app.evaluate(({ BrowserWindow }, upload) => BrowserWindow.getAllWindows()[0].webContents.send('transfer:update', { ...upload, state: 'completed' }), upload)
       await uploading.getByText('上传成功', { exact: true }).waitFor()
       await uploading.waitFor({ state: 'detached', timeout: 3500 })
       assert.equal(await page.evaluate(() => devicePixelRatio), scale)

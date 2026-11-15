@@ -81,7 +81,7 @@ impl Session {
     pub fn click(&mut self, path: &str) { if !self.loading && self.error.is_none() { self.selected = path.to_string(); } }
 
     pub fn enter(&mut self, path: &str) -> Option<u64> {
-        if self.loading || self.error.is_some() { return None; }
+        if self.error.is_some() { return None; }
         self.selected = path.to_string();
         Some(self.navigate(path.to_string(), None))
     }
@@ -101,7 +101,6 @@ impl Session {
 
     pub fn parent(&mut self) -> Option<u64> {
         let path = self.parent.clone()?;
-        if self.loading { return None; }
         Some(self.navigate(path, None))
     }
 

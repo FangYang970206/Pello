@@ -17,6 +17,7 @@ const EN: &[(&str, &str)] = &[
     ("文件类型已更改，请刷新目录", "File type has changed. Refresh the directory."),
     ("文件类型已更改或路径包含符号链接", "File type changed or the path contains a symbolic link"),
     ("请先读取文件再保存", "Read the file before saving"),
+    ("文件正在进行其他写入操作", "Another write operation is using this file"),
     ("文件超过 2 MB，无法在内置编辑器中保存", "File exceeds 2 MB and cannot be saved in the built-in editor"),
     ("文件已被其他程序修改，请重新读取后合并更改", "File was modified by another program. Reload it and merge your changes."),
     ("只能编辑 UTF-8 文本文件", "Only UTF-8 text files can be edited"),

@@ -607,6 +607,7 @@ export function App() {
     if (replacementAt(doc.projectId, doc.path)) doc = { ...doc, replacing: true }
     documentsRef.current = { ...documentsRef.current, [key]: doc }
     setDocuments((map) => ({ ...map, [key]: doc }))
+    window.awb.setUnsavedChanges(Object.values(documentsRef.current).some(isDirty))
   }
 
   function updateFileDraft(id: string, update: (doc: DocumentDraft) => DocumentDraft) {

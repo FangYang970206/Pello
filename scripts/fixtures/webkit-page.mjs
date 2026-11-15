@@ -70,8 +70,10 @@ const helper = `
     return [...new Set(controls)]
   }
   function byText(text, exact) {
+    const pattern = namePattern(text)
     const all = [...document.querySelectorAll('body *')].filter((el) => {
       const value = (el.innerText || '').trim()
+      if (pattern) return pattern.test(value)
       return exact ? value === text : value.includes(text)
     })
     return all.filter((el) => ![...el.children].some((child) => all.includes(child)))
@@ -117,12 +119,36 @@ const helper = `
     if (nodes.length !== 1) throw new Error('strict mode violation: ' + nodes.length + ' matches for ' + JSON.stringify(steps))
     return nodes[0]
   }
-  function setValue(el, value) {
+  async function setValue(el, value) {
     if (el.isContentEditable) {
       el.focus()
-      document.execCommand('selectAll', false, null)
-      document.execCommand('delete', false, null)
+      const selectContents = () => {
+        const range = document.createRange()
+        range.selectNodeContents(el)
+        const selection = window.getSelection()
+        selection.removeAllRanges()
+        selection.addRange(range)
+      }
+      selectContents()
       document.execCommand('insertText', false, value)
+      const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+      await frame()
+      // WebKit insertText leaves an empty first line when it replaces a block
+      // selection. Chromium does not, so delete that line before the draft is saved.
+      if (!value.startsWith('\\n')) {
+        const first = el.querySelector(':scope > .cm-line')
+        const next = first && first.nextElementSibling
+        if (first && !first.textContent && first.querySelector('br') && next && next.classList.contains('cm-line')) {
+          const range = document.createRange()
+          range.setStart(first, 0)
+          range.setEnd(next, 0)
+          const selection = window.getSelection()
+          selection.removeAllRanges()
+          selection.addRange(range)
+          document.execCommand('delete', false, null)
+          await frame()
+        }
+      }
       return
     }
     const prototype = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype
@@ -145,8 +171,19 @@ const helper = `
     const init = keyInit(combo)
     const down = new KeyboardEvent('keydown', init)
     target.dispatchEvent(down)
+    const space = init.key === ' ' || init.key === 'Space'
     if (!down.defaultPrevented && init.key === 'Enter' && target.form && target.tagName !== 'BUTTON') target.form.requestSubmit()
-    if (!down.defaultPrevented && (init.key === 'Enter' || init.key === ' ') && (target.tagName === 'BUTTON' || target.getAttribute('role') === 'button')) target.click()
+    if (!down.defaultPrevented && (init.key === 'Enter' || space) && (target.tagName === 'BUTTON' || target.getAttribute('role') === 'button')) target.click()
+    if (!down.defaultPrevented && space && target.tagName === 'INPUT' && (target.type === 'checkbox' || target.type === 'radio')) target.click()
+    if (!down.defaultPrevented && init.key === 'Tab') {
+      const items = [...document.querySelectorAll('button, a[href], input, select, textarea, [tabindex]')].filter((el) => !el.disabled && el.tabIndex >= 0 && el.getClientRects().length)
+      const next = items[items.indexOf(target) + (init.shiftKey ? -1 : 1)]
+      if (next) next.focus()
+    }
+    if (!down.defaultPrevented && init.key === 'Escape') {
+      const dialog = target.closest('dialog')
+      if (dialog) dialog.dispatchEvent(new Event('cancel', { bubbles: true, cancelable: true }))
+    }
     target.dispatchEvent(new KeyboardEvent('keyup', init))
   }
 `
@@ -400,6 +437,23 @@ class WebKitPage {
 
   setDefaultTimeout(timeout) { this.timeout = timeout }
 
+  async reload() {
+    await this.invoke(this.mainId, `setTimeout(() => location.reload(), 30); return true`)
+    await sleep(200)
+    const deadline = Date.now() + 20000
+    let last = ''
+    while (Date.now() < deadline) {
+      this.mainId = [...this.targets.values()].find((target) => target.type === 'page')?.targetId || this.mainId
+      try {
+        const value = await this.invoke(this.mainId, `return { awb: typeof window.awb, text: (document.body && document.body.innerText || '').slice(0, 80) }`)
+        last = JSON.stringify(value)
+        if (value?.awb === 'object' && !String(value.text).includes('Could not connect')) return
+      } catch (error) { last = error instanceof Error ? error.message : String(error) }
+      await sleep(100)
+    }
+    throw new Error(`Tauri webview did not reload the workbench: ${last}`)
+  }
+
   mainFrame() { return this._mainFrame || (this._mainFrame = { url: () => 'main' }) }
 
   on(event, listener) {
@@ -424,6 +478,8 @@ class WebKitPage {
   context() {
     return { newCDPSession: async () => { throw new Error('This WebKit inspector has no Chrome input domain') } }
   }
+
+  emulateMedia() { return Promise.resolve() }
 
   async evaluate(fn, arg) {
     const hasArg = arguments.length > 1
@@ -726,16 +782,17 @@ class Locator {
 
   async fill(value) {
     await this.waitFor()
-    return this.run(`setValue(only(steps), ${JSON.stringify(value)}); return true`)
+    return this.run(`await setValue(only(steps), ${JSON.stringify(value)}); return true`)
   }
 
   async selectOption(value) {
     await this.waitFor()
-    return this.run(`setValue(only(steps), ${JSON.stringify(value)}); return true`)
+    return this.run(`await setValue(only(steps), ${JSON.stringify(value)}); return true`)
   }
 
   async inputValue() { await this.waitFor(); return this.run(`return only(steps).value`) }
   async isDisabled() { return this.run(`const el = only(steps); return !!el.disabled || el.getAttribute('aria-disabled') === 'true'`) }
+  async isChecked() { return this.run(`return !!only(steps).checked`) }
   async getAttribute(name) { return this.run(`const el = only(steps); return el.getAttribute(${JSON.stringify(name)})`) }
   async textContent() { return this.run(`return only(steps).textContent`) }
   async innerText() { return this.run(`return only(steps).innerText`) }

@@ -4,6 +4,7 @@
 use crate::files::{self, default_ignore};
 use crate::git;
 use crate::i18n::{self, translate};
+use crate::import;
 use crate::layout::{self, Tile};
 use crate::legacy;
 use crate::menu;
@@ -42,9 +43,28 @@ pub struct Workbench {
     resources: resources::Resources,
     updates: Mutex<updates::Service>,
     uploads: upload::Service,
+    imports: import::Imports,
     pickers: Mutex<HashMap<String, Picker>>,
     history_flushed: Mutex<bool>,
     emit: Emit,
+}
+
+fn fixture_directory(input: &str) -> Result<Value, String> {
+    if input == "/slow" { std::thread::sleep(std::time::Duration::from_millis(500)); }
+    let current = if input.is_empty() { "/home/tester" } else { input };
+    if current == "/throws" { return Err("Connection lost".into()); }
+    if current == "/denied" {
+        return Ok(json!({ "path": current, "parent": "/", "dirs": [], "error": "Permission denied" }));
+    }
+    let dirs = if current == "/empty" {
+        Vec::new()
+    } else {
+        vec![
+            json!({ "name": "projects", "path": "/home/tester/projects" }),
+            json!({ "name": "下载", "path": "/home/tester/下载" }),
+        ]
+    };
+    Ok(json!({ "path": current, "parent": if current == "/" { Value::Null } else { json!("/") }, "dirs": dirs }))
 }
 
 impl Workbench {
@@ -61,7 +81,7 @@ impl Workbench {
             db["settings"]["language"] = json!("zh-CN");
         }
         let updates = updates::Service::new(db["settings"]["autoCheckUpdates"] != false);
-        Ok(Self { paths, db: Mutex::new(db), pty: Manager::new(), dirty: Mutex::new(false), content_searches: Mutex::new(HashMap::new()), tree_searches: Mutex::new(HashMap::new()), layouts: Mutex::new(HashMap::new()), restore_failures: Mutex::new(HashMap::new()), preview: preview::Service::new(), resources: resources::Resources::new(), updates: Mutex::new(updates), uploads: upload::Service::new(), pickers: Mutex::new(HashMap::new()), history_flushed: Mutex::new(false), emit })
+        Ok(Self { paths, db: Mutex::new(db), pty: Manager::new(), dirty: Mutex::new(false), content_searches: Mutex::new(HashMap::new()), tree_searches: Mutex::new(HashMap::new()), layouts: Mutex::new(HashMap::new()), restore_failures: Mutex::new(HashMap::new()), preview: preview::Service::new(), resources: resources::Resources::new(), updates: Mutex::new(updates), uploads: upload::Service::new(), imports: import::Imports::new(), pickers: Mutex::new(HashMap::new()), history_flushed: Mutex::new(false), emit })
     }
 
     pub fn database_path(&self) -> std::path::PathBuf { self.paths.data.join("workbench.json") }
@@ -135,10 +155,27 @@ impl Workbench {
             "transfer:pick" => self.transfer_pick(args, &language),
             "transfer:download" => self.transfer_download(args, &language),
             "transfer:drop" => self.transfer_drop(args, &language),
-            "transfer:cancel" => self.uploads.cancel(str_arg(args, 0), &language),
+            "transfer:cancel" => {
+                let id = str_arg(args, 0);
+                if self.imports.cancel(id) { Ok(Value::Null) } else { self.uploads.cancel(id, &language) }
+            }
             "transfer:retry" => self.transfer_retry(str_arg(args, 0), &language),
-            "transfer:dismiss" => self.uploads.dismiss(str_arg(args, 0)),
-            "transfer:decide" | "transfer:keep-both" => Err(translate(&language, "上传不再询问同名处理", &[] as &[String])),
+            "transfer:dismiss" => {
+                let id = str_arg(args, 0);
+                if self.imports.dismiss(id) { Ok(Value::Null) } else { self.uploads.dismiss(id) }
+            }
+            "transfer:keep-both" => Err(translate(&language, "上传不再询问同名处理", &[] as &[String])),
+            "transfer:decide" => {
+                let id = str_arg(args, 0);
+                if self.imports.waiting(id) { self.imports.decide(id, str_arg(args, 1), &language) }
+                else { Err(translate(&language, "上传不再询问同名处理", &[] as &[String])) }
+            }
+            "transfer:inject" => {
+                let payload = args.first().cloned().unwrap_or(Value::Null);
+                if !payload.is_object() { return Err(translate(&language, "传输任务不存在", &[] as &[String])); }
+                (self.emit)(json!({ "channel": "transfer:update", "payload": payload }));
+                Ok(Value::Null)
+            }
             "file:replacement-ready" => { self.uploads.confirm(str_arg(args, 0), args.get(1).and_then(|value| value.as_bool()).unwrap_or(false)); Ok(Value::Null) }
             "exec:test" => self.test_exec(args.first().cloned().unwrap_or(json!({})), &language),
             "host:test" => Ok(ssh::test_connection(&self.paths.data, args.first().unwrap_or(&Value::Null), &language)),
@@ -481,6 +518,9 @@ impl Workbench {
     }
 
     fn git_write(&self, project_id: &str, rel: &str, text: &str, version: Option<&str>, language: &str) -> Result<Value, String> {
+        if self.uploads.write_blocked(project_id, rel) {
+            return Err(translate(language, "文件正在进行其他写入操作", &[] as &[String]));
+        }
         if let Some((host, path)) = self.remote_place(project_id, language)? {
             return git::write_remote(&self.paths.data, &host, &path, rel, text, version, language);
         }
@@ -510,6 +550,9 @@ impl Workbench {
     }
 
     fn path_list(&self, host_id: &str, input: &str, language: &str) -> Result<Value, String> {
+        if std::env::var("AWB_PATH_FIXTURE").ok().as_deref() == Some("1") {
+            return fixture_directory(input);
+        }
         let Some(host) = self.optional_host(host_id)? else { return Ok(files::list_dir(input)) };
         if host["platform"] == "windows" {
             let current = input.trim();
@@ -847,6 +890,23 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
         self.with_local(project_id, language, |root| files::move_entry(root, rel, destination, directory, language).map(|path| json!(path)))
     }
 
+    fn upload_aliases(&self, project_id: &str, host: &Value) -> Vec<Value> {
+        let db = self.db.lock().expect("db");
+        let hosts = db["hosts"].as_array().cloned().unwrap_or_default();
+        db["projects"].as_array().cloned().unwrap_or_default().into_iter().filter_map(|project| {
+            if project["id"].as_str() == Some(project_id) { return None; }
+            let other = hosts.iter().find(|item| item["id"] == project["host"])?;
+            let same = host["addr"] == other["addr"]
+                && host["port"].as_u64().unwrap_or(22) == other["port"].as_u64().unwrap_or(22)
+                && host["user"] == other["user"]
+                && host["platform"] == other["platform"]
+                && host["id"] != "local"
+                && other["id"] != "local";
+            if !same { return None; }
+            Some(json!({ "id": project["id"], "path": project["path"] }))
+        }).collect()
+    }
+
     fn transfer_drop(&self, args: &[Value], language: &str) -> Result<Value, String> {
         let project_id = str_arg(args, 0).to_string();
         let parent = str_arg(args, 1).to_string();
@@ -854,8 +914,12 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
         let project = self.project(&project_id, language)?;
         let root = project["path"].as_str().unwrap_or("").to_string();
         let host = self.optional_host(project["host"].as_str().unwrap_or("local"))?;
+        if host.is_none() {
+            return self.imports.start(project_id, PathBuf::from(root), parent, sources, language.to_string(), self.emit.clone());
+        }
         let dirty = *self.dirty.lock().expect("dirty");
-        self.uploads.start(self.paths.data.clone(), host, project_id, root, parent, sources, dirty, language.to_string(), self.emit.clone())
+        let aliases = host.as_ref().map(|item| self.upload_aliases(&project_id, item)).unwrap_or_default();
+        self.uploads.start(self.paths.data.clone(), host, project_id, root, parent, sources, aliases, dirty, language.to_string(), self.emit.clone())
     }
 
     fn transfer_retry(&self, id: &str, language: &str) -> Result<Value, String> {
@@ -942,6 +1006,19 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
             session.apply(generation, request["listing"].clone());
             return Ok(session.view());
         }
+        if op == "finish" {
+            let generation = request["generation"].as_u64().unwrap_or(0);
+            if session.generation != generation {
+                return Ok(session.view());
+            }
+            let address = session.address.clone();
+            let host_id = session.host_id.clone();
+            drop(pickers);
+            let listing = self.path_list(&host_id, &address, language).unwrap_or_else(|error| json!({ "path": address, "parent": Value::Null, "dirs": [], "error": error }));
+            let mut pickers = self.pickers.lock().expect("picker");
+            if let Some(session) = pickers.get_mut(&id) { session.apply(generation, listing); }
+            return Ok(pickers.get(&id).map(|session| session.view()).unwrap_or(Value::Null));
+        }
         let host_id = session.host_id.clone();
         let generation = match op {
             "enter" => session.enter(request["path"].as_str().unwrap_or("")),
@@ -953,6 +1030,10 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
             _ => None,
         };
         if let Some(generation) = generation {
+            if request["stage"].as_bool().unwrap_or(false) {
+                let _ = generation;
+                return Ok(session.view());
+            }
             let address = session.address.clone();
             drop(pickers);
             let listing = self.path_list(&host_id, &address, language).unwrap_or_else(|error| json!({ "path": address, "parent": Value::Null, "dirs": [], "error": error }));

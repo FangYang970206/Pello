@@ -17,6 +17,8 @@ function subscribe(channel: string, callback: Handler) {
   return () => { set.delete(callback) }
 }
 
+let unsavedWrite = Promise.resolve()
+
 async function call<T>(channel: string, args: unknown[] = []): Promise<T> {
   try {
     return await invoke<T>('awb', { channel, args })
@@ -52,7 +54,7 @@ const api: WorkbenchApi = {
   pickResource: (kind) => call('resources:pick', [kind]),
   saveSessions: (projectId, terms, activeId, groups, selected) => call('db:sessions', [projectId, terms, activeId ?? null, groups, selected]),
   saveBranch: (projectId, branch) => call('db:branch', [projectId, branch]),
-  setUnsavedChanges: (dirty) => { void call('files:dirty', [dirty]) },
+  setUnsavedChanges: (dirty) => { unsavedWrite = unsavedWrite.then(() => call('files:dirty', [dirty])).then(() => {}, () => {}) },
   pickDirectory: () => call('dialog:directory'),
   picker: (request) => call('dialog:picker', [request]),
   temporaryDirectory: () => call('temporary:directory'),
@@ -72,7 +74,7 @@ const api: WorkbenchApi = {
   treeTrash: (projectId, rel, directory) => call('tree:trash', [projectId, rel, directory]),
   transferPick: (projectId, parent, kind) => call('transfer:pick', [projectId, parent, kind]),
   droppedFilePath: () => '',
-  transferDrop: (projectId, parent, sources) => call('transfer:drop', [projectId, parent, sources]),
+  transferDrop: async (projectId, parent, sources) => { await unsavedWrite; return call('transfer:drop', [projectId, parent, sources]) },
   transferCancel: (id) => call('transfer:cancel', [id]),
   transferDownload: (projectId, rel, directory) => call('transfer:download', [projectId, rel, directory ?? false]),
   transferDecide: (id, choice, applyToBatch) => call('transfer:decide', [id, choice, applyToBatch ?? false]),

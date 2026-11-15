@@ -11,19 +11,25 @@ export function DirectoryBrowser({ hostId, initialPath, onSelect, onClose }: {
   const [address, setAddress] = useState(initialPath)
   const [sessionId, setSessionId] = useState('')
 
+  const show = useCallback((next: DirectoryPickerView) => {
+    setView((current) => current && next.generation < current.generation ? current : next)
+    setSessionId(next.id)
+    setAddress(next.address || next.path || '')
+  }, [])
   const apply = useCallback(async (request: { op: string; id?: string; hostId?: string; initial?: string; path?: string; query?: string }) => {
-    const next = await window.awb.picker(request)
-    if (next && typeof next === 'object' && 'closed' in next && next.closed) {
+    const navigating = ['go', 'home', 'enter', 'back', 'forward', 'parent'].includes(request.op)
+    const staged = await window.awb.picker(navigating ? { ...request, stage: true } : request)
+    if (staged && typeof staged === 'object' && 'closed' in staged && staged.closed) {
       onClose()
-      return next
+      return staged
     }
-    if (next && typeof next === 'object' && 'id' in next) {
-      setView(next)
-      setSessionId(next.id)
-      setAddress(next.address || next.path || '')
-    }
+    if (staged && typeof staged === 'object' && 'id' in staged) show(staged)
+    if (!navigating || !staged || typeof staged !== 'object' || !('loading' in staged) || !staged.loading) return staged
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    const next = await window.awb.picker({ op: 'finish', id: staged.id, generation: staged.generation })
+    if (next && typeof next === 'object' && 'id' in next) show(next)
     return next
-  }, [onClose])
+  }, [onClose, show])
 
   useEffect(() => {
     let live = true
