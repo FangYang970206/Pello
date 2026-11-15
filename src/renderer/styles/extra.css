@@ -352,9 +352,21 @@ kbd {
 .side{position:relative;min-width:0}
 .sidebar-resize{position:absolute;top:0;bottom:0;right:-3px;width:6px;cursor:col-resize;touch-action:none;z-index:5;-webkit-app-region:no-drag}
 .sidebar-resize:focus-visible{outline:1px solid var(--ctl);outline-offset:-2px}
-.panes[data-split=true]{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(2,minmax(0,1fr));gap:1px;background:var(--line2)}
+.panes[data-split=true]{gap:1px;background:var(--line2)}
 .panes[data-split=true] .pane{border:0;background:var(--panel)}
 .panes[data-split=true] .pane.focus{box-shadow:inset 0 0 0 1px var(--ctl)}
+.editor-group-tabs{align-self:start;z-index:2;background:var(--bg)}
+.panes>.pane{padding-top:40px}
+.editor-group-tabs[data-focused=true]{box-shadow:inset 0 -1px 0 var(--accent)}
+.editor-group-tabs .tab .sidebar-name-editor{min-width:120px}
+.pane[data-type=diff]{container-type:inline-size}
+@container (max-width:480px){
+  .pane .diffbar{gap:4px;padding:4px 6px}
+  .pane .diffbar .path{flex:1;min-width:0}
+  .pane .diffbar>.grow{display:none}
+  .pane .diff-headings{gap:8px}
+  .pane .diff-headings>span{padding:4px 6px}
+}
 .tab .sidebar-name-editor{min-width:200px}
 #app.with-right[data-panel-side=left] .body { grid-template-columns: var(--sidebar-width) var(--right-width,296px) minmax(0,1fr); }
 #app.with-right[data-panel-side=left] .side { grid-column: 1; grid-row: 1; }

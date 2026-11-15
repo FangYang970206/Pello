@@ -86,9 +86,9 @@ const api: WorkbenchApi = {
   treeReference: (projectId, rel, kind, shell) => ipcRenderer.invoke('tree:reference', projectId, rel, kind, shell),
   documentMenu: (options) => ipcRenderer.invoke('file:menu', options),
   documentLink: (projectId, source, href) => ipcRenderer.invoke('file:link', projectId, source, href),
-  terminalMenu: (options) => ipcRenderer.invoke('terminal:menu', options),
+  paneMenu: (options) => ipcRenderer.invoke('workspace:menu', options),
   onPreviewSource: (cb) => {
-    const listener = () => cb()
+    const listener = (_event: Electron.IpcRendererEvent, url: string) => cb(url)
     ipcRenderer.on('file:preview-source', listener)
     return () => ipcRenderer.removeListener('file:preview-source', listener)
   },

@@ -1,5 +1,5 @@
 import { t } from '../shared/i18n'
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useId, useRef, useState } from 'react'
 import type { DocumentDraft } from './documents'
 import { SourceHighlight } from './SourceHighlight'
 import { mediaKind } from '../shared/media'
@@ -7,13 +7,14 @@ import { useContentZoom } from './usePreviewWheel'
 import { DocumentSearch, useDocumentSearch } from './DocumentSearch'
 import { clearSearchHighlights, highlightMatches, revealSearchRect } from './document-search'
 import type { SearchAdapter } from './search-types'
+import type { PaneLayoutOptions } from '../shared/api'
 import type { SearchLocation } from '../shared/types'
 import { textMatches } from '../shared/search'
 
 const MarkdownEditor = lazy(() => import('./MarkdownEditor'))
 const MediaPreview = lazy(() => import('./MediaPreview'))
 
-export function FilePane({ path, anchor, location, onNavigate, document, onEdit, onSave, onReload, onHistory, onCompose, onToggleRight }: {
+export function FilePane({ path, anchor, location, onNavigate, document, onEdit, onSave, onReload, onHistory, onCompose, onToggleRight, layout, onLayout }: {
   path: string
   anchor?: string
   location?: SearchLocation
@@ -27,6 +28,8 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
   onCompose: (composing: boolean) => void
   onPreviewHtml: () => void
   onToggleRight: () => void
+  layout: PaneLayoutOptions
+  onLayout: (command: string) => void
 }) {
   const gutter = useRef<HTMLDivElement>(null)
   const highlight = useRef<HTMLPreElement>(null)
@@ -40,6 +43,7 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
   const projectId = document?.projectId
   const { ref: content, zoom, changeZoom } = useContentZoom()
   const frame = useRef<HTMLIFrameElement>(null)
+  const viewId = useId()
   const source = useRef<HTMLTextAreaElement>(null)
   const richSearch = useRef<SearchAdapter | null>(null)
   const [renderedText, setRenderedText] = useState('')
@@ -55,7 +59,7 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
     reveal: (match, matches, index) => {
       if (markdown && visual) { richSearch.current?.reveal(match, matches, index); return }
       if (html && visual) { frame.current?.contentWindow?.postMessage({ type: 'pello-preview-search', matches, current: match, open: search.open }, '*'); return }
-      clearSearchHighlights()
+      clearSearchHighlights(content.current)
       if (highlight.current) highlightMatches(highlight.current, matches, index)
       if (!match || !source.current) return
       const field = source.current, style = getComputedStyle(field)
@@ -95,7 +99,7 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
     }
     field.dispatchEvent(new Event('scroll'))
   }, [location, readonly, markdown, html, visual, document])
-  useEffect(() => () => clearSearchHighlights(), [])
+  useEffect(() => { const root = content.current; return () => clearSearchHighlights(root) }, [])
   useEffect(() => {
     const receive = (event: MessageEvent) => {
       if (event.source !== frame.current?.contentWindow) return
@@ -111,7 +115,7 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
     window.addEventListener('message', receive)
     return () => window.removeEventListener('message', receive)
   })
-  useEffect(() => window.awb.onPreviewSource(() => { if (html) { setPreview({}); setVisual(false) } }), [html])
+  useEffect(() => window.awb.onPreviewSource((url) => { if (html && frame.current?.src === url) { setPreview({}); setVisual(false) } }), [html])
   useEffect(() => {
     if (!html || !visual || !projectId) return
     if (document?.replacing) { setPreview({}); return }
@@ -123,12 +127,13 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
   }, [html, visual, projectId, path, document?.version, document?.draft, document?.replacing, document?.replacementId])
   async function contextMenu() {
     const command = await window.awb.documentMenu({ markdown, visual: (markdown || html) && visual,
-      undo: !!document?.past?.length, redo: !!document?.future?.length, editable: !readonly })
+      undo: !!document?.past?.length, redo: !!document?.future?.length, editable: !readonly, layout })
     if (command === 'mode') { setPreview({}); setVisual((value) => !value) }
     else if (command === 'save') onSave()
     else if (command === 'reload') onReload()
     else if (command === 'panel') onToggleRight()
     else if (command === 'undo' || command === 'redo') onHistory(command === 'redo')
+    else if (command?.startsWith('split-') || command === 'merge') onLayout(command)
     else if (command) format.current?.(command)
   }
   return <>
@@ -153,7 +158,7 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
         <MediaPreview key={`${document.projectId}:${path}:${document.replacementId || ''}`} projectId={document.projectId} path={path} version={document.version} />
       </Suspense> : readonly ? <div className="empty"><div className="in"><h2>{!document ? t("正在读取文件…") : document.missing ? t("文件不存在") : document.binary ? t("无法编辑二进制或非 UTF-8 文件") : t("文件超过 2 MB，请使用外部编辑器")}</h2></div></div>
         : html && visual ? preview.error ? <p className="file-error" role="alert">{preview.error}</p> : preview.url && preview.content === document.draft && preview.replacementId === document.replacementId ?
-          <div className="html-preview-viewport"><iframe ref={frame} key={preview.url} className="html-preview" title={t("HTML 预览")} sandbox="allow-scripts" src={`${preview.url}${preview.url.includes('?') ? '&' : '?'}workbenchWheel=1`} onLoad={() => frame.current?.contentWindow?.postMessage({ type: 'pello-preview-search', matches: search.open ? search.matches : [], current: search.open ? search.matches[search.active] : null, open: search.open }, '*')} style={{ zoom, width: `${100 / zoom}%`, height: `${100 / zoom}%` }} /></div> : null
+          <div className="html-preview-viewport"><iframe ref={frame} key={preview.url} className="html-preview" title={t("HTML 预览")} sandbox="allow-scripts" src={`${preview.url}${preview.url.includes('?') ? '&' : '?'}workbenchWheel=1&workbenchView=${encodeURIComponent(viewId)}`} onLoad={() => frame.current?.contentWindow?.postMessage({ type: 'pello-preview-search', matches: search.open ? search.matches : [], current: search.open ? search.matches[search.active] : null, open: search.open }, '*')} style={{ zoom, width: `${100 / zoom}%`, height: `${100 / zoom}%` }} /></div> : null
         : markdown && visual ? <Suspense fallback={null}>
           <MarkdownEditor value={document.draft} projectId={document.projectId} path={path} anchor={anchor} onNavigate={onNavigate} onChange={onEdit} formatRef={format} searchRef={richSearch} onSearchText={setRenderedText} />
         </Suspense> : <div className="file-editor">

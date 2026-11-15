@@ -23,6 +23,7 @@ export function TerminalPane({
   theme,
   visible,
   focused = visible,
+  groupId,
   onInterrupt,
   onAppKey,
   onVisible
@@ -34,6 +35,7 @@ export function TerminalPane({
   shell: ShellKind
   visible: boolean
   focused?: boolean
+  groupId?: string
   onInterrupt: (id: string) => void
   onAppKey: (key: string) => void
   onVisible?: (id: string) => void
@@ -193,7 +195,7 @@ export function TerminalPane({
 
   // Parent modal/settings restoration runs after this layout effect. Font loads
   // only redraw; they must not take focus back from the restored control.
-  useLayoutEffect(() => { if (visible && focused) termRef.current?.focus() }, [visible, focused, id])
+  useLayoutEffect(() => { if (visible && focused) termRef.current?.focus() }, [visible, focused, id, groupId])
 
   return <div className="termhost" data-term={id}><div className="termframe" ref={hostRef} /></div>
 }

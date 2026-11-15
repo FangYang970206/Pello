@@ -76,7 +76,7 @@ try {
   await page.waitForFunction(() => window.__awbBuffer('s').includes('PELLO_LAYOUT_CONTENT'))
   await context('s', 'split-right')
   await page.waitForFunction(() => document.querySelectorAll('.pane:not([hidden])').length === 2)
-  const right = await page.locator('.tab.on [data-a=tab]').getAttribute('data-id')
+  const right = await page.locator('.tabbar[data-focused=true] .tab.on [data-a=tab]').getAttribute('data-id')
   await context('s', 'split-down')
   await page.waitForFunction(() => document.querySelectorAll('.pane:not([hidden])').length === 3)
   await context(right, 'split-down')
@@ -85,7 +85,7 @@ try {
   assert.equal(new Set(rects.map((r) => r[0])).size, 2)
   assert.equal(new Set(rects.map((r) => r[1])).size, 2)
   assert.ok(rects.every((r) => r[2] > 100 && r[3] > 100))
-  const active = await page.locator('.tab.on [data-a=tab]').getAttribute('data-id')
+  const active = await page.locator('.tabbar[data-focused=true] .tab.on [data-a=tab]').getAttribute('data-id')
   await app.evaluate(({ Menu }) => {
     const original = Menu.prototype.popup
     Menu.prototype.popup = function (options) {
@@ -193,7 +193,7 @@ try {
   assert.ok(instructions.includes(first.path) && instructions.includes('不得将文件或输出写到此目录之外'))
   assert.equal(fs.readFileSync(path.join(first.path, 'CLAUDE.md'), 'utf8'), '@AGENTS.md\n')
   assert.equal(JSON.parse(fs.readFileSync(path.join(data, 'pello.config.json'), 'utf8')).temporarySessionsDirectory, base)
-  const temporaryTerm = await page.locator('.tab.on [data-a=tab]').getAttribute('data-id')
+  const temporaryTerm = await page.locator('.tabbar[data-focused=true] .tab.on [data-a=tab]').getAttribute('data-id')
   await page.waitForFunction(({ id, cwd }) => window.__awbBuffer(id).replace(/\s/g, '').includes(cwd), { id: temporaryTerm, cwd: path.basename(first.path) })
   await page.locator('[data-a=temporary-session]').locator('..').hover()
   await page.click('[data-a=temporary-session]')

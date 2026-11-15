@@ -98,7 +98,9 @@ kbd{font:11px var(--mono);color:var(--faint);padding:0 4px;border-radius:4px;bor
 .ib:disabled{opacity:.35;pointer-events:none}
 .ib.w{width:auto;padding:0 8px;gap:6px;display:flex;font-size:calc(var(--ui-size,13px) - 1px)}
 .vsep{width:1px;height:16px;background:var(--line2);align-self:center;margin:0 4px}
-.panes{flex:1;display:flex;min-height:0;background:var(--panel)}
+/* Keep the grid mounted so nested preview containers remain measurable on split/merge. */
+.panes{flex:1;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(2,minmax(0,1fr));min-height:0;background:var(--panel)}
+.panes>.pane{grid-area:1 / 1 / span 2 / span 2}
 .pane{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
 .pane+.pane{border-left:1px solid var(--line)}
 .pane .ph{display:flex;align-items:center;gap:8px;height:28px;padding:0 12px;font-size:11px;color:var(--faint);border-bottom:1px solid var(--line)}

@@ -3,6 +3,7 @@ import { createAppUpdates } from './app-updates'
 import { ContentSearch } from './content-search'
 import { UpdateScheduler } from './update-scheduler'
 import { t } from '../shared/i18n'
+import type { PaneLayoutOptions } from '../shared/api'
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, shell, type MenuItemConstructorOptions } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -334,7 +335,7 @@ function createWindow(): void {
   win.webContents.on('context-menu', (_event, params) => {
     if (!isPreviewUrl(params.frameURL)) return
     Menu.buildFromTemplate([
-      { id: 'source', label: t("源码模式"), click: () => win?.webContents.send('file:preview-source') },
+      { id: 'source', label: t("源码模式"), click: () => win?.webContents.send('file:preview-source', params.frameURL) },
       { type: 'separator' }, { role: 'copy', label: t("复制") }, { role: 'selectAll', label: t("全选") }
     ]).popup({ window: win! })
   })
@@ -829,7 +830,11 @@ function registerIpc(): void {
     const relative = !link ? from : path.posix.normalize(link.startsWith('/') ? link.slice(1) : path.posix.join(path.posix.dirname(from), link))
     return { path: treePath(target, relative).relative, anchor }
   })
-  ipcMain.handle('file:menu', (_e, options: { markdown: boolean; visual: boolean; undo: boolean; redo: boolean; editable: boolean }) => new Promise<string | null>((resolve) => {
+  const layoutMenuItems = (options: PaneLayoutOptions, resolve: (command: string) => void): MenuItemConstructorOptions[] => {
+    const action = (label: string, id: string, enabled: boolean): MenuItemConstructorOptions => ({ id, label, enabled, click: () => resolve(id) })
+    return [action(t("向左分栏"), 'split-left', options.horizontal), action(t("向右分栏"), 'split-right', options.horizontal), action(t("向上分栏"), 'split-up', options.vertical), action(t("向下分栏"), 'split-down', options.vertical), { type: 'separator' }, action(t("撤销分栏（合并）"), 'merge', options.merge)]
+  }
+  ipcMain.handle('file:menu', (_e, options: { markdown: boolean; visual: boolean; undo: boolean; redo: boolean; editable: boolean; layout?: PaneLayoutOptions }) => new Promise<string | null>((resolve) => {
     const action = (label: string, id: string, enabled = true): MenuItemConstructorOptions => ({ id, label, enabled, click: () => resolve(id) })
     const template: MenuItemConstructorOptions[] = [
       action(options.visual ? t("源码模式") : t("渲染模式"), 'mode'), { type: 'separator' },
@@ -842,12 +847,13 @@ function registerIpc(): void {
       { label: t("格式"), submenu: [action(t("加粗"), 'bold'), action(t("斜体"), 'italic'), action(t("行内代码"), 'code')] },
       { label: t("段落"), submenu: [action(t("一级标题"), 'heading'), action(t("引用"), 'quote'), action(t("无序列表"), 'bullet'), action(t("有序列表"), 'ordered'), action(t("代码块"), 'codeblock'), action(t("插入表格"), 'table')] })
     template.push({ type: 'separator' }, action(t("保存"), 'save', options.editable), action(t("重新读取"), 'reload'), action(t("切换文件面板"), 'panel'))
+    if (options.layout) template.push({ type: 'separator' }, ...layoutMenuItems(options.layout, resolve))
     Menu.buildFromTemplate(template).popup({ window: win!, callback: () => resolve(null) })
   }))
 
-  ipcMain.handle('terminal:menu', (_e, options: { horizontal: boolean; vertical: boolean; merge: boolean; reconnect?: boolean }) => new Promise<string | null>((resolve) => {
+  ipcMain.handle('workspace:menu', (_e, options: PaneLayoutOptions & { terminal: boolean; reconnect?: boolean }) => new Promise<string | null>((resolve) => {
     const action = (label: string, id: string, enabled = true): MenuItemConstructorOptions => ({ id, label, enabled, click: () => resolve(id) })
-    Menu.buildFromTemplate([...(options.reconnect ? [action(t("重新连接会话"), 'reconnect'), { type: 'separator' as const }] : []), action(t("重命名终端"), 'rename'), action(t("导出完整终端记录"), 'export-history'), { type: 'separator' }, action(t("向左分栏"), 'split-left', options.horizontal), action(t("向右分栏"), 'split-right', options.horizontal), action(t("向上分栏"), 'split-up', options.vertical), action(t("向下分栏"), 'split-down', options.vertical), { type: 'separator' }, action(t("撤销分栏（合并）"), 'merge', options.merge)]).popup({ window: win!, callback: () => resolve(null) })
+    Menu.buildFromTemplate([...(options.terminal ? [...(options.reconnect ? [action(t("重新连接会话"), 'reconnect'), { type: 'separator' as const }] : []), action(t("重命名终端"), 'rename'), action(t("导出完整终端记录"), 'export-history'), { type: 'separator' as const }] : []), ...layoutMenuItems(options, resolve)]).popup({ window: win!, callback: () => resolve(null) })
   }))
   ipcMain.handle('terminal:export', async (_event, id: string) => {
     if (typeof id !== 'string' || !Object.values(db().sessions).flat().some((term) => term.id === id)) throw new Error(t("终端不存在"))

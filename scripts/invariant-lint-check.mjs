@@ -132,7 +132,14 @@ const cases = [
   ['AWB075', 'src/renderer/SettingsView.tsx', "'Ctrl Shift F'", "'F12'"],
   ['AWB076', 'src/renderer/ContentSearchResults.tsx', '<summary title={file.path}>', '<summary title={file.path}><span className="content-search-count">1</span>'],
   ['AWB076', 'src/renderer/styles/extra.css', '.file-name-search .tx { width: 100%; height: 24px;', '.file-name-search .tx { width: 100%; height: 36px;'],
-  ['AWB076', 'src/renderer/styles/extra.css', '.content-search-hit mark {', '.content-search-hit mark { font-weight: 600;']
+  ['AWB076', 'src/renderer/styles/extra.css', '.content-search-hit mark {', '.content-search-hit mark { font-weight: 600;'],
+  ['AWB077', 'src/renderer/Workspace.tsx', 'documents[key]', 'documents.active'],
+  ['AWB077', 'src/renderer/Workspace.tsx', 'onBaseline(tab.id, text)', 'onBaseline(shown.id, text)'],
+  ['AWB077', 'src/renderer/DocumentSearch.tsx', "closest('.pane:not(.focus)')", "closest('.missing')"],
+  ['AWB077', 'src/main/index.ts', '...layoutMenuItems(options.layout, resolve)', '...[]'],
+  ['AWB077', 'src/renderer/styles/workbench.css', '.panes{flex:1;display:grid;', '.panes{flex:1;display:flex;'],
+  ['AWB077', 'src/renderer/Workspace.tsx', 'tabs={group.tabs.map((id) => tabById.get(id)!)}', 'tabs={mine}'],
+  ['AWB077', 'src/renderer/Workspace.tsx', 'aria-busy={splitting || undefined}>', 'aria-busy={splitting || undefined}><div className="pane-caption">File</div>']
 ]
 for (const [id, file, before, after] of cases) {
   const mutated = new Map(files)

@@ -9,7 +9,7 @@ import { Text } from '@codemirror/state'
 import { useContentZoom } from './usePreviewWheel'
 import { DocumentSearch, useDocumentSearch } from './DocumentSearch'
 import type { SearchAdapter } from './search-types'
-import { clearSearchHighlights, domText } from './document-search'
+import { clearSearchHighlights, domText, setSearchHighlights } from './document-search'
 
 function Rich({ text, peers }: { text: string; peers?: string[] }) {
   const segs: Seg[] = segments(text, peers)
@@ -104,7 +104,7 @@ export function DiffPane({
     focus: () => { if (mode === 'split') searchRef.current?.focus(); else ref.current?.focus() },
     reveal: (match, matches, active) => {
       if (mode === 'split') { searchRef.current?.reveal(match, matches, active); return }
-      clearSearchHighlights()
+      clearSearchHighlights(ref.current)
       const ranges: Range[] = [], current: Range[] = []
       for (const node of ref.current?.querySelectorAll<HTMLElement>(`.diff-line-text[data-${side}-start]`) || []) {
         const start = Number(node.dataset[side === 'before' ? 'beforeStart' : 'afterStart']), end = start + (node.textContent?.length || 0)
@@ -116,10 +116,10 @@ export function DiffPane({
           if (range && item === match) { current.push(range); node.scrollIntoView({ block: 'nearest', inline: 'nearest' }) }
         }
       }
-      CSS.highlights.set('document-matches', new Highlight(...ranges)); CSS.highlights.set('document-current', new Highlight(...current))
+      if (ref.current) setSearchHighlights(ref.current, ranges, current)
     }
   })
-  useEffect(() => () => clearSearchHighlights(), [])
+  useEffect(() => { const root = ref.current; return () => clearSearchHighlights(root) }, [])
   const computed: DiffData | null = useMemo(() => {
     if (!diff || diff.binary || diff.tooBig) return null
     const base = editableText(baseline ?? diff.before), work = document?.draft ?? editableText(diff.after)
