@@ -15,6 +15,19 @@
 
 ![Pello 中实际运行的 Pi、Codex 与 OpenCode 终端，上方同时保留 README.md 和 notes.txt 文件标签](assets/screenshots/codeagents-running.png)
 
+## 功能
+
+- **多 Agent 终端**：内置 Claude Code、Codex、OpenCode、Pi、Oh My Pi，支持自定义 CLI 与纯 Shell；项目下多会话、多终端、四象限分栏与项目置顶。
+- **会话管理**：项目、会话与终端标签支持重命名，临时会话单独分组；退出后恢复项目、会话与终端可视历史，并续接各 Agent 的原生对话。
+- **文件编辑与预览**：语法高亮、Markdown 渲染与标题目录、HTML 沙箱预览，PDF 和图片在标签内只读预览；Ctrl+F 查找替换，Ctrl+滚轮局部缩放。
+- **Git 审阅**：统一与并排比较，两侧均可编辑、滚动双向联动，按差异块从比较基准还原到工作区，比较基准侧的编辑不改写 Git 提交。
+- **项目搜索**：Ctrl+E 搜索文件名，Ctrl+Shift+F 搜索项目内容，支持大小写、全字与正则，点击结果在源码视图定位。
+- **SSH 远程项目**：密钥、SSH Agent 与密码认证，密码系统加密保存；远程目录浏览、上传与下载。
+- **Agent 资源**：MCP 与 Skill 读取各 Agent 原生配置与发现目录，按目标分发、启停，同名资源不覆盖。
+- **界面与更新**：简体中文 / English，六套主题，终端、界面与源码字号独立设置；应用内检查更新、下载与安装重启。
+
+各功能的日常操作见[使用指南](https://github.com/FangYang970206/Pello/wiki)。
+
 ## 安装
 
 从 [Releases](https://github.com/FangYang970206/Pello/releases/latest) 下载 Windows x64 安装包或 ZIP，安装或解压后运行。使用发行版无需 Node.js；Agent CLI、Git 与 SSH 按需安装。
