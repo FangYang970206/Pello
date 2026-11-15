@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::net::SocketAddr;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::net::UnixStream;
@@ -513,6 +514,167 @@ pub fn ssh_batch_args(host: &Value) -> Vec<String> {
     }
     args.push(format!("{}@{}", host["user"].as_str().unwrap_or(""), host["addr"].as_str().unwrap_or("")));
     args
+}
+
+/// Stream one local file to a remote command. File bytes are written in chunks,
+/// then a single confirmation byte. A cancel closes the session before that byte.
+pub fn stream_file(data: &Path, host: &Value, command: &str, source: &Path, total: u64, progress: &(dyn Fn(u64) + Send + Sync), cancel: &AtomicBool, language: &str) -> Result<String, String> {
+    if host["auth"] == "password" {
+        let password = password_of(data, host).ok_or_else(|| translate(language, "请填写 SSH 登录密码", &[] as &[String]))?;
+        return runtime().block_on(password_stream(data, host, &password, command, source, total, progress, cancel, language));
+    }
+    key_stream(host, command, source, total, progress, cancel, language)
+}
+
+fn open_upload_source(source: &Path, total: u64, language: &str) -> Result<(std::fs::File, Option<std::time::SystemTime>), String> {
+    let meta = std::fs::symlink_metadata(source).map_err(|error| error.to_string())?;
+    if meta.file_type().is_symlink() { return Err(translate(language, "不上传符号链接", &[] as &[String])) }
+    if !meta.is_file() { return Err(translate(language, "仅支持上传普通文件", &[] as &[String])) }
+    if meta.len() != total { return Err(translate(language, "来源文件已更改或传输已取消", &[] as &[String])) }
+    let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(source).map_err(|error| error.to_string())?;
+    let opened = file.metadata().map_err(|error| error.to_string())?;
+    if !opened.is_file() || opened.len() != total { return Err(translate(language, "来源文件已更改或传输已取消", &[] as &[String])) }
+    Ok((file, opened.modified().ok()))
+}
+
+fn source_unchanged(file: &std::fs::File, total: u64, started: Option<std::time::SystemTime>, language: &str) -> Result<(), String> {
+    let after = file.metadata().map_err(|error| error.to_string())?;
+    if after.len() != total || after.modified().ok() != started {
+        return Err(translate(language, "来源文件已更改或传输已取消", &[] as &[String]));
+    }
+    Ok(())
+}
+
+fn key_stream(host: &Value, command: &str, source: &Path, total: u64, progress: &(dyn Fn(u64) + Send + Sync), cancel: &AtomicBool, language: &str) -> Result<String, String> {
+    let (mut file, started) = open_upload_source(source, total, language)?;
+    let mut ssh = std::process::Command::new(ssh_program());
+    for arg in ssh_batch_args(host) { ssh.arg(arg); }
+    ssh.arg(command);
+    ssh.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let mut child = ssh.spawn().map_err(|error| error.to_string())?;
+    let mut stdin = child.stdin.take().ok_or_else(|| translate(language, "上传失败", &[] as &[String]))?;
+    let mut buffer = vec![0u8; 32 * 1024];
+    let mut sent = 0u64;
+    while sent < total {
+        if cancel.load(Ordering::SeqCst) { let _ = child.kill(); return Err(translate(language, "传输已取消", &[] as &[String])) }
+        let want = std::cmp::min(buffer.len() as u64, total - sent) as usize;
+        file.read_exact(&mut buffer[..want]).map_err(|error| error.to_string())?;
+        progress(sent + want as u64);
+        if stdin.write_all(&buffer[..want]).is_err() { let _ = child.kill(); return Err(translate(language, "传输中断", &[] as &[String])) }
+        sent += want as u64;
+    }
+    if cancel.load(Ordering::SeqCst) { let _ = child.kill(); return Err(translate(language, "传输已取消", &[] as &[String])) }
+    if let Err(error) = source_unchanged(&file, total, started, language) { let _ = child.kill(); return Err(error) }
+    if stdin.write_all(&[1]).is_err() { let _ = child.kill(); return Err(translate(language, "传输中断", &[] as &[String])) }
+    drop(stdin);
+    let output = child.wait_with_output().map_err(|error| error.to_string())?;
+    if output.stdout.len() > MAX_OUTPUT { return Err(translate(language, "远程输出过大", &[] as &[String])) }
+    if output.status.success() { return Ok(String::from_utf8_lossy(&output.stdout).into_owned()) }
+    let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !detail.is_empty() { return Err(detail.chars().rev().take(240).collect::<String>().chars().rev().collect()) }
+    Err(translate(language, "SSH 退出码 {{0}}", &[output.status.code().unwrap_or(-1).to_string()]))
+}
+
+async fn until_cancel(cancel: &AtomicBool) {
+    while !cancel.load(Ordering::SeqCst) {
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+}
+
+async fn password_stream(data: &Path, host: &Value, password: &str, command: &str, source: &Path, total: u64, progress: &(dyn Fn(u64) + Send + Sync), cancel: &AtomicBool, language: &str) -> Result<String, String> {
+    let (mut file, started) = open_upload_source(source, total, language)?;
+    let addr = host["addr"].as_str().unwrap_or("");
+    let user = host["user"].as_str().unwrap_or("");
+    let port = host_port(host);
+    let state = Arc::new(Mutex::new(KeyState { mismatch: false, fingerprint: String::new() }));
+    let handler = KeyHandler { state: state.clone(), file: fingerprint_file(data), identity: key_identity(addr, port) };
+    let config = Arc::new(client::Config { keepalive_interval: Some(Duration::from_secs(15)), ..client::Config::default() });
+    let mut session = match client::connect(config, (addr, port), handler).await {
+        Ok(session) => session,
+        Err(error) => {
+            if state.lock().expect("key").mismatch { return Err(translate(language, "SSH 主机密钥已改变", &[] as &[String])) }
+            return Err(error.to_string());
+        }
+    };
+    let authed = session.authenticate_password(user, password).await.map_err(|error| error.to_string())?;
+    if !matches!(authed, AuthResult::Success) {
+        match session.authenticate_keyboard_interactive_start(user, None).await.map_err(|error| error.to_string())? {
+            KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } if prompts.len() == 1 && !prompts[0].echo && prompts[0].prompt.to_ascii_lowercase().contains("password") => {
+                let reply = session.authenticate_keyboard_interactive_respond(vec![password.to_string()]).await.map_err(|error| error.to_string())?;
+                if !matches!(reply, KeyboardInteractiveAuthResponse::Success) { return Err(translate(language, "SSH 连接在认证完成前关闭", &[] as &[String])) }
+            }
+            KeyboardInteractiveAuthResponse::Success => {}
+            _ => return Err(translate(language, "SSH 连接在认证完成前关闭", &[] as &[String])),
+        }
+    }
+    let fingerprint = state.lock().expect("key").fingerprint.clone();
+    let mut known = read_json(&fingerprint_file(data));
+    if !known.is_object() { known = json!({}); }
+    let stored = known[&key_identity(addr, port)].as_str().unwrap_or("");
+    if !stored.is_empty() && stored != fingerprint { return Err(translate(language, "SSH 主机密钥已改变", &[] as &[String])) }
+    known[&key_identity(addr, port)] = json!(fingerprint);
+    write_private(&fingerprint_file(data), &known)?;
+    let mut channel = session.channel_open_session().await.map_err(|error| error.to_string())?;
+    channel.exec(true, command.as_bytes().to_vec()).await.map_err(|error| error.to_string())?;
+    let mut buffer = vec![0u8; 32 * 1024];
+    let mut sent = 0u64;
+    while sent < total {
+        if cancel.load(Ordering::SeqCst) {
+            let _ = tokio::time::timeout(Duration::from_secs(2), session.disconnect(Disconnect::ByApplication, "", "en")).await;
+            return Err(translate(language, "传输已取消", &[] as &[String]));
+        }
+        let want = std::cmp::min(buffer.len() as u64, total - sent) as usize;
+        file.read_exact(&mut buffer[..want]).map_err(|error| error.to_string())?;
+        progress(sent + want as u64);
+        let write = channel.data(&buffer[..want]);
+        tokio::pin!(write);
+        tokio::select! {
+            biased;
+            result = &mut write => { result.map_err(|error| error.to_string())?; }
+            _ = until_cancel(cancel) => {
+                drop(write);
+                let _ = tokio::time::timeout(Duration::from_secs(2), session.disconnect(Disconnect::ByApplication, "", "en")).await;
+                return Err(translate(language, "传输已取消", &[] as &[String]));
+            }
+        }
+        sent += want as u64;
+    }
+    if cancel.load(Ordering::SeqCst) {
+        let _ = tokio::time::timeout(Duration::from_secs(2), session.disconnect(Disconnect::ByApplication, "", "en")).await;
+        return Err(translate(language, "传输已取消", &[] as &[String]));
+    }
+    source_unchanged(&file, total, started, language)?;
+    let confirm = [1u8];
+    channel.data(&confirm[..]).await.map_err(|error| error.to_string())?;
+    channel.eof().await.map_err(|error| error.to_string())?;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut code = None;
+    let started_at = std::time::Instant::now();
+    loop {
+        if started_at.elapsed() > Duration::from_secs(120) { return Err(translate(language, "远程命令执行超时", &[] as &[String])) }
+        let Some(message) = channel.wait().await else { break };
+        match message {
+            ChannelMsg::Data { data } => {
+                stdout.extend_from_slice(&data);
+                if stdout.len() > MAX_OUTPUT { return Err(translate(language, "远程输出过大", &[] as &[String])) }
+            }
+            ChannelMsg::ExtendedData { data, ext: 1 } => {
+                stderr.extend_from_slice(&data);
+                if stderr.len() > 16000 { stderr.drain(..stderr.len() - 16000); }
+            }
+            ChannelMsg::ExitStatus { exit_status } => code = Some(exit_status),
+            _ => {}
+        }
+    }
+    let _ = session.disconnect(Disconnect::ByApplication, "", "en").await;
+    if code == Some(0) { return Ok(String::from_utf8_lossy(&stdout).into_owned()) }
+    let detail = String::from_utf8_lossy(&stderr).trim().to_string();
+    if !detail.is_empty() { return Err(detail) }
+    match code {
+        None => Err(translate(language, "SSH 连接中断", &[] as &[String])),
+        Some(code) => Err(translate(language, "远程命令退出码 {{0}}", &[code.to_string()])),
+    }
 }
 
 fn key_exec(host: &Value, command: &str, input: &[u8], language: &str) -> Result<String, String> {

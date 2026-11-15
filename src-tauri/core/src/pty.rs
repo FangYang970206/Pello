@@ -249,6 +249,7 @@ impl Manager {
             }
         }
         self.sessions.lock().expect("pty").insert(id.to_string(), session);
+        record_lifecycle("spawn", Some(root_pid));
         spawn_reader(id.to_string(), reader, live.clone(), writer.clone(), emit.clone());
         let live_timer = live.clone();
         let writer_timer = writer;
@@ -385,6 +386,13 @@ impl Manager {
             if let Some(stop) = session.stop.lock().expect("stop").take() { stop(); }
         }
         session.live.lock().expect("pty live").phase = Phase::Dead;
+        record_lifecycle("exit", Some(root));
+    }
+
+    pub fn close_all(&self) {
+        let ids: Vec<String> = self.sessions.lock().expect("pty").keys().cloned().collect();
+        for id in ids { self.close(&id); }
+        record_lifecycle("quit", None);
     }
 
     pub fn snapshot_of(&self, id: &str) -> Option<Value> {
@@ -596,7 +604,10 @@ fn arm(id: &str, live: &Mutex<Live>, writer: &Mutex<Box<dyn Write + Send>>, emit
     let mut live = live.lock().expect("pty live");
     if live.phase == Phase::Dead { return }
     if from_timer && live.phase != Phase::Starting { return }
-    if live.native_working { return }
+    // A shell prompt after a foreground command means that command has exited.
+    // Electron clears the native agent there even if the last report was working.
+    let shell_returned = live.kind == "shell" && live.phase == Phase::Command && prompt_code.is_some();
+    if live.native_working && !shell_returned { return }
     if !live.launched && !live.command.is_empty() {
         let command = format!("{}\n", live.command);
         live.launched = true;
@@ -620,6 +631,12 @@ fn arm(id: &str, live: &Mutex<Live>, writer: &Mutex<Box<dyn Write + Send>>, emit
         live.input_ready = true;
         live.started_at = None;
         live.exit_code = None;
+        if shell_returned {
+            live.agent_kind = None;
+            live.agent_session = None;
+            live.native_working = false;
+            live.native_status = false;
+        }
     }
     let event = snapshot(id, &live);
     drop(live);
@@ -814,6 +831,17 @@ fn wait_native(pid: u32) {
         if result == pid as i32 || result < 0 || Instant::now() >= deadline { return }
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+fn record_lifecycle(kind: &str, pid: Option<u32>) {
+    let Ok(path) = std::env::var("AWB_PTY_LIFECYCLE") else { return };
+    let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) else { return };
+    use std::io::Write;
+    let line = match pid {
+        Some(pid) => format!(r#"{{"type":"{kind}","pid":{pid}}}"#),
+        None => format!(r#"{{"type":"{kind}"}}"#),
+    };
+    let _ = writeln!(file, "{line}");
 }
 
 fn record_shutdown(line: &str) {

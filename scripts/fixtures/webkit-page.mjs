@@ -64,7 +64,7 @@ const helper = `
       const control = label.htmlFor ? document.getElementById(label.htmlFor) : label.querySelector('input,select,textarea,button')
       if (control) controls.push(control)
     }
-    for (const el of document.querySelectorAll('input,select,textarea')) {
+    for (const el of document.querySelectorAll('[aria-label]')) {
       if (matches(el.getAttribute('aria-label') || '')) controls.push(el)
     }
     return [...new Set(controls)]
@@ -751,12 +751,17 @@ class Locator {
 
   async hover() {
     await this.waitFor()
-    const framed = await this.run(`const el = only(steps); window.__awbHover = el;
-      const framed = window.parent !== window
-      if (framed) parent.postMessage({ type: 'awb-wheel-target', frame: true }, '*')
-      else window.__awbHoverFrame = false
-      for (const type of ['pointerover', 'mouseover', 'pointerenter', 'mouseenter']) el.dispatchEvent(new MouseEvent(type, { bubbles: type.endsWith('over'), cancelable: true, view: window })); return framed`)
-    if (framed) await new Promise((resolve) => setTimeout(resolve, 50))
+    const box = await this.run(`const el = only(steps); el.scrollIntoView({ block: 'center', inline: 'center' });
+      for (const type of ['pointerover', 'mouseover', 'pointerenter', 'mouseenter']) el.dispatchEvent(new MouseEvent(type, { bubbles: type.endsWith('over'), cancelable: true, view: window }));
+      const rect = el.getBoundingClientRect(); return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, dpr: devicePixelRatio, viewport: innerHeight }`)
+    // CSS :hover follows the pointer. A synthetic mouse event does not change it.
+    const info = execFileSync('xwininfo', ['-name', 'Pello'], { encoding: 'utf8' })
+    const number = (label) => Number(info.match(new RegExp(`${label}:\\s+(-?\\d+)`))?.[1])
+    const origin = { x: number('Absolute upper-left X'), y: number('Absolute upper-left Y'), height: number('Height') }
+    const menu = origin.height - box.viewport * box.dpr
+    const x = Math.round(origin.x + (box.x + box.width / 2) * box.dpr)
+    const y = Math.round(origin.y + menu + (box.y + box.height / 2) * box.dpr)
+    execFileSync('xdotool', ['mousemove', String(x), String(y)])
     return true
   }
 

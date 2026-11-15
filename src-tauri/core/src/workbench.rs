@@ -26,6 +26,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 type Emit = Arc<dyn Fn(Value) + Send + Sync>;
@@ -46,6 +47,7 @@ pub struct Workbench {
     imports: import::Imports,
     pickers: Mutex<HashMap<String, Picker>>,
     history_flushed: Mutex<bool>,
+    closing: AtomicBool,
     emit: Emit,
 }
 
@@ -81,7 +83,27 @@ impl Workbench {
             db["settings"]["language"] = json!("zh-CN");
         }
         let updates = updates::Service::new(db["settings"]["autoCheckUpdates"] != false);
-        Ok(Self { paths, db: Mutex::new(db), pty: Manager::new(), dirty: Mutex::new(false), content_searches: Mutex::new(HashMap::new()), tree_searches: Mutex::new(HashMap::new()), layouts: Mutex::new(HashMap::new()), restore_failures: Mutex::new(HashMap::new()), preview: preview::Service::new(), resources: resources::Resources::new(), updates: Mutex::new(updates), uploads: upload::Service::new(), imports: import::Imports::new(), pickers: Mutex::new(HashMap::new()), history_flushed: Mutex::new(false), emit })
+        Ok(Self { paths, db: Mutex::new(db), pty: Manager::new(), dirty: Mutex::new(false), content_searches: Mutex::new(HashMap::new()), tree_searches: Mutex::new(HashMap::new()), layouts: Mutex::new(HashMap::new()), restore_failures: Mutex::new(HashMap::new()), preview: preview::Service::new(), resources: resources::Resources::new(), updates: Mutex::new(updates), uploads: upload::Service::new(), imports: import::Imports::new(), pickers: Mutex::new(HashMap::new()), history_flushed: Mutex::new(false), closing: AtomicBool::new(false), emit })
+    }
+
+    /// The window close handler calls this once. Later terminal creates fail
+    /// while the existing sessions are still being closed.
+    pub fn begin_shutdown(&self) -> bool {
+        self.closing.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok()
+    }
+
+    pub fn shutdown_sessions(&self) {
+        // The renderer owns the visible scrollback. Wait for its snapshot,
+        // the same way Electron waits for terminal:history-flushed, then
+        // close every PTY before the process exits.
+        *self.history_flushed.lock().expect("flush") = false;
+        (self.emit)(json!({ "channel": "terminal:history-flush" }));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            if *self.history_flushed.lock().expect("flush") { break }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        self.pty.close_all();
     }
 
     pub fn database_path(&self) -> std::path::PathBuf { self.paths.data.join("workbench.json") }
@@ -586,6 +608,9 @@ impl Workbench {
     }
 
     fn pty_create(&self, request: Value, language: &str) -> Result<Value, String> {
+        if self.closing.load(Ordering::SeqCst) {
+            return Err(translate(language, "工作台正在关闭", &[] as &[String]));
+        }
         let id = request["id"].as_str().filter(|id| !id.is_empty()).map(|id| id.to_string()).unwrap_or_else(|| uid("t"));
         match self.pty_create_inner(request, &id, language) {
             Ok(info) => {
@@ -605,6 +630,9 @@ impl Workbench {
     fn pty_create_inner(&self, request: Value, id: &str, language: &str) -> Result<Value, String> {
         let project = self.project(request["projectId"].as_str().unwrap_or(""), language)?;
         if let Some(host) = self.optional_host(project["host"].as_str().unwrap_or("local"))? {
+        if host["on"] == false {
+            return Err(translate(language, "这台机器未连接", &[] as &[String]));
+        }
         let kind = request["kind"].as_str().unwrap_or("shell");
         let shell = request["shell"].as_str().unwrap_or("bash");
         let requested = request["agentSessionId"].as_str().filter(|value| !value.is_empty());

@@ -1,6 +1,6 @@
-//! Remote upload. A same-name file is overwritten and a same-name directory is
-//! replaced as a whole after the temporary tree is complete and its version matches.
-//! Cancel and failure remove only the temporary tree. The source is copied.
+//! Remote upload. Linux streams each file into a temporary tree and publishes it
+//! only after the captured version still matches. Cancel and failure remove only
+//! that temporary tree. Windows keeps the JSON helper used by the upload shim.
 
 use crate::i18n::translate;
 use crate::random_id;
@@ -56,6 +56,8 @@ impl Service {
             "destination": root,
             "bytes": 0,
             "total": 0,
+            "overallBytes": 0,
+            "overallTotal": 0,
             "items": [],
             "warnings": [],
             "retryable": true,
@@ -136,7 +138,7 @@ fn run_job(job: Arc<Job>, data: PathBuf, host: Option<Value>, project_id: String
         let mut nodes = Vec::new();
         let mut replacing = false;
         for source in &sources {
-            let node = read_source(Path::new(source), &language)?;
+            let node = read_source(Path::new(source), &language, case_insensitive)?;
             let name = node["name"].as_str().unwrap_or("");
             let relative = if parent.is_empty() { name.to_string() } else { format!("{parent}/{name}") };
             if relative.is_empty() || relative == "." { return Err(translate(&language, "不能替换项目根目录", &[] as &[String])); }
@@ -167,8 +169,14 @@ fn run_job(job: Arc<Job>, data: PathBuf, host: Option<Value>, project_id: String
             }
             }
         }
+        let total = tree_bytes(&nodes);
+        {
+            let mut snapshot = job.snapshot.lock().expect("snapshot");
+            snapshot["overallTotal"] = json!(total);
+            snapshot["total"] = json!(total);
+        }
         set_phase(&job, "transferring", &emit);
-        let staged = stage(&data, host.as_ref(), &root, &parent, &nodes, &language)?;
+        let staged = stage(&data, host.as_ref(), &root, &parent, &nodes, &job, &emit, &language)?;
         if let Ok(hold) = std::env::var("AWB_UPLOAD_HOLD") {
             let _ = fs::write(format!("{hold}.ready"), &staged.to_string());
             loop {
@@ -192,7 +200,13 @@ fn run_job(job: Arc<Job>, data: PathBuf, host: Option<Value>, project_id: String
                 thread::sleep(Duration::from_millis(20));
             }
         }
-        let warning = publish(&data, host.as_ref(), &root, &parent, &staged, &language)?;
+        let warning = match publish(&data, host.as_ref(), &root, &parent, &staged, &language) {
+            Ok(warning) => warning,
+            Err(error) => {
+                let _ = remove_stages(&data, host.as_ref(), &root, &parent, &staged, &language);
+                return Err(error);
+            }
+        };
         if let Some(warning) = warning {
             let mut snapshot = job.snapshot.lock().expect("snapshot");
             snapshot["warnings"] = json!([warning]);
@@ -330,7 +344,7 @@ fn destination_of(root: &str, parent: &str, source: &Path) -> String {
     format!("{}/{}", root.trim_end_matches(['/', '\\']), relative)
 }
 
-fn read_source(path: &Path, language: &str) -> Result<Value, String> {
+fn read_source(path: &Path, language: &str, embed: bool) -> Result<Value, String> {
     let meta = fs::symlink_metadata(path).map_err(|_| translate(language, "无法检查来源", &[] as &[String]))?;
     if meta.file_type().is_symlink() { return Err(translate(language, "不上传符号链接", &[] as &[String])); }
     let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("").to_string();
@@ -339,14 +353,29 @@ fn read_source(path: &Path, language: &str) -> Result<Value, String> {
         let mut children = Vec::new();
         for entry in fs::read_dir(path).map_err(|error| error.to_string())? {
             let entry = entry.map_err(|error| error.to_string())?;
-            children.push(read_source(&entry.path(), language)?);
+            children.push(read_source(&entry.path(), language, embed)?);
         }
         children.sort_by(|left, right| left["name"].as_str().unwrap_or("").cmp(right["name"].as_str().unwrap_or("")));
         return Ok(json!({ "name": name, "dir": true, "children": children }));
     }
     if !meta.is_file() { return Err(translate(language, "不支持此文件类型", &[] as &[String])); }
-    let bytes = fs::read(path).map_err(|error| error.to_string())?;
-    Ok(json!({ "name": name, "dir": false, "data": base64::engine::general_purpose::STANDARD.encode(bytes) }))
+    let mut node = json!({ "name": name, "dir": false, "path": path.display().to_string(), "size": meta.len() });
+    if embed {
+        let bytes = fs::read(path).map_err(|error| error.to_string())?;
+        node["data"] = json!(base64::engine::general_purpose::STANDARD.encode(bytes));
+    }
+    Ok(node)
+}
+
+fn tree_bytes(nodes: &[Value]) -> u64 {
+    fn walk(node: &Value) -> u64 {
+        if node["dir"].as_bool().unwrap_or(false) {
+            node["children"].as_array().map(|children| children.iter().map(walk).sum()).unwrap_or(0)
+        } else {
+            node["size"].as_u64().unwrap_or(0)
+        }
+    }
+    nodes.iter().map(walk).sum()
 }
 
 fn exists_remote(data: &Path, host: Option<&Value>, root: &str, relative: &str, language: &str) -> Result<bool, String> {
@@ -355,7 +384,10 @@ fn exists_remote(data: &Path, host: Option<&Value>, root: &str, relative: &str, 
     Ok(output.trim() == "yes")
 }
 
-fn stage(data: &Path, host: Option<&Value>, root: &str, parent: &str, items: &[Value], language: &str) -> Result<Value, String> {
+fn stage(data: &Path, host: Option<&Value>, root: &str, parent: &str, items: &[Value], job: &Arc<Job>, emit: &Emit, language: &str) -> Result<Value, String> {
+    if let Some(remote) = host.filter(|item| item["platform"].as_str() != Some("windows")) {
+        return stage_linux(data, remote, root, parent, items, job, emit, language);
+    }
     let payload = json!({
         "root": root,
         "parent": parent,
@@ -371,6 +403,9 @@ fn stage(data: &Path, host: Option<&Value>, root: &str, parent: &str, items: &[V
 }
 
 fn publish(data: &Path, host: Option<&Value>, root: &str, parent: &str, staged: &Value, language: &str) -> Result<Option<String>, String> {
+    if let Some(remote) = host.filter(|item| item["platform"].as_str() != Some("windows")) {
+        return publish_linux(data, remote, root, parent, staged, language);
+    }
     let payload = json!({
         "root": root,
         "parent": parent,
@@ -391,6 +426,300 @@ fn publish(data: &Path, host: Option<&Value>, root: &str, parent: &str, staged: 
 fn remove_stages(data: &Path, host: Option<&Value>, root: &str, parent: &str, staged: &Value, language: &str) -> Result<(), String> {
     let payload = json!({ "root": root, "parent": parent, "items": staged }).to_string();
     run_helper(data, host, "remove", REMOVE_PY, &payload, language).map(|_| ())
+}
+
+struct ProgressWatch {
+    stop: Arc<AtomicBool>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for ProgressWatch {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() { let _ = handle.join(); }
+    }
+}
+
+fn watch_progress(job: Arc<Job>, emit: Emit) -> ProgressWatch {
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    let handle = thread::spawn(move || {
+        let mut last = Value::Null;
+        let publish = |last: &mut Value| {
+            let event = job.snapshot.lock().expect("snapshot").clone();
+            let bytes = event["overallBytes"].clone();
+            if bytes != *last {
+                *last = bytes;
+                emit(json!({ "channel": "transfer:update", "payload": event }));
+            }
+        };
+        loop {
+            publish(&mut last);
+            if flag.load(Ordering::SeqCst) { break }
+            thread::sleep(Duration::from_millis(15));
+        }
+        publish(&mut last);
+    });
+    ProgressWatch { stop, handle: Some(handle) }
+}
+
+fn note_bytes(job: &Job, bytes: u64) {
+    let mut snapshot = job.snapshot.lock().expect("snapshot");
+    snapshot["overallBytes"] = json!(bytes);
+    snapshot["bytes"] = json!(bytes);
+}
+
+fn join_rel(parent: &str, name: &str) -> String {
+    if parent.is_empty() { name.to_string() } else { format!("{parent}/{name}") }
+}
+
+fn quoted_message(language: &str, source: &str) -> String {
+    serde_json::to_string(&translate(language, source, &[] as &[String])).unwrap_or_else(|_| "\"\"".into())
+}
+
+fn python_command(script: &str, args: &[String]) -> String {
+    let mut parts = vec![String::from("python3"), String::from("-c"), ssh::bash_quote(script)];
+    parts.extend(args.iter().map(|arg| ssh::bash_quote(arg)));
+    parts.join(" ")
+}
+
+fn linux_entry(language: &str) -> String {
+    r#"def entry_version(parent, name):
+    try: fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=parent)
+    except FileNotFoundError: return "absent"
+    try:
+        before = os.fstat(fd)
+        fields = lambda s: (s.st_dev, s.st_ino, s.st_mode, s.st_size, s.st_mtime_ns)
+        digest = hashlib.sha256(repr(fields(before)).encode())
+        if stat.S_ISDIR(before.st_mode):
+            for child in sorted(os.listdir(fd)):
+                version = entry_version(fd, child)
+                if version == "absent": raise ValueError(@@CHANGING_DIR@@)
+                digest.update(os.fsencode(child)); digest.update(bytes([0])); digest.update(version.encode())
+            kind = "d"
+        elif stat.S_ISREG(before.st_mode):
+            while True:
+                block = os.read(fd, 262144)
+                if not block: break
+                digest.update(block)
+            kind = "f"
+        else: raise ValueError(@@BAD_TYPE@@)
+        after = os.fstat(fd)
+        if fields(before) != fields(after) or before.st_ctime_ns != after.st_ctime_ns: raise ValueError(@@CHANGING@@)
+        return kind + ":" + digest.hexdigest()
+    finally: os.close(fd)
+
+def open_parent(root, relative):
+    parts = relative.split("/")
+    if not relative or any(p in ("", ".", "..") for p in parts): raise ValueError(@@ROOT@@)
+    parent = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for part in parts[:-1]:
+            nxt = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+            os.close(parent); parent = nxt
+        return parent, parts[-1]
+    except:
+        os.close(parent); raise
+
+def remove_entry(parent, name):
+    info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    if stat.S_ISDIR(info.st_mode):
+        fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+        try:
+            opened = os.fstat(fd)
+            if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino): raise ValueError(@@TEMP@@)
+            for child in os.listdir(fd): remove_entry(fd, child)
+            current = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino): raise ValueError(@@TEMP@@)
+            os.rmdir(name, dir_fd=parent)
+        finally: os.close(fd)
+    else: os.unlink(name, dir_fd=parent)
+"#
+    .replace("@@CHANGING_DIR@@", &quoted_message(language, "目标目录正在更改"))
+    .replace("@@BAD_TYPE@@", &quoted_message(language, "目标包含链接或不支持的文件类型"))
+    .replace("@@CHANGING@@", &quoted_message(language, "目标正在更改"))
+    .replace("@@ROOT@@", &quoted_message(language, "不能替换项目根目录"))
+    .replace("@@TEMP@@", &quoted_message(language, "临时目录已更改"))
+}
+
+fn write_script(language: &str) -> String {
+    r#"import os, signal, sys
+root, relative, name, expected_text, temporary, expected_version = sys.argv[1:]
+expected = int(expected_text)
+flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+parent = os.open(root, flags)
+def interrupted(signum, frame):
+    raise InterruptedError(@@INTERRUPTED@@)
+signal.signal(signal.SIGTERM, interrupted)
+signal.signal(signal.SIGHUP, interrupted)
+created = False
+try:
+    for part in relative.split("/") if relative else []:
+        new = os.open(part, flags | os.O_NOFOLLOW, dir_fd=parent)
+        os.close(parent)
+        parent = new
+    output = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600, dir_fd=parent)
+    created = True
+    try:
+        remaining = expected
+        while remaining:
+            data = os.read(0, min(262144, remaining))
+            if not data: raise EOFError(@@INCOMPLETE@@)
+            view = memoryview(data)
+            while view:
+                written = os.write(output, view)
+                view = view[written:]
+            remaining -= len(data)
+        if os.read(0, 1) != bytes([1]): raise EOFError(@@UNCONFIRMED@@)
+        os.fsync(output)
+    finally:
+        os.close(output)
+    os.link(temporary, name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+finally:
+    if created:
+        try: os.unlink(temporary, dir_fd=parent)
+        except FileNotFoundError: pass
+    os.close(parent)
+"#
+    .replace("@@INTERRUPTED@@", &quoted_message(language, "传输中断"))
+    .replace("@@INCOMPLETE@@", &quoted_message(language, "传输不完整"))
+    .replace("@@UNCONFIRMED@@", &quoted_message(language, "传输未确认"))
+}
+
+fn publish_script(language: &str) -> String {
+    let mut script = String::from("import ctypes, hashlib, os, stat, sys\n");
+    script.push_str(&linux_entry(language));
+    script.push_str(&r#"
+root, relative, stage, expected = sys.argv[1:]
+parent, name = open_parent(root, relative)
+old_in_stage = False
+try:
+    staged = entry_version(parent, stage)
+    if staged == "absent": raise ValueError(@@MISSING@@)
+    if entry_version(parent, name) != expected: raise ValueError(@@CHANGED@@)
+    libc = ctypes.CDLL(None, use_errno=True)
+    rename = getattr(libc, "renameat2", None)
+    if rename is None: raise ValueError(@@UNSAFE@@)
+    rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+    def move(flags):
+        if rename(parent, os.fsencode(stage), parent, os.fsencode(name), flags) != 0:
+            code = ctypes.get_errno(); raise OSError(code, os.strerror(code))
+    if expected == "absent": move(1)
+    else:
+        move(2); old_in_stage = True
+        if entry_version(parent, stage) != expected:
+            if entry_version(parent, name) != staged: raise ValueError(@@CHANGING_AT@@ + stage)
+            move(2); old_in_stage = False
+            raise ValueError(@@CHANGED@@)
+        try:
+            remove_entry(parent, stage); old_in_stage = False
+        except Exception:
+            print(@@WARNING@@ + os.path.join(root, os.path.dirname(relative), stage))
+finally:
+    if not old_in_stage:
+        try: remove_entry(parent, stage)
+        except FileNotFoundError: pass
+    os.close(parent)
+"#
+    .replace("@@MISSING@@", &quoted_message(language, "临时上传不存在"))
+    .replace("@@CHANGED@@", &quoted_message(language, "目标已更改，原对象已保留"))
+    .replace("@@UNSAFE@@", &quoted_message(language, "系统不支持安全目录替换"))
+    .replace("@@CHANGING_AT@@", &quoted_message(language, "目标正在更改，原对象保留于 "))
+    .replace("@@WARNING@@", &quoted_message(language, "AWB_WARNING:替换已完成，旧对象清理失败，保留于 ")));
+    script
+}
+
+fn parse_version(output: &str, language: &str) -> Result<String, String> {
+    let version = output.trim();
+    let hex = version.len() == 66 && (version.starts_with("d:") || version.starts_with("f:")) && version[2..].chars().all(|char| char.is_ascii_hexdigit());
+    if version == "absent" || hex { return Ok(version.to_string()) }
+    Err(translate(language, "远程版本响应无效", &[] as &[String]))
+}
+
+fn remote_version(data: &Path, host: &Value, root: &str, relative: &str, language: &str) -> Result<String, String> {
+    let script = format!("import hashlib, os, stat, sys\n{}\nparent, name = open_parent(sys.argv[1], sys.argv[2])\ntry:\n    print(entry_version(parent, name))\nfinally:\n    os.close(parent)\n", linux_entry(language));
+    let command = python_command(&script, &[root.to_string(), relative.to_string()]);
+    parse_version(&ssh::run(data, host, &command, None, language)?, language)
+}
+
+fn stream_tree(data: &Path, host: &Value, root: &str, remote_parent: &str, node: &Value, job: &Job, base: &mut u64, language: &str) -> Result<(), String> {
+    let children = node["children"].as_array().cloned().unwrap_or_default();
+    for child in children {
+        if job.cancel.load(Ordering::SeqCst) { return Err(translate(language, "传输已取消", &[] as &[String])) }
+        let name = child["name"].as_str().unwrap_or("").to_string();
+        if child["dir"].as_bool().unwrap_or(false) {
+            let command = ssh::linux_create_command(root, remote_parent, &name, true, language);
+            ssh::run(data, host, &command, None, language)?;
+            stream_tree(data, host, root, &join_rel(remote_parent, &name), &child, job, base, language)?;
+        } else {
+            let path = child["path"].as_str().unwrap_or("");
+            let size = child["size"].as_u64().unwrap_or(0);
+            let temporary = format!(".awb-upload-{}.tmp", random_id());
+            let command = python_command(&write_script(language), &[root.to_string(), remote_parent.to_string(), name, size.to_string(), temporary, String::new()]);
+            let start = *base;
+            ssh::stream_file(data, host, &command, Path::new(path), size, &|sent| note_bytes(job, start + sent), &job.cancel, language)?;
+            *base += size;
+        }
+    }
+    Ok(())
+}
+
+fn stage_linux(data: &Path, host: &Value, root: &str, parent: &str, items: &[Value], job: &Arc<Job>, emit: &Emit, language: &str) -> Result<Value, String> {
+    let _watch = watch_progress(job.clone(), emit.clone());
+    let mut created = Vec::new();
+    let mut base = job.snapshot.lock().expect("snapshot")["overallBytes"].as_u64().unwrap_or(0);
+    let result = (|| -> Result<Value, String> {
+        for item in items {
+            if job.cancel.load(Ordering::SeqCst) { return Err(translate(language, "传输已取消", &[] as &[String])) }
+            let name = item["name"].as_str().unwrap_or("").to_string();
+            if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\\') {
+                return Err(translate(language, "名称无效", &[] as &[String]));
+            }
+            let relative = join_rel(parent, &name);
+            let version = remote_version(data, host, root, &relative, language)?;
+            let stage_name = format!(".awb-upload-tree-{}", random_id());
+            created.push(json!({ "name": name, "stage": stage_name, "version": version }));
+            if item["dir"].as_bool().unwrap_or(false) {
+                let command = ssh::linux_create_command(root, parent, &stage_name, true, language);
+                ssh::run(data, host, &command, None, language)?;
+                stream_tree(data, host, root, &join_rel(parent, &stage_name), item, job, &mut base, language)?;
+            } else {
+                let path = item["path"].as_str().unwrap_or("");
+                let size = item["size"].as_u64().unwrap_or(0);
+                let temporary = format!(".awb-upload-{}.tmp", random_id());
+                let command = python_command(&write_script(language), &[root.to_string(), parent.to_string(), stage_name.clone(), size.to_string(), temporary, String::new()]);
+                let start = base;
+                ssh::stream_file(data, host, &command, Path::new(path), size, &|sent| note_bytes(job, start + sent), &job.cancel, language)?;
+                base += size;
+            }
+        }
+        Ok(Value::Array(created.clone()))
+    })();
+    if result.is_err() { discard_stages(data, Some(host), root, parent, &Value::Array(created), language); }
+    result
+}
+
+fn discard_stages(data: &Path, host: Option<&Value>, root: &str, parent: &str, staged: &Value, language: &str) {
+    for _ in 0..40 {
+        if remove_stages(data, host, root, parent, staged, language).is_ok() { return }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn publish_linux(data: &Path, host: &Value, root: &str, parent: &str, staged: &Value, language: &str) -> Result<Option<String>, String> {
+    let mut warning = None;
+    for item in staged.as_array().cloned().unwrap_or_default() {
+        let name = item["name"].as_str().unwrap_or("");
+        let stage = item["stage"].as_str().unwrap_or("");
+        let version = item["version"].as_str().unwrap_or("");
+        let relative = join_rel(parent, name);
+        let command = python_command(&publish_script(language), &[root.to_string(), relative, stage.to_string(), version.to_string()]);
+        let output = ssh::run(data, host, &command, None, language)?;
+        if let Some(rest) = output.trim().strip_prefix("AWB_WARNING:") {
+            if warning.is_none() { warning = Some(rest.to_string()); }
+        }
+    }
+    Ok(warning)
 }
 
 fn run_helper(data: &Path, host: Option<&Value>, op: &str, script: &str, payload: &str, language: &str) -> Result<String, String> {

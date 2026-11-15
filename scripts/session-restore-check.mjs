@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { _electron as electron } from 'playwright'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 
 const root = path.resolve('.')
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'awb-session-restore-'))
@@ -58,11 +58,13 @@ const db = {
   activeTab: { p1: 'shell-check', p3: 'remote-term' }
 }
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify(db, null, 2))
+const exported = path.join(data, 'complete-history.ansi')
 const env = { ...process.env, AWB_USER_DATA: data }
 delete env.ELECTRON_RUN_AS_NODE
+if (process.env.AWB_SHELL === 'tauri') env.AWB_SAVE_PATH = exported
 
 const launch = async () => {
-  const app = await electron.launch({ args: [root], cwd: root, env })
+  const app = await launchWorkbench({ args: [root], cwd: root, env })
   const page = await app.firstWindow()
   page.setDefaultTimeout(20000)
   await page.locator('.plist').waitFor()
@@ -84,8 +86,7 @@ try {
   await page.waitForFunction(({ id, marker }) => window.__awbBuffer(id).includes(marker), { id: term, marker })
   await page.waitForTimeout(4000)
   assert.ok((await page.evaluate((id) => window.awb.terminalHistory(id), term)).includes(marker), 'persisted terminal history missing marker')
-  const exported = path.join(data, 'complete-history.ansi')
-  await app.evaluate(({ dialog }, file) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: file }) }, exported)
+  if (app.shell !== 'tauri') await app.evaluate(({ dialog }, file) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: file }) }, exported)
   await page.evaluate((id) => window.awb.exportTerminalHistory(id), term)
   assert.ok(fs.readFileSync(exported, 'utf8').includes(marker), 'full output journal must be exportable')
 

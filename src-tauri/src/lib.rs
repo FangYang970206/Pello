@@ -20,7 +20,16 @@ fn awb(window: Window, state: State<Arc<Workbench>>, channel: String, args: Vec<
             Ok(Value::Null)
         }
         "win:close" => {
-            window.close().map_err(|error| error.to_string())?;
+            // Return before the processes exit so a create that arrives during
+            // cleanup is rejected, matching Electron's closing window.
+            if state.begin_shutdown() {
+                let workbench = Arc::clone(&state);
+                let app = window.app_handle().clone();
+                std::thread::spawn(move || {
+                    workbench.shutdown_sessions();
+                    app.exit(0);
+                });
+            }
             Ok(Value::Null)
         }
         "win:resize" => {
@@ -65,6 +74,10 @@ fn awb(window: Window, state: State<Arc<Workbench>>, channel: String, args: Vec<
     }
 }
 
+fn menu_choice_enabled(template: &Value, choice: &str) -> bool {
+    template.as_array().map(|items| items.iter().any(|item| item["id"].as_str() == Some(choice) && item["enabled"].as_bool().unwrap_or(true))).unwrap_or(false)
+}
+
 fn popup_menu(window: &Window, template: &Value) -> Result<Value, String> {
     use tauri::menu::{ContextMenu, Menu, MenuItem};
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
@@ -82,17 +95,16 @@ fn popup_menu(window: &Window, template: &Value) -> Result<Value, String> {
         menu.append(&entry).map_err(|error| error.to_string())?;
     }
     if let Ok(path) = std::env::var("AWB_MENU_FILE") {
+        let _ = std::fs::write(format!("{path}.json"), template.to_string());
         let choice = std::fs::read_to_string(&path).unwrap_or_default();
         let choice = choice.trim().to_string();
         let _ = std::fs::write(&path, "");
         if choice.is_empty() { return Ok(Value::Null) }
-        let present = template.as_array().map(|items| items.iter().any(|item| item["id"].as_str() == Some(choice.as_str()))).unwrap_or(false);
-        return Ok(if present { serde_json::json!(choice) } else { Value::Null });
+        return Ok(if menu_choice_enabled(template, &choice) { serde_json::json!(choice) } else { Value::Null });
     }
     if let Ok(choice) = std::env::var("AWB_MENU_CHOICE") {
         if choice.is_empty() { return Ok(Value::Null) }
-        let present = template.as_array().map(|items| items.iter().any(|item| item["id"].as_str() == Some(choice.as_str()))).unwrap_or(false);
-        return Ok(if present { serde_json::json!(choice) } else { Value::Null });
+        return Ok(if menu_choice_enabled(template, &choice) { serde_json::json!(choice) } else { Value::Null });
     }
     if menu.popup(window.clone()).is_err() {
         return Ok(Value::Null);
