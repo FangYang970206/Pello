@@ -3,6 +3,7 @@
   "version": "0.1.12",
   "private": true,
   "description": "Local desktop workbench for code agent CLIs. No account, no cloud.",
+  "license": "Apache-2.0",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",

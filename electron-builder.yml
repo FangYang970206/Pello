@@ -20,7 +20,6 @@ extraResources:
     filter:
       - pello-rounded.ico
       - pello-rounded.png
-      - licenses/**
 
 # Renderer dependencies are bundled into out/ and listed as devDependencies.
 # Main-process JS dependencies remain external and are copied by the builder.

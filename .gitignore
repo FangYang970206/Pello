@@ -11,3 +11,5 @@ output
 /data/
 /data.migration-*/
 /pello.config.json
+docs/
+licenses/
