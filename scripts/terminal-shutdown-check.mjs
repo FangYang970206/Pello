@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { _electron as electron } from 'playwright'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const shell = process.platform === 'win32' ? 'pwsh' : 'bash'
@@ -34,14 +34,15 @@ for (let run = 0; run < runs; run++) {
     }
     return fs.readFileSync(pidFile, 'utf8').trim().split(/\s+/).map(Number).filter((pid) => { try { process.kill(pid, 0); return true } catch { return false } })
   }
-  const env = { ...process.env, AWB_USER_DATA: data }; delete env.ELECTRON_RUN_AS_NODE
-  const app = await electron.launch({ args: [root], cwd: root, env })
-  const applicationProcess = app.process()
   const lifecycle = path.join(data, 'pty-lifecycle.jsonl')
+  const env = { ...process.env, AWB_USER_DATA: data }; delete env.ELECTRON_RUN_AS_NODE
+  if (process.env.AWB_SHELL === 'tauri') env.AWB_PTY_LIFECYCLE = lifecycle
+  const app = await launchWorkbench({ args: [root], cwd: root, env })
+  const applicationProcess = app.process()
   let closed = false
   try {
     const page = await app.firstWindow()
-    await app.evaluate(({ app }, lifecycle) => {
+    if (app.shell !== 'tauri') await app.evaluate(({ app }, lifecycle) => {
       const require = process.getBuiltinModule('module').createRequire(`${app.getAppPath()}/package.json`)
       const pty = require('node-pty'), fs = require('node:fs'), original = pty.spawn
       const record = (type, pid) => fs.appendFileSync(lifecycle, JSON.stringify({ type, pid }) + '\n')

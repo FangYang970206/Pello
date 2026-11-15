@@ -10,7 +10,7 @@ import type { DocumentDraft } from './documents'
 import { terminalStatus } from './terminal-state'
 import { sessionOf } from '../shared/work-sessions'
 import { NameEditor } from './ProjectSidebar'
-import { loadTerminalLayouts, splitTile, type SplitDirection } from './terminal-layout'
+import { loadTerminalLayouts, type SplitDirection, type Tile } from './terminal-layout'
 
 export type TermTab = {
   id: string
@@ -90,7 +90,7 @@ export function Workspace({
   preview: DocumentDraft | null
   onSelect: (id: string) => void
   onRenameTerm: (id: string, name: string) => Promise<void>
-  onSplitTerm: (id: string) => Promise<string>
+  onSplitTerm: (id: string, direction: SplitDirection) => Promise<{ id: string; tiles: Tile[] }>
   onNavigateFile: (path: string, anchor?: string) => void
   onClose: (id: string) => void
   onNewTerm: () => void
@@ -150,9 +150,8 @@ export function Workspace({
     setSplitting(true); setLayoutError('')
     try {
       const direction = command.slice(6) as SplitDirection
-      splitTile(current, id, '__validate__', direction)
-      const nextId = await onSplitTerm(id)
-      setLayouts((value) => ({ ...value, [layoutKey]: splitTile(current, id, nextId, direction) }))
+      const result = await onSplitTerm(id, direction)
+      setLayouts((value) => ({ ...value, [layoutKey]: result.tiles }))
     } catch (error) { setLayoutError(String(error)) }
     finally { setSplitting(false) }
   }

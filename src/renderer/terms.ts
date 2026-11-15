@@ -124,7 +124,7 @@ export function prependTermHistory(id: string, text: string): Promise<void> {
     serializer.dispose()
     // Leave the alternate screen without clearing it, scroll the history out
     // of the current viewport, then restore the serialized live screen/cursor.
-    const history = restoreHistoryText(text)
+    const history = text.includes('── 上次会话记录 ──') || text.includes('── Previous session history ──') ? text : restoreHistoryText(text)
     term.write(`\x1b[?47l\x1b[H\x1b[2J${history}${'\r\n'.repeat(term.rows)}\x1b[H${screen}`, () => {
       replaying.delete(id)
       for (const data of pending) writeTerm(id, data)

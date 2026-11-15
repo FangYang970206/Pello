@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { _electron as electron } from 'playwright'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 
 const root = path.resolve('.')
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'pello-diff-editor-'))
@@ -16,7 +16,7 @@ const after = before.replace('line 2 ', 'changed 2 ').replace('line 140 ', 'chan
 fs.writeFileSync(path.join(project, 'fixture.txt'), before)
 fs.writeFileSync(path.join(project, 'deleted.txt'), 'deleted original\n')
 git('add', '.')
-git('-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture')
+git('-c', 'commit.gpgsign=false', '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture')
 fs.writeFileSync(path.join(project, 'fixture.txt'), after)
 fs.unlinkSync(path.join(project, 'deleted.txt'))
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({
@@ -25,7 +25,7 @@ fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({
 }))
 const env = { ...process.env, AWB_USER_DATA: data }
 delete env.ELECTRON_RUN_AS_NODE
-const app = await electron.launch({ args: [root], cwd: root, env })
+const app = await launchWorkbench({ args: [root], cwd: root, env })
 try {
   const page = await app.firstWindow()
   page.setDefaultTimeout(15000)
@@ -138,7 +138,8 @@ try {
     await page.locator('[data-a=sec][data-id=look]').click()
     await page.locator(`[data-a=theme][data-id=${theme}]`).click()
     await page.locator('[data-a=back]').click()
-    await app.browserWindow(page).then((win) => win.evaluate((win, size) => win.setSize(...size), [width, height]))
+    if (app.shell === 'tauri') await page.setViewportSize({ width, height })
+    else await app.browserWindow(page).then((win) => win.evaluate((win, size) => win.setSize(...size), [width, height]))
     await page.waitForTimeout(150)
     await checkChangedLineStyle()
     fs.mkdirSync(path.join(root, 'output/playwright/diff-editor'), { recursive: true })
@@ -151,6 +152,6 @@ try {
   throw error
 } finally {
   // Exercise normal cleanup even if a failed assertion leaves a dirty draft.
-  await app.evaluate(({ dialog }) => { dialog.showMessageBoxSync = () => 1 })
+  if (app.shell !== 'tauri') await app.evaluate(({ dialog }) => { dialog.showMessageBoxSync = () => 1 })
   await app.close()
 }

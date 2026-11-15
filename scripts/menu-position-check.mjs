@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { _electron as electron } from 'playwright'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'pello-menu-position-'))
 const home = path.join(data, 'home'), shots = path.resolve('output/playwright/menu-position')
@@ -21,7 +21,7 @@ fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({
 }))
 const env = { ...process.env, AWB_USER_DATA: data, AWB_RESOURCE_HOME: home }
 delete env.ELECTRON_RUN_AS_NODE
-const app = await electron.launch({ args: ['.'], env })
+const app = await launchWorkbench({ args: ['.'], env })
 const failures = [], baselines = new Map(), measurements = []
 try {
   const page = await app.firstWindow()
@@ -35,7 +35,7 @@ try {
     const surface = page.locator(selector)
     await surface.waitFor()
     await page.evaluate(() => document.fonts.ready)
-    const m = await surface.boundingBox(), viewport = page.viewportSize() || await page.evaluate(() => ({ width: innerWidth, height: innerHeight }))
+    const m = await surface.boundingBox(), viewport = typeof page.viewportSize === 'function' ? page.viewportSize() : await page.evaluate(() => ({ width: innerWidth, height: innerHeight }))
     const key = `${name}/${width}`, previous = baselines.get(key)
     if (m.x < 0 || m.y < 0 || m.x + m.width > viewport.width + 1 || m.y + m.height > viewport.height + 1) failures.push(`${key}: surface exceeds viewport: ${JSON.stringify(m)}`)
     if (previous && Object.keys(m).some((key) => Math.abs(m[key] - previous[key]) > 1)) failures.push(`${name}/${theme}/${width}: theme changes surface geometry: ${JSON.stringify(m)} vs ${JSON.stringify(previous)}`)

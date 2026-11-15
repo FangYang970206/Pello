@@ -23,9 +23,15 @@
     "check:sessions:deep": "node scripts/codex-native-session-check.mjs && node scripts/pi-native-session-check.mjs",
     "check:i18n": "node scripts/i18n-check.mjs",
     "check:installation": "node scripts/installation-check.mjs",
+    "check:rust": "node scripts/rust-port-check.mjs",
+    "dev:tauri:web": "vite --config vite.tauri.config.ts",
+    "build:tauri:web": "vite build --config vite.tauri.config.ts",
+    "dev:tauri": "tauri dev",
+    "build:tauri": "tauri build",
     "check:media:ssh-linux": "node scripts/linux-media-check.mjs"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.12.4",
     "electron-updater": "6.8.12",
     "fflate": "^0.8.3",
     "jsonc-parser": "^3.3.1",
@@ -51,6 +57,7 @@
     "@milkdown/kit": "^7.23.0",
     "@playwright/test": "^1.64.1",
     "@tailwindcss/vite": "^4.1.16",
+    "@tauri-apps/cli": "^2.12.4",
     "@types/node": "^22.19.0",
     "@types/plantuml-encoder": "^1.4.2",
     "@types/react": "^19.2.2",

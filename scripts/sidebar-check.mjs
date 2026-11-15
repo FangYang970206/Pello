@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { _electron as electron } from 'playwright'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'awb-sidebar-'))
 const shell = process.platform === 'win32' ? 'pwsh' : 'bash'
@@ -34,7 +34,7 @@ const env = { ...process.env, AWB_USER_DATA: data }
 delete env.ELECTRON_RUN_AS_NODE
 const shots = path.resolve('output/playwright/sidebar-sessions')
 fs.mkdirSync(shots, { recursive: true })
-let app = await electron.launch({ args: ['.'], env })
+let app = await launchWorkbench({ args: ['.'], env, scale: 1 })
 try {
   let page = await app.firstWindow()
   page.setDefaultTimeout(15000)
@@ -179,7 +179,8 @@ try {
   assert.equal(await page.locator('.project-folder').first().getAttribute('data-color'), 'orange')
   // Batch captures at both sizes and themes, with real terminal content.
   for (const theme of ['dark', 'light']) for (const [width, height] of [[1440, 900], [1024, 680]]) {
-    await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setContentSize(...size), [width, height])
+    if (app.shell === 'tauri') await page.evaluate(([width, height]) => window.awb.winResize(width, height), [width, height])
+    else await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setContentSize(...size), [width, height])
     await page.click('[data-a=settings]'); await page.click('[data-a=sec][data-id=look]'); await page.click(`[data-a=theme][data-id=${theme}]`); await page.keyboard.press('Escape')
     await page.evaluate(() => document.fonts.ready)
     await page.screenshot({ path: path.join(shots, `${theme}-${width}.png`) })
@@ -201,7 +202,7 @@ try {
   await session(newGroup.id).click()
   // Restart proves grouping, names, active terminal and actual output survive.
   await app.close()
-  app = await electron.launch({ args: ['.'], env }); page = await app.firstWindow(); page.setDefaultTimeout(15000)
+  app = await launchWorkbench({ args: ['.'], env, scale: 1 }); page = await app.firstWindow(); page.setDefaultTimeout(15000)
   await session(newGroup.id).waitFor()
   assert.equal(await page.locator('[data-a=agents-toggle]').getAttribute('aria-expanded'), 'false')
   await session(newGroup.id).click()

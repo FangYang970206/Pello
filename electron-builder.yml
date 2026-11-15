@@ -116,3 +116,6 @@ nsis:
   shortcutName: Pello
   # customRemoveFiles preserves installation-local data on upgrades/uninstall.
   deleteAppDataOnUninstall: false
+  # electron-builder writes latest.yml for the GitHub provider and a .blockmap
+  # beside the NSIS installer when differential packages stay enabled.
+  differentialPackage: true

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { _electron as electron } from 'playwright'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 
 const root = path.resolve(import.meta.dirname, '..')
 const shots = path.join(root, 'output/playwright/terminal-input')
@@ -22,10 +22,48 @@ for (const scale of process.argv.includes('--quick') ? [1] : [1, 1.25, 1.5, 2]) 
   }))
   const env = { ...process.env, AWB_USER_DATA: data }
   delete env.ELECTRON_RUN_AS_NODE
-  const app = await electron.launch({ args: [root, `--force-device-scale-factor=${scale}`], cwd: root, env })
+  const app = await launchWorkbench({ args: [root, `--force-device-scale-factor=${scale}`], cwd: root, env, scale })
   try {
     const page = await app.firstWindow()
-    const cdp = await page.context().newCDPSession(page)
+    const cdp = await page.context().newCDPSession(page).catch(() => null)
+    const compose = async (text) => {
+      if (cdp) {
+        try {
+          await cdp.send('Input.imeSetComposition', { text, selectionStart: text.length, selectionEnd: text.length })
+          return
+        } catch (error) {
+          if (app.shell !== 'tauri') throw error
+        }
+      }
+      await page.locator('[data-term=input] .xterm-helper-textarea').evaluate((node, value) => {
+        if (!node.dataset.composing) {
+          node.dispatchEvent(new CompositionEvent('compositionstart', { data: '', bubbles: true }))
+          node.dataset.composing = '1'
+        }
+        if (!value) {
+          node.dataset.composing = ''
+          node.dispatchEvent(new CompositionEvent('compositionupdate', { data: '', bubbles: true }))
+          node.dispatchEvent(new CompositionEvent('compositionend', { data: '', bubbles: true }))
+          return
+        }
+        node.dispatchEvent(new CompositionEvent('compositionupdate', { data: value, bubbles: true }))
+      }, text)
+    }
+    const commitText = async (text) => {
+      if (cdp && app.shell !== 'tauri') {
+        await cdp.send('Input.insertText', { text })
+        return
+      }
+      if (cdp) {
+        try {
+          await cdp.send('Input.insertText', { text })
+          return
+        } catch { /* WebKit inspector may not implement insertText. */ }
+      }
+      await page.locator('[data-term=input] .xterm-helper-textarea').evaluate((node, value) => {
+        node.dispatchEvent(new InputEvent('input', { data: value, inputType: 'insertText', bubbles: true, composed: false }))
+      }, text)
+    }
     await page.waitForFunction(() => window.__awbBuffer?.('input')?.includes('INPUT_FOOTER 最底行'))
     await page.evaluate(() => { window.__inputTerminal = document.querySelector('[data-term=input] .xterm') })
     let expected = ''
@@ -60,19 +98,19 @@ for (const scale of process.argv.includes('--quick') ? [1] : [1, 1.25, 1.5, 2]) 
       }
       await page.locator('[data-term=input] .xterm-helper-textarea').focus()
       for (const composition of ['zhongwen', 'ceshizhongwenshuru'.repeat(12)]) {
-        await cdp.send('Input.imeSetComposition', { text: composition, selectionStart: composition.length, selectionEnd: composition.length })
+        await compose(composition)
         await page.waitForTimeout(60)
         await stable('composing')
         await anchored()
         assert.equal(fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '', expected, 'Preedit must not reach the PTY')
         const committed = '测试中文输入'
-        await cdp.send('Input.insertText', { text: committed })
+        await commitText(committed)
         expected += committed
         await page.waitForFunction((expected) => window.__awbBuffer('input').includes(expected), expected)
         await stable('committed')
       }
-      await cdp.send('Input.imeSetComposition', { text: 'quxiao', selectionStart: 6, selectionEnd: 6 })
-      await cdp.send('Input.imeSetComposition', { text: '', selectionStart: 0, selectionEnd: 0 })
+      await compose('quxiao')
+      await compose('')
       await page.keyboard.type(' ASCII')
       expected += ' ASCII'
       await page.waitForFunction((expected) => window.__awbBuffer('input').includes(expected), expected)

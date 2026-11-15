@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { _electron as electron } from 'playwright'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 import { installDocumentHarness, documentCommand } from './fixtures/document-harness.mjs'
 
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'awb-html-switch-'))
@@ -10,7 +10,7 @@ const file = path.join(data, 'page.html')
 fs.writeFileSync(file, '<h1>original</h1>')
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: { layout: 'balanced', restore: false }, projects: [{ id: 'p', name: 'HTML switching', host: 'local', path: data, agent: 'shell' }] }))
 const env = { ...process.env, AWB_USER_DATA: data }; delete env.ELECTRON_RUN_AS_NODE
-const app = await electron.launch({ args: ['.'], env })
+const app = await launchWorkbench({ args: ['.'], env })
 try {
   const page = await app.firstWindow()
   await installDocumentHarness(app, page, false)
@@ -21,7 +21,8 @@ try {
     await frame.locator('h1').waitFor()
     // The iframe DOM can be ready before Chromium updates its input hit-test surface.
     await frame.locator('h1').evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
-    await app.evaluate(() => { globalThis.__documentMenuCommand = 'source' })
+    if (app.menuFile) fs.writeFileSync(app.menuFile, 'source')
+    else await app.evaluate(() => { globalThis.__documentMenuCommand = 'source' })
     await frame.locator('h1').click({ button: 'right' })
     const source = page.getByRole('textbox', { name: '文件内容', exact: true })
     await source.waitFor()
@@ -41,9 +42,13 @@ try {
   const source = path.join(imported, 'page.html')
   fs.writeFileSync(source, fs.readFileSync(file))
   await page.evaluate((source) => window.awb.transferDrop('p', '', [source]), source)
-  const task = page.locator('.transfer-task').last()
-  await task.getByRole('button', { name: '覆盖冲突文件', exact: true }).click()
-  await task.getByText('导入结束', { exact: true }).waitFor()
+  if (app.shell === 'tauri') {
+    await page.locator('.upload-status').getByText('上传成功', { exact: true }).waitFor()
+  } else {
+    const task = page.locator('.transfer-task').last()
+    await task.getByRole('button', { name: '覆盖冲突文件', exact: true }).click()
+    await task.getByText('导入结束', { exact: true }).waitFor()
+  }
   await page.waitForFunction((old) => { const frame = document.querySelector('iframe'); return frame && frame.getAttribute('src') !== old }, oldPreview)
   await page.frameLocator('iframe').getByRole('heading', { name: 'Draft 19', exact: true }).waitFor()
   assert.equal(fs.readFileSync(file, 'utf8'), '<h1>Draft 19</h1>')

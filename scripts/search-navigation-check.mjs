@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { _electron as electron } from 'playwright'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'pello-search-navigation-'))
 const project = path.join(data, 'project'); fs.mkdirSync(project)
@@ -14,12 +14,12 @@ const code = Array.from({ length: 180 }, (_, index) => index === 40 || index ===
 fs.writeFileSync(path.join(project, 'code.md'), '# Code navigation\n\n' + 'Introductory paragraph before the lazy code block.\n\n'.repeat(40) + '```js\n' + code + '\n```\n')
 fs.writeFileSync(path.join(project, 'navigation.html'), '<!doctype html><html><body>' + text.split('\n\n').map((line) => `<p>${line}</p>`).join('') + '</body></html>')
 const git = (...args) => execFileSync('git', args, { cwd: project, windowsHide: true })
-git('init', '-q'); git('add', '.'); git('-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture')
+git('init', '-q'); git('add', '.'); git('-c', 'commit.gpgsign=false', '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture')
 fs.writeFileSync(path.join(project, 'navigation.txt'), 'Worktree\n' + text)
 const originals = new Map(fs.readdirSync(project).filter((name) => name !== '.git').map((name) => [name, fs.readFileSync(path.join(project, name))]))
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: { layout: 'balanced', restore: false, confirmKill: false }, projects: [{ id: 'p', name: 'Search navigation', path: project, host: 'local', agent: 'shell' }] }))
 const env = { ...process.env, AWB_USER_DATA: data }; delete env.ELECTRON_RUN_AS_NODE
-const app = await electron.launch({ args: ['.'], env })
+const app = await launchWorkbench({ args: ['.'], env })
 try {
   const page = await app.firstWindow(); page.setDefaultTimeout(8000)
   await page.setViewportSize({ width: 1024, height: 680 })

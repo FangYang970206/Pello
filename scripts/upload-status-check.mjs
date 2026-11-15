@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { _electron as electron } from 'playwright'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'pello-upload-status-'))
 const project = path.join(data, 'project'); fs.mkdirSync(project)
@@ -11,11 +11,24 @@ fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: {
   { id: 'other', name: 'Other project', host: 'local', path: project, agent: 'shell' }
 ] }))
 const env = { ...process.env, AWB_USER_DATA: data }; delete env.ELECTRON_RUN_AS_NODE
-const app = await electron.launch({ args: ['.'], env })
+const app = await launchWorkbench({ args: ['.'], env })
 try {
   const page = await app.firstWindow(); page.setDefaultTimeout(10000)
   await page.click('[data-a=rmode][data-id=files]')
-  await app.evaluate(({ ipcMain, BrowserWindow }) => {
+  const retried = { id: 'retried', projectId: 'p', direction: 'upload', state: 'running', current: '', destination: '', bytes: 0, total: 0, items: [] }
+  if (app.shell === 'tauri') {
+    await page.evaluate((retried) => {
+      window.__uploadCalls = { cancel: [], dismiss: [], retry: [] }
+      window.awb.transferCancel = async (id) => { window.__uploadCalls.cancel.push(id) }
+      window.awb.transferDismiss = async (id) => { window.__uploadCalls.dismiss.push(id) }
+      window.awb.transferRetry = async (id) => {
+        window.__uploadCalls.retry.push(id)
+        if (window.__retryError) throw new Error('网络仍不可用')
+        await window.__TAURI_INTERNALS__.invoke('awb', { channel: 'transfer:inject', args: [retried] })
+        return 'retried'
+      }
+    }, retried)
+  } else await app.evaluate(({ ipcMain, BrowserWindow }) => {
     globalThis.__uploadCalls = { cancel: [], dismiss: [], retry: [] }
     for (const method of ['cancel', 'dismiss', 'retry']) {
       ipcMain.removeHandler(`transfer:${method}`)
@@ -30,7 +43,11 @@ try {
     }
   })
   const snapshot = (id, changes = {}) => ({ id, projectId: 'p', direction: 'upload', state: 'running', phase: 'transferring', current: 'C:\\private\\source.bin', destination: '/private/target', bytes: 50, total: 100, overallBytes: 50, overallTotal: 100, items: [], ...changes })
-  const send = (value) => app.evaluate(({ BrowserWindow }, value) => BrowserWindow.getAllWindows()[0].webContents.send('transfer:update', value), value)
+  const send = (value) => app.shell === 'tauri'
+    ? page.evaluate((value) => window.__TAURI_INTERNALS__.invoke('awb', { channel: 'transfer:inject', args: [value] }), value)
+    : app.evaluate(({ BrowserWindow }, value) => BrowserWindow.getAllWindows()[0].webContents.send('transfer:update', value), value)
+  const calls = () => app.shell === 'tauri' ? page.evaluate(() => window.__uploadCalls) : app.evaluate(() => globalThis.__uploadCalls)
+  const setRetryError = (value) => app.shell === 'tauri' ? page.evaluate((value) => { window.__retryError = value }, value) : app.evaluate((value) => { globalThis.__retryError = value }, value)
   const row = (id) => page.locator(`.upload-status[data-transfer-id="${id}"]`)
   const success = (id) => snapshot(id, { state: 'completed', items: [{ source: 'private-source', destination: 'private-target', status: 'done' }] })
 
@@ -46,7 +63,7 @@ try {
   }
   await row('first').getByRole('button', { name: '取消上传', exact: true }).focus()
   await page.keyboard.press('Enter')
-  assert.deepEqual(await app.evaluate(() => globalThis.__uploadCalls.cancel), ['first'])
+  assert.deepEqual((await calls()).cancel, ['first'])
   await send(snapshot('first', { state: 'cancelled' }))
   await row('first').waitFor({ state: 'detached' })
   console.log('PASS compact upload hides paths and progress, supports keyboard cancellation and protects publication')
@@ -60,7 +77,7 @@ try {
   await send(success('success')); await send(snapshot('concurrent'))
   await row('success').waitFor({ state: 'detached', timeout: 1600 })
   assert.equal(await row('concurrent').innerText(), '上传中')
-  assert.ok((await app.evaluate(() => globalThis.__uploadCalls.dismiss)).includes('success'))
+  assert.ok((await calls()).dismiss.includes('success'))
   await send(snapshot('concurrent', { state: 'cancelled' }))
   console.log('PASS success remains readable then clears after 2 seconds, without resetting on updates or clearing another task')
 
@@ -93,10 +110,10 @@ try {
   assert.match(await row('warning').innerText(), /\/remote\/\.awb-upload-backup/)
   assert.equal(await row('failed').getByText('上传成功', { exact: true }).count(), 0)
   assert.equal(await row('warning').getByText('上传成功', { exact: true }).count(), 0)
-  await app.evaluate(() => { globalThis.__retryError = true })
+  await setRetryError(true)
   await row('failed').getByRole('button', { name: '重试上传', exact: true }).click()
   await row('failed').getByText(/网络仍不可用/).waitFor()
-  await app.evaluate(() => { globalThis.__retryError = false })
+  await setRetryError(false)
   await row('failed').getByRole('button', { name: '重试上传', exact: true }).click()
   await row('failed').waitFor({ state: 'detached' })
   await row('retried').getByText('上传中', { exact: true }).waitFor()

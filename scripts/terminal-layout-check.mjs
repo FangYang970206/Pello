@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { _electron as electron } from 'playwright'
 import { installDocumentHarness } from './fixtures/document-harness.mjs'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 import { loadTypeScript } from './fixtures/load-ts.mjs'
 
 const { splitTile } = await loadTypeScript(new URL('../src/renderer/terminal-layout.ts', import.meta.url))
@@ -17,24 +17,34 @@ console.log('PASS left/right/up/down split placement preserves the complete term
 
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'pello-layout-'))
 const shell = process.platform === 'win32' ? 'pwsh' : 'bash'
+const showsPrompt = (text) => typeof text === 'string' && (process.platform === 'win32' ? text.includes('>') : text.includes('$'))
 const quote = (text) => `'${text.replaceAll("'", process.platform === 'win32' ? "''" : "'\\''")}'`
 const command = `${process.platform === 'win32' ? '& ' : ''}${quote(process.execPath)}`
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: { restore: true, confirmKill: false, defShell: shell, defAgent: 'shell', layout: 'balanced' }, custom: [{ id: 'native', name: 'Native', cmd: command, args: quote(path.resolve('scripts/fixtures/program-status.cjs')), shell, env: [], letter: 'N', color: '#a9c3df' }], projects: [{ id: 'p', name: 'Layout', path: data, host: 'local', agent: 'shell' }], sessions: { p: [{ id: 's', kind: 'shell', shell }, { id: 'n', kind: 'native', shell }] }, activeTab: { p: 'n' } }))
 const env = { ...process.env, AWB_USER_DATA: data }
 delete env.ELECTRON_RUN_AS_NODE
-let app = await electron.launch({ args: ['.'], env })
+const launch = () => launchWorkbench({ args: ['.'], env })
+let app = await launch()
 try {
   let page = await app.firstWindow()
   page.setDefaultTimeout(15000)
   await installDocumentHarness(app, page, false)
+  const context = async (id, action) => {
+    if (app.menuFile) fs.writeFileSync(app.menuFile, action)
+    else await app.evaluate((_electron, action) => { globalThis.__documentMenuCommand = action }, action)
+    await page.locator(`[data-a=pane][data-id="${id}"]`).dispatchEvent('contextmenu')
+    if (!app.menuFile) return
+    const end = Date.now() + 5000
+    while (Date.now() < end) {
+      if (fs.readFileSync(app.menuFile, 'utf8').trim() !== action) return
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    throw new Error(`terminal menu command was not consumed: ${action}`)
+  }
   const agent = () => page.locator('[data-a=side-term][data-id=n]')
   const tab = (id) => page.locator(`[data-a=tab][data-id="${id}"]`)
   const visible = () => page.locator('.pane:not([hidden])')
   const send = (text) => page.evaluate((text) => window.awb.ptyWrite('n', text + '\r'), text)
-  const context = async (id, action) => {
-    await app.evaluate((_electron, action) => { globalThis.__documentMenuCommand = action }, action)
-    await page.locator(`[data-a=pane][data-id="${id}"]`).dispatchEvent('contextmenu')
-  }
   await page.waitForFunction(() => window.__awbBuffer?.('n')?.includes('STATUS_PROBE_OK'))
   await page.waitForFunction(() => document.activeElement?.closest('[data-term]')?.getAttribute('data-term') === 'n')
   await page.click('[data-a=agents-toggle]')
@@ -69,9 +79,10 @@ try {
   await tab('s').press('F2')
   await page.getByLabel('新名称', { exact: true }).fill('临时 Shell')
   await page.getByLabel('新名称', { exact: true }).press('Enter')
+  await page.waitForFunction(() => document.querySelector('[data-a=tab][data-id="s"]')?.textContent?.includes('临时 Shell'))
   assert.ok((await tab('s').textContent()).includes('临时 Shell'))
   await page.evaluate(() => { window.__layoutOriginal = document.querySelector('[data-term=s] .xterm') })
-  await page.waitForFunction(() => window.__awbBuffer('s').includes('>'))
+  await page.waitForFunction((windows) => { const text = window.__awbBuffer('s'); return typeof text === 'string' && (windows ? text.includes('>') : text.includes('$')) }, process.platform === 'win32')
   await page.evaluate(() => window.awb.ptyWrite('s', "echo PELLO_LAYOUT_CONTENT\r"))
   await page.waitForFunction(() => window.__awbBuffer('s').includes('PELLO_LAYOUT_CONTENT'))
   await context('s', 'split-right')
@@ -86,18 +97,32 @@ try {
   assert.equal(new Set(rects.map((r) => r[1])).size, 2)
   assert.ok(rects.every((r) => r[2] > 100 && r[3] > 100))
   const active = await page.locator('.tab.on [data-a=tab]').getAttribute('data-id')
-  await app.evaluate(({ Menu }) => {
-    const original = Menu.prototype.popup
-    Menu.prototype.popup = function (options) {
-      if (this.getMenuItemById('split-left') && !globalThis.__documentMenuCommand) {
-        globalThis.__splitDisabled = ['split-left','split-right','split-up','split-down'].every((id) => !this.getMenuItemById(id).enabled)
-        options?.callback?.(); return
-      }
-      return original.call(this, options)
+  if (app.menuFile) {
+    fs.rmSync(`${app.menuFile}.json`, { force: true })
+    fs.writeFileSync(app.menuFile, '')
+    await page.locator(`[data-a=pane][data-id="${active}"]`).dispatchEvent('contextmenu')
+    const end = Date.now() + 5000
+    let items
+    while (Date.now() < end) {
+      if (fs.existsSync(`${app.menuFile}.json`)) { items = JSON.parse(fs.readFileSync(`${app.menuFile}.json`, 'utf8')); break }
+      await new Promise((resolve) => setTimeout(resolve, 20))
     }
-  })
-  await page.locator(`[data-a=pane][data-id="${active}"]`).dispatchEvent('contextmenu')
-  assert.equal(await app.evaluate(() => globalThis.__splitDisabled), true)
+    assert.ok(items, 'The terminal menu must be built before a four-pane split is offered')
+    assert.equal(['split-left', 'split-right', 'split-up', 'split-down'].every((id) => items.find((item) => item.id === id)?.enabled === false), true)
+  } else {
+    await app.evaluate(({ Menu }) => {
+      const original = Menu.prototype.popup
+      Menu.prototype.popup = function (options) {
+        if (this.getMenuItemById('split-left') && !globalThis.__documentMenuCommand) {
+          globalThis.__splitDisabled = ['split-left','split-right','split-up','split-down'].every((id) => !this.getMenuItemById(id).enabled)
+          options?.callback?.(); return
+        }
+        return original.call(this, options)
+      }
+    })
+    await page.locator(`[data-a=pane][data-id="${active}"]`).dispatchEvent('contextmenu')
+    assert.equal(await app.evaluate(() => globalThis.__splitDisabled), true)
+  }
   await tab('s').click()
   await page.waitForFunction(() => document.activeElement?.closest('[data-term]')?.getAttribute('data-term') === 's')
   const separator = page.getByRole('separator', { name: '调整项目侧栏宽度', exact: true })
@@ -112,16 +137,17 @@ try {
   assert.equal(await page.evaluate(() => window.__layoutOriginal === document.querySelector('[data-term=s] .xterm')), true)
   assert.ok(await page.evaluate(() => window.__awbBuffer('s').includes('PELLO_LAYOUT_CONTENT')))
   for (const theme of ['dark', 'light']) for (const [width, height] of [[1440, 900], [1024, 680]]) {
-    await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setContentSize(...size), [width, height])
+    if (app.shell === 'tauri') await page.setViewportSize({ width, height })
+    else await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setContentSize(...size), [width, height])
     await page.click('[data-a=settings]'); await page.click('[data-a=sec][data-id=look]'); await page.click(`[data-a=theme][data-id=${theme}]`); await page.keyboard.press('Escape')
     await page.waitForTimeout(150)
-    await page.waitForFunction(() => [...document.querySelectorAll('.pane:not([hidden])')].every((node) => window.__awbBuffer(node.dataset.id).includes('>')))
+    await page.waitForFunction((windows) => [...document.querySelectorAll('.pane:not([hidden])')].every((node) => { const text = window.__awbBuffer(node.dataset.id); return typeof text === 'string' && (windows ? text.includes('>') : text.includes('$')) }), process.platform === 'win32')
     assert.equal(await visible().count(), 4)
     assert.equal(await page.evaluate(() => window.__layoutOriginal === document.querySelector('[data-term=s] .xterm')), true)
     const fits = await visible().evaluateAll((nodes) => nodes.every((node) => { const host = node.querySelector('.termframe').getBoundingClientRect(), screen = node.querySelector('.xterm-screen').getBoundingClientRect(); return screen.right <= host.right + 1 && screen.bottom <= host.bottom + 1 }))
     assert.equal(fits, true, `${theme} ${width} terminal fit`)
     const viewport = await visible().evaluateAll((nodes) => nodes.map((node) => ({ id: node.dataset.id, geometry: window.__awbGeometry(node.dataset.id) })))
-    assert.ok(viewport.every((item) => item.geometry.visibleText.includes('>')), `Every visible pane must show its prompt: ${JSON.stringify(viewport)}`)
+    assert.ok(viewport.every((item) => showsPrompt(item.geometry.visibleText)), `Every visible pane must show its prompt: ${JSON.stringify(viewport)}`)
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
     await page.screenshot({ path: path.resolve(`output/playwright/terminal-split-${theme}-${width}.png`) })
   }
@@ -150,7 +176,7 @@ try {
   }
   assert.equal(await page.evaluate(() => { const state = window.__awbGeometry('s'); return state.viewportY === state.baseY }), true, 'Mouse wheel can return to current output after font changes')
   console.log('PASS resizing follows live output without replacing the user\'s deliberate scrollback position')
-  await app.close(); app = await electron.launch({ args: ['.'], env }); page = await app.firstWindow(); page.setDefaultTimeout(15000)
+  await app.close(); app = await launch(); page = await app.firstWindow(); page.setDefaultTimeout(15000)
   await page.waitForFunction(() => document.querySelectorAll('.pane:not([hidden])').length === 4)
   await installDocumentHarness(app, page, false)
   assert.ok((await tab('s').textContent()).includes('临时 Shell'))
@@ -160,7 +186,7 @@ try {
   assert.equal(await page.locator('.pane .xterm').count(), 5, 'Merge hides other terminals without destroying them')
   console.log('PASS tab renaming, four quadrant splits, four-pane limit, merge, terminal instance/content preservation, project/file resize and restart persistence; four theme/size captures')
   await page.click('[data-a=agents-toggle]')
-  await page.waitForFunction(() => window.__awbBuffer('s').includes('>'))
+  await page.waitForFunction((windows) => { const text = window.__awbBuffer('s'); return typeof text === 'string' && (windows ? text.includes('>') : text.includes('$')) }, process.platform === 'win32')
   await page.evaluate((command) => window.awb.ptyWrite('s', command + '\r'), `${command} ${quote(path.resolve('scripts/fixtures/program-status.cjs'))} pi`)
   await page.locator('[data-a=side-term][data-id=s][data-status=waiting]').waitFor().catch(async (error) => { console.error('Manual Agent fixture', await page.evaluate(() => ({ buffer: window.__awbBuffer('s'), tab: document.querySelector('[data-a=tab][data-id=s]').outerHTML }))); throw error })
   await page.evaluate(() => window.awb.ptyWrite('s', 'work\r'))
@@ -207,7 +233,7 @@ try {
   const next = (await page.evaluate(() => window.awb.getState())).db.projects.filter((project) => project.temporary)
   assert.equal(next.length, 2)
   assert.notEqual(next[0].path, next[1].path)
-  await app.close(); app = await electron.launch({ args: ['.'], env }); page = await app.firstWindow()
+  await app.close(); app = await launch(); page = await app.firstWindow(); page.setDefaultTimeout(15000)
   await page.locator('[data-a=temporary-session]').locator('..').hover()
   await page.click('[data-a=temporary-session]')
   await page.getByRole('heading', { name: '新建会话', exact: true }).waitFor()

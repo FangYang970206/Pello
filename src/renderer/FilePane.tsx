@@ -101,6 +101,9 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
       if (event.source !== frame.current?.contentWindow) return
       if (event.data?.type === 'pello-preview-zoom' && Number.isFinite(event.data.deltaY) && event.data.deltaY) changeZoom(event.data.deltaY)
       else if (event.data?.type === 'pello-preview-text' && typeof event.data.text === 'string') setRenderedText(event.data.text)
+      else if (event.data?.type === 'pello-preview-context' && '__TAURI_INTERNALS__' in window && window.awb.previewMenu) {
+        void window.awb.previewMenu().then((choice) => { if (choice === 'source' && html) { setPreview({}); setVisual(false) } })
+      }
       else if (event.data?.type === 'pello-preview-key') {
         if (content.current?.closest('[inert]') || window.document.querySelector('dialog[open],[role=dialog][aria-modal=true]')) return
         if (event.data.key === 'f' || event.data.key === 'h') search.show(event.data.key === 'h')

@@ -1,0 +1,22 @@
+[workspace]
+members = [".", "core"]
+resolver = "2"
+
+[package]
+name = "pello"
+version = "0.1.12"
+description = "Pello desktop workbench"
+edition = "2021"
+publish = false
+
+[lib]
+name = "pello_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.1.1", features = [] }
+
+[dependencies]
+pello-core = { path = "core" }
+serde_json = "1"
+tauri = { version = "2.1.1", features = [] }

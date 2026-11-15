@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto'
 import http from 'node:http'
 import { _electron as electron } from 'playwright'
 import { loadTypeScript } from './fixtures/load-ts.mjs'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 
 const { UpdateController } = await loadTypeScript(new URL('../src/main/update-controller.ts', import.meta.url))
 class Driver extends EventEmitter {
@@ -99,6 +100,9 @@ fs.unlinkSync(linked)
 assert.ok(fs.existsSync(outside))
 console.log('PASS complete migration preserves credentials/history/Chromium state, retains originals and never overwrites the new profile')
 
+if (process.env.AWB_SHELL === 'tauri') {
+  await runTauriAppUpdate(root)
+} else {
 const profile = path.join(root, 'ui')
 fs.mkdirSync(profile)
 fs.writeFileSync(path.join(profile, 'workbench.json'), JSON.stringify({ settings: { restore: false }, projects: [] }))
@@ -247,3 +251,155 @@ try {
   assert.equal(JSON.parse(fs.readFileSync(path.join(profile, 'workbench.json'), 'utf8')).settings.autoCheckUpdates, true)
   console.log('PASS disabled automatic checks survive restart and can be enabled again')
 } finally { await restarted.close() }
+}
+
+async function runTauriAppUpdate(root) {
+  const profile = path.join(root, 'ui')
+  fs.mkdirSync(profile)
+  fs.writeFileSync(path.join(profile, 'workbench.json'), JSON.stringify({ settings: { restore: false }, projects: [] }))
+  const payload = Buffer.from('LOCAL_INSTALLER_FIXTURE_DO_NOT_EXECUTE')
+  const digest = createHash('sha512').update(payload).digest('base64')
+  const feed = path.join(profile, 'feed')
+  fs.mkdirSync(feed)
+  const releaseName = 'Pello-99.0.0-setup.exe'
+  const writeFeed = (folder, bytes) => {
+    fs.mkdirSync(folder, { recursive: true })
+    fs.writeFileSync(path.join(folder, 'latest.yml'), `version: 99.0.0\nfiles:\n  - url: ${releaseName}\n    sha512: ${digest}\n    size: ${payload.length}\npath: ${releaseName}\nsha512: ${digest}\nreleaseDate: '2026-11-12T00:00:00.000Z'\n`)
+    fs.writeFileSync(path.join(folder, releaseName), bytes)
+  }
+  writeFeed(feed, payload)
+  const env = { ...process.env, AWB_USER_DATA: profile, AWB_UPDATE_FEED: feed, AWB_APP_VERSION: '1.0.0' }
+  const app = await launchWorkbench({ env })
+  try {
+    const page = await app.firstWindow()
+    await page.locator('[data-a=settings]').waitFor()
+    for (const name of ['tmp', 'logs', 'crashes']) {
+      const directory = path.join(profile, name)
+      assert.ok(fs.statSync(directory).isDirectory(), directory)
+      assert.ok(directory === profile || directory.startsWith(profile + path.sep), directory)
+    }
+    assert.equal(await page.locator('.app-update').count(), 0)
+    assert.equal((await page.evaluate(() => window.awb.getState())).db.settings.autoCheckUpdates, true, 'old profiles default to automatic checks enabled')
+    await page.evaluate(() => {
+      const calls = []
+      window.__updateCalls = calls
+      for (const [channel, method] of [['app:update-check', 'checkAppUpdate'], ['app:update-download', 'downloadAppUpdate'], ['app:update-install', 'installAppUpdate']]) {
+        const original = window.awb[method]
+        window.awb[method] = (...args) => { calls.push(channel); return original.apply(window.awb, args) }
+      }
+    })
+    await page.click('[data-a=settings]')
+    const section = () => page.getByRole('region', { name: '应用更新', exact: true })
+    const toggle = () => section().getByRole('switch', { name: '自动检查更新', exact: true })
+    assert.equal(await toggle().getAttribute('aria-checked'), 'true')
+    await toggle().click()
+    await page.waitForFunction(() => document.querySelector('.app-update-settings [role=switch]')?.getAttribute('aria-checked') === 'false')
+    assert.equal(JSON.parse(fs.readFileSync(path.join(profile, 'workbench.json'), 'utf8')).settings.autoCheckUpdates, false)
+    fs.mkdirSync(path.join(profile, 'workbench.json.tmp'))
+    try {
+      await toggle().click()
+      await section().getByRole('alert').waitFor()
+      assert.equal(await toggle().getAttribute('aria-checked'), 'false')
+      assert.equal(await page.locator('#toasts .toast').count(), 0, 'update errors stay inside the General section')
+    } finally { fs.rmdirSync(path.join(profile, 'workbench.json.tmp')) }
+    await section().getByRole('button', { name: '检查更新', exact: true }).click()
+    await section().getByText('发现新版本 99.0.0', { exact: true }).waitFor()
+    const publish = (state) => page.evaluate(async (state) => {
+      await window.__TAURI_INTERNALS__.invoke('plugin:event|emit_to', {
+        target: { kind: 'AnyLabel', label: 'main' },
+        event: 'awb',
+        payload: { channel: 'app:update', payload: state }
+      })
+    }, state)
+    for (const [state, text] of [
+      [{ phase: 'current' }, '已是最新版本'],
+      [{ phase: 'error', failed: 'check' }, '检查更新失败，请重试'],
+      [{ phase: 'error', failed: 'download', version: '99.0.0' }, '更新下载失败，请重试'],
+      [{ phase: 'downloading', version: '99.0.0', percent: 55 }, '正在下载更新 55%']
+    ]) {
+      await publish(state)
+      await section().getByText(text, { exact: true }).waitFor()
+      if (state.phase === 'downloading') assert.equal(await section().getByRole('button', { name: '检查更新', exact: true }).isDisabled(), true)
+    }
+    await publish({ phase: 'available', version: '99.0.0' })
+    const shots = path.resolve('output/playwright/app-update')
+    fs.mkdirSync(shots, { recursive: true })
+    for (const theme of ['dark', 'light']) for (const [width, height] of [[1024, 680], [1440, 900]]) {
+      await page.setViewportSize({ width, height })
+      await page.click('[data-a=sec][data-id=look]')
+      await page.click(`[data-a=theme][data-id=${theme}]`)
+      await page.click('[data-a=sec][data-id=general]')
+      assert.equal(await page.locator('html').getAttribute('data-theme'), theme)
+      await section().scrollIntoViewIfNeeded()
+      const box = await section().boundingBox(), button = await section().getByRole('button', { name: '下载新版本 99.0.0', exact: true }).boundingBox()
+      assert.ok(box && button && button.x >= box.x && button.x + button.width <= box.x + box.width + 1)
+      assert.equal(await page.locator('.app-update,.app-update-button').count(), 0, 'no floating update control')
+      await page.screenshot({ path: path.join(shots, `${theme}-${width}.png`) })
+    }
+    await page.setViewportSize({ width: 1024, height: 680 })
+    await page.locator('[data-set=language]').selectOption('en')
+    await page.getByText('New version available: 99.0.0', { exact: true }).waitFor()
+    const englishSection = page.getByRole('region', { name: 'App updates', exact: true })
+    const englishBox = await englishSection.boundingBox(), englishButton = await englishSection.getByRole('button', { name: 'Download version 99.0.0', exact: true }).boundingBox()
+    assert.ok(englishButton.x + englishButton.width <= englishBox.x + englishBox.width + 1)
+    await page.screenshot({ path: path.join(shots, 'english-1024.png') })
+    await page.locator('[data-set=language]').selectOption('zh-CN')
+    await page.getByRole('button', { name: '下载新版本 99.0.0', exact: true }).focus()
+    await page.keyboard.press('Enter')
+    await page.getByRole('button', { name: '安装更新 99.0.0 并重启', exact: true }).waitFor()
+    await page.click('[data-a=back]')
+    assert.equal(await page.locator('[data-update-phase]').count(), 0, 'updates must only appear inside General')
+    await page.click('[data-a=settings]')
+    await page.locator('.settings').waitFor()
+    await page.getByRole('button', { name: '安装更新 99.0.0 并重启', exact: true }).first().click()
+    assert.deepEqual(await page.evaluate(() => window.__updateCalls), ['app:update-check', 'app:update-download', 'app:update-install'])
+    console.log('PASS default-on/persistent switch and failed-save rollback, manual check while disabled, version/status/download/install in one General section, two themes/two sizes, keyboard actions and no floating control')
+  } finally { await app.close() }
+
+  const network = async (folder, bytes) => {
+    const data = path.join(folder, 'data')
+    const localFeed = path.join(folder, 'feed')
+    fs.mkdirSync(data, { recursive: true })
+    writeFeed(localFeed, bytes)
+    const destination = path.join(data, 'updates', releaseName)
+    const before = fs.existsSync(destination)
+    const launched = await launchWorkbench({ env: { ...process.env, AWB_USER_DATA: data, AWB_UPDATE_FEED: localFeed, AWB_APP_VERSION: '1.0.0' } })
+    try {
+      const page = await launched.firstWindow()
+      await page.locator('[data-a=settings]').waitFor()
+      await page.click('[data-a=settings]')
+      const section = page.getByRole('region', { name: '应用更新', exact: true })
+      await section.getByRole('button', { name: '检查更新', exact: true }).click()
+      await section.getByText('发现新版本 99.0.0', { exact: true }).waitFor()
+      await section.getByRole('button', { name: '下载新版本 99.0.0', exact: true }).click()
+      const failed = page.getByText('更新下载失败，请重试', { exact: true })
+      const ready = page.getByRole('button', { name: '安装更新 99.0.0 并重启', exact: true })
+      await Promise.race([failed.waitFor(), ready.waitFor()])
+      if (await failed.count()) {
+        const state = await page.evaluate(() => window.awb.appUpdateState())
+        return { error: state.error, before }
+      }
+      return { available: true, before, files: [destination] }
+    } finally { await launched.close() }
+  }
+  const good = await network(path.join(profile, 'updates-good'), payload)
+  assert.equal(good.available, true); assert.equal(good.before, false)
+  assert.ok(good.files.every((file) => file.startsWith(profile + path.sep)))
+  assert.deepEqual(fs.readFileSync(good.files[0]), payload)
+  const bad = await network(path.join(profile, 'updates-bad'), Buffer.from('CORRUPTED_INSTALLER'))
+  assert.match(bad.error, /sha512|checksum|size mismatch/i)
+  console.log('PASS real updater: local version feed, explicit download, installation-local cache and SHA-512 rejection of corrupt downloads')
+
+  const restarted = await launchWorkbench({ env })
+  try {
+    const page = await restarted.firstWindow()
+    await page.click('[data-a=settings]')
+    const toggle = page.getByRole('switch', { name: '自动检查更新', exact: true })
+    assert.equal(await toggle.getAttribute('aria-checked'), 'false')
+    assert.equal((await page.evaluate(() => window.awb.getState())).db.settings.autoCheckUpdates, false)
+    await toggle.click()
+    await page.waitForFunction(() => document.querySelector('.app-update-settings [role=switch]')?.getAttribute('aria-checked') === 'true')
+    assert.equal(JSON.parse(fs.readFileSync(path.join(profile, 'workbench.json'), 'utf8')).settings.autoCheckUpdates, true)
+    console.log('PASS disabled automatic checks survive restart and can be enabled again')
+  } finally { await restarted.close() }
+}

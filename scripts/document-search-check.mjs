@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { _electron as electron } from 'playwright'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 import { installDocumentHarness, documentCommand } from './fixtures/document-harness.mjs'
 import { loadTypeScript } from './fixtures/load-ts.mjs'
 
@@ -32,12 +32,12 @@ objects.forEach((value, index) => { offsets.push(Buffer.byteLength(pdf)); pdf +=
 const xref = Buffer.byteLength(pdf)
 pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.slice(1).map((offset) => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`
 fs.writeFileSync(path.join(project, 'sample.pdf'), pdf)
-git('init', '-q'); git('add', '.'); git('-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture')
+git('init', '-q'); git('add', '.'); git('-c', 'commit.gpgsign=false', '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture')
 fs.writeFileSync(path.join(project, 'diff.txt'), 'needle work\nneedle common\n')
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: { layout: 'balanced', restore: false, confirmKill: false }, projects: [{ id: 'p', name: 'Document search', path: project, host: 'local', agent: 'shell' }] }))
 const env = { ...process.env, AWB_USER_DATA: data }; delete env.ELECTRON_RUN_AS_NODE
 const dpi = Number(process.env.AWB_TEST_DPI || 1)
-const app = await electron.launch({ args: ['.', `--force-device-scale-factor=${dpi}`], env })
+const app = await launchWorkbench({ args: ['.', `--force-device-scale-factor=${dpi}`], env, scale: dpi })
 try {
   const page = await app.firstWindow(); page.setDefaultTimeout(8000)
   const resize = async (width, height) => {

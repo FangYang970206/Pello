@@ -132,6 +132,7 @@ export function App() {
   }, [dismissTransfer])
   const booted = useRef(false)
   const restoring = useRef(false)
+  const ptySeen = useRef(new Set<string>())
   const closingTerms = useRef(new Set<string>())
   const touring = useRef(false)
   const modalRef = useRef<Modal | null>(null)
@@ -399,14 +400,20 @@ export function App() {
         }
       }
       const info = await window.awb.ptyCreate({ id, projectId: target.id, kind, shell, agentSessionId: existingAgentSessionId })
+      if (info.replay) {
+        retainTermHistory(id, info.replay)
+        restoredHistory.current[id] = { text: info.replay }
+        holdTermHistory(id)
+      }
       // Replay is a display operation, independent of Agent completion. Keep
       // startup screen setup out of the historical scrollback transaction.
       if (restoredHistory.current[id]) historyTimers.current[id] = setTimeout(() => flushRestoredHistory(id), 1200)
       syncTermSize(id)
       setTabs((list) => {
+        const seen = ptySeen.current.has(id)
         const next = list.map((item) =>
           item.id === id && item.type === 'term'
-            ? { ...item, shell: info.shell, state: info.state as TermTab['state'], startedAt: info.startedAt, exitCode: info.exitCode, inputReady: info.inputReady, agentKind: info.agentKind, agentSessionId: info.agentSessionId ?? item.agentSessionId }
+            ? { ...item, shell: info.shell, agentKind: info.agentKind, agentSessionId: info.agentSessionId ?? item.agentSessionId, ...(seen ? {} : { state: info.state as TermTab['state'], startedAt: info.startedAt, exitCode: info.exitCode, inputReady: info.inputReady }) }
             : item
         )
         const ids = activate ? { ...activeMapRef.current, [target.id]: id } : activeMapRef.current
@@ -500,6 +507,7 @@ export function App() {
         writeTerm(event.id, event.data)
         return
       }
+      ptySeen.current.add(event.id)
       queueSnapshot(event.id)
       setTabs((list) =>
         list.map((tab) =>
@@ -599,6 +607,7 @@ export function App() {
     if (replacementAt(doc.projectId, doc.path)) doc = { ...doc, replacing: true }
     documentsRef.current = { ...documentsRef.current, [key]: doc }
     setDocuments((map) => ({ ...map, [key]: doc }))
+    window.awb.setUnsavedChanges(Object.values(documentsRef.current).some(isDirty))
   }
 
   function updateFileDraft(id: string, update: (doc: DocumentDraft) => DocumentDraft) {
@@ -1228,11 +1237,11 @@ export function App() {
     <>
       <div id="app" className={withRight ? 'with-right' : ''} data-panel-side={db?.settings.panelSide || 'right'} style={{ '--right-width': `${rightWidth}px`, '--sidebar-width': `${sidebarWidth}px` } as CSSProperties}>
         <header className="title">
-          <div className="brand">
+          <div className="brand" data-tauri-drag-region>
             <img className="logo" src={appIcon} width="18" height="18" alt="" aria-hidden="true" />
             Pello
           </div>
-          <span className="grow" />
+          <span className="grow" data-tauri-drag-region />
           <div className="wc">
             <button aria-label={t("最小化")} onClick={() => void window.awb.winMin()}>
               <Icon name="minus" className="s" />
@@ -1294,13 +1303,15 @@ export function App() {
                   onSelect={selectTab}
                   onRenameTerm={renameTerm}
                   onNavigateFile={openFile}
-                  onSplitTerm={async (id) => {
+                  onSplitTerm={async (id, direction) => {
                     const term = tabs.find((tab): tab is TermTab => tab.id === id && tab.type === 'term')
                     const target = db?.projects.find((item) => item.id === term?.projectId)
                     if (!term || !target) throw new Error(t("终端已关闭"))
-                    const result = await openTerm(target, term.kind, term.shell, true, undefined, undefined, sessionOf(term))
-                    if (!result) throw new Error(t("分栏终端启动失败"))
-                    return result
+                    const result = await window.awb.terminalSplit({ projectId: target.id, sessionId: sessionOf(term), termId: id, direction })
+                    const tab: TermTab = { id: result.id, type: 'term', projectId: target.id, sessionId: sessionOf(term), kind: term.kind, shell: term.shell, state: term.kind === 'shell' ? 'idle' : 'running', startedAt: term.kind === 'shell' ? null : Date.now(), exitCode: null, inputReady: false, hasRun: term.kind !== 'shell', agentKind: term.kind === 'shell' ? null : term.kind, agentSessionId: term.agentSessionId }
+                    setTabs((list) => (list.some((item) => item.id === result.id) ? list : [...list, tab]))
+                    setActiveMap((map) => ({ ...map, [target.id]: result.id }))
+                    return { id: result.id, tiles: result.tiles }
                   }}
                   onClose={requestClose}
                   onNewTerm={() => (project ? setModal({ type: 'term' }) : setModal({ type: 'project' }))}

@@ -5,7 +5,7 @@ import path from 'node:path'
 import { execFileSync, spawn } from 'node:child_process'
 import { createHash, generateKeyPairSync } from 'node:crypto'
 import ssh2 from 'ssh2'
-import { _electron as electron } from 'playwright'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 import { installDocumentHarness } from './fixtures/document-harness.mjs'
 
 const linux = process.argv.includes('--linux') || process.platform !== 'win32'
@@ -33,7 +33,20 @@ fs.writeFileSync(path.join(source, 'big.bin'), binary)
 const digest = createHash('sha256').update(binary).digest('hex')
 const clients = new Set(), children = new Set()
 let pauseNext = false, paused = false, failCleanupNext = false, release = () => {}
-const server = new ssh2.Server({ hostKeys: [generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs1', format: 'pem' })] }, (client) => {
+function ed25519HostKey() {
+  const u32 = (value) => { const bytes = Buffer.alloc(4); bytes.writeUInt32BE(value); return bytes }
+  const field = (value) => { const data = Buffer.isBuffer(value) ? value : Buffer.from(value); return Buffer.concat([u32(data.length), data]) }
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519')
+  const pub = publicKey.export({ type: 'spki', format: 'der' }).subarray(-32)
+  const seed = privateKey.export({ type: 'pkcs8', format: 'der' }).subarray(-32)
+  const pubWire = Buffer.concat([field('ssh-ed25519'), field(pub)])
+  let secret = Buffer.concat([u32(0x01020304), u32(0x01020304), field('ssh-ed25519'), field(pub), field(Buffer.concat([seed, pub])), field('')])
+  const pad = (8 - (secret.length % 8)) % 8
+  if (pad) secret = Buffer.concat([secret, Buffer.from(Array.from({ length: pad }, (_, index) => index + 1))])
+  const blob = Buffer.concat([Buffer.from('openssh-key-v1\0'), field('none'), field('none'), field(''), u32(1), field(pubWire), field(secret)])
+  return `-----BEGIN OPENSSH PRIVATE KEY-----\n${blob.toString('base64').match(/.{1,70}/g).join('\n')}\n-----END OPENSSH PRIVATE KEY-----\n`
+}
+const server = new ssh2.Server({ hostKeys: [ed25519HostKey()] }, (client) => {
   clients.add(client); client.on('error', () => {}); client.on('close', () => clients.delete(client))
   client.on('authentication', (context) => context.method === 'password' && context.password === 'fixture' ? context.accept() : context.reject())
   client.on('ready', () => client.on('session', (accept) => accept().on('exec', (accept, _reject, info) => {
@@ -65,7 +78,7 @@ const server = new ssh2.Server({ hostKeys: [generateKeyPairSync('rsa', { modulus
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
 const env = { ...process.env, AWB_USER_DATA: data }; delete env.ELECTRON_RUN_AS_NODE
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: { layout: 'balanced', restore: false, confirmKill: false }, projects: [] }))
-const app = await electron.launch({ args: ['.'], env })
+const app = await launchWorkbench({ args: ['.'], env })
 try {
   const page = await app.firstWindow(); page.setDefaultTimeout(15000)
   await page.evaluate(async ({ root, port, platform }) => {

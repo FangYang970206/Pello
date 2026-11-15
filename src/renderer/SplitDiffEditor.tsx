@@ -100,7 +100,23 @@ export function SplitDiffEditor({ before, after, path, onBefore, onAfter, onSave
         for (const [editor, compartment] of [[view.a, searchA], [view.b, searchB]] as const) {
           editor.dispatch({ effects: compartment.reconfigure(editor === side ? EditorView.decorations.of(Decoration.set(marks, true)) : []) })
         }
-        if (match && match.to <= side.state.doc.length) side.dispatch({ selection: { anchor: match.from, head: match.to }, effects: EditorView.scrollIntoView(match.from, { y: 'center' }) })
+        if (match && match.to <= side.state.doc.length) {
+          side.dispatch({ selection: { anchor: match.from, head: match.to }, effects: EditorView.scrollIntoView(match.from, { y: 'center' }) })
+          const other = side === view.a ? view.b : view.a
+          const align = () => {
+            const highlight = side.dom.querySelector('.search-active')
+            if (highlight) {
+              const box = highlight.getBoundingClientRect(), viewBox = side.scrollDOM.getBoundingClientRect()
+              if (box.right > viewBox.right - 8) side.scrollDOM.scrollLeft += box.right - viewBox.right + 8
+              if (box.left < viewBox.left + 8) side.scrollDOM.scrollLeft -= viewBox.left + 8 - box.left
+              if (box.bottom > viewBox.bottom - 8) side.scrollDOM.scrollTop += box.bottom - viewBox.bottom + 8
+              if (box.top < viewBox.top + 8) side.scrollDOM.scrollTop -= viewBox.top + 8 - box.top
+            }
+            other.scrollDOM.scrollTop = side.scrollDOM.scrollTop
+            other.scrollDOM.scrollLeft = side.scrollDOM.scrollLeft
+          }
+          requestAnimationFrame(() => requestAnimationFrame(align))
+        }
       }
     }
     let sizing = 0
