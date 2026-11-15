@@ -8,6 +8,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::SystemTime;
 
 const MAX_CONFIG: u64 = 32 * 1024 * 1024;
@@ -16,10 +17,37 @@ const MAX_SKILL_FILES: usize = 10_000;
 
 pub struct Resources {
     busy: AtomicBool,
+    scope: Mutex<Option<Vec<Target>>>,
 }
 
 impl Resources {
-    pub fn new() -> Self { Self { busy: AtomicBool::new(false) } }
+    pub fn new() -> Self { Self { busy: AtomicBool::new(false), scope: Mutex::new(None) } }
+}
+
+/// Limit the next resource operations to the targets the caller already resolved.
+/// An empty list restores the saved builtin and custom agents.
+pub fn set_scope(resources: &Resources, value: &Value) {
+    let scope = value.as_array().map(|list| list.iter().filter_map(target_from_json).collect::<Vec<_>>()).filter(|list| !list.is_empty());
+    *resources.scope.lock().expect("scope") = scope;
+}
+
+fn target_from_json(value: &Value) -> Option<Target> {
+    let id = value.get("id").and_then(|item| item.as_str()).unwrap_or("");
+    if id.is_empty() { return None; }
+    Some(Target {
+        id: id.to_string(),
+        name: value.get("name").and_then(|item| item.as_str()).unwrap_or(id).to_string(),
+        mcp_path: value.get("mcpPath").and_then(|item| item.as_str()).unwrap_or("").to_string(),
+        skill_path: value.get("skillPath").and_then(|item| item.as_str()).unwrap_or("").to_string(),
+        skill_config_path: value.get("skillConfigPath").and_then(|item| item.as_str()).unwrap_or("").to_string(),
+        format: value.get("format").and_then(|item| item.as_str()).unwrap_or("standard").to_string(),
+        skill_adapter: value.get("skillAdapter").and_then(|item| item.as_str()).unwrap_or("portable").to_string(),
+    })
+}
+
+fn current_targets(resources: &Resources, data: &Path, custom: &Value) -> Vec<Target> {
+    if let Some(scope) = resources.scope.lock().expect("scope").clone() { return scope; }
+    owned_targets(data, custom)
 }
 
 #[derive(Clone)]
@@ -122,8 +150,8 @@ fn find_target<'a>(targets: &'a [Target], agent: &str, language: &str) -> Result
     targets.iter().find(|item| item.id == agent).ok_or_else(|| t(language, "Agent 不存在"))
 }
 
-pub fn list(data: &Path, custom: &Value, kind: &str, agent: &str, page: usize, query: &str, language: &str) -> Result<Value, String> {
-    let targets = owned_targets(data, custom);
+pub fn list(resources: &Resources, data: &Path, custom: &Value, kind: &str, agent: &str, page: usize, query: &str, language: &str) -> Result<Value, String> {
+    let targets = current_targets(resources, data, custom);
     let target = find_target(&targets, agent, language)?;
     let mut items = Vec::new();
     let mut errors = Vec::new();
@@ -335,6 +363,10 @@ fn skill_enabled(target: &Target, file: &Path, name: &str, language: &str) -> Re
 fn settings_file(target: &Target) -> PathBuf {
     if !target.skill_config_path.is_empty() { return PathBuf::from(&target.skill_config_path); }
     if target.skill_adapter == "codex" || target.skill_adapter == "opencode" { return PathBuf::from(&target.mcp_path); }
+    if target.skill_adapter == "omp" {
+        if target.skill_path.is_empty() { return PathBuf::new(); }
+        return Path::new(&target.skill_path).parent().unwrap_or(Path::new("")).join("config.yml");
+    }
     if !target.skill_path.is_empty() { return Path::new(&target.skill_path).parent().unwrap_or(Path::new("")).join("settings.json"); }
     PathBuf::new()
 }
@@ -417,15 +449,7 @@ fn toggle_opencode_skill(settings: &Path, name: &str, enabled: bool, language: &
         if config.get("permissions").is_some_and(|value| !value.is_array()) {
             return Err(t(language, "OpenCode V2 permissions 必须是数组"));
         }
-        let mut rules = config.get("permissions").and_then(|value| value.as_array()).cloned().unwrap_or_default();
-        let last_matches = rules.last().is_some_and(|rule| rule.get("action").and_then(|value| value.as_str()) == Some("skill") && rule.get("resource").and_then(|value| value.as_str()) == Some(name));
-        if last_matches {
-            if let Some(rule) = rules.last_mut() { rule["effect"] = json!(effect); }
-        } else {
-            rules.push(json!({ "action": "skill", "resource": name, "effect": effect }));
-        }
-        let raw = serde_json::to_string(&Value::Array(rules)).map_err(|_| t(language, "JSON 配置存在语法错误，请修复后重试"))?;
-        upsert_json(&source, &["permissions"], &raw).map_err(|_| t(language, "JSON 配置存在语法错误，请修复后重试"))?
+        patch_permission_rule(&source, name, effect).map_err(|_| t(language, "JSON 配置存在语法错误，请修复后重试"))?
     } else {
         let skill = config.get("permission").and_then(|value| value.get("skill"));
         if let Some(policy) = skill.and_then(|value| value.as_str()) {
@@ -437,6 +461,50 @@ fn toggle_opencode_skill(settings: &Path, name: &str, enabled: bool, language: &
     };
     parse_json_text(&next, language)?;
     atomic_text(settings, &before, &next, language)
+}
+
+fn patch_permission_rule(text: &str, name: &str, effect: &str) -> Result<String, ()> {
+    let open = root_object(text)?;
+    let fields = object_fields(text, open)?;
+    let field = fields.iter().rev().find(|field| field.key == "permissions").ok_or(())?;
+    let array_at = skip_ws(text.as_bytes(), field.value_at);
+    if text.as_bytes().get(array_at) != Some(&b'[') { return Err(()); }
+    let elements = array_elements(text, array_at)?;
+    if let Some(&(start, end)) = elements.last() {
+        let parsed: Value = serde_json::from_str(&strip_jsonc(&text[start..end])).unwrap_or(Value::Null);
+        let matches = parsed.get("action").and_then(|value| value.as_str()) == Some("skill")
+            && parsed.get("resource").and_then(|value| value.as_str()) == Some(name);
+        if matches {
+            let inner = text[start..end].find('{').ok_or(())?;
+            let rules = object_fields(text, start + inner)?;
+            let effect_field = rules.iter().find(|item| item.key == "effect").ok_or(())?;
+            let raw = serde_json::to_string(effect).map_err(|_| ())?;
+            return Ok(format!("{}{raw}{}", &text[..effect_field.value_at], &text[effect_field.value_end..]));
+        }
+    }
+    let close = skip_value(text, array_at)? - 1;
+    let trailing = elements.last().is_some_and(|&(_, end)| text[end..close].contains(','));
+    let comma = if elements.is_empty() || trailing { "" } else { "," };
+    let raw = format!("{{\"action\":\"skill\",\"resource\":{},\"effect\":{}}}", serde_json::to_string(name).map_err(|_| ())?, serde_json::to_string(effect).map_err(|_| ())?);
+    Ok(format!("{}{comma}{raw}{}", &text[..close], &text[close..]))
+}
+
+fn array_elements(text: &str, open: usize) -> Result<Vec<(usize, usize)>, ()> {
+    let bytes = text.as_bytes();
+    if bytes.get(open) != Some(&b'[') { return Err(()); }
+    let mut index = open + 1;
+    let mut items = Vec::new();
+    loop {
+        index = skip_ws(bytes, index);
+        if bytes.get(index) == Some(&b']') { return Ok(items); }
+        let start = index;
+        let end = skip_value(text, start)?;
+        items.push((start, end));
+        index = skip_ws(bytes, end);
+        if bytes.get(index) == Some(&b',') { index += 1; continue; }
+        if bytes.get(index) == Some(&b']') { return Ok(items); }
+        return Err(());
+    }
 }
 
 fn toggle_pi_skill(settings: &Path, skill_path: &str, enabled: bool, language: &str) -> Result<(), String> {
@@ -657,11 +725,11 @@ fn set_yaml_root_list(text: &str, key: &str, values: &[String]) -> String {
     next
 }
 
-pub fn toggle(data: &Path, custom: &Value, kind: &str, agent: &str, item: &Value, enabled: Option<bool>, language: &str) -> Result<(), String> {
+pub fn toggle(resources: &Resources, data: &Path, custom: &Value, kind: &str, agent: &str, item: &Value, enabled: Option<bool>, language: &str) -> Result<(), String> {
     let enabled = enabled.ok_or_else(|| t(language, "无效的开关状态"))?;
-    let targets = owned_targets(data, custom);
+    let targets = current_targets(resources, data, custom);
     let target = find_target(&targets, agent, language)?.clone();
-    let found = listed(&targets, data, custom, kind, agent, item, language)?;
+    let found = listed(resources, data, custom, kind, agent, item, language)?;
     if kind == "mcp" {
         toggle_mcp(&target, &found, enabled, language)
     } else {
@@ -669,18 +737,17 @@ pub fn toggle(data: &Path, custom: &Value, kind: &str, agent: &str, item: &Value
     }
 }
 
-fn listed(targets: &[Target], data: &Path, custom: &Value, kind: &str, agent: &str, item: &Value, language: &str) -> Result<Value, String> {
-    let page = list(data, custom, kind, agent, 1, "", language)?;
+fn listed(resources: &Resources, data: &Path, custom: &Value, kind: &str, agent: &str, item: &Value, language: &str) -> Result<Value, String> {
+    let page = list(resources, data, custom, kind, agent, 1, "", language)?;
     let name = item["name"].as_str().unwrap_or("");
     let path = item["path"].as_str().unwrap_or("");
     let mut all = page["items"].as_array().cloned().unwrap_or_default();
     if page["pages"].as_u64().unwrap_or(1) > 1 {
         for index in 2..=page["pages"].as_u64().unwrap_or(1) {
-            let next = list(data, custom, kind, agent, index as usize, "", language)?;
+            let next = list(resources, data, custom, kind, agent, index as usize, "", language)?;
             all.extend(next["items"].as_array().cloned().unwrap_or_default());
         }
     }
-    let _ = targets;
     all.into_iter().find(|entry| entry["name"] == name && entry["path"] == path).ok_or_else(|| t(language, "资源已改变或不属于当前 Agent，请刷新后重试"))
 }
 
@@ -751,10 +818,10 @@ fn toggle_skill(target: &Target, item: &Value, enabled: bool, language: &str) ->
     fs::rename(&source, &dest).map_err(|error| error.to_string())
 }
 
-pub fn detail(data: &Path, custom: &Value, kind: &str, agent: &str, item: &Value, language: &str) -> Result<Value, String> {
-    let targets = owned_targets(data, custom);
+pub fn detail(resources: &Resources, data: &Path, custom: &Value, kind: &str, agent: &str, item: &Value, language: &str) -> Result<Value, String> {
+    let targets = current_targets(resources, data, custom);
     let target = find_target(&targets, agent, language)?.clone();
-    let found = listed(&targets, data, custom, kind, agent, item, language)?;
+    let found = listed(resources, data, custom, kind, agent, item, language)?;
     if kind == "skills" {
         let path = PathBuf::from(found["path"].as_str().unwrap_or(""));
         let disabled = PathBuf::from(format!("{}.awb-disabled", path.display()));
@@ -814,10 +881,10 @@ fn regex_secret(text: &str) -> bool {
     lower.contains("token") || lower.contains("password") || lower.contains("secret") || lower.contains("api-key") || lower.contains("api_key")
 }
 
-pub fn skill_directory(data: &Path, custom: &Value, agent: &str, item: &Value, removing: bool, language: &str) -> Result<PathBuf, String> {
-    let targets = owned_targets(data, custom);
+pub fn skill_directory(resources: &Resources, data: &Path, custom: &Value, agent: &str, item: &Value, removing: bool, language: &str) -> Result<PathBuf, String> {
+    let targets = current_targets(resources, data, custom);
     let target = find_target(&targets, agent, language)?.clone();
-    let found = listed(&targets, data, custom, "skills", agent, item, language)?;
+    let found = listed(resources, data, custom, "skills", agent, item, language)?;
     let folder = Path::new(found["path"].as_str().unwrap_or("")).parent().ok_or_else(|| t(language, "Skill 路径不属于当前 Agent"))?.to_path_buf();
     let roots = skill_roots(&target);
     let inside = roots.iter().any(|root| folder.starts_with(root));
@@ -846,8 +913,8 @@ pub fn skill_directory(data: &Path, custom: &Value, agent: &str, item: &Value, r
     Ok(folder)
 }
 
-pub fn open_skill(data: &Path, custom: &Value, agent: &str, item: &Value, language: &str) -> Result<Value, String> {
-    let folder = skill_directory(data, custom, agent, item, false, language)?;
+pub fn open_skill(resources: &Resources, data: &Path, custom: &Value, agent: &str, item: &Value, language: &str) -> Result<Value, String> {
+    let folder = skill_directory(resources, data, custom, agent, item, false, language)?;
     let real = fs::canonicalize(&folder).unwrap_or(folder);
     if std::env::var_os("AWB_OPEN_BIN").is_some() || std::env::var_os("AWB_OPEN_LOG").is_some() {
         crate::menu::reveal_path(&real, language)?;
@@ -857,8 +924,8 @@ pub fn open_skill(data: &Path, custom: &Value, agent: &str, item: &Value, langua
     Ok(json!(real.display().to_string()))
 }
 
-pub fn delete_skill(data: &Path, custom: &Value, agent: &str, item: &Value, language: &str) -> Result<Value, String> {
-    let folder = skill_directory(data, custom, agent, item, true, language)?;
+pub fn delete_skill(resources: &Resources, data: &Path, custom: &Value, agent: &str, item: &Value, language: &str) -> Result<Value, String> {
+    let folder = skill_directory(resources, data, custom, agent, item, true, language)?;
     trash_path(&folder)?;
     Ok(Value::Null)
 }
@@ -1002,6 +1069,12 @@ fn inline_toml(value: &Value) -> String {
 }
 
 fn toml_servers(text: &str) -> Vec<(String, Value)> {
+    let mut servers = toml_table_servers(text);
+    servers.extend(inline_mcp_servers(text));
+    servers
+}
+
+fn toml_table_servers(text: &str) -> Vec<(String, Value)> {
     let mut servers: Vec<(String, Map<String, Value>)> = Vec::new();
     let mut current = None;
     for line in text.lines() {
@@ -1022,15 +1095,45 @@ fn toml_servers(text: &str) -> Vec<(String, Value)> {
 }
 
 fn parse_toml_value(value: &str) -> Value {
-    if value == "true" { json!(true) } else if value == "false" { json!(false) } else if let Some(text) = value.strip_prefix('"') { json!(text.trim_end_matches('"').replace("\\\"", "\"")) } else if value.starts_with('[') { serde_json::from_str(value).unwrap_or(json!([])) } else { json!(value) }
+    let value = value.trim();
+    if value == "true" { return json!(true); }
+    if value == "false" { return json!(false); }
+    if let Some(text) = value.strip_prefix('"') { return json!(text.trim_end_matches('"').replace("\\\"", "\"")); }
+    if value.starts_with('[') { return serde_json::from_str(value).unwrap_or(json!([])); }
+    if value.starts_with('{') && value.ends_with('}') {
+        if let Ok(parsed) = serde_json::from_str::<Value>(value) { return parsed; }
+        let mut map = Map::new();
+        for part in split_toml_fields(&value[1..value.len() - 1]) {
+            let Some((key, item)) = part.split_once('=') else { continue };
+            map.insert(key.trim().trim_matches('"').to_string(), parse_toml_value(item.trim()));
+        }
+        return Value::Object(map);
+    }
+    json!(value)
+}
+
+fn split_toml_fields(text: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    for ch in text.chars() {
+        if ch == '"' { quoted = !quoted; current.push(ch); continue; }
+        if ch == ',' && !quoted { fields.push(std::mem::take(&mut current)); continue; }
+        current.push(ch);
+    }
+    if !current.trim().is_empty() { fields.push(current); }
+    fields
 }
 
 fn unquote(value: &str) -> String { value.trim().trim_matches('"').to_string() }
 
 fn set_toml_enabled(text: &str, name: &str, enabled: bool) -> Result<String, ()> {
     let header = format!("[mcp_servers.{name}]");
+    let quoted = format!("[mcp_servers.\"{name}\"]");
     let mut lines = text.lines().map(|line| line.to_string()).collect::<Vec<_>>();
-    let start = lines.iter().position(|line| line.trim() == header).ok_or(())?;
+    let Some(start) = lines.iter().position(|line| { let trimmed = line.trim(); trimmed == header || trimmed == quoted }) else {
+        return set_inline_toml_enabled(text, name, enabled);
+    };
     let end = lines.iter().enumerate().skip(start + 1).find(|(_, line)| line.trim().starts_with('[')).map(|(index, _)| index).unwrap_or(lines.len());
     let replacement = format!("enabled = {}", if enabled { "true" } else { "false" });
     if let Some(index) = lines.iter().enumerate().skip(start + 1).take(end - start - 1).find(|(_, line)| line.trim().starts_with("enabled")).map(|(index, _)| index) {
@@ -1041,11 +1144,185 @@ fn set_toml_enabled(text: &str, name: &str, enabled: bool) -> Result<String, ()>
     Ok(lines.join("\n") + if text.ends_with('\n') { "\n" } else { "" })
 }
 
+fn inline_mcp_servers(text: &str) -> Vec<(String, Value)> {
+    let mut servers = Vec::new();
+    let mut index = 0;
+    while index < text.len() {
+        let Some(found) = text[index..].find("mcp_servers") else { break };
+        let start = index + found;
+        let after = start + "mcp_servers".len();
+        let rest = text[after..].trim_start();
+        if !rest.starts_with('=') { index = after; continue; }
+        let Some(eq) = text[after..].find('=') else { break };
+        let Some(open_rel) = text[after + eq..].find('{') else { break };
+        let open = after + eq + open_rel;
+        let Some(close) = matching_brace(text, open) else { break };
+        servers.extend(inline_server_pairs(&text[open + 1..close]));
+        index = close + 1;
+    }
+    servers
+}
+
+fn matching_brace(text: &str, open: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut depth = 0;
+    let mut index = open;
+    let mut quoted = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if quoted {
+            if byte == b'\\' { index += 2; continue; }
+            if byte == b'"' { quoted = false; }
+            index += 1;
+            continue;
+        }
+        match byte {
+            b'"' => quoted = true,
+            b'{' => depth += 1,
+            b'}' => { depth -= 1; if depth == 0 { return Some(index); } }
+            _ => {}
+        }
+        index += 1;
+    }
+    None
+}
+
+fn inline_server_pairs(body: &str) -> Vec<(String, Value)> {
+    let mut pairs = Vec::new();
+    let bytes = body.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        while index < bytes.len() && (bytes[index].is_ascii_whitespace() || bytes[index] == b',') { index += 1; }
+        if index >= bytes.len() { break; }
+        let (key, next) = if bytes[index] == b'"' {
+            let Some(end) = body[index + 1..].find('"') else { break };
+            let end = index + 1 + end;
+            (body[index + 1..end].to_string(), end + 1)
+        } else {
+            let start = index;
+            while index < bytes.len() && bytes[index] != b'=' && !bytes[index].is_ascii_whitespace() { index += 1; }
+            (body[start..index].to_string(), index)
+        };
+        let Some(eq) = body[next..].find('=') else { break };
+        let value_from = next + eq + 1;
+        let Some(rel) = body[value_from..].find(|char: char| !char.is_whitespace()) else { break };
+        let value_at = value_from + rel;
+        if bytes.get(value_at) != Some(&b'{') { break; }
+        let Some(close) = matching_brace(body, value_at) else { break };
+        let inner = &body[value_at + 1..close];
+        let mut map = Map::new();
+        if let Some(enabled) = inline_flag(inner, "enabled") { map.insert("enabled".into(), json!(enabled)); }
+        if let Some(command) = inline_string(inner, "command") { map.insert("command".into(), json!(command)); }
+        pairs.push((key, Value::Object(map)));
+        index = close + 1;
+    }
+    pairs
+}
+
+fn inline_flag(body: &str, key: &str) -> Option<bool> {
+    let token = flag_token(body, key)?;
+    if token == "true" { Some(true) } else if token == "false" { Some(false) } else { None }
+}
+
+fn inline_string(body: &str, key: &str) -> Option<String> {
+    let token = flag_token(body, key)?;
+    Some(token.trim_matches('"').to_string())
+}
+
+fn flag_token<'a>(body: &'a str, key: &str) -> Option<&'a str> {
+    let bytes = body.as_bytes();
+    let mut index = 0;
+    while let Some(found) = body[index..].find(key) {
+        let at = index + found;
+        let after = at + key.len();
+        let before_ok = at == 0 || !bytes[at - 1].is_ascii_alphanumeric();
+        let rest = body[after..].trim_start();
+        if before_ok && rest.starts_with('=') {
+            let eq = body[after..].find('=')? + after;
+            let mut value_at = eq + 1;
+            while value_at < bytes.len() && bytes[value_at].is_ascii_whitespace() { value_at += 1; }
+            let end = value_at + body[value_at..].find(|char: char| char == ',' || char == '}' || char.is_whitespace()).unwrap_or(body.len() - value_at);
+            return Some(&body[value_at..end]);
+        }
+        index = after;
+    }
+    None
+}
+
+fn set_inline_toml_enabled(text: &str, name: &str, enabled: bool) -> Result<String, ()> {
+    let mut index = 0;
+    while index < text.len() {
+        let Some(found) = text[index..].find("mcp_servers") else { break };
+        let start = index + found;
+        let after = start + "mcp_servers".len();
+        if !text[after..].trim_start().starts_with('=') { index = after; continue; }
+        let Some(eq) = text[after..].find('=') else { break };
+        let Some(open_rel) = text[after + eq..].find('{') else { break };
+        let open = after + eq + open_rel;
+        let Some(close) = matching_brace(text, open) else { break };
+        let body = &text[open + 1..close];
+        if let Some((inner_start, inner_end)) = inline_server_span(body, name) {
+            let start = open + 1 + inner_start;
+            let end = open + 1 + inner_end;
+            let replaced = replace_enabled_token(&text[start..end], enabled)?;
+            return Ok(format!("{}{replaced}{}", &text[..start], &text[end..]));
+        }
+        index = close + 1;
+    }
+    Err(())
+}
+
+fn inline_server_span(body: &str, name: &str) -> Option<(usize, usize)> {
+    let bytes = body.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        while index < bytes.len() && (bytes[index].is_ascii_whitespace() || bytes[index] == b',') { index += 1; }
+        if index >= bytes.len() { return None; }
+        let (key, next) = if bytes[index] == b'"' {
+            let end = body[index + 1..].find('"')? + index + 1;
+            (body[index + 1..end].to_string(), end + 1)
+        } else {
+            let start = index;
+            while index < bytes.len() && bytes[index] != b'=' && !bytes[index].is_ascii_whitespace() { index += 1; }
+            (body[start..index].to_string(), index)
+        };
+        let eq = body[next..].find('=')? + next;
+        let value_from = eq + 1;
+        let rel = body[value_from..].find(|char: char| !char.is_whitespace())?;
+        let value_at = value_from + rel;
+        if bytes.get(value_at) != Some(&b'{') { return None; }
+        let close = matching_brace(body, value_at)?;
+        if key == name { return Some((value_at + 1, close)); }
+        index = close + 1;
+    }
+    None
+}
+
+fn replace_enabled_token(inner: &str, enabled: bool) -> Result<String, ()> {
+    let value = if enabled { "true" } else { "false" };
+    let bytes = inner.as_bytes();
+    let mut index = 0;
+    while let Some(found) = inner[index..].find("enabled") {
+        let at = index + found;
+        let after = at + "enabled".len();
+        let before_ok = at == 0 || !bytes[at - 1].is_ascii_alphanumeric();
+        if before_ok && inner[after..].trim_start().starts_with('=') {
+            let eq = inner[after..].find('=').ok_or(())? + after;
+            let mut value_at = eq + 1;
+            while value_at < bytes.len() && bytes[value_at].is_ascii_whitespace() { value_at += 1; }
+            let word = if inner[value_at..].starts_with("true") { 4 } else if inner[value_at..].starts_with("false") { 5 } else { return Err(()) };
+            return Ok(format!("{}{value}{}", &inner[..value_at], &inner[value_at + word..]));
+        }
+        index = after;
+    }
+    Err(())
+}
+
 fn distribute(resources: &Resources, data: &Path, custom: &Value, agents: &[Value], language: &str, run: &mut dyn FnMut(&Target) -> Result<(), String>) -> Result<Value, String> {
     if resources.busy.swap(true, Ordering::SeqCst) { return Err(t(language, "正在分发资源，请稍候")); }
     let result = (|| {
         if agents.is_empty() { return Err(t(language, "请选择至少一个 Code Agent")); }
-        let targets = owned_targets(data, custom);
+        let targets = current_targets(resources, data, custom);
         let mut seen = Vec::new();
         let mut results = Vec::new();
         for agent in agents {
@@ -1658,7 +1935,8 @@ fn insert_field(text: &str, open: usize, key: &str, raw: &str) -> Result<String,
     let end = skip_value(text, open)?;
     let close = end - 1;
     let fields = object_fields(text, open)?;
-    let comma = if fields.is_empty() { "" } else { "," };
+    let trailing = fields.last().is_some_and(|field| text[field.value_end..close].contains(','));
+    let comma = if fields.is_empty() || trailing { "" } else { "," };
     let piece = format!("{comma}\n  \"{key}\": {raw}");
     Ok(format!("{}{}{}", &text[..close], piece, &text[close..]))
 }

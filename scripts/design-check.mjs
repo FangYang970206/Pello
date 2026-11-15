@@ -6,6 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { _electron as electron } from 'playwright'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const baseline = process.argv.includes('--before')
@@ -34,7 +35,18 @@ fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({
     { id: 'long', name: '跨团队协作与远程项目名称很长时的显示检查', host: 'local', path: project, agent: 'shell' }],
   custom: [{ id: 'custom', name: '项目专用 Agent', cmd: 'custom-agent', args: '--interactive --workspace current-project', shell: 'pwsh', color: '#7fb2ff', letter: 'A', env: [] }]
 }))
-const app = await electron.launch({ args: [root], cwd: root, env })
+const launch = (launchEnv = env) => process.env.AWB_SHELL === 'tauri'
+  ? launchWorkbench({ args: [root], cwd: root, env: launchEnv })
+  : electron.launch({ args: [root], cwd: root, env: launchEnv })
+async function setContentSize(target, page, width, height) {
+  if (process.env.AWB_SHELL === 'tauri') {
+    await page.evaluate((size) => window.awb.winResize(size.width, size.height), { width, height })
+    await page.waitForFunction((size) => Math.abs(innerWidth - size.width) <= 4, { width, height })
+    return
+  }
+  await target.evaluate(({ BrowserWindow }, dimensions) => BrowserWindow.getAllWindows()[0].setContentSize(...dimensions), [width, height])
+}
+const app = await launch()
 const errors = [], captures = []
 function contrast(first, second) {
   const luminance = (hex) => {
@@ -73,7 +85,7 @@ try {
   for (const theme of ['dark', 'light']) {
     for (const [width, height] of [[1440, 900], [1024, 680]]) {
       const size = String(width)
-      await app.evaluate(({ BrowserWindow }, dimensions) => BrowserWindow.getAllWindows()[0].setContentSize(...dimensions), [width, height])
+      await setContentSize(app, page, width, height)
       await page.click('[data-a=settings]')
       await page.click('[data-a=sec][data-id=look]')
       await page.click(`[data-a=theme][data-id=${theme}]`)
@@ -178,13 +190,13 @@ try {
   if (!baseline) {
     const emptyData = path.join(data, 'first-launch')
     fs.mkdirSync(emptyData)
-    const emptyApp = await electron.launch({ args: [root], cwd: root, env: { ...env, AWB_USER_DATA: emptyData } })
+    const emptyApp = await launch({ ...env, AWB_USER_DATA: emptyData })
     try {
       const emptyPage = await emptyApp.firstWindow()
       await emptyPage.getByRole('heading', { name: '创建第一个项目', exact: true }).waitFor()
       for (const theme of ['dark', 'light']) {
         for (const [width, height] of [[1440, 900], [1024, 680]]) {
-          await emptyApp.evaluate(({ BrowserWindow }, dimensions) => BrowserWindow.getAllWindows()[0].setContentSize(...dimensions), [width, height])
+          await setContentSize(emptyApp, emptyPage, width, height)
           await emptyPage.click('[data-a=settings]')
           await emptyPage.click('[data-a=sec][data-id=look]')
           await emptyPage.click(`[data-a=theme][data-id=${theme}]`)
@@ -201,8 +213,11 @@ try {
   fs.writeFileSync(path.join(folder, 'manifest.json'), JSON.stringify(captures, null, 2))
   console.log(`Captured ${captures.length} interface states`)
 } finally {
-  await app.evaluate(({ dialog }) => { dialog.showMessageBoxSync = () => 1 }).catch(() => {})
-  const closed = app.waitForEvent('close')
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close())
-  await closed
+  if (process.env.AWB_SHELL === 'tauri') await app.close()
+  else {
+    await app.evaluate(({ dialog }) => { dialog.showMessageBoxSync = () => 1 }).catch(() => {})
+    const closed = app.waitForEvent('close')
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close())
+    await closed
+  }
 }

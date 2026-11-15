@@ -1,7 +1,9 @@
 //! Update checks stay manual for download and install.
 //! Turning automatic checks off clears every later scheduled check.
 
+use base64::Engine;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha512};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -84,7 +86,7 @@ impl Service {
                 self.downloaded = Some(path);
                 self.state = json!({ "phase": "downloaded", "version": version });
             }
-            Err(_) => self.state = json!({ "phase": "error", "failed": "download", "version": version }),
+            Err(message) => self.state = json!({ "phase": "error", "failed": "download", "version": version, "error": message }),
         }
         self.state()
     }
@@ -133,19 +135,32 @@ fn release_name() -> Result<String, ()> {
     Ok(name)
 }
 
-fn copy_release(data: &Path) -> Result<PathBuf, ()> {
-    let name = release_name()?;
+fn copy_release(data: &Path) -> Result<PathBuf, String> {
+    let name = release_name().map_err(|_| "size mismatch".to_string())?;
     let source = feed_dir().join(&name);
-    if !source.is_file() { return Err(()); }
+    let bytes = fs::read(&source).map_err(|_| "size mismatch".to_string())?;
+    if let Some(size) = feed_value("size").and_then(|value| value.parse::<u64>().ok()) {
+        if bytes.len() as u64 != size { return Err("size mismatch".into()); }
+    }
+    if let Some(expected) = feed_value("sha512") {
+        let digest = base64::engine::general_purpose::STANDARD.encode(Sha512::digest(&bytes));
+        if digest != expected { return Err("sha512 checksum mismatch".into()); }
+    }
     let destination_dir = data.join("updates");
-    fs::create_dir_all(&destination_dir).map_err(|_| ())?;
+    fs::create_dir_all(&destination_dir).map_err(|_| "size mismatch".to_string())?;
     let destination = destination_dir.join(&name);
-    fs::copy(&source, &destination).map_err(|_| ())?;
+    fs::write(&destination, &bytes).map_err(|_| "size mismatch".to_string())?;
     let blockmap = feed_dir().join(format!("{name}.blockmap"));
     if blockmap.is_file() {
-        fs::copy(&blockmap, destination_dir.join(format!("{name}.blockmap"))).map_err(|_| ())?;
+        fs::copy(&blockmap, destination_dir.join(format!("{name}.blockmap"))).map_err(|_| "size mismatch".to_string())?;
     }
     Ok(destination)
+}
+
+fn feed_value(key: &str) -> Option<String> {
+    let text = fs::read_to_string(feed_file()).ok()?;
+    let prefix = format!("{key}:");
+    text.lines().rev().find_map(|line| line.trim().strip_prefix(&prefix).map(|value| value.trim().trim_matches('"').to_string())).filter(|value| !value.is_empty())
 }
 
 fn newer(found: &str, current: &str) -> bool {

@@ -93,7 +93,12 @@ const helper = `
           continue
         }
         let found = []
-        if (step.selector) found = [...base.querySelectorAll(step.selector)]
+        if (step.selector) {
+          const onlyVisible = step.selector.endsWith(':visible')
+          const selector = onlyVisible ? step.selector.slice(0, -':visible'.length) : step.selector
+          found = [...base.querySelectorAll(selector)]
+          if (onlyVisible) found = found.filter(visible)
+        }
         else if (step.label != null) found = byLabel(step.label, step.exact)
         else if (step.role) found = [...base.querySelectorAll('*')].filter((el) => roleOf(el) === step.role && named(el, step.name, step.exact))
         else if (step.text != null) found = byText(step.text, step.exact)
