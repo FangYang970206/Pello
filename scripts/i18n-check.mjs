@@ -173,7 +173,7 @@ try {
   assert.equal(fs.readdirSync(base).length, 0)
   for (let index = 0; index < 2; index++) {
     await page.locator('[data-a=temporary-session]').locator('..').hover()
-    await page.click('[data-a=temporary-session]'); await page.click('[data-a=ntk][data-id=shell]'); await page.click('[data-a=nt-ok]')
+    await page.click('[data-a=temporary-session]'); await page.getByRole('button', { name: 'Save and create', exact: true }).click(); await page.click('[data-a=ntk][data-id=shell]'); await page.click('[data-a=nt-ok]')
     await page.locator('.dlg').waitFor({ state: 'detached' })
   }
   const created = (await state()).db.projects.filter((project) => project.temporary && !project.id.startsWith('old-'))

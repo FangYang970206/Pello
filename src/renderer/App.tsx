@@ -24,7 +24,7 @@ import { preferredGroupTab } from './workspace-layout'
 type Modal =
   | { type: 'project' }
   | { type: 'temporary' }
-  | { type: 'temporary-term'; root: string }
+  | { type: 'temporary-term'; root: string; hostId: string }
   | { type: 'term'; newSession?: boolean }
   | { type: 'exec'; id?: string }
   | { type: 'host'; id?: string }
@@ -879,9 +879,10 @@ export function App() {
   }
 
   async function createTemporary(kind: string, shell: ShellKind) {
+    if (modal?.type !== 'temporary-term') return
     let target = temporaryPending.current
     if (!target) {
-      const result = await window.awb.createTemporarySession()
+      const result = await window.awb.createTemporarySession(modal.root, modal.hostId)
       setDb(result.database)
       target = result.database.projects.find((item) => item.id === result.projectId)!
       temporaryPending.current = target
@@ -896,9 +897,7 @@ export function App() {
     temporaryStarting.current = true; setTemporaryBusy(true)
     temporaryPending.current = null
     try {
-      const root = await window.awb.temporaryDirectory()
-      if (root) setModal({ type: 'temporary-term', root })
-      else setModal({ type: 'temporary' })
+      setModal({ type: 'temporary' })
     } catch (error) { toast(String(error), true) }
     finally { temporaryStarting.current = false; setTemporaryBusy(false) }
   }
@@ -1265,6 +1264,7 @@ export function App() {
   const withRight = route === 'work' && !!project && right
   const editing = modal?.type === 'exec' ? db?.custom.find((item) => item.id === modal.id) || null : null
   const editingHost = modal?.type === 'host' && modal.id ? db?.hosts.find((item) => item.id === modal.id) || null : null
+  const temporaryHost = modal?.type === 'temporary-term' ? db?.hosts.find((item) => item.id === modal.hostId) : undefined
 
   return (
     <>
@@ -1464,8 +1464,8 @@ export function App() {
       </div>
       <div id="modal">
         {modal?.type === 'confirm' ? <ConfirmDialog title={modal.title} body={modal.body} ok={modal.ok} onOk={modal.run} onSave={modal.save} onClose={() => setModal(null)} /> : null}
-        {modal?.type === 'temporary' ? <TemporarySessionDialog onCreate={async (root) => { const directory = await window.awb.configureTemporaryDirectory(root); setModal({ type: 'temporary-term', root: directory }) }} onClose={() => setModal(null)} /> : null}
-        {modal?.type === 'temporary-term' && db ? <NewTermDialog newSession host={db.hosts.find((item) => item.id === 'local')!} cwd={modal.root} initialKind={db.settings.defAgent} initialShell={db.settings.defShell} agents={agents} onClose={() => setModal(null)} onManage={() => { setModal(null); openSettings('agents') }} onOpen={createTemporary} /> : null}
+        {modal?.type === 'temporary' && db ? <TemporarySessionDialog hosts={db.hosts} onCreate={async (root, hostId) => { const directory = await window.awb.configureTemporaryDirectory(root, hostId); setModal({ type: 'temporary-term', root: directory, hostId }) }} onClose={() => setModal(null)} /> : null}
+        {modal?.type === 'temporary-term' && db && temporaryHost ? <NewTermDialog newSession host={temporaryHost} cwd={modal.root} initialKind={db.settings.defAgent} initialShell={shellFor(temporaryHost, db.settings.defShell)} agents={modal.hostId === 'local' ? agents : agents.map((agent) => ({ ...agent, installed: true }))} onClose={() => setModal(null)} onManage={() => { setModal(null); openSettings('agents') }} onOpen={createTemporary} /> : null}
         {modal?.type === 'project' && db ? (
           <NewProjectDialog
             hosts={db.hosts}

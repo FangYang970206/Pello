@@ -259,6 +259,8 @@ export function checkInvariants(files) {
     'AWB076', 'src/renderer/ContentSearchResults.tsx', '搜索输入框保持紧凑，结果不显示跳过统计、文件分布、行号或文件内匹配数')
   require(declarations('.editor-surface').get('container') === 'editor / inline-size' && /width:\s*clamp\([^;]*cqi/.test(sidebarCss) && containers.some((node) => node.params.startsWith('editor ')) && containers.some((node) => node.params.startsWith('media ')) && declarations('.media-zoom').get('flex-wrap') === 'wrap' && files.get('AGENTS.md')?.includes('日常自适应检查'),
     'AWB073', 'src/renderer/styles/extra.css', '搜索按实际编辑区宽度收窄，媒体工具栏允许换行，窄容器检查纳入日常开发约定')
+  require(files.get('src/main/temporary-sessions.ts')?.includes('remoteTemporarySessionsDirectories') && files.get('src/main/temporary-sessions.ts')?.includes('host: hostId') && files.get('src/main/temporary-session-remote.ts')?.includes('stream.stdin.end(JSON.stringify(') && files.get('src/renderer/TemporarySessionDialog.tsx')?.includes('<DirectoryBrowser hostId={hostId}') && scripts.check?.includes('scripts/temporary-sessions-check.mjs'),
+    'AWB078', 'src/main/temporary-sessions.ts', '临时会话按机器保存目录，在对应机器创建，远程路径与内容走 stdin 并保留 SSH 行为回归')
   return errors
 }
 

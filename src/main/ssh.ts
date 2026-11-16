@@ -139,6 +139,7 @@ export async function runPasswordCommand(host: Host, command: string, input?: st
   const client = await connectPasswordHost(host)
   return await new Promise((resolve, reject) => {
     let stdout = ''
+    let stdoutBytes = 0
     let stderr = ''
     const timer = setTimeout(() => { client.destroy(); reject(new Error(t("远程命令执行超时"))) }, 20000)
     const fail = (error: Error) => { clearTimeout(timer); client.end(); reject(error) }
@@ -149,8 +150,10 @@ export async function runPasswordCommand(host: Host, command: string, input?: st
       stream.setEncoding('utf8')
       stream.stderr.setEncoding('utf8')
       stream.on('data', (data: string) => {
+        // Count each decoded chunk once; rescanning accumulated output is quadratic.
+        stdoutBytes += Buffer.byteLength(data)
         stdout += data
-        if (Buffer.byteLength(stdout) > maxOutput) fail(new Error(t("远程输出过大")))
+        if (stdoutBytes > maxOutput) fail(new Error(t("远程输出过大")))
       })
       stream.stderr.on('data', (data: string) => { stderr = (stderr + data).slice(-16000) })
       stream.on('error', fail)

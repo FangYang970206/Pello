@@ -67,7 +67,7 @@ for (const fontFamily of requestedFonts.length ? requestedFonts : ['Cascadia Mon
       await app.evaluate((_electron, command) => { globalThis.__documentMenuCommand = command }, `split-${direction}`)
       await page.locator(`[data-a=pane][data-id="${id}"]`).dispatchEvent('contextmenu')
       await page.waitForFunction((count) => document.querySelectorAll('.pane:not([hidden])').length === count, count)
-      return page.locator('.tab.on [data-a=tab]').getAttribute('data-id')
+      return page.locator('[data-a=editor-group][data-focused=true] .tab.on [data-a=tab]').getAttribute('data-id')
     }
     await page.evaluate(() => { window.__renderOriginal = document.querySelector('[data-term=glyphs] .xterm') })
     const right = await split('glyphs', 'right', 2)

@@ -430,14 +430,14 @@ function registerIpc(): void {
   ipcMain.handle('diagram:cancel', (event) => {
     if (event.sender === win?.webContents && event.senderFrame === win?.webContents.mainFrame) cancelDiagramRenderer()
   })
-  ipcMain.handle('temporary:directory', () => temporaryDirectory())
-  ipcMain.handle('temporary:configure', (_event, root: string) => {
+  ipcMain.handle('temporary:directory', (_event, hostId?: string) => temporaryDirectory(hostId))
+  ipcMain.handle('temporary:configure', (_event, root: string, hostId?: string) => {
     if (typeof root !== 'string') throw new Error(t("临时目录无效"))
-    return configureTemporaryDirectory(root)
+    return configureTemporaryDirectory(root, hostId)
   })
-  ipcMain.handle('temporary:create', (_event, root?: string) => {
+  ipcMain.handle('temporary:create', (_event, root?: string, hostId?: string) => {
     if (root !== undefined && typeof root !== 'string') throw new Error(t("临时目录无效"))
-    return createTemporarySession(root)
+    return createTemporarySession(root, hostId)
   })
   ipcMain.on('files:dirty', (_event, dirty: boolean) => { hasUnsavedChanges = !!dirty })
   ipcMain.handle('db:get', async () => ({ db: db(), installed: await installedMap() }))

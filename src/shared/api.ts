@@ -58,9 +58,9 @@ export interface WorkbenchApi {
   saveBranch(projectId: string, branch: string): Promise<Database>
   setUnsavedChanges(dirty: boolean): void
   pickDirectory(): Promise<string | null>
-  temporaryDirectory(): Promise<string | null>
-  configureTemporaryDirectory(root: string): Promise<string>
-  createTemporarySession(root?: string): Promise<{ database: Database; projectId: string }>
+  temporaryDirectory(hostId?: string): Promise<string | null>
+  configureTemporaryDirectory(root: string, hostId?: string): Promise<string>
+  createTemporarySession(root?: string, hostId?: string): Promise<{ database: Database; projectId: string }>
   checkPath(hostId: string, input: string): Promise<PathCheck>
   listDir(hostId: string, input: string): Promise<DirListing>
   gitStatus(projectId: string, rescan?: boolean): Promise<GitPanel & { untracked: Record<string, boolean> }>
