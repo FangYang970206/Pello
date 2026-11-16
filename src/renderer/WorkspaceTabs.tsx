@@ -5,6 +5,7 @@ import { Icon, Mark } from './icons'
 import { NameEditor } from './ProjectSidebar'
 import { terminalStatus } from './terminal-state'
 import type { Tab } from './Workspace'
+import { useAnchoredMenu } from './useAnchoredMenu'
 
 export function WorkspaceTabs({ groupId, index, tabs, activeId, focused, style, agents, installed, rightOpen, onToggleRight, onSelect, onClose, onPaneMenu, onRenameTerm, onNewTerm, renaming, setRenaming, onMoveTab }: {
   groupId: string; index: number; tabs: Tab[]; activeId: string; focused: boolean; style: CSSProperties
@@ -18,7 +19,31 @@ export function WorkspaceTabs({ groupId, index, tabs, activeId, focused, style, 
   const [overflow, setOverflow] = useState(false)
   const [fade, setFade] = useState<'none' | 'left' | 'right' | 'both'>('none')
   const [menu, setMenu] = useState(false)
+  const menuRef = useAnchoredMenu(menu && overflow, () => setMenu(false), { minWidth: 260 })
+  const wheelGesture = useRef({ delta: 0, lastEvent: 0, lastSwitch: 0 })
   const renameFocus = useRef<string | null>(null)
+  useEffect(() => {
+    const el = scroller.current
+    if (!el) return
+    const wheel = (event: WheelEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey || renaming || tabs.length < 2) return
+      const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY
+      if (!delta) return
+      event.preventDefault()
+      const gesture = wheelGesture.current, now = performance.now()
+      if (now - gesture.lastEvent > 200 || Math.sign(delta) !== Math.sign(gesture.delta)) gesture.delta = 0
+      gesture.lastEvent = now
+      gesture.delta += delta * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? el.clientWidth : 1)
+      if (Math.abs(gesture.delta) < 40 || now - gesture.lastSwitch < 120) return
+      const index = tabs.findIndex((tab) => tab.id === activeId)
+      const next = tabs[index + Math.sign(gesture.delta)]
+      gesture.delta = 0
+      gesture.lastSwitch = now
+      if (next) { setMenu(false); onSelect(next.id) }
+    }
+    el.addEventListener('wheel', wheel, { passive: false })
+    return () => el.removeEventListener('wheel', wheel)
+  }, [tabs, activeId, onSelect, renaming])
   useEffect(() => {
     if (renaming) { renameFocus.current = renaming; return }
     const id = renameFocus.current
@@ -45,6 +70,7 @@ export function WorkspaceTabs({ groupId, index, tabs, activeId, focused, style, 
       const over = width > el.clientWidth + 1
       setOverflow((prev) => (prev === over ? prev : over))
       if (!over) {
+        setMenu(false)
         setFade((prev) => (prev === 'none' ? prev : 'none'))
         return
       }
@@ -127,9 +153,22 @@ export function WorkspaceTabs({ groupId, index, tabs, activeId, focused, style, 
       </div>
       <div className="tabtools">
         {overflow ? (
-          <button className="addtab" data-a="tabs-menu" aria-label={t("全部标签")} title={t("全部标签")} onClick={() => setMenu((value) => !value)}>
+          <button className="addtab" data-a="tabs-menu" aria-label={t("全部标签")} title={t("全部标签")} aria-haspopup="listbox" aria-expanded={menu} onClick={() => setMenu((value) => !value)}>
             <Icon name="chev" className="s chev open" />
           </button>
+        ) : null}
+        {menu && overflow ? (
+          <div ref={menuRef} className="pop tabs-popover" popover="manual" role="listbox" aria-label={t("全部标签")}>
+            {tabs.map((tab) => {
+              const label = tab.type === 'term' ? tab.name || (tab.kind === 'shell' ? shellLabel(tab.shell) : agentOf(tab.kind).name) : tab.path.split('/').pop()
+              return <button key={tab.id} role="option" aria-selected={tab.id === activeId} className={`row ${tab.id === activeId ? 'on' : ''}`} title={tab.type === 'term' ? label : tab.path}
+                onClick={() => { onSelect(tab.id); setMenu(false) }}>
+                <span style={{ width: 14, flex: 'none', color: 'var(--muted)' }}>{tab.id === activeId ? '✓' : ''}</span>
+                <span className="nm grow">{label}</span>
+                {tab.type === 'term' ? <span className={`dot terminal-status ${terminalStatus(tab).color}${terminalStatus(tab).spinning ? ' spinning' : ''}`} role="img" aria-label={terminalStatus(tab).label} /> : null}
+              </button>
+            })}
+          </div>
         ) : null}
         <button className="addtab" data-a="newterm" title={t("新建终端")} aria-label={t("新建终端")} onClick={onNewTerm}>
           <Icon name="plus" />
@@ -137,27 +176,6 @@ export function WorkspaceTabs({ groupId, index, tabs, activeId, focused, style, 
       </div>
       <span className="grow" />
       {!rightOpen && focused ? <button className="ib" data-a="right" title={t("显示文件面板")} aria-label={t("显示文件面板")} onClick={onToggleRight}><Icon name="panel" /></button> : null}
-      {menu ? (
-        <div className="pop" style={{ left: 8, right: 'auto' }}>
-          {tabs.map((tab) => {
-            const label = tab.type === 'term' ? tab.name || (tab.kind === 'shell' ? shellLabel(tab.shell) : agentOf(tab.kind).name) : tab.path.split('/').pop()
-            return (
-              <button
-                key={tab.id}
-                className={`row ${tab.id === activeId ? 'on' : ''}`}
-                onClick={() => {
-                  onSelect(tab.id)
-                  setMenu(false)
-                }}
-              >
-                <span style={{ width: 14, flex: 'none', color: 'var(--muted)' }}>{tab.id === activeId ? '✓' : ''}</span>
-                <span className="nm grow">{label}</span>
-                {tab.type === 'term' ? <span className={`dot terminal-status ${terminalStatus(tab).color}${terminalStatus(tab).spinning ? ' spinning' : ''}`} role="img" aria-label={terminalStatus(tab).label} /> : null}
-              </button>
-            )
-          })}
-        </div>
-      ) : null}
     </div>
   )
 }

@@ -104,7 +104,7 @@ try {
       await page.click('[data-a=back]')
       await page.locator('[data-a=tabs-menu]').click()
       await compareSurface('all-tabs', '.pop', theme, width)
-      await page.locator('[data-a=tabs-menu]').click()
+      await page.keyboard.press('Escape')
       const project = page.locator('[data-a=proj]')
       await project.click({ button: 'right' }); await measure('project', project, theme, width, true)
       const session = page.locator('[data-a=side-session]')
