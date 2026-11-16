@@ -329,6 +329,13 @@ function createWindow(): void {
     })
   }
   win.once('ready-to-show', () => win?.show())
+  // Reserve close-tab before Electron's native Window > Close accelerator.
+  // Renderer preventDefault alone does not cover native key events in dialogs.
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.key.toLowerCase() !== 'w' || !(input.control || input.meta) || input.alt || input.shift) return
+    event.preventDefault()
+    if (input.type === 'keyDown' && !input.isAutoRepeat) win?.webContents.send('app:close-tab')
+  })
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   win.webContents.on('will-navigate', (event) => event.preventDefault())
   win.webContents.on('will-frame-navigate', (event) => { if (!event.isMainFrame && !isPreviewUrl(event.url)) event.preventDefault() })

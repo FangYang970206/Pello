@@ -3,6 +3,10 @@ import { checkInvariants, projectFiles } from './invariant-lint.mjs'
 
 const files = projectFiles()
 const cases = [
+  ['AWB082', 'src/main/index.ts', "win.webContents.on('before-input-event'", "win.webContents.on('missing-input-event'"],
+  ['AWB082', 'src/renderer/App.tsx', 'requestClose(active.id, true)', 'requestClose(active.id, false)'],
+  ['AWB083', 'src/renderer/DiffPane.tsx', '<Icon name="save" />', '{t("保存")}'],
+  ['AWB083', 'src/renderer/DiffPane.tsx', 'title={label}', 'data-missing-title={label}'],
   ['AWB001', 'src/renderer/TerminalPane.tsx', '.onBinary(', '.onMissingBinary('],
   ['AWB002', 'src/renderer/TerminalPane.tsx', 'lineHeight: 1,', 'lineHeight: 1.45,'],
   ['AWB003', 'src/renderer/Workspace.tsx', 'const terms = tabs.filter', 'const terms = mine.filter'],

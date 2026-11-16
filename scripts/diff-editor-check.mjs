@@ -19,18 +19,28 @@ git('add', '.')
 git('-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture')
 fs.writeFileSync(path.join(project, 'fixture.txt'), after)
 fs.unlinkSync(path.join(project, 'deleted.txt'))
+fs.writeFileSync(path.join(project, 'untracked.txt'), 'untracked contents\n')
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({
   settings: { layout: 'balanced', restore: false, theme: 'dark' },
   projects: [{ id: 'p', name: 'Diff fixture', path: project, host: 'local', agent: 'shell' }]
 }))
 const env = { ...process.env, AWB_USER_DATA: data }
 delete env.ELECTRON_RUN_AS_NODE
-const app = await electron.launch({ args: [root], cwd: root, env })
+const dpi = Number(process.env.AWB_TEST_DPI || 1)
+const app = await electron.launch({ args: [root, `--force-device-scale-factor=${dpi}`], cwd: root, env })
 try {
   const page = await app.firstWindow()
   page.setDefaultTimeout(15000)
   await page.locator('[data-a=diff][data-id="fixture.txt"]').click()
   await page.locator('[data-a=dmode][data-id=split]').click()
+  assert.equal(await page.locator('.diff-actions button').count(), 4)
+  assert.ok((await page.locator('.diff-actions button').evaluateAll((nodes) => nodes.map((node) => ({
+    icon: !!node.querySelector('svg'), text: node.textContent.trim(), label: node.getAttribute('aria-label'), title: node.getAttribute('title')
+  })))).every((item) => item.icon && !item.text && item.label && item.title), 'Diff actions must use named, tooltip-equipped icons')
+  await page.locator('.diff-actions [data-a=discard]').click()
+  await page.locator('[data-a=confirm]').waitFor()
+  await page.keyboard.press('Escape')
+  assert.equal(fs.readFileSync(path.join(project, 'fixture.txt'), 'utf8'), after, 'Canceling the discard icon must keep file contents')
   assert.equal(await page.locator('.diff-split .cm-content[contenteditable=true]').count(), 2, 'both diff panes must be editable')
   const contents = page.locator('.diff-split .cm-content')
   const checkChangedLineStyle = async () => {
@@ -78,7 +88,8 @@ try {
     assert.ok(offsets[0] > 0 && Math.abs(offsets[0] - offsets[1]) < 2, `unequal panes must share horizontal range: ${offsets}`)
   }
   await contents.nth(1).fill('edited right\n')
-  await page.getByRole('button', { name: '保存文件', exact: true }).click()
+  await page.keyboard.press('Control+s')
+  await page.waitForFunction(() => !document.querySelector('.dot.unsaved'))
   assert.equal(fs.readFileSync(path.join(project, 'fixture.txt'), 'utf8'), 'edited right\n')
   await contents.nth(0).fill('editable baseline\n')
   await page.evaluate(() => { window.__diffFontNodes = [...document.querySelectorAll('.diff-split .cm-content')] })
@@ -103,8 +114,12 @@ try {
   assert.equal(git('show', 'HEAD:fixture.txt').toString(), before, 'editing baseline must not rewrite Git HEAD')
   await page.getByRole('button', { name: '还原此处更改', exact: true }).first().click()
   await page.waitForFunction(() => document.querySelector('.cm-merge-b .cm-content')?.textContent.includes('editable baseline'))
-  await page.getByRole('button', { name: '保存文件', exact: true }).click()
+  await page.locator('[data-a=dmode][data-id=unified]').click()
+  await page.locator('.diff-unified').focus()
+  await page.keyboard.press('Control+s')
+  await page.waitForFunction(() => !document.querySelector('.dot.unsaved'))
   assert.equal(fs.readFileSync(path.join(project, 'fixture.txt'), 'utf8'), 'editable baseline\n')
+  await page.locator('[data-a=dmode][data-id=split]').click()
   // An external modification must be rejected by the usual version guard.
   await contents.nth(1).fill('unsaved conflict\n')
   // Git status can briefly hold a Windows file handle; wait for the external
@@ -132,19 +147,51 @@ try {
   await page.getByRole('button', { name: '保存文件', exact: true }).click()
   await page.waitForFunction(() => !document.querySelector('.dot.unsaved'))
   assert.equal(fs.readFileSync(path.join(project, 'deleted.txt'), 'utf8'), 'deleted original\n', 'hunk revert must recreate a deleted file')
+  await page.locator('[data-a=diff][data-id="untracked.txt"]').click()
+  await page.getByRole('button', { name: '删除文件', exact: true }).click()
+  await page.locator('[data-a=confirm]').waitFor()
+  await page.keyboard.press('Escape')
+  assert.equal(fs.readFileSync(path.join(project, 'untracked.txt'), 'utf8'), 'untracked contents\n', 'Untracked delete icon must also require confirmation')
   await page.locator('[data-a=diff][data-id="fixture.txt"]').click()
-  for (const theme of ['dark', 'light']) for (const [width, height] of [[1024, 680], [1440, 900]]) {
+  for (const theme of ['dark', 'light']) for (const [width, height] of [[1024, 680], [1440, 900]]) for (const size of [12, 16]) {
     await page.locator('[data-a=settings]').click()
     await page.locator('[data-a=sec][data-id=look]').click()
     await page.locator(`[data-a=theme][data-id=${theme}]`).click()
+    await page.locator('[aria-label="界面字号"],[aria-label="Interface font size"]').selectOption(String(size))
+    await page.locator('[data-a=sec][data-id=general]').click()
+    await page.locator('[aria-label="应用语言"],[aria-label="Application language"]').selectOption(width === 1024 ? 'en' : 'zh-CN')
     await page.locator('[data-a=back]').click()
-    await app.browserWindow(page).then((win) => win.evaluate((win, size) => win.setSize(...size), [width, height]))
+    await page.evaluate(([width, height]) => window.awb.winResize(width, height), [width, height])
     await page.waitForTimeout(150)
     await checkChangedLineStyle()
+    const assertToolbar = async (compact) => {
+      const geometry = await page.locator('.pane').filter({ has: page.locator('.diffbar') }).evaluate((pane) => {
+        const box = pane.getBoundingClientRect(), bar = pane.querySelector('.diffbar').getBoundingClientRect()
+        return { width: box.width, height: box.height, barHeight: bar.height,
+          controls: [...pane.querySelectorAll('.diff-actions button')].map((node) => { const b = node.getBoundingClientRect(); return { left: b.left, right: b.right, top: b.top, bottom: b.bottom, width: b.width, height: b.height } }),
+          left: box.left, right: box.right, top: bar.top, bottom: bar.bottom }
+      })
+      assert.ok(geometry.controls.every((b) => b.width >= 28 && b.height >= 28 && b.left >= geometry.left && b.right <= geometry.right + 1 && b.top >= geometry.top && b.bottom <= geometry.bottom), JSON.stringify(geometry))
+      assert.ok(geometry.height - geometry.barHeight > 300, 'Diff text must retain visible reading space')
+      if (compact) assert.ok(geometry.width <= 321, `Exercise a real narrow container: ${JSON.stringify(geometry)}`)
+      await page.locator('[data-a=dmode][data-id=unified]').focus()
+      await page.keyboard.press('Space')
+      await page.locator('[data-a=dmode][data-id=split]').focus()
+      await page.keyboard.press('Space')
+      assert.equal(await page.locator('[data-a=dmode][data-id=split]').getAttribute('aria-checked'), 'true')
+    }
+    await assertToolbar(false)
     fs.mkdirSync(path.join(root, 'output/playwright/diff-editor'), { recursive: true })
-    await page.screenshot({ path: path.join(root, `output/playwright/diff-editor/${theme}-${width}.png`) })
+    await page.screenshot({ path: path.join(root, `output/playwright/diff-editor/${dpi}-${theme}-${width}-${size}.png`) })
+    if (width === 1024) {
+      for (let step = 0; step < 20; step++) await page.locator('.right-resize').press('ArrowLeft')
+      await assertToolbar(true)
+      await page.screenshot({ path: path.join(root, `output/playwright/diff-editor/${dpi}-${theme}-narrow-${size}.png`) })
+      for (let step = 0; step < 20; step++) await page.locator('.right-resize').press('ArrowRight')
+    }
   }
-  console.log(`PASS editable diff, live terminal font size (10/13/18/24px), independent source size, editor/draft/undo preservation, synchronized axes, resizing, hunk revert, guarded save (${data})`)
+  assert.ok(Math.abs(await page.evaluate(() => devicePixelRatio) - dpi) < .01)
+  console.log(`PASS ${dpi}x DPI: named action icons, Ctrl+S, discard cancellation, themes, windows, narrow containers, UI 12/16, Chinese/English, editable diff, font/draft/undo preservation, synchronized axes, resizing, hunk revert and guarded save (${data})`)
 } catch (error) {
   const page = await app.firstWindow()
   console.error(await page.evaluate(() => ({ scroll: [...document.querySelectorAll('.cm-scroller')].map(n => ({ width:n.clientWidth, total:n.scrollWidth, left:n.scrollLeft, content:n.querySelector('.cm-content')?.getBoundingClientRect().width, min:n.querySelector('.cm-content')?.style.minWidth, gutters:n.querySelector('.cm-gutters')?.getBoundingClientRect().width })), errors: [...document.querySelectorAll('.file-error')].map((node) => node.textContent), editors: [...document.querySelectorAll('.cm-content')].map((node) => node.textContent?.slice(0, 100)), tabs: [...document.querySelectorAll('.tabs .tab')].map((node) => node.textContent) })))

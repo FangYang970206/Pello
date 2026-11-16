@@ -190,6 +190,8 @@ kbd{font:11px var(--mono);color:var(--faint);padding:0 4px;border-radius:4px;bor
 /* diff */
 .diffbar{display:flex;align-items:center;gap:8px;min-height:44px;padding:6px 12px;border-bottom:1px solid var(--line);background:var(--panel);flex:none;font-size:calc(var(--ui-size,13px) - 1px);flex-wrap:wrap}
 .diffbar .path{font-family:var(--mono);color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.diff-actions,.diff-modes{display:flex;align-items:center;gap:2px;flex:none}
+.diff-actions{margin-left:auto}
 .diff{flex:1;display:grid;grid-template-rows:minmax(0,1fr);background:var(--panel);font:calc(12px * var(--content-zoom,1))/1.7 var(--mono);overflow:hidden}
 .diff>*{min-width:0;min-height:0}
 .diff-unified{display:block;overflow:auto}

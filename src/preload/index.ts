@@ -117,6 +117,11 @@ const api: WorkbenchApi = {
   winMin: () => ipcRenderer.invoke('win:min'),
   winMax: () => ipcRenderer.invoke('win:max'),
   winClose: () => ipcRenderer.invoke('win:close'),
+  onCloseTab: (cb) => {
+    const listener = () => cb()
+    ipcRenderer.on('app:close-tab', listener)
+    return () => { ipcRenderer.removeListener('app:close-tab', listener) }
+  },
   winResize: (width, height) => ipcRenderer.invoke('win:resize', width, height),
   shot: (name) => ipcRenderer.invoke('app:shot', name),
   meta: () => ipcRenderer.invoke('app:meta')

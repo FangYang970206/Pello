@@ -121,6 +121,7 @@ export interface WorkbenchApi {
   winMin(): Promise<void>
   winMax(): Promise<void>
   winClose(): Promise<void>
+  onCloseTab(cb: () => void): () => void
   winResize(width: number, height: number): Promise<void>
   shot(name: string): Promise<boolean>
   meta(): Promise<{ capture: boolean; platform: string; shots: boolean }>

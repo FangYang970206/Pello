@@ -272,6 +272,16 @@ export function checkInvariants(files) {
     ['regression', 'github'].every((suite) => ['filenameMs', 'contentMs', 'mainThreadGapMs', 'savePaintMs', 'renderedGitRows'].every((metric) => Number.isFinite(performance[suite]?.limits?.[metric]) && performance[suite].limits[metric] > 0)) &&
     files.get('scripts/large-project-regression-check.mjs')?.includes('finishPerformance(metrics,') && files.get('scripts/fixtures/performance-metrics.mjs')?.includes('budget.requiredChecks') && files.get('AGENTS.md')?.includes('性能度量') && files.get('PERFORMANCE.md')?.includes('npm run check:performance'),
     'AWB080', 'scripts/performance-budgets.json', '性能预算、完成性检查、反例和度量入口必须接入项目检查，调整门限须附证据')
+  const closeShortcut = called(main, 'on').find((call) => call.arguments[0]?.text === 'before-input-event' && hasString(call, 'app:close-tab'))
+  require(closeShortcut && called(closeShortcut, 'preventDefault').length && closeShortcut.getText().includes('!input.isAutoRepeat') &&
+    called(named(app, 'onAppKey'), 'requestClose').some((call) => call.arguments[1]?.kind === ts.SyntaxKind.TrueKeyword) &&
+    scripts.check?.includes('scripts/terminal-close-shortcut-check.mjs'),
+    'AWB082', mainFile, 'Ctrl+W 在原生菜单之前拦截并转交当前标签确认，长按不关闭窗口，保留原生按键回归')
+  const diffPane = source('src/renderer/DiffPane.tsx')
+  const diffActions = nodes(diffPane, (node) => ts.isJsxElement(node) && attrText(node.openingElement, 'className') === 'diff-actions')[0]
+  const actionButtons = diffActions && nodes(diffActions, (node) => ts.isJsxElement(node) && node.openingElement.tagName.getText() === 'button')
+  require(actionButtons?.length === 3 && actionButtons.every((node) => attr(node.openingElement, 'aria-label') && attr(node.openingElement, 'title') && nodes(node, (child) => ts.isJsxSelfClosingElement(child) && child.tagName.getText() === 'Icon').length),
+    'AWB083', 'src/renderer/DiffPane.tsx', 'Diff 保存、视图与放弃操作使用带无障碍名称和提示的图标')
   return errors
 }
 
