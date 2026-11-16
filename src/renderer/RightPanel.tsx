@@ -7,6 +7,7 @@ import type { TermTab } from './Workspace'
 import { FileOperationDialog } from './FileOperationDialog'
 import { UploadStatus } from './UploadStatus'
 import { ContentSearchResults } from './ContentSearchResults'
+import { VirtualFileRows } from './VirtualFileRows'
 
 function MoveEntryDialog({ projectId, path, directory, onCancel, onMove }: { projectId: string; path: string; directory: boolean; onCancel: () => void; onMove: (parent: string) => Promise<void> }) {
   const [parent, setParent] = useState('')
@@ -228,7 +229,7 @@ export function RightPanel({
           while (!done && !cancelled) {
             const batch = await window.awb.treeSearchNext(id)
             done = batch.done
-            if (!cancelled) setSearch((state) => ({ ...state, items: [...state.items, ...batch.items], loading: !done }))
+            if (!cancelled && (batch.items.length || done)) setSearch((state) => ({ ...state, items: [...state.items, ...batch.items], loading: !done }))
           }
         } catch (error) {
           if (!cancelled) setSearch((state) => ({ ...state, loading: false, error: error instanceof Error ? error.message : t("搜索失败") }))
@@ -413,9 +414,9 @@ export function RightPanel({
             <div className="glyph">
               <Icon name="folder" />
             </div>
-            <p style={{ marginTop: 8 }}>{t("不是 Git 仓库")}</p>
-            <p className="repository-help">{t("未发现子仓库。自动发现目录中的 Git 仓库，跳过依赖、构建、缓存及符号链接目录。")}</p>
-            {errors.map((error) => <p className="bad" key={error}>{error}</p>)}
+            {!errors.length ? <><p style={{ marginTop: 8 }}>{t("不是 Git 仓库")}</p>
+            <p className="repository-help">{t("未发现子仓库。自动发现目录中的 Git 仓库，跳过依赖、构建、缓存及符号链接目录。")}</p></> : null}
+            {errors.map((error) => <p role="alert" className="bad" key={error}>{error}</p>)}
             <button className="btn sm" disabled={rescanning} onClick={() => void rescan()}>{rescanning ? t("正在扫描…") : t("重新扫描仓库")}</button>
           </div>
         </div>
@@ -452,9 +453,9 @@ export function RightPanel({
           <div className="rlist">
             {repositories.length ? repositories.filter((repo) => !filter || repo.path === filter).map((repo) => <details className="repository-group" key={`${project.id}:${repo.path}`} data-repository={repo.path} open>
               <summary><Icon name="branch" className="s" /><span className="grow">{repo.path}</span><small>{repo.branch || 'HEAD'} · {repo.count}</small></summary>
-              {files.filter((file) => file.repository === repo.path).map(renderChange)}
+              <VirtualFileRows items={files.filter((file) => file.repository === repo.path)} render={renderChange} />
               {!repo.count ? <p className="repository-help">{t("工作区干净")}</p> : null}
-            </details>) : files.map(renderChange)}
+            </details>) : <VirtualFileRows items={files} render={renderChange} />}
           </div>
         </>
       )
@@ -498,10 +499,10 @@ export function RightPanel({
         {dropTarget !== null ? <div className="tree-drop-hint" role="status">{host.id !== 'local' ? t("松开以上传") : <>{t("复制到 · ")}{project.path}{dropTarget ? `${host.platform === 'windows' ? '\\' : '/'}${dropTarget.replaceAll('/', host.platform === 'windows' ? '\\' : '/')}` : ''}</>}</div> : null}
         {query.trim() ? <div className="rlist" role="group" aria-label={t("文件搜索结果")} tabIndex={0} {...dropHandlers} onContextMenu={treeBackgroundContext} onKeyDown={treeBackgroundKey}>
           {search.projectId === project.id && search.query === query ? <>
-            {search.items.map((node) => <button className="row" data-a="search-file" onContextMenu={(event) => { event.preventDefault(); void treeMenu(node.path, false) }} onKeyDown={(event) => menuKey(event, node.path, false)} data-id={node.path} key={node.path} title={node.path} onClick={() => {
+            <VirtualFileRows key={`${project.id}:${query}`} items={search.items} render={(node) => <button className="row" data-a="search-file" onContextMenu={(event) => { event.preventDefault(); void treeMenu(node.path, false) }} onKeyDown={(event) => menuKey(event, node.path, false)} data-id={node.path} key={node.path} title={node.path} onClick={() => {
               selectNode(node)
               onOpenFile(node.path)
-            }}><Icon name="file" className="s" /><span className="nm">{node.path}</span></button>)}
+            }}><Icon name="file" className="s" /><span className="nm">{node.path}</span></button>} />
             {search.loading ? <p role="status" className="repository-help">{t("正在搜索…")}</p> : null}
             {search.error ? <p role="alert" className="repository-help bad">{search.error}</p> : null}
             {!search.loading && !search.error && !search.items.length ? <p className="repository-help">{t("没有匹配的文件")}</p> : null}

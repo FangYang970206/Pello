@@ -31,11 +31,11 @@ try {
   await page.emulateMedia({ reducedMotion: 'reduce' })
   await page.locator('[data-a=proj]').waitFor()
   check((await page.evaluate(() => window.awb.getState())).db.settings.theme === 'light', 'Missing theme in an existing configuration must default to light')
-  const reveal = async (row, button, label) => {
+  const reveal = async (row, button, label, alwaysVisible = false) => {
     await page.mouse.move(800, 500)
     await page.evaluate(() => document.activeElement?.blur())
     const opacity = () => button.evaluate((node) => Number(getComputedStyle(node).opacity))
-    check(await opacity() === 0, `${label}: hidden at rest`)
+    check(await opacity() === Number(alwaysVisible), `${label}: ${alwaysVisible ? 'visible' : 'hidden'} at rest`)
     await row.hover()
     check(await opacity() === 1, `${label}: revealed on row hover`)
     // pointer-events changes after hover must reach Chromium's hit-test tree
@@ -104,7 +104,12 @@ try {
       await page.locator('[data-a=new-session]').focus(); await page.keyboard.press('Enter')
       await page.getByRole('dialog').waitFor(); await page.keyboard.press('Escape')
       await reveal(page.locator('.temporary-group .sidebar-section-heading'), page.locator('[data-a=temporary-session]'), `${theme} temporary`)
-      await reveal(page.locator('.tabbar'), page.locator('.tabtools [data-a=newterm]'), `${theme} terminal`)
+      await reveal(page.locator('.tabbar'), page.locator('.tabtools [data-a=newterm]'), `${theme} terminal`, true)
+      await page.mouse.move(800, 500)
+      await page.locator('.tabtools [data-a=newterm]').click()
+      await page.getByRole('dialog').waitFor()
+      await page.keyboard.press('Escape')
+      check(await page.locator('.tabtools [data-a=newterm]').evaluate((node) => node === document.activeElement), `${theme}: always-visible terminal add opens the picker and restores focus`)
       await page.locator('.proj').hover()
       await page.screenshot({ path: path.join(shots, `hover-${theme}-${width}.png`) })
       const add = page.locator('.side [data-a=newproj]')

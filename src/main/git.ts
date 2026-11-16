@@ -58,14 +58,11 @@ function gitBin(target: Target, args: string[]): string {
 }
 
 async function git(target: Target, args: string[]): Promise<string> {
-  try {
-    return await run(target, gitBin(target, args))
-  } catch (err) {
-    const e = err as { stdout?: string; stderr?: string }
-    const stdout = e.stdout || ''
-    if (stdout) return stdout
-    throw err
+  if (!target.host || target.host.id === 'local') {
+    const { stdout } = await exec('git', ['-C', target.cwd, '-c', 'core.quotepath=false', ...args], { timeout: 20000, maxBuffer: 12_000_000, windowsHide: true })
+    return stdout
   }
+  return run(target, gitBin(target, args))
 }
 
 function parseBranch(status: string): string {
@@ -111,18 +108,31 @@ function parseNumstat(text: string): Map<string, [number, number]> {
   return map
 }
 
+const lineCounts = new Map<string, { stamp: string; lines: number }>()
 async function countLines(target: Target, rel: string): Promise<number> {
   try {
     if (!target.host || target.host.id === 'local') {
-      const abs = path.resolve(target.cwd, rel)
-      if (!inside(target.cwd, abs)) return 0
-      const buf = fs.readFileSync(abs)
-      if (buf.includes(0)) return 0
-      if (buf.length === 0) return 0
-      let n = 0
-      for (const b of buf) if (b === 10) n++
-      if (buf[buf.length - 1] !== 10) n++
-      return n
+      const root = await fs.promises.realpath(target.cwd)
+      const candidate = path.resolve(root, cleanRelative(rel))
+      const abs = await fs.promises.realpath(candidate)
+      if (!inside(root, abs)) return 0
+      const stat = await fs.promises.lstat(candidate)
+      if (!stat.isFile()) return 0
+      const stamp = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`
+      const cached = lineCounts.get(abs)
+      if (cached?.stamp === stamp) return cached.lines
+      let n = 0, last = -1
+      const chunks = stat.size <= 2_000_000 ? [await fs.promises.readFile(abs)] : fs.createReadStream(abs)
+      for await (const chunk of chunks) {
+        const bytes = chunk as Buffer
+        if (bytes.includes(0)) return 0
+        for (let index = bytes.indexOf(10); index !== -1; index = bytes.indexOf(10, index + 1)) n++
+        last = bytes[bytes.length - 1]
+      }
+      const lines = n + Number(last !== -1 && last !== 10)
+      if (lineCounts.size >= 10000) lineCounts.delete(lineCounts.keys().next().value!)
+      lineCounts.set(abs, { stamp, lines })
+      return lines
     }
     const abs = joinPath(target.platform, target.cwd, rel)
     const q = target.platform === 'windows' ? psQuote(abs) : bashQuote(abs)
@@ -138,7 +148,8 @@ async function singleGitStatus(target: Target): Promise<GitPanel & { flags: Reco
   let status: string
   try {
     status = await git(target, ['status', '--porcelain=v1', '-z', '-uall', '-b', '--', '.'])
-  } catch {
+  } catch (error) {
+    if (!String((error as { stderr?: string }).stderr).includes('not a git repository')) throw error
     return { isRepo: false, branch: '', files: [], flags: {} }
   }
   if (!status.trim() && !(await isRepo(target))) return { isRepo: false, branch: '', files: [], flags: {} }
@@ -157,13 +168,22 @@ async function singleGitStatus(target: Target): Promise<GitPanel & { flags: Reco
   }
   const flags: Record<string, boolean> = {}
   const files: GitFile[] = []
+  const counts = new Map<string, number>()
+  const untracked = parsed.files.filter((file) => file.untracked)
+  let next = 0
+  await Promise.all(Array.from({ length: Math.min(8, untracked.length) }, async () => {
+    while (next < untracked.length) {
+      const file = untracked[next++]
+      counts.set(file.path, await countLines(target, file.path))
+    }
+  }))
   for (const f of parsed.files) {
     flags[f.path] = f.untracked
     let add = 0
     let del = 0
     const stat = nums.get(f.path)
     if (stat) [add, del] = stat
-    else if (f.untracked) add = await countLines(target, f.path)
+    else if (f.untracked) add = counts.get(f.path) || 0
     else if (f.st === 'D') del = stat?.[1] || 0
     files.push({ path: f.path, st: f.st, add, del })
   }
@@ -215,9 +235,9 @@ async function discoverRepositories(target: Target): Promise<Discovery> {
 /** A workspace may be a repository or a directory containing independent repositories. */
 export async function gitStatus(target: Target, rescan = false): Promise<GitPanel & { flags: Record<string, boolean> }> {
   const key = targetKey(target)
-  if (rescan) { await statusRequests.get(key)?.catch(() => undefined); discoveries.delete(key) }
   const pending = statusRequests.get(key)
   if (pending) return pending
+  if (rescan) discoveries.delete(key)
   const request = (async () => {
     const root = await singleGitStatus(target)
     if (root.isRepo) return root
@@ -298,7 +318,7 @@ function decodeFile(buf: Buffer): FileContent {
 
 async function readLocal(cwd: string, rel: string): Promise<FileContent> {
   try {
-    return decodeFile(fs.readFileSync(localPath(cwd, rel)))
+    return decodeFile(await fs.promises.readFile(localPath(cwd, rel)))
   } catch {
     return missingFile()
   }
@@ -371,8 +391,8 @@ function cleanRelative(rel: string): string {
 }
 
 function localPath(cwd: string, rel: string): string {
-  const root = fs.realpathSync(cwd)
-  const abs = fs.realpathSync(path.resolve(root, cleanRelative(rel)))
+  const root = fs.realpathSync.native(cwd)
+  const abs = fs.realpathSync.native(path.resolve(root, cleanRelative(rel)))
   if (!inside(root, abs)) throw new Error(t("路径超出项目目录"))
   return abs
 }
@@ -474,11 +494,11 @@ export async function removeRemoteEntry(target: Target, rel: string, directory: 
 }
 
 /** List one level on demand. Directory depth no longer truncates the tree. */
-export async function fileTree(target: Target, rel = '', ignored: ReadonlySet<string> = IGNORE): Promise<TreeNode[]> {
+export async function fileTree(target: Target, rel = '', ignored: ReadonlySet<string> = IGNORE, sorted = true): Promise<TreeNode[]> {
   rel = cleanRelative(rel)
   let entries: { name: string; dir: boolean }[]
   if (!target.host || target.host.id === 'local') {
-    entries = fs.readdirSync(localPath(target.cwd, rel), { withFileTypes: true })
+    entries = (await fs.promises.readdir(localPath(target.cwd, rel), { withFileTypes: true }))
       .filter((entry) => entry.isDirectory() || entry.isFile())
       .map((entry) => ({ name: entry.name, dir: entry.isDirectory() }))
   } else {
@@ -493,9 +513,10 @@ export async function fileTree(target: Target, rel = '', ignored: ReadonlySet<st
       entries = text.split('\0').filter(Boolean).map((entry) => ({ name: entry.slice(1), dir: entry[0] === 'd' }))
     }
   }
-  return sortNodes(entries.filter((entry) => !entry.dir || !ignored.has(entry.name)).map((entry) => ({
+  const nodes = entries.filter((entry) => !entry.dir || !ignored.has(entry.name)).map((entry) => ({
     name: entry.name, dir: entry.dir, path: rel ? `${rel}/${entry.name}` : entry.name
-  })))
+  }))
+  return sorted ? sortNodes(nodes) : nodes
 }
 
 export async function readFile(target: Target, rel: string): Promise<FileContent> {
@@ -583,18 +604,18 @@ export async function writeFile(target: Target, rel: string, text: string, versi
   const conflict = () => new Error(t("文件已被其他程序修改，请重新读取后合并更改"))
   if (!target.host || target.host.id === 'local') {
     const abs = localPath(target.cwd, rel)
-    const current = fs.readFileSync(abs)
+    const current = await fs.promises.readFile(abs)
     if (versionOf(current) !== version) throw conflict()
     if (looksBinary(current) || !isUtf8(current)) throw new Error(t("只能编辑 UTF-8 文本文件"))
     const temp = `${abs}.awb-${randomUUID()}.tmp`
     try {
-      fs.writeFileSync(temp, bytes, { flag: 'wx', mode: fs.statSync(abs).mode })
-      if (versionOf(fs.readFileSync(abs)) !== version) throw conflict()
-      fs.renameSync(temp, abs)
+      await fs.promises.writeFile(temp, bytes, { flag: 'wx', mode: (await fs.promises.stat(abs)).mode })
+      if (localPath(target.cwd, rel) !== abs || versionOf(await fs.promises.readFile(abs)) !== version) throw conflict()
+      await fs.promises.rename(temp, abs)
     } finally {
-      if (fs.existsSync(temp)) fs.unlinkSync(temp)
+      await fs.promises.unlink(temp).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error })
     }
-    return readLocal(target.cwd, rel)
+    return decodeFile(bytes)
   }
   const before = await readRemote(target, rel)
   if (before.missing) throw new Error(t("文件不存在"))
@@ -727,3 +748,27 @@ export function targetFor(cwd: string, host: Host | null): Target {
 }
 
 export type { Target }
+
+/** Git's index avoids re-reading every directory for each filename keystroke.
+ * No gitignore rules are applied: Pello's editable ignore list owns this search.
+ * Results are candidates only; callers still verify current file type/boundary.
+ */
+export async function localFileNameCandidates(target: Target, query: string, ignored: Set<string>, signal: AbortSignal): Promise<string[] | null> {
+  if (target.host && target.host.id !== 'local') return null
+  try {
+    const exclusions = ['**/.*/**', ...[...ignored].map((name) => `**/${name.replace(/[\\*?[\]]/g, '\\$&')}/**`)]
+    const options = { timeout: 20000, maxBuffer: 12_000_000, windowsHide: true, signal }
+    const [names, staged] = await Promise.all([
+      exec('git', ['-C', target.cwd, 'ls-files', '--cached', '--others', '-z', ...exclusions.map((rule) => `--exclude=${rule}`), '--', '.'], options),
+      exec('git', ['-C', target.cwd, 'ls-files', '--stage', '-z', '--', '.'], options)
+    ])
+    const paths = names.stdout.split('\0')
+    // The parent index lists a gitlink/embedded repository as one directory.
+    // Fall back to traversal so its actual files remain searchable as before.
+    if (paths.some((rel) => rel.endsWith('/')) || staged.stdout.split('\0').some((entry) => entry.startsWith('160000 '))) return null
+    return [...new Set(paths.filter((rel) => {
+      if (!rel || !rel.toLocaleLowerCase().includes(query)) return false
+      return !rel.split('/').slice(0, -1).some((part) => part.startsWith('.') || ignored.has(part))
+    }))]
+  } catch { return signal.aborted ? [] : null }
+}

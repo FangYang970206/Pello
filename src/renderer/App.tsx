@@ -520,13 +520,17 @@ export function App() {
   useEffect(() => {
     if (!project || route !== 'work') return
     let stop = false
+    let loading = false
     const load = () => {
+      if (loading || stop) return
+      loading = true
       void window.awb
         .gitStatus(project.id)
         .then((panel) => {
           if (!stop) setGit(panel)
         })
-        .catch(() => undefined)
+        .catch(() => { if (!stop) setGit({ isRepo: false, branch: '', files: [], untracked: {}, errors: [t("{{0}}：无法读取 Git 状态", project.name)] }) })
+        .finally(() => { loading = false })
       if (rmode === 'files') {
         void window.awb
           .gitTree(project.id)

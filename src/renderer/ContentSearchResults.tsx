@@ -24,7 +24,7 @@ export function ContentSearchResults({ projectId, query, sensitive, regex, whole
           while (!cancelled) {
             const batch = await window.awb.contentSearchNext(id)
             if (cancelled) return
-            setState((current) => ({ ...current, ...batch, items: [...current.items, ...batch.items], loading: !batch.done }))
+            if (batch.items.length || batch.done || batch.limited || batch.errors) setState((current) => ({ ...current, ...batch, items: [...current.items, ...batch.items], loading: !batch.done }))
             if (batch.done) break
           }
         } catch (error) {

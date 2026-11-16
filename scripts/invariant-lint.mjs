@@ -15,7 +15,7 @@ export function projectFiles() {
     }
   }
   read('src')
-  for (const rel of ['package.json', 'AGENTS.md', 'electron-builder.yml', 'electron.vite.config.ts', 'assets/installer.nsh', 'src/renderer/index.html']) files.set(rel, fs.readFileSync(path.join(root, rel), 'utf8'))
+  for (const rel of ['package.json', 'AGENTS.md', 'PERFORMANCE.md', 'scripts/performance-budgets.json', 'scripts/large-project-regression-check.mjs', 'scripts/fixtures/performance-metrics.mjs', 'electron-builder.yml', 'electron.vite.config.ts', 'assets/installer.nsh', 'src/renderer/index.html']) files.set(rel, fs.readFileSync(path.join(root, rel), 'utf8'))
   return files
 }
 
@@ -84,7 +84,7 @@ export function checkInvariants(files) {
   const gitFile = 'src/main/git.ts', git = source(gitFile), tree = named(git, 'fileTree'), write = named(git, 'writeFile')
   require(tree && !called(tree, 'fileTree').length && !/(-Recurse|-maxdepth|MAX_TREE|depth\s*>)/.test(tree.getText()), 'AWB011', gitFile, '文件树必须逐层加载，不能以深度或全局数量静默截断')
   const versionChecks = write ? nodes(write, (node) => ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken && node.right.getText() === 'version' && called(node.left, 'versionOf').length) : []
-  require(write && called(write, 'cleanRelative').length && called(write, 'localPath').length && versionChecks.length >= 2 && called(write, 'renameSync').length &&
+  require(write && called(write, 'cleanRelative').length && called(write, 'localPath').length && versionChecks.length >= 2 && called(write, 'rename').length &&
     called(write, 'run').some((call) => call.arguments.length === 3), 'AWB012', gitFile, '保存须真实路径校验、版本检查、原子替换；远程载荷走 stdin')
   const rightFile = 'src/renderer/RightPanel.tsx', right = source(rightFile)
   const separator = nodes(right, (node) => ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)).find((node) => attrText(node, 'role') === 'separator')
@@ -224,8 +224,8 @@ export function checkInvariants(files) {
   require(files.get('src/main/store.ts')?.includes('autoCheckUpdates: asBool(settings.autoCheckUpdates, true)') && files.get('src/main/index.ts')?.includes('automaticUpdates.setEnabled(next.settings.autoCheckUpdates)') && files.get('src/main/index.ts')?.includes('automaticUpdates.setEnabled(db().settings.autoCheckUpdates)') && files.get('src/main/update-scheduler.ts')?.includes('this.timers.clearTimeout(this.startup)') && files.get('src/main/update-scheduler.ts')?.includes('this.timers.clearInterval(this.interval)') && !files.get('src/renderer/App.tsx')?.includes('<AppUpdate') && files.get('src/renderer/SettingsView.tsx')?.includes('<AppUpdate settings={settings} onSettings={onSettings} />'),
     'AWB064', 'src/renderer/AppUpdate.tsx', '更新只在通用栏目操作，自动检测默认开启、保存后调整定时器并支持关闭')
   const controlsCss = files.get('src/renderer/styles/workbench.css') || ''
-  require(!files.get('src/renderer/App.tsx')?.includes('className="newp"') && !files.get('src/renderer/Workspace.tsx')?.includes('data-a="newproj"') && sidebar.includes('data-a="newproj"') && sidebar.includes('props.onNewProject()') && controlsCss.includes('.proj:has(:focus-visible) .project-add') && controlsCss.includes('.sidebar-section-heading:hover .sidebar-add') && controlsCss.includes('.tabbar:hover .tabtools [data-a=newterm]') && scripts.check?.includes('scripts/ui-affordance-check.mjs'),
-    'AWB065', 'src/renderer/ProjectSidebar.tsx', '项目标题统一添加项目；加号按行悬停与键盘焦点显示，保留行为回归')
+  require(!files.get('src/renderer/App.tsx')?.includes('className="newp"') && !files.get('src/renderer/Workspace.tsx')?.includes('data-a="newproj"') && sidebar.includes('data-a="newproj"') && sidebar.includes('props.onNewProject()') && controlsCss.includes('.proj:has(:focus-visible) .project-add') && controlsCss.includes('.sidebar-section-heading:hover .sidebar-add') && controlsCss.includes('.tabtools [data-a=newterm]{opacity:1;pointer-events:auto}') && !controlsCss.includes('.sidebar-add,.tabtools [data-a=newterm]{opacity:0') && scripts.check?.includes('scripts/ui-affordance-check.mjs'),
+    'AWB065', 'src/renderer/ProjectSidebar.tsx', '项目标题统一添加项目；侧栏加号按行悬停与键盘焦点显示，终端加号常驻，保留行为回归')
   require(files.get('src/main/store.ts')?.includes("theme: 'light'") && files.get('src/renderer/index.html')?.includes('data-theme="light"') && controlsCss.includes('font:calc(var(--fs,13px) * var(--content-zoom,1))/1.7 var(--mono)') && files.get('src/renderer/icons.tsx')?.includes("fill={name === 'more' ? 'currentColor' : undefined}"),
     'AWB066', 'src/main/store.ts', '默认浅色，Diff 双栏实时沿用终端字号，更多菜单使用实心图标')
   const sidebarCss = files.get('src/renderer/styles/extra.css') || ''
@@ -250,10 +250,11 @@ export function checkInvariants(files) {
     'AWB071', 'src/renderer/DocumentSearch.tsx', '搜索替换悬浮在编辑器内且保留行为回归，Markdown 通过模型替换，快捷键列入设置，预览不显示加载文字')
   const containers = postcss.parse(sidebarCss).nodes.filter((node) => node.type === 'atrule' && node.name === 'container')
   const contentSearch = files.get('src/main/content-search.ts') || ''
-  require(contentSearch.includes('class ContentSearch') && contentSearch.includes('this.controller.abort()') && contentSearch.includes('treePath(target, rel)') && contentSearch.includes("!entry.name.startsWith('.')") && files.get('src/main/content-search-scripts.ts')?.includes('os.O_NOFOLLOW') && files.get('src/renderer/RightPanel.tsx')?.includes('file-name-search') && files.get('src/renderer/RightPanel.tsx')?.includes('project-search-options') && !files.get('src/renderer/RightPanel.tsx')?.includes('project-search-modes') && files.get('src/renderer/ContentSearchResults.tsx')?.includes('contentSearchCancel(id)') && files.get('src/renderer/FilePane.tsx')?.includes('field.setSelectionRange(match.from, match.to)') && files.get('AGENTS.md')?.includes('项目搜索') && scripts.check?.includes('scripts/content-search-check.mjs'),
+  const localSearch = files.get('src/main/local-content-search.ts') || ''
+  require(contentSearch.includes('class ContentSearch') && contentSearch.includes('this.controller.abort()') && localSearch.includes('fs.realpathSync.native(full) !== full') && localSearch.includes('fs.constants.O_NOFOLLOW') && localSearch.includes("!entry.name.startsWith('.')") && files.get('src/main/content-search-scripts.ts')?.includes('os.O_NOFOLLOW') && files.get('src/renderer/RightPanel.tsx')?.includes('file-name-search') && files.get('src/renderer/RightPanel.tsx')?.includes('project-search-options') && !files.get('src/renderer/RightPanel.tsx')?.includes('project-search-modes') && files.get('src/renderer/ContentSearchResults.tsx')?.includes('contentSearchCancel(id)') && files.get('src/renderer/FilePane.tsx')?.includes('field.setSelectionRange(match.from, match.to)') && files.get('AGENTS.md')?.includes('项目搜索') && scripts.check?.includes('scripts/content-search-check.mjs'),
     'AWB074', 'src/main/content-search.ts', '文件页常驻名称搜索，内容搜索独立并提供框内选项；沿用边界、取消与定位回归')
-  require(files.get('src/main/search-matcher.ts')?.includes('new Worker(') && files.get('src/main/search-matcher.ts')?.includes('}, 500)') && files.get('src/renderer/App.tsx')?.includes('onSearchKey') && files.get('src/renderer/App.tsx')?.includes('event.isComposing') && files.get('src/renderer/SettingsView.tsx')?.includes("'Ctrl E'") && files.get('src/renderer/SettingsView.tsx')?.includes("'Ctrl Shift F'"),
-    'AWB075', 'src/main/search-matcher.ts', '正则在可终止 Worker 中限时执行，两个项目搜索快捷键同步列入设置并跳过输入法组合')
+  require(files.get('src/main/content-search.ts')?.includes('remoteSearch : localContentSearch') && files.get('src/main/local-content-search.ts')?.includes('new Worker(') && files.get('src/main/local-content-search.ts')?.includes('}, 500)') && files.get('src/main/local-content-search.ts')?.includes('worker.terminate()') && files.get('src/renderer/App.tsx')?.includes('onSearchKey') && files.get('src/renderer/App.tsx')?.includes('event.isComposing') && files.get('src/renderer/SettingsView.tsx')?.includes("'Ctrl E'") && files.get('src/renderer/SettingsView.tsx')?.includes("'Ctrl Shift F'"),
+    'AWB075', 'src/main/local-content-search.ts', '磁盘扫描与正则在可终止 Worker 中限时执行，两个项目搜索快捷键同步列入设置并跳过输入法组合')
   const resultView = files.get('src/renderer/ContentSearchResults.tsx') || ''
   require(!resultView.includes('content-search-count') && !resultView.includes('content-search-line') && !resultView.includes('state.skipped ?') && !resultView.includes('分布于') && declarations('.file-name-search .tx').get('height') === '24px' && declarations('.project-search-input input').get('height') === '24px' && declarations('.content-search-hit').get('font') === 'inherit' && declarations('.content-search-hit mark').get('font') === 'inherit' && !declarations('.content-search-hit mark').has('font-weight'),
     'AWB076', 'src/renderer/ContentSearchResults.tsx', '搜索输入框保持紧凑，结果不显示跳过统计、文件分布、行号或文件内匹配数')
@@ -261,6 +262,14 @@ export function checkInvariants(files) {
     'AWB073', 'src/renderer/styles/extra.css', '搜索按实际编辑区宽度收窄，媒体工具栏允许换行，窄容器检查纳入日常开发约定')
   require(files.get('src/main/temporary-sessions.ts')?.includes('remoteTemporarySessionsDirectories') && files.get('src/main/temporary-sessions.ts')?.includes('host: hostId') && files.get('src/main/temporary-session-remote.ts')?.includes('stream.stdin.end(JSON.stringify(') && files.get('src/renderer/TemporarySessionDialog.tsx')?.includes('<DirectoryBrowser hostId={hostId}') && scripts.check?.includes('scripts/temporary-sessions-check.mjs'),
     'AWB078', 'src/main/temporary-sessions.ts', '临时会话按机器保存目录，在对应机器创建，远程路径与内容走 stdin 并保留 SSH 行为回归')
+  const rows = files.get('src/renderer/VirtualFileRows.tsx') || ''
+  require(rows.includes('items.length > 300') && rows.includes('data-virtual-count') && rows.includes("event.key === 'End'") && rows.includes("event.key === 'Tab'") && files.get('src/renderer/RightPanel.tsx')?.includes('<VirtualFileRows') && scripts.check?.includes('npm run check:performance') && scripts['check:performance']?.includes('scripts/large-project-regression-check.mjs'),
+    'AWB079', 'src/renderer/VirtualFileRows.tsx', '大量变更和文件结果按视口渲染，完整结果可滚动和键盘访问，并保留大项目回归')
+  const performance = JSON.parse(files.get('scripts/performance-budgets.json') || '{}')
+  require(scripts.check?.includes('npm run check:performance') && scripts['check:performance']?.includes('scripts/performance-budget-check.mjs') && scripts['bench:large-project']?.includes('--enforce-budget') &&
+    ['regression', 'github'].every((suite) => ['filenameMs', 'contentMs', 'mainThreadGapMs', 'savePaintMs', 'renderedGitRows'].every((metric) => Number.isFinite(performance[suite]?.limits?.[metric]) && performance[suite].limits[metric] > 0)) &&
+    files.get('scripts/large-project-regression-check.mjs')?.includes('finishPerformance(metrics,') && files.get('scripts/fixtures/performance-metrics.mjs')?.includes('budget.requiredChecks') && files.get('AGENTS.md')?.includes('性能度量') && files.get('PERFORMANCE.md')?.includes('npm run check:performance'),
+    'AWB080', 'scripts/performance-budgets.json', '性能预算、完成性检查、反例和度量入口必须接入项目检查，调整门限须附证据')
   return errors
 }
 

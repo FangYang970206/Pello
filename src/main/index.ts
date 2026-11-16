@@ -13,7 +13,7 @@ import { ResourceManager, validateResourcePaths } from './resources'
 import { db, mutate, saveSettings, validTreeIgnores, writeSessions } from './store'
 import { bashQuote, commandExists, osLabel, psQuote } from './platform'
 import { workbenchTheme } from '../shared/themes'
-import { checkPath, createTreeEntry, fileTree, gitDiff, gitDiscard, gitStatus, listDir, moveTreeEntry, readFile, removeRemoteEntry, renameTreeEntry, targetFor, treePath, TREE_DEFAULT_IGNORE, validateEntryName, writeFile } from './git'
+import { checkPath, createTreeEntry, fileTree, gitDiff, gitDiscard, gitStatus, listDir, localFileNameCandidates, moveTreeEntry, readFile, removeRemoteEntry, renameTreeEntry, targetFor, treePath, TREE_DEFAULT_IGNORE, validateEntryName, writeFile } from './git'
 import {
   closeAllSessions,
   closeSession,
@@ -75,7 +75,7 @@ const uploadHistory = new Map<string, { projectId: string; identity: string; ent
 let hasUnsavedChanges = false
 let allowWindowClose = false
 let closingWindow = false
-const treeSearches = new Map<string, { projectId: string; query: string; pending: string[]; cancelled: boolean; ignored: Set<string> }>()
+const treeSearches = new Map<string, { projectId: string; query: string; pending: string[]; cancelled: boolean; ignored: Set<string>; controller: AbortController; candidates: Promise<string[] | null>; paths?: string[] | null }>()
 const contentSearches = new Map<string, { projectId: string; identity: string; search: ContentSearch }>()
 const treeIgnored = (projectId: string) => new Set(db().treeIgnores?.[projectId] ?? TREE_DEFAULT_IGNORE)
 
@@ -364,6 +364,8 @@ function createWindow(): void {
     })
   })
   win.on('closed', () => {
+    for (const search of treeSearches.values()) { search.cancelled = true; search.controller.abort() }
+    treeSearches.clear()
     for (const value of contentSearches.values()) value.search.cancel()
     contentSearches.clear()
     disposeDiagramRenderer()
@@ -695,13 +697,15 @@ function registerIpc(): void {
     } catch (error) { value.search.cancel(); if (contentSearches.get(id) === value) contentSearches.delete(id); throw error }
   })
   ipcMain.handle('tree:search-start', (_e, projectId: string, id: string, query: string) => {
-    projectTarget(projectId)
+    const { target } = projectTarget(projectId)
     if (!/^[\w-]{1,100}$/.test(id) || typeof query !== 'string' || !query.trim() || query.length > 500) throw new Error(t("搜索参数无效"))
-    treeSearches.set(id, { projectId, query: query.trim().toLocaleLowerCase(), pending: [''], cancelled: false, ignored: treeIgnored(projectId) })
+    for (const [key, search] of treeSearches) if (key === id || search.projectId === projectId) { search.cancelled = true; search.controller.abort(); treeSearches.delete(key) }
+    const normalized = query.trim().toLocaleLowerCase(), ignored = treeIgnored(projectId), controller = new AbortController()
+    treeSearches.set(id, { projectId, query: normalized, pending: [''], cancelled: false, ignored, controller, candidates: localFileNameCandidates(target, normalized, ignored, controller.signal) })
   })
   ipcMain.handle('tree:search-cancel', (_e, id: string) => {
     const search = treeSearches.get(id)
-    if (search) search.cancelled = true
+    if (search) { search.cancelled = true; search.controller.abort() }
     treeSearches.delete(id)
   })
   ipcMain.handle('tree:search-next', async (_e, id: string) => {
@@ -710,8 +714,24 @@ function registerIpc(): void {
     const { target } = projectTarget(search.projectId)
     const items = []
     try {
-      for (let count = 0; count < 8 && search.pending.length && !search.cancelled; count++) {
-        const nodes = await fileTree(target, search.pending.shift()!, search.ignored)
+      if (search.paths === undefined) search.paths = await search.candidates
+      if (search.paths !== null) {
+        const root = fs.realpathSync.native(target.cwd)
+        while (search.paths.length && items.length < 256 && !search.cancelled) {
+          const rel = search.paths.pop()!
+          try {
+            const full = treePath(target, rel).full
+            const expected = path.resolve(root, rel)
+            if (full === expected && fs.lstatSync(expected).isFile()) items.push({ name: path.basename(rel), path: rel, dir: false })
+          } catch { /* An index entry may have been removed or replaced by a link. */ }
+        }
+        const done = search.cancelled || !search.paths.length
+        if (done && treeSearches.get(id) === search) treeSearches.delete(id)
+        return { items: search.cancelled ? [] : items, done }
+      }
+      const started = Date.now()
+      for (let count = 0; count < 256 && search.pending.length && !search.cancelled && Date.now() - started < 25 && items.length < 256; count++) {
+        const nodes = await fileTree(target, search.pending.pop()!, search.ignored, false)
         if (search.cancelled) break
         for (const node of nodes) {
           // Hidden tooling and cache folders are never useful search targets.
@@ -720,9 +740,9 @@ function registerIpc(): void {
         }
       }
       const done = search.cancelled || !search.pending.length
-      if (done) treeSearches.delete(id)
+      if (done && treeSearches.get(id) === search) treeSearches.delete(id)
       return { items: search.cancelled ? [] : items, done }
-    } catch (error) { treeSearches.delete(id); throw error }
+    } catch (error) { if (treeSearches.get(id) === search) treeSearches.delete(id); throw error }
   })
   ipcMain.handle('git:read', async (_e, projectId: string, rel: string) => {
     const { target } = projectTarget(projectId)

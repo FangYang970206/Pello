@@ -84,7 +84,8 @@ kbd{font:11px var(--mono);color:var(--faint);padding:0 4px;border-radius:4px;bor
 .dot.terminal-status.ready{background:var(--green)}
 .addtab{flex:none;width:32px;height:32px;align-self:center;display:grid;place-items:center;border-radius:var(--r1);color:var(--muted);transition:background var(--t)}
 .addtab:hover{background:var(--hover);color:var(--text)}
-.project-add,.sidebar-add,.tabtools [data-a=newterm]{opacity:0;pointer-events:none}
+.project-add,.sidebar-add{opacity:0;pointer-events:none}
+.tabtools [data-a=newterm]{opacity:1;pointer-events:auto}
 .proj:hover .project-add,.proj:has(:focus-visible) .project-add,.sidebar-section-heading:hover .sidebar-add,.sidebar-section-heading:has(:focus-visible) .sidebar-add,.tabbar:hover .tabtools [data-a=newterm],.tabbar:has(:focus-visible) .tabtools [data-a=newterm]{opacity:1;pointer-events:auto}
 .tabtools [data-a=newterm]:hover{background:transparent}
 @media(hover:none){.project-add,.sidebar-add,.tabtools [data-a=newterm]{opacity:1;pointer-events:auto}}

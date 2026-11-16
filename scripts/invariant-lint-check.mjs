@@ -15,7 +15,7 @@ const cases = [
   ['AWB009', 'src/main/index.ts', 'return publicHost({ ...host, color: hostColor(host.color) })', 'return host'],
   ['AWB010', 'src/shared/types.ts', "{ id: 'pi',", "{ id: 'gemini',"],
   ['AWB010', 'src/shared/types.ts', "{ id: 'omp',", "{ id: 'unsupported',"],
-  ['AWB011', 'src/main/git.ts', "fileTree(target: Target, rel = '', ignored: ReadonlySet<string> = IGNORE): Promise<TreeNode[]> {", "fileTree(target: Target, rel = '', ignored: ReadonlySet<string> = IGNORE, depth = 0): Promise<TreeNode[]> { if (depth > 5) return []"],
+  ['AWB011', 'src/main/git.ts', "fileTree(target: Target, rel = '', ignored: ReadonlySet<string> = IGNORE, sorted = true): Promise<TreeNode[]> {", "fileTree(target: Target, rel = '', ignored: ReadonlySet<string> = IGNORE, sorted = true, depth = 0): Promise<TreeNode[]> { if (depth > 5) return []"],
   ['AWB012', 'src/main/git.ts', 'versionOf(current) !== version', 'false'],
   ['AWB013', 'src/renderer/RightPanel.tsx', 'onPointerMove=', 'onMouseMove='],
   ['AWB014', 'src/renderer/App.tsx', '{ ...latest, ...saved, draft,', '{ ...saved, draft,'],
@@ -98,6 +98,7 @@ const cases = [
   ['AWB064', 'src/shared/locales/en.ts', '"临时会话": "TempSessions"', '"临时会话": "Temporary sessions"'],
   ['AWB065', 'src/renderer/ProjectSidebar.tsx', 'props.onNewProject()', 'void 0'],
   ['AWB065', 'src/renderer/styles/workbench.css', '.proj:has(:focus-visible) .project-add', '.proj .missing'],
+  ['AWB065', 'src/renderer/styles/workbench.css', '.tabtools [data-a=newterm]{opacity:1;pointer-events:auto}', '.tabtools [data-a=newterm]{opacity:0;pointer-events:none}'],
   ['AWB065', 'src/renderer/Workspace.tsx', '<main className="center" id="center">', '<main className="center" id="center"><button data-a="newproj" />'],
   ['AWB066', 'src/main/store.ts', "theme: 'light'", "theme: 'dark'"],
   ['AWB066', 'src/renderer/index.html', 'data-theme="light"', 'data-theme="dark"'],
@@ -127,11 +128,11 @@ const cases = [
   ['AWB073', 'src/renderer/styles/extra.css', '.media-zoom { min-width: 0; flex-wrap: wrap; }', '.media-zoom { min-width: 0; flex-wrap: nowrap; }'],
   ['AWB073', 'AGENTS.md', '日常自适应检查', '界面检查'],
   ['AWB074', 'src/main/content-search.ts', 'this.controller.abort()', 'void 0'],
-  ['AWB074', 'src/main/content-search.ts', 'treePath(target, rel)', 'unsafePath(target, rel)'],
+  ['AWB074', 'src/main/local-content-search.ts', 'fs.realpathSync.native(full) !== full', 'false'],
   ['AWB074', 'src/renderer/RightPanel.tsx', 'file-name-search', 'missing-name-search'],
   ['AWB074', 'src/renderer/RightPanel.tsx', 'project-search-options', 'missing-search-options'],
   ['AWB074', 'src/renderer/ContentSearchResults.tsx', 'contentSearchCancel(id)', 'noSearchCancel(id)'],
-  ['AWB075', 'src/main/search-matcher.ts', 'new Worker(', 'unsafeWorker('],
+  ['AWB075', 'src/main/local-content-search.ts', 'new Worker(', 'unsafeWorker('],
   ['AWB075', 'src/renderer/SettingsView.tsx', "'Ctrl Shift F'", "'F12'"],
   ['AWB076', 'src/renderer/ContentSearchResults.tsx', '<summary title={file.path}>', '<summary title={file.path}><span className="content-search-count">1</span>'],
   ['AWB076', 'src/renderer/styles/extra.css', '.file-name-search .tx { width: 100%; height: 24px;', '.file-name-search .tx { width: 100%; height: 36px;'],
@@ -142,13 +143,19 @@ const cases = [
   ['AWB077', 'src/main/index.ts', '...layoutMenuItems(options.layout, resolve)', '...[]'],
   ['AWB077', 'src/renderer/styles/workbench.css', '.panes{flex:1;display:grid;', '.panes{flex:1;display:flex;'],
   ['AWB077', 'src/renderer/Workspace.tsx', 'tabs={group.tabs.map((id) => tabById.get(id)!)}', 'tabs={mine}'],
-  ['AWB077', 'src/renderer/Workspace.tsx', 'aria-busy={splitting || undefined}>', 'aria-busy={splitting || undefined}><div className="pane-caption">File</div>']
+  ['AWB077', 'src/renderer/Workspace.tsx', 'aria-busy={splitting || undefined}>', 'aria-busy={splitting || undefined}><div className="pane-caption">File</div>'],
+  ['AWB079', 'src/renderer/VirtualFileRows.tsx', 'items.length > 300', 'false'],
+  ['AWB079', 'src/renderer/RightPanel.tsx', '<VirtualFileRows', '<MissingFileRows'],
+  ['AWB080', 'scripts/performance-budgets.json', '"mainThreadGapMs": 250', '"removedGapMetric": 250'],
+  ['AWB080', 'scripts/large-project-regression-check.mjs', 'finishPerformance(metrics,', 'skipPerformance(metrics,'],
+  ['AWB080', 'scripts/fixtures/performance-metrics.mjs', 'budget.requiredChecks', '[]'],
+  ['AWB080', 'package.json', '--enforce-budget', '--skip-budget']
 ]
 for (const [id, file, before, after] of cases) {
   const mutated = new Map(files)
   assert.ok(files.get(file)?.includes(before), `${id}: mutation is stale`)
   let text = files.get(file).replaceAll(before, after)
-  if (id === 'AWB012') text = text.replaceAll('versionOf(fs.readFileSync(abs)) !== version', 'false')
+  if (id === 'AWB012') text = text.replaceAll('versionOf(await fs.promises.readFile(abs)) !== version', 'false')
   mutated.set(file, text)
   const errors = checkInvariants(mutated)
   assert.ok(errors.some((error) => error.id === id), `${id}: lint did not catch its regression`)

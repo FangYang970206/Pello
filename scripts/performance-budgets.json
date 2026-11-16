@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "regression": {
+    "fixture": "generated-1800-files-8kb-v1",
+    "requiredSamples": { "gitWarmMs": 3, "filenameMs": 3, "contentMs": 3, "saveMs": 3, "savePaintMs": 3 },
+    "limits": {
+      "gitColdMs": 5000,
+      "gitWarmMs": 3000,
+      "filenameMs": 1000,
+      "contentMs": 5000,
+      "saveMs": 500,
+      "mainThreadGapMs": 250,
+      "filenamePaintMs": 2500,
+      "savePaintMs": 500,
+      "renderedFilenameRows": 100,
+      "renderedGitRows": 100
+    },
+    "requiredChecks": ["contentComplete", "filenameComplete", "saveConflictSafe", "lastResultVisible", "gitRetryRecovered"]
+  },
+  "github": {
+    "repository": "https://github.com/microsoft/TypeScript.git",
+    "commit": "5e32f3249529c40a56011c583b416ad838ffb682",
+    "trackedFiles": 68607,
+    "untrackedCopies": 6001,
+    "fixture": "typescript-5e32f3249529c40a56011c583b416ad838ffb682-68607-6001-v1",
+    "limits": {
+      "gitColdMs": 5000,
+      "gitWarmMs": 3000,
+      "filenameMs": 1000,
+      "contentMs": 60000,
+      "saveDuringScanMs": 250,
+      "mainThreadGapMs": 250,
+      "savePaintMs": 500,
+      "renderedFilenameRows": 100,
+      "renderedGitRows": 100
+    },
+    "requiredChecks": ["contentComplete", "filenameComplete", "sourceUnchanged", "lastResultVisible"]
+  }
+}

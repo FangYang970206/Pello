@@ -1,5 +1,5 @@
 import { t } from '../shared/i18n'
-import { lazy, Suspense, useEffect, useId, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { DocumentDraft } from './documents'
 import { SourceHighlight } from './SourceHighlight'
 import { mediaKind } from '../shared/media'
@@ -45,6 +45,9 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
   const frame = useRef<HTMLIFrameElement>(null)
   const viewId = useId()
   const source = useRef<HTMLTextAreaElement>(null)
+  // Saving toggles document flags without changing the text. Reuse the line
+  // number nodes instead of rebuilding a large gutter for each save phase.
+  const lineNumbers = useMemo(() => document?.draft.split('\n').map((_, i) => <div key={i}>{i + 1}</div>), [document?.draft])
   const richSearch = useRef<SearchAdapter | null>(null)
   const [renderedText, setRenderedText] = useState('')
   const located = useRef('')
@@ -162,7 +165,7 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
         : markdown && visual ? <Suspense fallback={null}>
           <MarkdownEditor value={document.draft} projectId={document.projectId} path={path} anchor={anchor} onNavigate={onNavigate} onChange={onEdit} formatRef={format} searchRef={richSearch} onSearchText={setRenderedText} />
         </Suspense> : <div className="file-editor">
-          <div className="editor-gutter" ref={gutter} aria-hidden="true">{document.draft.split('\n').map((_, i) => <div key={i}>{i + 1}</div>)}</div>
+          <div className="editor-gutter" ref={gutter} aria-hidden="true">{lineNumbers}</div>
           <div className="source-editor">
           <pre ref={highlight} className="source-highlight" aria-hidden="true"><SourceHighlight value={document.draft} path={path} /></pre>
           <textarea ref={source} aria-label={t("文件内容")} value={document.draft} wrap="off" spellCheck={false} autoCorrect="off" autoCapitalize="off"
