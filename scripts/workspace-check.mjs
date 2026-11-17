@@ -597,6 +597,9 @@ try {
     } finally {
       await page.locator(`[data-a=tab][data-id="${secondId}"]`).click()
       await page.locator(`[data-a=close][data-id="${secondId}"]`).click()
+      await page.locator('[data-a=confirm]').waitFor()
+      assert.equal(await page.locator(`[data-a=tab][data-id="${secondId}"]`).count(), 1, 'Agent stays open until close is confirmed')
+      await page.locator('[data-a=confirm]').click()
       await page.locator(`[data-a=tab][data-id="${secondId}"]`).waitFor({ state: 'detached' })
     }
     assert.equal(await page.evaluate(() => window.__terminalNode === document.querySelector('.termhost .xterm')), true)

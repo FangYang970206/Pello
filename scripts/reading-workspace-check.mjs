@@ -140,12 +140,18 @@ try {
   })
   await page.click('[data-a=preview][data-id="config.json"]')
   await check('JSON source contains actual syntax tokens', async () => {
+    await page.locator('.source-highlight .hljs-attr').first().waitFor()
     assert.ok(await page.locator('.source-highlight .hljs-attr').count(), 'no highlighted JSON property')
     assert.equal(await page.getByRole('textbox', { name: '文件内容', exact: true }).inputValue(), '{"answer": 42, "enabled": true}\n')
   })
   for (const [file, token] of [['config.yaml', 'attr'], ['config.xml', 'tag'], ['code.py', 'keyword']]) {
     await page.click(`[data-a=preview][data-id="${file}"]`)
-    await check(`${file} has language tokens`, async () => assert.ok(await page.locator(`.source-highlight .hljs-${token}`).count()))
+    await check(`${file} has language tokens`, async () => {
+      const expected = fs.readFileSync(path.join(data, file), 'utf8')
+      await page.waitForFunction((value) => document.querySelector('textarea[aria-label="文件内容"]')?.value === value, expected)
+      await page.locator(`.source-highlight .hljs-${token}`).first().waitFor()
+      assert.ok(await page.locator(`.source-highlight .hljs-${token}`).count())
+    })
   }
   await page.locator('[data-a=rmode][data-id=files]').click()
   await page.getByLabel('搜索文件', { exact: true }).fill('guide')

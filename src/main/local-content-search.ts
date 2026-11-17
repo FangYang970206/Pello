@@ -18,56 +18,66 @@ function scanFiles(config: Config, scan: typeof scanContent): void {
   const pattern = new RegExp(config.source, config.flags)
   const directories = [''], pending: string[] = []
   let remaining = 2000, finished = false, pendingIndex = 0
-  parentPort!.on('message', () => {
+  const read = async (rel: string): Promise<{ rel: string; text?: string; skipped?: number; errors?: number }> => {
+    const full = path.join(root, rel)
+    try {
+      if (fs.realpathSync.native(full) !== full) return { rel, errors: 1 }
+      const handle = await fs.promises.open(full, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK)
+      try {
+        const stat = await handle.stat()
+        if (!stat.isFile()) return { rel }
+        if (stat.size > 2_000_000) return { rel, skipped: 1 }
+        const buffer = Buffer.allocUnsafe(Math.min(stat.size + 1, 2_000_001))
+        let length = 0
+        while (length < buffer.length) {
+          const { bytesRead } = await handle.read(buffer, length, buffer.length - length, null)
+          if (!bytesRead) break
+          length += bytesRead
+        }
+        const bytes = buffer.subarray(0, length)
+        if (length > 2_000_000 || bytes.includes(0) || !isUtf8(bytes)) return { rel, skipped: 1 }
+        return { rel, text: bytes.toString('utf8') }
+      } finally { await handle.close() }
+    } catch { return { rel, errors: 1 } }
+  }
+  parentPort!.on('message', async () => {
     const events: Event[] = [], start = Date.now()
     let visited = 0
     try {
       while (!finished && visited++ < 512 && Date.now() - start < 30) {
-        if (pendingIndex >= pending.length) {
-          pending.length = 0; pendingIndex = 0
-          const relative = directories.pop()
-          if (relative === undefined) { finished = true; break }
-          try {
-            const folder = path.join(root, relative)
-            // Recheck ancestors after each pull; never cache boundary decisions.
-            if (fs.realpathSync.native(folder) !== folder) { events.push({ errors: 1 }); continue }
-            for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
-              const rel = relative ? `${relative}/${entry.name}` : entry.name
-              if (entry.isDirectory() && !entry.name.startsWith('.') && !ignored.has(entry.name)) directories.push(rel)
-              else if (entry.isFile()) pending.push(rel)
-            }
-          } catch (error) { if (!relative) throw error; events.push({ errors: 1 }) }
-          continue
+        const paths: string[] = []
+        while (paths.length < 8 && !finished) {
+          if (pendingIndex >= pending.length) {
+            pending.length = 0; pendingIndex = 0
+            const relative = directories.pop()
+            if (relative === undefined) { finished = true; break }
+            try {
+              const folder = path.join(root, relative)
+              // Recheck ancestors after each pull; never cache boundary decisions.
+              if (fs.realpathSync.native(folder) !== folder) { events.push({ errors: 1 }); continue }
+              for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
+                const rel = relative ? `${relative}/${entry.name}` : entry.name
+                if (entry.isDirectory() && !entry.name.startsWith('.') && !ignored.has(entry.name)) directories.push(rel)
+                else if (entry.isFile()) pending.push(rel)
+              }
+            } catch (error) { if (!relative) throw error; events.push({ errors: 1 }) }
+            continue
+          }
+          paths.push(pending[pendingIndex++])
         }
-        const rel = pending[pendingIndex++], full = path.join(root, rel)
-        let text: string
-        try {
-          if (fs.realpathSync.native(full) !== full) { events.push({ errors: 1 }); continue }
-          const fd = fs.openSync(full, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK)
-          try {
-            const stat = fs.fstatSync(fd)
-            if (!stat.isFile()) continue
-            if (stat.size > 2_000_000) { events.push({ skipped: 1 }); continue }
-            const buffer = Buffer.allocUnsafe(Math.min(stat.size + 1, 2_000_001))
-            let length = 0
-            while (length < buffer.length) {
-              const read = fs.readSync(fd, buffer, length, buffer.length - length, null)
-              if (!read) break
-              length += read
-            }
-            const bytes = buffer.subarray(0, length)
-            if (length > 2_000_000 || bytes.includes(0) || !isUtf8(bytes)) { events.push({ skipped: 1 }); continue }
-            text = bytes.toString('utf8')
-          } finally { fs.closeSync(fd) }
-        } catch { events.push({ errors: 1 }); continue }
-        if (config.regex) parentPort!.postMessage({ type: 'matching' })
-        pattern.lastIndex = 0
-        // Regex semantics are per-line (including ^/$); only literals may use
-        // the whole-file negative fast path.
-        const matches = config.regex || pattern.test(text) ? scan(text, config.source, config.flags, remaining) : []
-        if (config.regex) parentPort!.postMessage({ type: 'matched' })
-        if (matches.length) { events.push({ file: { path: rel, matches } }); remaining -= matches.length }
-        if (!remaining) { events.push({ limited: true }); finished = true }
+        // Bound open handles and buffered text while overlapping filesystem latency.
+        for (const { rel, text, skipped, errors } of await Promise.all(paths.map(read))) {
+          if (skipped || errors) events.push({ skipped, errors })
+          if (text === undefined) continue
+          if (config.regex) parentPort!.postMessage({ type: 'matching' })
+          pattern.lastIndex = 0
+          // Regex semantics are per-line (including ^/$); only literals may use
+          // the whole-file negative fast path.
+          const matches = config.regex || pattern.test(text) ? scan(text, config.source, config.flags, remaining) : []
+          if (config.regex) parentPort!.postMessage({ type: 'matched' })
+          if (matches.length) { events.push({ file: { path: rel, matches } }); remaining -= matches.length }
+          if (!remaining) { events.push({ limited: true }); finished = true; break }
+        }
       }
       parentPort!.postMessage({ type: 'batch', events, done: finished })
     } catch (error) { parentPort!.postMessage({ type: 'error', message: (error as Error).message }) }
