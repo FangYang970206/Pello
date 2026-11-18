@@ -8,6 +8,9 @@ import { FileOperationDialog } from './FileOperationDialog'
 import { UploadStatus } from './UploadStatus'
 import { ContentSearchResults } from './ContentSearchResults'
 import { VirtualFileRows } from './VirtualFileRows'
+import { GitChangeRows } from './GitChangeRows'
+
+const NO_COLLAPSED_CHANGES: ReadonlySet<string> = new Set()
 
 function MoveEntryDialog({ projectId, path, directory, onCancel, onMove }: { projectId: string; path: string; directory: boolean; onCancel: () => void; onMove: (parent: string) => Promise<void> }) {
   const [parent, setParent] = useState('')
@@ -172,6 +175,17 @@ export function RightPanel({
   const drag = useRef<{ x: number; width: number } | null>(null)
   const [repositoryFilter, setRepositoryFilter] = useState('')
   const [rescanning, setRescanning] = useState(false)
+  const [changeViews, setChangeViews] = useState<Record<string, boolean>>({})
+  const [collapsedChanges, setCollapsedChanges] = useState<Record<string, ReadonlySet<string>>>({})
+  const changeTree = !!changeViews[project.id]
+  const collapsed = collapsedChanges[project.id] || NO_COLLAPSED_CHANGES
+  function toggleChangeDirectory(path: string) {
+    setCollapsedChanges((state) => {
+      const next = new Set(state[project.id])
+      if (next.has(path)) next.delete(path); else next.add(path)
+      return { ...state, [project.id]: next }
+    })
+  }
   const [treeError, setTreeError] = useState('')
   const searchInput = useRef<HTMLInputElement>(null)
   const contentInput = useRef<HTMLInputElement>(null)
@@ -348,14 +362,7 @@ export function RightPanel({
     try { await onRescan() } finally { setRescanning(false) }
   }
   const filter = repositories.some((repo) => repo.path === repositoryFilter) ? repositoryFilter : ''
-  const renderChange = (file: GitFile) => {
-    const parts = (file.repository ? file.path.slice(file.repository.length + 1) : file.path).split('/')
-    const name = parts.pop() || file.path
-    return <button key={file.path} className={`row ${activePath === file.path ? 'on' : ''}`} data-a="diff" data-id={file.path} title={file.path} onClick={() => onOpenDiff(file.path)}>
-      <span className={`st ${file.st}`}>{file.st}</span><span className="nm">{name}</span><span className="dir grow">{parts.join('/')}</span>
-      <span className="num"><span className="a">+{file.add}</span>{file.del ? <span className="d">−{file.del}</span> : null}</span>
-    </button>
-  }
+  const renderChanges = (items: GitFile[], repository = '') => <GitChangeRows files={items} repository={repository} tree={changeTree} collapsed={collapsed} onToggle={toggleChangeDirectory} activePath={activePath} onOpen={onOpenDiff} />
   const changed = new Map(files.map((file) => [file.path, file]))
   const renderTree = (nodes: TreeNode[], depth: number) =>
     nodes.map((node) => {
@@ -415,9 +422,8 @@ export function RightPanel({
               <Icon name="folder" />
             </div>
             {!errors.length ? <><p style={{ marginTop: 8 }}>{t("不是 Git 仓库")}</p>
-            <p className="repository-help">{t("未发现子仓库。自动发现目录中的 Git 仓库，跳过依赖、构建、缓存及符号链接目录。")}</p></> : null}
+            </> : null}
             {errors.map((error) => <p role="alert" className="bad" key={error}>{error}</p>)}
-            <button className="btn sm" disabled={rescanning} onClick={() => void rescan()}>{rescanning ? t("正在扫描…") : t("重新扫描仓库")}</button>
           </div>
         </div>
       )
@@ -436,16 +442,6 @@ export function RightPanel({
     } else {
       body = (
         <>
-          <div className="rmeta">
-            <span className="br">
-              <Icon name="branch" className="s" />
-              {repositories.length ? t("{{0}} 个仓库", repositories.length) : branch || 'HEAD'}
-            </span>
-            <span className="grow" />
-            <span>git status</span>
-          </div>
-          {repositories.length ? <div className="repository-discovery"><small title={t("自动发现子仓库；跳过依赖、构建、缓存及符号链接目录。")}>{t("自动发现子仓库")}</small><button className="btn sm" aria-label={t("重新扫描仓库")} disabled={rescanning} onClick={() => void rescan()}>{rescanning ? t("正在扫描…") : t("重新扫描")}</button></div> : null}
-
           {repositories.length ? <label className="repository-filter"><span className="vh">{t("选择仓库")}</span><select className="sel" aria-label={t("选择仓库")} value={filter} onChange={(event) => setRepositoryFilter(event.target.value)}>
             <option value="">{t("所有仓库")}</option>{repositories.map((repo) => <option key={repo.path} value={repo.path}>{repo.path} · {repo.count} {t(" 项变更")}</option>)}
           </select></label> : null}
@@ -453,13 +449,18 @@ export function RightPanel({
           <div className="rlist">
             {repositories.length ? repositories.filter((repo) => !filter || repo.path === filter).map((repo) => <details className="repository-group" key={`${project.id}:${repo.path}`} data-repository={repo.path} open>
               <summary><Icon name="branch" className="s" /><span className="grow">{repo.path}</span><small>{repo.branch || 'HEAD'} · {repo.count}</small></summary>
-              <VirtualFileRows items={files.filter((file) => file.repository === repo.path)} render={renderChange} />
+              {renderChanges(files.filter((file) => file.repository === repo.path), repo.path)}
               {!repo.count ? <p className="repository-help">{t("工作区干净")}</p> : null}
-            </details>) : <VirtualFileRows items={files} render={renderChange} />}
+            </details>) : renderChanges(files)}
           </div>
         </>
       )
     }
+    body = <><div className="rmeta git-toolbar">
+      <span className="br grow"><Icon name="branch" className="s" />{repositories.length ? t("{{0}} 个仓库", repositories.length) : branch || (isRepo ? 'HEAD' : t("变更"))}</span>
+      <button type="button" className="ib" data-a="git-view" title={changeTree ? t("切换为平铺列表") : t("切换为树状结构")} aria-label={changeTree ? t("切换为平铺列表") : t("切换为树状结构")} aria-pressed={changeTree} onClick={() => setChangeViews((state) => ({ ...state, [project.id]: !changeTree }))}><Icon name={changeTree ? 'tree' : 'list'} className="s" /></button>
+      <button type="button" className="ib" data-a="git-refresh" title={rescanning ? t("正在扫描…") : t("重新扫描仓库")} aria-label={t("重新扫描仓库")} aria-busy={rescanning} disabled={rescanning} onClick={() => void rescan()}><Icon name="refresh" className={`s${rescanning ? ' git-scanning' : ''}`} /></button>
+    </div>{body}</>
   } else if (mode === 'search') {
     body = <>
       <div className="project-search" role="search" aria-label={t("内容搜索区域")} onKeyDown={(event) => {

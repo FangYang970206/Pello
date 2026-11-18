@@ -3,6 +3,11 @@ import { checkInvariants, projectFiles } from './invariant-lint.mjs'
 
 const files = projectFiles()
 const cases = [
+  ['AWB084', 'src/main/pty.ts', 'session.prepareShutdown()', 'void session'],
+  ['AWB084', 'src/main/pty.ts', 'await session.spawn()\n    timer =', 'await Promise.resolve()\n    timer ='],
+  ['AWB084', 'src/main/pty.ts', 'const config = executorForHost(custom, hostId)', 'const config = custom'],
+  ['AWB084', 'src/main/pty.ts', 'const custom = submittedCustomAgent(command, db().custom, this.hostId)', 'const custom = undefined'],
+  ['AWB084', 'src/main/pty.ts', '? customResumeCommand(this.baseCommand, this.agentSessionId, custom.session, quote)', '? { command: this.baseCommand }'],
   ['AWB082', 'src/main/index.ts', "win.webContents.on('before-input-event'", "win.webContents.on('missing-input-event'"],
   ['AWB082', 'src/renderer/App.tsx', 'requestClose(active.id, true)', 'requestClose(active.id, false)'],
   ['AWB083', 'src/renderer/DiffPane.tsx', '<Icon name="save" />', '{t("保存")}'],
@@ -159,7 +164,14 @@ const cases = [
   ['AWB080', 'package.json', '--enforce-budget', '--skip-budget'],
   ['AWB085', 'src/renderer/TerminalSearch.tsx', 'window.awb.terminalMenu(', 'window.awb.paneMenu('],
   ['AWB085', 'src/renderer/Workspace.tsx', "tab.type !== 'term' && !event.defaultPrevented", '!event.defaultPrevented'],
-  ['AWB085', 'src/renderer/TerminalSearch.tsx', 'term.paste(text)', "window.awb.ptyWrite('wrong', text)"]
+  ['AWB085', 'src/renderer/TerminalSearch.tsx', 'term.paste(text)', "window.awb.ptyWrite('wrong', text)"],
+  ['AWB086', 'src/renderer/RightPanel.tsx', 'data-a="git-view"', 'data-a="missing-view"'],
+  ['AWB086', 'src/renderer/GitChangeRows.tsx', '<VirtualFileRows', '<UnboundedRows'],
+  ['AWB087', 'src/main/index.ts', 'version: app.getVersion()', "version: '0.0.0'"],
+  ['AWB087', 'src/renderer/styles/extra.css', '.about-eye, .git-scanning { animation: none; }', '.unrelated { animation: none; }'],
+  ['AWB087', 'src/renderer/SettingsView.tsx', "section !== 'about' ? <h1>", "true ? <h1>"],
+  ['AWB087', 'src/shared/app-info.ts', "'zh-CN': '方阳', en: 'FangYang'", "'zh-CN': '旧名称', en: 'OldName'"],
+  ['AWB087', 'src/renderer/styles/extra.css', '.settings .snav {', '.settings .snav .about-nav { margin-top: auto; } .settings .snav {']
 ]
 for (const [id, file, before, after] of cases) {
   const mutated = new Map(files)

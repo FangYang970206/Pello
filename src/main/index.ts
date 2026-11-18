@@ -1,8 +1,10 @@
 import './app-paths'
+import { APP_AUTHOR, APP_HOMEPAGE } from '../shared/app-info'
 import { createAppUpdates } from './app-updates'
 import { ContentSearch } from './content-search'
 import { UpdateScheduler } from './update-scheduler'
 import { t } from '../shared/i18n'
+import { validateCustomSession } from './agent-resume'
 import type { PaneLayoutOptions } from '../shared/api'
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, shell, type MenuItemConstructorOptions } from 'electron'
 import fs from 'node:fs'
@@ -462,7 +464,7 @@ function registerIpc(): void {
     if (draft.treeIgnores) for (const id of Object.keys(draft.treeIgnores)) if (!projects.some((project) => project.id === id)) delete draft.treeIgnores[id]
   }))
   ipcMain.handle('db:custom', (_e, custom: Executor[]) => mutate((draft) => {
-    for (const executor of custom) validateResourcePaths(executor.resources)
+    for (const executor of custom) { validateResourcePaths(executor.resources); validateCustomSession(executor.session) }
     draft.custom = custom
   }))
   ipcMain.handle('db:hosts', async (_e, hosts: Host[]) => {
@@ -919,14 +921,15 @@ function registerIpc(): void {
     deleteTerminalHistory(id)
   })
 
-  ipcMain.handle('exec:test', async (_e, req: { cmd: string; args: string; shell: ShellKind; env: { k: string; v: string; secret: boolean }[]; cwd?: string }) => {
+  ipcMain.handle('exec:test', async (_e, req: { cmd: string; args: string; shell: ShellKind; env: { k: string; v: string; secret: boolean }[]; cwd?: string; hostId?: string }) => {
     if (closingWindow || quitting) throw new Error(t("工作台正在关闭"))
     return testExecutor({
       cmd: req.cmd || '',
       args: req.args || '',
       shell: req.shell || 'bash',
       env: Array.isArray(req.env) ? req.env : [],
-      cwd: req.cwd || ''
+      cwd: req.cwd || '',
+      hostId: req.hostId
     })
   })
 
@@ -954,7 +957,11 @@ function registerIpc(): void {
     fs.writeFileSync(path.join(dir, safe.endsWith('.png') ? safe : safe + '.png'), image.toPNG())
     return true
   })
+  ipcMain.handle('app:homepage', () => shell.openExternal(APP_HOMEPAGE))
   ipcMain.handle('app:meta', () => ({
+    version: app.getVersion(),
+    author: APP_AUTHOR[db().settings.language || 'zh-CN'],
+    homepage: APP_HOMEPAGE,
     capture: process.env.AWB_CAPTURE === '1',
     platform: process.platform,
     shots: !!process.env.AWB_SHOTS

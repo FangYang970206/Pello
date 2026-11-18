@@ -31,6 +31,7 @@ import type {
 export type PaneLayoutOptions = { horizontal: boolean; vertical: boolean; merge: boolean }
 
 export interface WorkbenchApi {
+  openHomepage(): Promise<void>
   appUpdateState(): Promise<import('./types').AppUpdateState>
   checkAppUpdate(): Promise<import('./types').AppUpdateState>
   downloadAppUpdate(): Promise<import('./types').AppUpdateState>
@@ -117,7 +118,7 @@ export interface WorkbenchApi {
   saveTerminalHistory(id: string, text: string): void
   onFlushTerminalHistory(cb: () => Promise<void>): () => void
   onPty(cb: (event: PtyEvent) => void): () => void
-  testExec(req: TestExecRequest): Promise<{ text: string; code: number | null }>
+  testExec(req: TestExecRequest): Promise<{ text: string; code: number | null; running?: boolean }>
   testHost(host: Host): Promise<HostTest>
   winMin(): Promise<void>
   winMax(): Promise<void>
@@ -125,7 +126,7 @@ export interface WorkbenchApi {
   onCloseTab(cb: () => void): () => void
   winResize(width: number, height: number): Promise<void>
   shot(name: string): Promise<boolean>
-  meta(): Promise<{ capture: boolean; platform: string; shots: boolean }>
+  meta(): Promise<{ capture: boolean; platform: string; shots: boolean; version: string; author: string; homepage: string }>
 }
 
 export type { GitFile }

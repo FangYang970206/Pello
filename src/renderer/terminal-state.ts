@@ -1,5 +1,11 @@
 import { t } from '../shared/i18n'
 import type { TermTab } from './Workspace'
+import type { SavedTerm } from '../shared/types'
+import { sessionOf } from '../shared/work-sessions'
+
+export function savedTerminal(tab: TermTab): SavedTerm {
+  return { id: tab.id, kind: tab.kind === 'shell' && tab.agentKind && tab.agentSessionId ? tab.agentKind : tab.kind, shell: tab.shell, name: tab.name, sessionId: sessionOf(tab), agentSessionId: tab.agentSessionId }
+}
 
 export const activeAgentKind = (tab: TermTab) => tab.agentKind === undefined ? (tab.kind === 'shell' ? null : tab.kind) : tab.agentKind
 

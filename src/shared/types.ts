@@ -4,7 +4,7 @@ export type ShellKind = 'pwsh' | 'cmd' | 'bash' | 'zsh'
 export type LocalShell = { id: ShellKind; label: string; path: string }
 export type OsKind = 'windows' | 'linux'
 export type ProcState = 'running' | 'idle' | 'exited' | 'failed'
-export type SettingsSection = 'general' | 'look' | 'agents' | 'hosts' | 'mcp' | 'skills' | 'keys'
+export type SettingsSection = 'general' | 'look' | 'agents' | 'hosts' | 'mcp' | 'skills' | 'keys' | 'about'
 export type ChangeStatus = 'M' | 'A' | 'D'
 
 export interface EnvVar {
@@ -38,8 +38,11 @@ export interface Executor {
   args: string
   letter: string
   color: string
-  shell: 'pwsh' | 'cmd'
+  shell: ShellKind
   env: EnvVar[]
+  hosts?: Record<string, { cmd: string; args: string; shell: ShellKind }>
+  /** Explicit native CLI protocol; never guess --continue or a project's latest session. */
+  session?: { startArgs: string; resumeArgs: string }
   resources?: ResourcePaths
 }
 
@@ -122,9 +125,10 @@ export interface AgentInfo {
   letter: string
   color: string
   installed: boolean
-  shell?: 'pwsh' | 'cmd'
+  shell?: ShellKind
   env?: EnvVar[]
   custom?: boolean
+  hosts?: Executor['hosts']
 }
 
 export const PRESETS: Preset[] = [
@@ -239,9 +243,10 @@ export interface PtyCreateRequest {
 export interface TestExecRequest {
   cmd: string
   args: string
-  shell: 'pwsh' | 'cmd' | 'bash'
+  shell: ShellKind
   env: EnvVar[]
   cwd?: string
+  hostId?: string
 }
 
 export interface TestExecResult {

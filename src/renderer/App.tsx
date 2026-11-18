@@ -20,6 +20,8 @@ import type { TransferSnapshot } from '../shared/types'
 import { UPLOAD_SUCCESS_DURATION, uploadSucceeded } from './UploadStatus'
 import { loadTerminalLayouts } from './terminal-layout'
 import { preferredGroupTab } from './workspace-layout'
+import { executorForHost } from '../shared/executor'
+import { savedTerminal } from './terminal-state'
 
 type Modal =
   | { type: 'project' }
@@ -319,7 +321,7 @@ export function App() {
     for (const item of db.projects) {
       const terms = next
         .filter((tab): tab is TermTab => tab.type === 'term' && tab.projectId === item.id)
-        .map((tab) => ({ id: tab.id, kind: tab.kind === 'shell' && tab.agentKind && tab.agentSessionId ? tab.agentKind : tab.kind, shell: tab.shell, name: tab.name, sessionId: sessionOf(tab), agentSessionId: tab.agentSessionId }))
+        .map(savedTerminal)
       const wanted = map[item.id]
       const activeId = terms.some((term) => term.id === wanted) ? wanted : terms[0]?.id ?? null
       const groups = (sessionsRef.current[item.id] || []).map((session) => ({ ...session, activeTab: terms.find((term) => term.id === wanted && term.sessionId === session.id)?.id || session.activeTab }))
@@ -824,7 +826,7 @@ export function App() {
   async function renameSession(project: string, id: string, name: string) {
     const existing = sessionsRef.current[project] || [{ id, name }]
     const groups = existing.map((item) => item.id === id ? { ...item, name } : item)
-    const terms = tabs.filter((tab): tab is TermTab => tab.type === 'term' && tab.projectId === project)
+    const terms = tabs.filter((tab): tab is TermTab => tab.type === 'term' && tab.projectId === project).map(savedTerminal)
     await window.awb.saveSessions(project, terms, activeMapRef.current[project], groups, selectedSessionsRef.current[project])
     putSessions({ ...sessionsRef.current, [project]: groups })
   }
@@ -925,7 +927,7 @@ export function App() {
   async function renameTerm(id: string, name: string) {
     const tab = tabs.find((item) => item.id === id && item.type === 'term')
     if (!tab) return
-    const terms = tabs.filter((item): item is TermTab => item.type === 'term' && item.projectId === tab.projectId).map((item) => ({ id: item.id, kind: item.kind, shell: item.shell, sessionId: sessionOf(item), agentSessionId: item.agentSessionId, name: item.id === id ? name : item.name }))
+    const terms = tabs.filter((item): item is TermTab => item.type === 'term' && item.projectId === tab.projectId).map((item) => ({ ...savedTerminal(item), name: item.id === id ? name : item.name }))
     await window.awb.saveSessions(tab.projectId, terms, activeMapRef.current[tab.projectId], sessionsRef.current[tab.projectId], selectedSessionsRef.current[tab.projectId])
     setTabs((list) => list.map((item) => item.id === id ? { ...item, name } : item))
   }
@@ -1372,7 +1374,8 @@ export function App() {
                   onNewTerm={() => (project ? setModal({ type: 'term' }) : setModal({ type: 'project' }))}
                   onQuick={() => {
                     if (!project || !db || !host) return
-                    void openTerm(project, project.agent, shellFor(host, db.settings.defShell))
+                    const custom = db.custom.find((item) => item.id === project.agent)
+                    void openTerm(project, project.agent, shellFor(host, custom ? executorForHost(custom, project.host).shell : db.settings.defShell))
                   }}
                   onInterrupt={(id) => {
                     void window.awb.ptyInterrupt(id).then((action) => {
@@ -1521,6 +1524,7 @@ export function App() {
           <ExecDialog
             initial={editing && modal.id ? editing : null}
             cwd={project?.path || ''}
+            hosts={db.hosts}
             onClose={() => setModal(null)}
             onToast={toast}
             onDelete={(id) => {

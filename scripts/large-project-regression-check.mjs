@@ -204,6 +204,47 @@ try {
   await page.locator('[data-virtual-count]').waitFor()
   assert.ok(await page.locator('[data-a=diff]').count() < 100, 'Large Git panels mount visible changes only')
   metrics.metrics.renderedGitRows = await page.locator('[data-a=diff]').count()
+  const { changeTree } = load('src/renderer/git-change-tree.ts')
+  const fullGit = await page.evaluate(() => window.awb.gitStatus('p'))
+  const expectedTree = changeTree(fullGit.files, '', new Set())
+  const treeSamples = [], treeGaps = [], treeMounted = []
+  for (let run = 0; run < 3; run++) {
+    await page.evaluate(() => {
+      window.__treePaint = { ms: null, gap: 0 }
+      const button = document.querySelector('[data-a=git-view]')
+      button.addEventListener('keydown', function start(event) {
+        if (event.key !== 'Enter') return
+        button.removeEventListener('keydown', start)
+        const began = performance.now(); let previous = began
+        const timer = setInterval(() => { const now = performance.now(); window.__treePaint.gap = Math.max(window.__treePaint.gap, now - previous); previous = now }, 16)
+        const observer = new MutationObserver(() => {
+          if (!document.querySelector('.git-change-rows.tree [data-virtual-count]')) return
+          observer.disconnect()
+          requestAnimationFrame(() => requestAnimationFrame(() => { clearInterval(timer); window.__treePaint.ms = performance.now() - began }))
+        })
+        observer.observe(document.querySelector('.rlist'), { childList: true, attributes: true, subtree: true })
+      })
+    })
+    await page.locator('[data-a=git-view]').press('Enter')
+    await page.waitForFunction(() => window.__treePaint.ms !== null)
+    const timing = await page.evaluate(() => window.__treePaint)
+    treeSamples.push(timing.ms); treeGaps.push(timing.gap)
+    const treeRows = page.locator('.git-change-rows.tree [data-virtual-count]')
+    assert.equal(Number(await treeRows.getAttribute('data-virtual-count')), expectedTree.length, 'Tree exposes every change and directory')
+    treeMounted.push(await treeRows.locator('button').count())
+    await treeRows.locator('button').first().focus(); await page.keyboard.press('End')
+    await page.waitForFunction((last) => document.activeElement?.getAttribute('data-id') === last, expectedTree.at(-1).path)
+    await page.keyboard.press('Home')
+    await page.waitForFunction((first) => document.activeElement?.getAttribute('data-id') === first, expectedTree[0].path)
+    await page.locator('[data-a=git-view]').click()
+  }
+  const treeMetrics = { samples: treeSamples, medianKeyToPaintMs: median(treeSamples), rendererMaxGapMs: Math.max(...treeGaps), mountedRows: treeMounted, completeRows: expectedTree.length, environment: metrics.environment }
+  fs.mkdirSync(path.resolve('output/performance'), { recursive: true })
+  fs.writeFileSync(path.resolve('output/performance/git-tree-metrics.json'), JSON.stringify(treeMetrics, null, 2))
+  assert.ok(treeSamples.every((ms) => ms <= budgets.regression.limits.filenamePaintMs), 'Tree keyboard-to-paint respects the existing list paint budget')
+  assert.ok(treeMetrics.rendererMaxGapMs <= budgets.regression.limits.mainThreadGapMs)
+  assert.ok(treeMounted.every((count) => count <= budgets.regression.limits.renderedGitRows))
+  console.log(`PASS complete virtual Git tree: three keyboard-to-paint samples, median ${treeMetrics.medianKeyToPaintMs.toFixed(1)}ms, at most ${Math.max(...treeMounted)} mounted rows`)
   await app.evaluate(() => { globalThis.__testPath = process.env.PATH; process.env.PATH = '' })
   await page.getByRole('alert').filter({ hasText: '无法读取 Git 状态' }).waitFor()
   await app.evaluate(() => { process.env.PATH = globalThis.__testPath })

@@ -3,6 +3,7 @@ import type { PtyEvent } from '../shared/types'
 import type { WorkbenchApi } from '../shared/api'
 
 const api: WorkbenchApi = {
+  openHomepage: () => ipcRenderer.invoke('app:homepage'),
   appUpdateState: () => ipcRenderer.invoke('app:update-state'),
   checkAppUpdate: () => ipcRenderer.invoke('app:update-check'),
   downloadAppUpdate: () => ipcRenderer.invoke('app:update-download'),

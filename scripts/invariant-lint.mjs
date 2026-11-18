@@ -282,11 +282,23 @@ export function checkInvariants(files) {
   const actionButtons = diffActions && nodes(diffActions, (node) => ts.isJsxElement(node) && node.openingElement.tagName.getText() === 'button')
   require(actionButtons?.length === 3 && actionButtons.every((node) => attr(node.openingElement, 'aria-label') && attr(node.openingElement, 'title') && nodes(node, (child) => ts.isJsxSelfClosingElement(child) && child.tagName.getText() === 'Icon').length),
     'AWB083', 'src/renderer/DiffPane.tsx', 'Diff 保存、视图与放弃操作使用带无障碍名称和提示的图标')
+  require(called(named(pty, 'testExecutor'), 'spawn').some((call) => call.expression.getText() === 'session.spawn') &&
+    called(named(pty, 'agentCommand'), 'executorForHost').length && called(named(pty, 'write'), 'submittedCustomAgent').length &&
+    called(named(pty, 'spawn'), 'customResumeCommand').length && called(named(pty, 'closeAllSessions'), 'prepareShutdown').length && scripts['check:custom-agent']?.includes('scripts/custom-agent-check.mjs'),
+    'AWB084', 'src/main/pty.ts', '自定义执行器按机器解析、复用实际终端启动测试、识别手动启动并按原生 ID 续接，保留行为回归')
   const terminalSearch = files.get('src/renderer/TerminalSearch.tsx') || ''
   require(terminalSearch.includes("from '@xterm/addon-search'") && terminalSearch.includes('window.awb.terminalMenu(') &&
     terminalSearch.includes('event.stopPropagation(); show()') && terminalSearch.includes('term.paste(text)') &&
     files.get(workspaceFile)?.includes("tab.type !== 'term' && !event.defaultPrevented") && scripts.check?.includes('scripts/terminal-search-check.mjs'),
     'AWB085', 'src/renderer/TerminalSearch.tsx', '终端搜索拦截快捷键，正文使用文字菜单及括号粘贴，分栏保留在标签菜单，并保留行为回归')
+  const rightPanel = files.get('src/renderer/RightPanel.tsx') || ''
+  require(rightPanel.includes('data-a="git-view"') && rightPanel.includes('data-a="git-refresh"') &&
+    !rightPanel.includes('<span>git status</span>') && !rightPanel.includes('repository-discovery') && files.get('src/renderer/GitChangeRows.tsx')?.includes('<VirtualFileRows') && scripts.check?.includes('scripts/git-about-check.mjs'),
+    'AWB086', 'src/renderer/RightPanel.tsx', 'Git 变更共用图标切换平铺与树状，最右刷新，不恢复旧说明行，保留虚拟列表与回归')
+  require(files.get('src/renderer/SettingsView.tsx')?.includes("id: 'about'") && files.get('src/renderer/SettingsView.tsx')?.includes("section !== 'about' ? <h1>") && files.get('src/renderer/AboutView.tsx')?.includes('window.awb.meta()') &&
+    files.get('src/shared/app-info.ts')?.includes("'zh-CN': '方阳', en: 'FangYang'") && !files.get('src/renderer/styles/extra.css')?.includes('about-nav') &&
+    files.get(mainFile)?.includes('version: app.getVersion()') && files.get(mainFile)?.includes('shell.openExternal(APP_HOMEPAGE)') && files.get('src/renderer/styles/extra.css')?.includes('.about-eye, .git-scanning { animation: none; }'),
+    'AWB087', 'src/renderer/AboutView.tsx', '关于页展示真实版本和品牌，固定主页经主进程打开，眨眼尊重减少动态效果')
   return errors
 }
 

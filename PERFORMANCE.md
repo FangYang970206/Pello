@@ -19,6 +19,8 @@ npm run check:performance
 
 重复后端查询、保存与保存绘制保留三次样本并取中位数；首次 Git 扫描和首次文件结果绘制单独记录。Electron 固定 100% DPI，初始窗口 1440×900，另验证深浅主题、两档窗口、220/420px 面板和 12/16px 界面字号。结果写入 `output/performance/regression-metrics.json`。
 
+Git 树状视图另以实际 Enter 按键到绘制记录三次样本及中位数、renderer 最大停顿和挂载行数，保存到 `output/performance/git-tree-metrics.json`。核对全部文件及目录的完整行数、End/Home 首末项可达；沿用现有列表绘制、停顿和挂载数量预算，不因切换视图放宽门限。
+
 | 指标 | 离线夹具上限 | 固定 GitHub 项目上限 |
 | --- | ---: | ---: |
 | 首次 Git 状态 | 5,000ms | 5,000ms |

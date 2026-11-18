@@ -57,16 +57,21 @@ try {
     })
     assert.ok(box.bottom <= box.limit + 1 && box.right <= box.rightLimit + 1, JSON.stringify(box))
   })
-  await check('legacy mouse clicks reach the terminal application', async () => {
+  await check('Alt-clicks reach the legacy terminal mouse protocol', async () => {
     const screen = await page.locator('.xterm-screen').boundingBox()
-    await page.mouse.click(screen.x + 50, screen.y + 10)
+    await page.keyboard.down('Alt')
+    try { await page.mouse.click(screen.x + 50, screen.y + 10) }
+    finally { await page.keyboard.up('Alt') }
     await page.waitForFunction(() => window.__awbBuffer?.('ui')?.includes('CLICK_COUNT=1'), {}, { timeout: 1200 })
   })
   await page.evaluate(() => window.awb.ptyWrite('ui', 's'))
-  await check('SGR mouse clicks reach the terminal application', async () => {
+  await check('Alt-clicks reach the SGR terminal mouse protocol', async () => {
     const screen = await page.locator('.xterm-screen').boundingBox()
-    await page.mouse.click(screen.x + 100, screen.y + 10)
-    await page.waitForFunction(() => /CLICK_COUNT=[1-9]/.test(window.__awbBuffer?.('ui') || ''), {}, { timeout: 1200 })
+    await page.waitForFunction(() => window.__awbGeometry('ui').mouse === 'vt200')
+    await page.keyboard.down('Alt')
+    try { await page.mouse.click(screen.x + 100, screen.y + 10) }
+    finally { await page.keyboard.up('Alt') }
+    await page.waitForFunction(() => window.__awbBuffer?.('ui')?.includes('CLICK_COUNT=2'), {}, { timeout: 1200 })
   })
   await page.evaluate(() => { window.__terminalNode = document.querySelector('.termhost .xterm') })
   await check('changing terminal fonts retains the terminal instance and screen', async () => {

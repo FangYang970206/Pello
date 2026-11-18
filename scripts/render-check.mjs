@@ -65,7 +65,7 @@ for (const fontFamily of requestedFonts.length ? requestedFonts : ['Cascadia Mon
     await installDocumentHarness(app, page, false)
     const split = async (id, direction, count) => {
       await app.evaluate((_electron, command) => { globalThis.__documentMenuCommand = command }, `split-${direction}`)
-      await page.locator(`[data-a=pane][data-id="${id}"]`).dispatchEvent('contextmenu')
+      await page.locator(`[data-a=tab][data-id="${id}"]`).dispatchEvent('contextmenu')
       await page.waitForFunction((count) => document.querySelectorAll('.pane:not([hidden])').length === count, count)
       return page.locator('[data-a=editor-group][data-focused=true] .tab.on [data-a=tab]').getAttribute('data-id')
     }
