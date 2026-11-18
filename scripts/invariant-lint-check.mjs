@@ -156,7 +156,10 @@ const cases = [
   ['AWB080', 'scripts/performance-budgets.json', '"mainThreadGapMs": 250', '"removedGapMetric": 250'],
   ['AWB080', 'scripts/large-project-regression-check.mjs', 'finishPerformance(metrics,', 'skipPerformance(metrics,'],
   ['AWB080', 'scripts/fixtures/performance-metrics.mjs', 'budget.requiredChecks', '[]'],
-  ['AWB080', 'package.json', '--enforce-budget', '--skip-budget']
+  ['AWB080', 'package.json', '--enforce-budget', '--skip-budget'],
+  ['AWB085', 'src/renderer/TerminalSearch.tsx', 'window.awb.terminalMenu(', 'window.awb.paneMenu('],
+  ['AWB085', 'src/renderer/Workspace.tsx', "tab.type !== 'term' && !event.defaultPrevented", '!event.defaultPrevented'],
+  ['AWB085', 'src/renderer/TerminalSearch.tsx', 'term.paste(text)', "window.awb.ptyWrite('wrong', text)"]
 ]
 for (const [id, file, before, after] of cases) {
   const mutated = new Map(files)

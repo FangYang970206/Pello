@@ -282,6 +282,11 @@ export function checkInvariants(files) {
   const actionButtons = diffActions && nodes(diffActions, (node) => ts.isJsxElement(node) && node.openingElement.tagName.getText() === 'button')
   require(actionButtons?.length === 3 && actionButtons.every((node) => attr(node.openingElement, 'aria-label') && attr(node.openingElement, 'title') && nodes(node, (child) => ts.isJsxSelfClosingElement(child) && child.tagName.getText() === 'Icon').length),
     'AWB083', 'src/renderer/DiffPane.tsx', 'Diff 保存、视图与放弃操作使用带无障碍名称和提示的图标')
+  const terminalSearch = files.get('src/renderer/TerminalSearch.tsx') || ''
+  require(terminalSearch.includes("from '@xterm/addon-search'") && terminalSearch.includes('window.awb.terminalMenu(') &&
+    terminalSearch.includes('event.stopPropagation(); show()') && terminalSearch.includes('term.paste(text)') &&
+    files.get(workspaceFile)?.includes("tab.type !== 'term' && !event.defaultPrevented") && scripts.check?.includes('scripts/terminal-search-check.mjs'),
+    'AWB085', 'src/renderer/TerminalSearch.tsx', '终端搜索拦截快捷键，正文使用文字菜单及括号粘贴，分栏保留在标签菜单，并保留行为回归')
   return errors
 }
 

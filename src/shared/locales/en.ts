@@ -1,5 +1,11 @@
 // Application-owned source messages. Interpolated values are preserved verbatim.
 export const en: Record<string, string> = {
+  "终端搜索": "Terminal search",
+  "终端复制 / 粘贴": "Copy / paste in terminal",
+  "终端程序鼠标操作": "Terminal application mouse controls",
+  "高亮所选文本": "Highlight selected text",
+  "清除高亮": "Clear highlights",
+  "匹配过多，请缩小范围": "Too many matches; narrow your search",
   "内容搜索区域": "Content search area",
   "文件搜索区域": "File search area",
   "全字匹配": "Match whole word",

@@ -33,6 +33,7 @@ kbd {
 }
 
 .termhost {
+  container: editor / inline-size;
   flex: 1;
   min-height: 0;
   min-width: 0;
@@ -51,6 +52,10 @@ kbd {
 .termhost .xterm {
   height: 100%;
 }
+.terminal-error { position: absolute; bottom: 0; left: 0; right: 0; z-index: 11; }
+.terminal-alt-highlights { position: absolute; inset: 0; pointer-events: none; overflow: clip; }
+.terminal-alt-hit { position: absolute; background: color-mix(in srgb,var(--amber) 18%,transparent); outline: 1px solid var(--amber); outline-offset: -1px; }
+.terminal-alt-hit.active { background: var(--accent-soft); outline-color: var(--accent); }
 
 .xterm-viewport {
   background-color: transparent !important;

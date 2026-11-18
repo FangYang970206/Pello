@@ -882,6 +882,13 @@ function registerIpc(): void {
     const action = (label: string, id: string, enabled = true): MenuItemConstructorOptions => ({ id, label, enabled, click: () => resolve(id) })
     Menu.buildFromTemplate([...(options.terminal ? [...(options.reconnect ? [action(t("重新连接会话"), 'reconnect'), { type: 'separator' as const }] : []), action(t("重命名终端"), 'rename'), action(t("导出完整终端记录"), 'export-history'), { type: 'separator' as const }] : []), ...layoutMenuItems(options, resolve)]).popup({ window: win!, callback: () => resolve(null) })
   }))
+  ipcMain.handle('terminal:menu', (_event, options: { selection: boolean; highlighted: boolean }) => new Promise<string | null>((resolve) => {
+    const action = (label: string, id: string, enabled = true): MenuItemConstructorOptions => ({ id, label, enabled, click: () => resolve(id) })
+    Menu.buildFromTemplate([
+      action(t("复制"), 'copy', !!options.selection), action(t("粘贴"), 'paste'), action(t("全选"), 'select-all'),
+      { type: 'separator' }, action(t("搜索"), 'search'), action(t("高亮所选文本"), 'highlight', !!options.selection), action(t("清除高亮"), 'clear-highlight', !!options.highlighted)
+    ]).popup({ window: win!, callback: () => resolve(null) })
+  }))
   ipcMain.handle('terminal:export', async (_event, id: string) => {
     if (typeof id !== 'string' || !Object.values(db().sessions).flat().some((term) => term.id === id)) throw new Error(t("终端不存在"))
     const source = terminalRecording(id)

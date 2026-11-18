@@ -33,7 +33,7 @@ try {
   const send = (text) => page.evaluate((text) => window.awb.ptyWrite('n', text + '\r'), text)
   const context = async (id, action) => {
     await app.evaluate((_electron, action) => { globalThis.__documentMenuCommand = action }, action)
-    await page.locator(`[data-a=pane][data-id="${id}"]`).dispatchEvent('contextmenu')
+    await tab(id).dispatchEvent('contextmenu')
   }
   await page.waitForFunction(() => window.__awbBuffer?.('n')?.includes('STATUS_PROBE_OK'))
   await page.waitForFunction(() => document.activeElement?.closest('[data-term]')?.getAttribute('data-term') === 'n')
@@ -96,7 +96,7 @@ try {
       return original.call(this, options)
     }
   })
-  await page.locator(`[data-a=pane][data-id="${active}"]`).dispatchEvent('contextmenu')
+  await tab(active).dispatchEvent('contextmenu')
   assert.equal(await app.evaluate(() => globalThis.__splitDisabled), true)
   await tab('s').click()
   await page.waitForFunction(() => document.activeElement?.closest('[data-term]')?.getAttribute('data-term') === 's')
