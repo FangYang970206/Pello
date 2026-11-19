@@ -65,9 +65,14 @@ export function WorkspaceTabs({ groupId, index, tabs, activeId, focused, style, 
       else if (box.left < view.left + pad) el.scrollLeft -= view.left + pad - box.left
     }
     const sync = () => {
-      const kids = [...el.children] as HTMLElement[]
-      const width = kids.reduce((sum, kid) => sum + kid.offsetWidth, 0) + Math.max(0, kids.length - 1) * 2
-      const over = width > el.clientWidth + 1
+      const first = el.firstElementChild, last = el.lastElementChild
+      // Keep fractional pixels: rounding every tab separately can invent an
+      // overflow. The arrow and overflow padding then repeatedly undo it.
+      const width = first && last ? last.getBoundingClientRect().right - first.getBoundingClientRect().left : 0
+      const view = el.getBoundingClientRect()
+      const padding = getComputedStyle(el)
+      const available = view.width - parseFloat(padding.paddingLeft) - parseFloat(padding.paddingRight)
+      const over = width > available + 1
       setOverflow((prev) => (prev === over ? prev : over))
       if (!over) {
         setMenu(false)

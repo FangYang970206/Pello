@@ -95,7 +95,10 @@ export function TerminalPane({
         interruptRef.current(id)
         return false
       }
-      if ((key === 'v' && !ev.shiftKey) || (key === 'v' && ev.shiftKey)) {
+      if (key === 'v') {
+        // Returning false only bypasses xterm's key handling. Cancel the
+        // browser paste too, or both paths forward the clipboard to the PTY.
+        ev.preventDefault()
         void navigator.clipboard
           .readText()
           .then((text) => {

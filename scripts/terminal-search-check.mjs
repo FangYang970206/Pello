@@ -88,9 +88,10 @@ try {
   await page.waitForTimeout(100)
   assert.ok(fs.readFileSync(log, 'utf8').includes('\x1b[200~paste 中文\rsecond line\x1b[201~'), 'Paste must use bracketed paste and retain Chinese')
   await app.evaluate(({ clipboard }) => clipboard.writeText('KEYBOARD_PASTE'))
+  const beforePaste = fs.readFileSync(log).length
   await host.locator('textarea').press('Control+v')
-  await page.waitForTimeout(100)
-  assert.ok(fs.readFileSync(log, 'utf8').includes('\x1b[200~KEYBOARD_PASTE\x1b[201~'))
+  await page.waitForTimeout(250)
+  assert.equal(fs.readFileSync(log).subarray(beforePaste).toString(), '\x1b[200~KEYBOARD_PASTE\x1b[201~', 'A keyboard paste must reach the PTY exactly once')
   await selectText()
   await menu('highlight')
   await page.waitForFunction(() => document.querySelectorAll('[data-term=s] .xterm-find-result-decoration').length > 0)

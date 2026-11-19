@@ -253,6 +253,13 @@ export function checkInvariants(files) {
   const search = files.get('src/renderer/DocumentSearch.tsx') || ''
   const workspaceText = files.get(workspaceFile) || ''
   const groupTabs = files.get('src/renderer/WorkspaceTabs.tsx') || ''
+  require(groupTabs.includes('last.getBoundingClientRect().right - first.getBoundingClientRect().left') && !groupTabs.includes('kid.offsetWidth') && groupTabs.includes('parseFloat(padding.paddingRight)') && scripts.check?.includes('scripts/input-regression-check.mjs'),
+    'AWB088', 'src/renderer/WorkspaceTabs.tsx', '标签溢出使用连续边界的浮点宽度并扣除内边距，避免取整累加引起加号与下拉按钮反复跳动')
+  require(/if \(key === 'v'\)\s*\{[\s\S]*?ev\.preventDefault\(\)[\s\S]*?term\.paste\(text\)/.test(files.get(terminalFile) || ''),
+    'AWB089', terminalFile, '终端手动处理键盘粘贴时必须取消浏览器默认粘贴，避免一次操作向 PTY 写入两份内容')
+  const markdownCss = files.get('src/renderer/styles/markdown.css') || ''
+  require(markdownCss.includes('.cm-focused .cm-selectionBackground{background:var(--accent-soft)!important}') && markdownCss.includes('.cm-content ::selection{background:transparent;color:var(--text)}'),
+    'AWB090', 'src/renderer/styles/markdown.css', 'Markdown 代码选区使用主题半透明背景，关闭叠加的原生背景并使用清晰的主题正文色')
   require(groupTabs.includes('useAnchoredMenu(menu && overflow') && groupTabs.includes("el.addEventListener('wheel', wheel, { passive: false })") && groupTabs.includes('event.ctrlKey || event.metaKey || event.altKey || renaming') && groupTabs.includes('role="listbox"') && declarations('.tabs-popover[popover]').get('position') === 'fixed' && scripts.check?.includes('scripts/tab-navigation-check.mjs'),
     'AWB081', 'src/renderer/WorkspaceTabs.tsx', '标签滚轮切换只影响当前栏，全部标签列表锚定箭头并复用外侧关闭与键盘导航，保留行为回归')
   require(workspaceText.includes('[...terms, ...mine.filter') && workspaceText.includes('documents[key]') && workspaceText.includes('diffs[key]') && workspaceText.includes('onBaseline(tab.id, text)') && workspaceText.includes('reconcileGroups(') && workspaceText.includes('tabs={group.tabs.map((id) => tabById.get(id)!)}') && groupTabs.includes('tabs.map((tab)') && !workspaceText.includes('pane-caption') && declarations('.panes').get('display') === 'grid' && search.includes("closest('.pane:not(.focus)')") && files.get('src/main/index.ts')?.includes('...layoutMenuItems(options.layout, resolve)') && scripts.check?.includes('scripts/workspace-split-check.mjs') && scripts.check?.includes('scripts/editor-groups-check.mjs'),

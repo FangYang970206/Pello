@@ -17,6 +17,10 @@
 .markdown-editor .milkdown .cm-editor,.markdown-editor .milkdown .cm-scroller{color:var(--text);background:var(--elev2)}
 .markdown-editor .milkdown .cm-gutters,.markdown-editor .milkdown .cm-activeLineGutter{background:var(--elev2)!important;color:var(--muted);border:0}
 .markdown-editor .milkdown .cm-activeLine{background:transparent}
+.markdown-editor .milkdown .cm-selectionBackground,.markdown-editor .milkdown .cm-focused .cm-selectionBackground{background:var(--accent-soft)!important}
+/* CodeMirror draws the selection background. Avoid a second native background
+   and use the theme foreground so selected syntax stays readable in all themes. */
+.markdown-editor .milkdown .cm-content::selection,.markdown-editor .milkdown .cm-content ::selection{background:transparent;color:var(--text)}
 .markdown-editor .milkdown .milkdown-code-block:has(>.milkdown-code-block-placeholder){height:var(--pello-code-height,auto)}
 .markdown-editor .milkdown .milkdown-code-block-placeholder{max-height:100%;overflow:hidden}
 .markdown-editor .milkdown .milkdown-code-block:has(.diagram-preview[data-loading=true]){min-height:var(--pello-code-height,0px)}
