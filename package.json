@@ -28,7 +28,8 @@
     "check:custom-agent:ssh-linux": "node scripts/custom-agent-remote-check.mjs",
     "check:custom-agent:native": "node scripts/qwen-native-session-check.mjs",
     "check:i18n": "node scripts/i18n-check.mjs",
-    "check:installation": "node scripts/installation-check.mjs",
+    "check:installation": "node scripts/nsis-update-check.mjs && node scripts/installation-check.mjs",
+    "check:upgrade:deep": "node scripts/update-upgrade-check.mjs --target=0.1.14 && node scripts/update-upgrade-check.mjs --target=0.1.15",
     "check:media:ssh-linux": "node scripts/linux-media-check.mjs"
   },
   "dependencies": {

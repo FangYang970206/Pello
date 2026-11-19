@@ -15,7 +15,7 @@ export function projectFiles() {
     }
   }
   read('src')
-  for (const rel of ['package.json', 'AGENTS.md', 'PERFORMANCE.md', 'scripts/performance-budgets.json', 'scripts/large-project-regression-check.mjs', 'scripts/fixtures/performance-metrics.mjs', 'electron-builder.yml', 'electron.vite.config.ts', 'assets/installer.nsh', 'src/renderer/index.html']) files.set(rel, fs.readFileSync(path.join(root, rel), 'utf8'))
+  for (const rel of ['package.json', 'AGENTS.md', 'PERFORMANCE.md', 'scripts/performance-budgets.json', 'scripts/large-project-regression-check.mjs', 'scripts/fixtures/performance-metrics.mjs', 'electron-builder.yml', 'electron.vite.config.ts', 'assets/installer.nsh', 'assets/installer-process.nsh', 'assets/installer-process-fallback.nsh', 'scripts/prepare-nsis-script.cjs', 'src/renderer/index.html']) files.set(rel, fs.readFileSync(path.join(root, rel), 'utf8'))
   return files
 }
 
@@ -221,6 +221,17 @@ export function checkInvariants(files) {
     'AWB062', 'src/main/app-paths.ts', '启动前配置安装目录数据及缓存，完整迁移并在升级和卸载时保留')
   require(files.get('src/main/app-updates.ts')?.includes('driver.autoDownload = false') && files.get('src/main/app-updates.ts')?.includes('driver.autoInstallOnAppQuit = false') && files.get('src/main/app-updates.ts')?.includes('driver.installDirectory = installationDirectory') && files.get('src/main/index.ts')?.includes("'app:update-install': () => appUpdates.install(async () =>") && files.get('electron-builder.yml')?.includes('provider: github') && scripts.check?.includes('scripts/app-update-check.mjs'),
     'AWB063', 'src/main/app-updates.ts', '更新必须显式下载与安装，安装前复用关闭流程，保留更新行为回归')
+  const installerProcesses = files.get('assets/installer-process.nsh') || ''
+  require(installerProcesses.includes('ExecutablePath -eq $$env:PELLO_INSTALLER_APP_EXE') && !installerProcesses.includes('StartsWith(') &&
+    installerProcesses.includes('if (@(Get-CimInstance') && installerProcesses.includes('SetEnvironmentVariableW') &&
+    installerProcesses.includes('installer-process-fallback.nsh') && !installerProcesses.includes('taskkill') &&
+    files.get('assets/installer-process-fallback.nsh')?.includes('QueryFullProcessImageNameW') &&
+    files.get('assets/installer-process-fallback.nsh')?.includes('StrCmp $R7 "$INSTDIR\\${APP_EXECUTABLE_FILENAME}" 0 pello_process_next') &&
+    files.get('assets/installer.nsh')?.includes('installer-process.nsh') && files.get('assets/installer.nsh')?.includes('!cd "${PELLO_INSTALL_UTIL_DIR}"') &&
+    files.get('scripts/prepare-nsis-script.cjs')?.includes('StrCpy $uninstallerFileName "$uninstallerFileNameTemp"') &&
+    files.get('scripts/prepare-nsis-script.cjs')?.includes('"${UNINSTALLER_OUT_FILE}"') &&
+    scripts['check:installation']?.includes('scripts/nsis-update-check.mjs') && scripts['check:upgrade:deep']?.includes('scripts/update-upgrade-check.mjs'),
+    'AWB091', 'assets/installer-process.nsh', '安装进程检查匹配实际应用并正确计数，兼容旧版卸载器，保留真实安装及原版升级回归')
   require(files.get('src/main/store.ts')?.includes('autoCheckUpdates: asBool(settings.autoCheckUpdates, true)') && files.get('src/main/index.ts')?.includes('automaticUpdates.setEnabled(next.settings.autoCheckUpdates)') && files.get('src/main/index.ts')?.includes('automaticUpdates.setEnabled(db().settings.autoCheckUpdates)') && files.get('src/main/update-scheduler.ts')?.includes('this.timers.clearTimeout(this.startup)') && files.get('src/main/update-scheduler.ts')?.includes('this.timers.clearInterval(this.interval)') && !files.get('src/renderer/App.tsx')?.includes('<AppUpdate') && files.get('src/renderer/SettingsView.tsx')?.includes('<AppUpdate settings={settings} onSettings={onSettings} />'),
     'AWB064', 'src/renderer/AppUpdate.tsx', '更新只在通用栏目操作，自动检测默认开启、保存后调整定时器并支持关闭')
   const controlsCss = files.get('src/renderer/styles/workbench.css') || ''

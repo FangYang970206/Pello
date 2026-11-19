@@ -34,7 +34,7 @@ fs.mkdirSync(data)
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: { restore: true, defAgent: 'shell', defShell: 'pwsh', confirmKill: false },
   projects: [{ id: 'smoke', name: 'Update smoke', host: 'local', path: data, agent: 'shell' }], sessions: { smoke: [{ id: 'update-shell', kind: 'shell', shell: 'pwsh' }] } }))
 fs.writeFileSync(path.join(data, 'keep.txt'), 'PERSISTENT_DATA_中文')
-fs.writeFileSync(path.join(installation, 'pello.config.json'), '{"temporarySessionsDirectory":"D:\\TempSessions"}')
+fs.writeFileSync(path.join(installation, 'pello.config.json'), JSON.stringify({ temporarySessionsDirectory: 'D:\\TempSessions' }))
 const install = () => run(installer, ['/S', `/D=${installation}`], { windowsHide: true, timeout: 120000 })
 await install()
 const uninstaller = path.join(installation, fs.readdirSync(installation).find((file) => /^Uninstall .*\.exe$/.test(file)))
@@ -50,7 +50,7 @@ const server = http.createServer((req, res) => {
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
 fs.writeFileSync(path.join(installation, 'resources', 'app-update.yml'), `provider: generic\nurl: http://127.0.0.1:${server.address().port}\nupdaterCacheDirName: fixture\n`)
 const env = { ...process.env }
-delete env.AWB_USER_DATA; delete env.ELECTRON_RUN_AS_NODE
+delete env.AWB_USER_DATA; delete env.ELECTRON_RUN_AS_NODE; delete env.PSModulePath
 const app = await electron.launch({ executablePath: executable, args: ['--force-device-scale-factor=1'], env })
 try {
   const page = await app.firstWindow()
@@ -96,6 +96,7 @@ await install()
 assert.equal(fs.readFileSync(path.join(data, 'keep.txt'), 'utf8'), 'PERSISTENT_DATA_中文')
 assert.equal(JSON.parse(fs.readFileSync(path.join(data, 'workbench.json'), 'utf8')).settings.language, 'en')
 assert.ok(fs.existsSync(path.join(installation, 'pello.config.json')))
+assert.equal(JSON.parse(fs.readFileSync(path.join(installation, 'pello.config.json'), 'utf8')).temporarySessionsDirectory, 'D:\\TempSessions')
 console.log('PASS isolated NSIS install, installation-local uninstaller, packaged runtime paths, settings persistence and upgrade data retention')
 // _?= runs the tested uninstaller in place, making completion observable.
 assert.ok(uninstaller.startsWith(installation + path.sep))

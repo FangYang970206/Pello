@@ -3,6 +3,13 @@ import { checkInvariants, projectFiles } from './invariant-lint.mjs'
 
 const files = projectFiles()
 const cases = [
+  ['AWB091', 'assets/installer-process.nsh', 'ExecutablePath -eq $$env:PELLO_INSTALLER_APP_EXE', "Path.StartsWith('D:\\Pello')"],
+  ['AWB091', 'assets/installer-process.nsh', 'if (@(Get-CimInstance', 'if ((Get-CimInstance'],
+  ['AWB091', 'scripts/prepare-nsis-script.cjs', 'StrCpy $uninstallerFileName "$uninstallerFileNameTemp"', 'StrCpy $uninstallerFileName "$INSTDIR\\Uninstall Pello.exe"'],
+  ['AWB091', 'scripts/prepare-nsis-script.cjs', '"${UNINSTALLER_OUT_FILE}"', '"$uninstallerFileName"'],
+  ['AWB091', 'assets/installer.nsh', 'installer-process.nsh', 'unused-process.nsh'],
+  ['AWB091', 'assets/installer-process-fallback.nsh', 'StrCmp $R7 "$INSTDIR\\${APP_EXECUTABLE_FILENAME}" 0 pello_process_next', 'StrCmp $R7 "Pello.exe" 0 pello_process_next'],
+  ['AWB091', 'assets/installer.nsh', '!cd "${PELLO_INSTALL_UTIL_DIR}"', '!cd "${PROJECT_DIR}"'],
   ['AWB084', 'src/main/pty.ts', 'session.prepareShutdown()', 'void session'],
   ['AWB084', 'src/main/pty.ts', 'await session.spawn()\n    timer =', 'await Promise.resolve()\n    timer ='],
   ['AWB084', 'src/main/pty.ts', 'const config = executorForHost(custom, hostId)', 'const config = custom'],
