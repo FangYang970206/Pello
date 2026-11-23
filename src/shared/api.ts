@@ -54,6 +54,11 @@ export interface WorkbenchApi {
   scanResources(kind: 'mcp' | 'skills', source: string): Promise<import('./types').ResourceSourceItem[]>
   importMcpConfig(source: string, agents: string[], ids: string[]): Promise<ResourceResult[]>
   importSkills(source: string, agents: string[], names?: string[]): Promise<ResourceResult[]>
+  discoverSkills(repository: string, id: string): Promise<import('./skill-catalog').DiscoveredSkills>
+  skillRepositories(): Promise<import('./skill-catalog').SkillRepository[]>
+  previewDiscoveredSkill(id: string, name: string): Promise<import('./types').ResourceDetail>
+  closeSkillDiscovery(id: string): Promise<void>
+  installDiscoveredSkills(id: string, agents: string[], names: string[]): Promise<ResourceResult[]>
   pickResource(kind: 'folder' | 'zip' | 'config'): Promise<string | null>
   saveSessions(projectId: string, terms: SavedTerm[], activeId?: string | null, groups?: WorkSession[], selected?: string): Promise<Database>
   saveBranch(projectId: string, branch: string): Promise<Database>

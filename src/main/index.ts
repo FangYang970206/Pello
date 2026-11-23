@@ -6,7 +6,7 @@ import { UpdateScheduler } from './update-scheduler'
 import { t } from '../shared/i18n'
 import { validateCustomSession } from './agent-resume'
 import type { PaneLayoutOptions } from '../shared/api'
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, shell, type MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, net, shell, type MenuItemConstructorOptions } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { PRESETS, type Executor, type Host, type Project, type SavedTerm, type Settings, type ShellKind, type ResourceTarget, type WorkSession } from '../shared/types'
@@ -29,7 +29,9 @@ import {
 } from './pty'
 import { sshBatchArgs } from './platform'
 import { publicHost, rememberPassword } from './credentials'
-import { runPasswordCommand } from './ssh'
+import { needsSshClient, runPasswordCommand } from './ssh'
+import { terminalTarget } from './terminal-context'
+import { SkillDiscovery } from './skill-discovery'
 import { invalidatePreview, isPreviewUrl, openHtmlPreview, previewUrl } from './preview'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -58,6 +60,7 @@ if (process.env.AWB_CAPTURE) {
 }
 
 let win: BrowserWindow | null = null
+let skillDiscovery: SkillDiscovery | undefined
 const appUpdates = createAppUpdates((state) => { if (win && !win.isDestroyed()) win.webContents.send('app:update', state) })
 const automaticUpdates = new UpdateScheduler(() => appUpdates.check())
 const transfers = new TransferManager((snapshot) => { if (win && !win.isDestroyed()) win.webContents.send('transfer:update', snapshot) }, guardReplacement)
@@ -185,9 +188,15 @@ async function installedMap(): Promise<Record<string, boolean>> {
 function projectTarget(projectId: string) {
   if (closingWindow || quitting) throw new Error(t("工作台正在关闭"))
   const draft = db()
-  const project = draft.projects.find((p) => p.id === projectId)
+  const context = terminalTarget(projectId)
+  if (projectId.startsWith('terminal:') && !context) throw new Error(t('此文件所属的 SSH 会话已结束，请重新登录后打开文件。'))
+  const stored = draft.projects.find((p) => p.id === (context?.projectId || projectId))
+  const project = stored && context ? { ...stored, id: projectId, path: context.cwd } : stored
   if (!project) throw new Error(t("项目不存在"))
-  const host = draft.hosts.find((h) => h.id === project.host)
+  const configuredHost = draft.hosts.find((h) => h.id === project.host)
+  if (configuredHost && configuredHost.id !== 'local' && !configuredHost.on) throw new Error(t("这台机器未连接"))
+  const originalHost = configuredHost && (context?.host || configuredHost)
+  const host = context && originalHost ? { ...originalHost, platform: 'linux' as const, terminalRoute: context.route } : originalHost
   if (!host) throw new Error(t("机器已移除"))
   if (host.id !== 'local' && !host.on) throw new Error(t("这台机器未连接"))
   return { project, host, target: targetFor(project.path, host.id === 'local' ? null : host) }
@@ -203,7 +212,7 @@ function validateTransferTarget(id: string): void {
 }
 
 function uploadIdentity(target: ReturnType<typeof targetFor>, host: Host): string {
-  return JSON.stringify([target.cwd, target.platform, host.id, host.addr, host.port, host.user, host.auth])
+  return JSON.stringify([target.cwd, target.platform, host.id, host.addr, host.port, host.user, host.auth, host.terminalRoute])
 }
 
 function startRemoteUpload(projectId: string, parent: string, sources: string[], retryEntries?: UploadRetry[], keepBoth = false): string {
@@ -366,7 +375,7 @@ function createWindow(): void {
     closingWindow = true
     const closing = win
     // Preserve the PTY parent processes until their complete trees are killed.
-    void flushRendererHistory(closing).then(() => Promise.all([closeAllSessions(), closeTransfers()])).catch((error) => console.error('Failed to close workbench tasks', error)).finally(() => {
+    void flushRendererHistory(closing).then(() => Promise.all([closeAllSessions(), closeTransfers(), skillDiscovery?.dispose()])).catch((error) => console.error('Failed to close workbench tasks', error)).finally(() => {
       sessionsClosed = true
       if (closing && !closing.isDestroyed()) closing.destroy()
       app.quit()
@@ -380,6 +389,7 @@ function createWindow(): void {
     disposeDiagramRenderer()
     win = null
   })
+  win.webContents.on('render-process-gone', () => { void skillDiscovery?.dispose() })
   win.webContents.on('will-prevent-unload', (event) => {
     if (!win) return
     if (allowWindowClose || confirmUnsavedClose()) {
@@ -393,7 +403,7 @@ async function testHostConnection(host: Host): Promise<import('../shared/types')
   if (!host.addr || !host.user) return { ok: false, error: t("请填写用户和地址") }
   try {
     const probe = 'uname -s 2>/dev/null || ver'
-    const stdout = host.auth === 'password'
+    const stdout = needsSshClient(host)
       ? await runPasswordCommand(host, probe)
       : (await execFileP('ssh', sshBatchArgs(host, [probe]), { timeout: 12000, windowsHide: true })).stdout
     const text = stdout.trim()
@@ -420,7 +430,7 @@ function registerIpc(): void {
       closingWindow = true
       try {
         await flushRendererHistory(win)
-        await Promise.all([closeAllSessions(), closeTransfers()])
+        await Promise.all([closeAllSessions(), closeTransfers(), skillDiscovery?.dispose()])
         sessionsClosed = true
         return true
       } catch (error) {
@@ -491,8 +501,14 @@ function registerIpc(): void {
     })
   })
   const resources = new ResourceManager(app.getPath('userData'))
+  const discovery = skillDiscovery = new SkillDiscovery(path.join(app.getPath('userData'), 'skill-discovery'), resources, (url, init) => net.fetch(url, init))
   const targets = () => resources.targets(db().custom)
   ipcMain.handle('resources:targets', () => targets())
+  ipcMain.handle('resources:discover', (_e, repository: string, id: string) => discovery.scan(repository, id))
+  ipcMain.handle('resources:repositories', () => discovery.repositories())
+  ipcMain.handle('resources:discover-preview', (_e, id: string, name: string) => discovery.preview(id, name))
+  ipcMain.handle('resources:discover-close', (_e, id: string) => discovery.close(id))
+  ipcMain.handle('resources:discover-install', (_e, id: string, agents: string[], names: string[]) => discovery.install(id, targets(), agents, names))
   ipcMain.handle('resources:target', (_e, target: ResourceTarget) => resources.saveTarget(target, db().custom))
   ipcMain.handle('resources:list', (_e, kind: 'mcp' | 'skills', agent: string, page: number, query: string) => resources.list(targets(), kind, agent, page, query))
   ipcMain.handle('resources:toggle', (_e, kind, agent, item, enabled) => resources.toggle(targets(), kind, agent, item, enabled))
@@ -551,7 +567,7 @@ function registerIpc(): void {
   ipcMain.handle('git:status', async (_e, projectId: string, rescan?: boolean) => {
     const { project, target } = projectTarget(projectId)
     const panel = await gitStatus(target, rescan === true)
-    if (panel.isRepo && panel.branch && panel.branch !== project.branch) {
+    if (panel.isRepo && panel.branch && panel.branch !== project.branch && !terminalTarget(projectId)) {
       mutate((draft) => {
         const item = draft.projects.find((p) => p.id === projectId)
         if (item) item.branch = panel.branch
@@ -992,7 +1008,7 @@ app.on('before-quit', (event) => {
     allowWindowClose = true
   }
   quitting = true
-  void Promise.all([closeAllSessions(), closeTransfers()]).catch((error) => console.error('Failed to close workbench tasks', error)).finally(() => {
+  void Promise.all([closeAllSessions(), closeTransfers(), skillDiscovery?.dispose()]).catch((error) => console.error('Failed to close workbench tasks', error)).finally(() => {
     sessionsClosed = true
     app.quit()
   })

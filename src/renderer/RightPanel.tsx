@@ -87,6 +87,7 @@ function CreateEntryDialog({ parent, directory, windows, existing, onCancel, onC
 
 export function RightPanel({
   project,
+  context,
   host,
   mode,
   files,
@@ -130,6 +131,7 @@ export function RightPanel({
   onRescan
 }: {
   project: Project
+  context?: import('../shared/types').TerminalContext | null
   host: Host
   mode: 'files' | 'changes' | 'search'
   files: GitFile[]
@@ -551,6 +553,7 @@ export function RightPanel({
           <Icon name="panel" />
         </button>
       </div>
+      {context ? <div className="terminal-file-context" role="status" title={`${context.user}@${context.hostname} · ${context.cwd}`}><Icon name="server" className="s" /><span>{context.user}@{context.hostname}<small>{context.cwd}</small></span></div> : null}
       {body}
       {moving ? <MoveEntryDialog projectId={moving.projectId} path={moving.path} directory={moving.dir} onCancel={() => setMoving(null)} onMove={async (parent) => { await onMove(moving.projectId, moving.path, parent, moving.dir); setMoving(null) }} /> : null}
       {transfers.length ? <section ref={transferList} className="transfer-list" aria-label={t("传输任务")}>{transfers.map((task) => task.direction === 'upload' ? <UploadStatus key={task.id} task={task} onDismiss={onDismissTransfer} /> : <div className="transfer-task" key={task.id}>

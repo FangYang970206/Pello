@@ -101,6 +101,19 @@ export function checkInvariants(files) {
   const ssh = source('src/main/ssh.ts'), connect = named(ssh, 'connectPasswordHost')
   require(connect && nodes(connect, (node) => ts.isPropertyAssignment(node) && node.name.getText() === 'hostVerifier').length && hasString(connect, 'sha256'),
     'AWB020', 'src/main/ssh.ts', '密码认证必须校验并固定主机指纹')
+  const remoteGit = files.get('src/main/remote-git.ts') || ''
+  require(remoteGit.includes('--no-optional-locks') && remoteGit.includes('diff.autoRefreshIndex=false') && remoteGit.includes('os.setuid(owner)') && remoteGit.includes("'sudo','-n','-H','-u'"),
+    'AWB092', 'src/main/remote-git.ts', '远程 Git 只读操作不刷新索引，跨用户写入须以仓库所有者执行')
+  require(hasString(named(ssh, 'remoteCommand'), 'ProxyCommand=false') && hasString(named(ssh, 'remoteCommand'), '-S') && called(named(ssh, 'openRemoteStream'), 'remoteCommand').length && files.get('src/main/terminal-context-shell.ts')?.includes('ControlPersist=no') && files.get('src/main/terminal-context.ts')?.includes('this.token'),
+    'AWB093', 'src/main/ssh.ts', '终端 SSH 跟随须复用已认证连接、校验会话报告且禁止失败后重新连接')
+  const discovery = source('src/main/skill-discovery.ts')
+  require(called(named(discovery, 'scan'), 'bytes').some((call) => call.arguments[0]?.getText().includes('/zip/${revision}')) && called(named(discovery, 'install'), 'importSkills').length && called(named(discovery, 'close'), 'abort').length,
+    'AWB094', 'src/main/skill-discovery.ts', 'Skill 发现须固定仓库版本、沿用校验安装并支持取消')
+  require(named(save, 'saveFile')?.getText().includes('gitWrite(fileTarget(tab),') || named(source('src/renderer/App.tsx'), 'saveFile')?.getText().includes('gitWrite(fileTarget(tab),'),
+    'AWB095', 'src/renderer/App.tsx', '文件保存必须绑定打开时的终端目标，不能使用后来切换的机器或目录')
+  const catalog = named(source('src/shared/skill-catalog.ts'), 'githubSkillRepository')
+  require(hasString(catalog, 'https:') && hasString(catalog, 'github.com') && catalog?.getText().includes('url.password') && called(named(discovery, 'preview'), 'previewSkill').length,
+    'AWB096', 'src/shared/skill-catalog.ts', '手动 Skill 链接只接受 GitHub HTTPS 地址，预览读取已校验快照')
   const preview = source('src/main/preview.ts')
   require(called(preview, 'listen').some((call) => call.arguments[1]?.text === '127.0.0.1') && called(preview, 'readAsset').length &&
     called(preview, 'openExternal').every((call) => call.arguments[0]?.getText() === 'url'), 'AWB021', 'src/main/preview.ts', '浏览器预览限本机、项目资源与受控 URL')
@@ -237,7 +250,7 @@ export function checkInvariants(files) {
   const controlsCss = files.get('src/renderer/styles/workbench.css') || ''
   require(!files.get('src/renderer/App.tsx')?.includes('className="newp"') && !files.get('src/renderer/Workspace.tsx')?.includes('data-a="newproj"') && sidebar.includes('data-a="newproj"') && sidebar.includes('props.onNewProject()') && controlsCss.includes('.proj:has(:focus-visible) .project-add') && controlsCss.includes('.sidebar-section-heading:hover .sidebar-add') && controlsCss.includes('.tabtools [data-a=newterm]{opacity:1;pointer-events:auto}') && !controlsCss.includes('.sidebar-add,.tabtools [data-a=newterm]{opacity:0') && scripts.check?.includes('scripts/ui-affordance-check.mjs'),
     'AWB065', 'src/renderer/ProjectSidebar.tsx', '项目标题统一添加项目；侧栏加号按行悬停与键盘焦点显示，终端加号常驻，保留行为回归')
-  require(files.get('src/main/store.ts')?.includes("theme: 'light'") && files.get('src/renderer/index.html')?.includes('data-theme="light"') && controlsCss.includes('font:calc(var(--fs,13px) * var(--content-zoom,1))/1.7 var(--mono)') && files.get('src/renderer/icons.tsx')?.includes("fill={name === 'more' ? 'currentColor' : undefined}"),
+  require(files.get('src/main/store.ts')?.includes("theme: 'light'") && files.get('src/renderer/index.html')?.includes('data-theme="light"') && controlsCss.includes('font:calc(var(--fs,13px) * var(--content-zoom,1))/1.7 var(--mono)') && files.get('src/renderer/icons.tsx')?.includes("['more', 'folder', 'folder-open', 'github'].includes(name)") && files.get('src/renderer/icons.tsx')?.includes("fill={filled ? 'currentColor' : undefined}"),
     'AWB066', 'src/main/store.ts', '默认浅色，Diff 双栏实时沿用终端字号，更多菜单使用实心图标')
   const sidebarCss = files.get('src/renderer/styles/extra.css') || ''
   require(sidebar.includes('sidebar-heading-label') && sidebar.includes('sidebar-disclosure') && hasString(source('src/renderer/ProjectSidebar.tsx'), '最近') && sidebar.includes("collapsed[project.id] ? 'folder' : 'folder-open'") && sidebarCss.includes('.sidebar-section-heading > [aria-expanded=true] .sidebar-disclosure { opacity:0; }') && sidebarCss.includes('.sidebar-disclosure { flex:none; pointer-events:none; }') && !sidebarCss.includes('white-space:nowrap; padding-right:34px;'),

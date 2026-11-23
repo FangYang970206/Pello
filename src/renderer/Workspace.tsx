@@ -28,10 +28,12 @@ export type TermTab = {
   hasRun?: boolean
   agentKind?: string | null
   agentSessionId?: string
+  context?: import('../shared/types').TerminalContext | null
 }
-export type DiffTab = { id: string; type: 'diff'; projectId: string; path: string; dirty?: boolean }
-export type FileTab = { id: string; type: 'file'; projectId: string; path: string; dirty?: boolean; anchor?: string; location?: SearchLocation }
+export type DiffTab = { id: string; type: 'diff'; projectId: string; targetId?: string; path: string; dirty?: boolean; untracked?: boolean }
+export type FileTab = { id: string; type: 'file'; projectId: string; targetId?: string; path: string; dirty?: boolean; anchor?: string; location?: SearchLocation }
 export type Tab = TermTab | DiffTab | FileTab
+export const fileTarget = (tab: Tab): string => tab.type !== 'term' && tab.targetId || tab.projectId
 
 export function Workspace({
   project,
@@ -94,7 +96,7 @@ export function Workspace({
   onSelect: (id: string) => void
   onRenameTerm: (id: string, name: string) => Promise<void>
   onSplitTab: (id: string) => Promise<string>
-  onNavigateFile: (path: string, anchor?: string) => void
+  onNavigateFile: (path: string, anchor?: string, targetId?: string) => void
   onClose: (id: string) => void
   onNewTerm: () => void
   onQuick: () => void
@@ -229,7 +231,7 @@ export function Workspace({
                 const tile = groups.find((group) => group.tabs.includes(tab.id))
                 const visible = tab.projectId === project?.id && tile?.active === tab.id
                 const focus = visible && tab.id === shown?.id
-                const key = tab.type === 'term' ? '' : documentKey(tab.projectId, tab.path)
+                const key = tab.type === 'term' ? '' : documentKey(fileTarget(tab), tab.path)
                 return (
                   <div
                     key={tab.id}
@@ -251,7 +253,7 @@ export function Workspace({
                       : visible && tab.type === 'diff' ? <DiffPane diff={diffs[key] || null} mode={diffModes[tab.id] || defaultDiffMode} onMode={(mode) => onDmode(tab.id, mode)} onDiscard={() => onDiscard(tab.id)} untracked={!!untracked[tab.path]}
                         document={documents[key] || null} baseline={baselines[key]?.draft} onBaseline={(text) => onBaseline(tab.id, text)} onBaselineHistory={(redo) => onBaselineHistory(tab.id, redo)}
                         onEdit={(text) => onEditFile(tab.id, text)} onSave={() => onSaveFile(tab.id)} onReload={() => onReloadFile(tab.id)} onCompose={(value) => onComposeFile(tab.id, value)} onHistory={(redo) => onHistoryFile(tab.id, redo)} />
-                      : visible && tab.type === 'file' ? <FilePane path={tab.path} anchor={tab.anchor} location={tab.location} onNavigate={onNavigateFile} document={documents[key] || null}
+                      : visible && tab.type === 'file' ? <FilePane path={tab.path} anchor={tab.anchor} location={tab.location} onNavigate={(path, anchor) => onNavigateFile(path, anchor, fileTarget(tab))} document={documents[key] || null}
                         onEdit={(text) => onEditFile(tab.id, text)} onSave={() => onSaveFile(tab.id)} onReload={() => onReloadFile(tab.id)} onHistory={(redo) => onHistoryFile(tab.id, redo)} onCompose={(value) => onComposeFile(tab.id, value)} onPreviewHtml={() => onPreviewHtml(tab.id)}
                         rightOpen={rightOpen} onToggleRight={onToggleRight} layout={layoutOptions(tab.id)} onLayout={(command) => void layoutCommand(tab.id, command)} /> : null}
                   </div>

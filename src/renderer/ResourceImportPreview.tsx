@@ -16,7 +16,7 @@ export function ResourceImportPreview({ items, selected, onChange, disabled }: {
     <div className="resource-import-list">
       {visible.map((item) => <label key={item.id} className="resource-import-item">
         <input type="checkbox" checked={selected.includes(item.id)} disabled={disabled || !!item.error} onChange={(event) => onChange(event.target.checked ? [...selected, item.id] : selected.filter((id) => id !== item.id))} />
-        <span><b>{item.name}</b>{item.enabled === false ? <small>{t("源配置已停用，导入时保留")}</small> : null}<small className="mono">{item.path}</small>{item.error ? <small className="bad">{item.error}</small> : null}</span>
+        <span><b>{item.name}</b>{item.description ? <small>{item.description}</small> : null}{item.enabled === false ? <small>{t("源配置已停用，导入时保留")}</small> : null}<small className="mono">{item.path}</small>{item.error ? <small className="bad">{item.error}</small> : null}</span>
       </label>)}
       {!visible.length ? <p className="resource-help">{t("没有匹配的资源")}</p> : null}
     </div>

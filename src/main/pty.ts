@@ -12,6 +12,8 @@ import { executorForHost, isConfiguredLaunch, submittedCustomAgent } from '../sh
 import { db } from './store'
 import { discoverLocalShells } from './local-shells'
 import { OscStrip } from './osc'
+import { TerminalContextTracker } from './terminal-context'
+import type { TerminalContext } from '../shared/types'
 import { ProgramStatus } from './program-status'
 import { replyProgramStatus } from './windows-status'
 import { claudeLifecycle, nativeAgent, submittedAgent } from './agent-lifecycle'
@@ -19,7 +21,7 @@ import { agentResumeCommand, customResumeCommand, validAgentSession, terminalSes
 import { createCodexThread } from './codex-session'
 import { loadTerminalHistory, recordTerminalOutput } from './terminal-history'
 import { legacyConversations, matchLegacyConversation } from './legacy-agent-session'
-import { passwordTerminal, remoteCommand, type TerminalProcess } from './ssh'
+import { needsSshClient, passwordTerminal, remoteCommand, type TerminalProcess } from './ssh'
 import {
   bashRc,
   bashQuote,
@@ -188,6 +190,9 @@ class Session {
   private rows = 24
   private remoteAbort: AbortController | null = null
   private osc = new OscStrip()
+  private contextTracker: TerminalContextTracker | undefined
+  private context: TerminalContext | null = null
+  private contextToken = randomUUID()
   private programStatus = new ProgramStatus()
   private programWaiting = false
   private activeAgent: string | null = null
@@ -255,6 +260,9 @@ class Session {
     this.procExited = false
     const draft = db()
     const host = draft.hosts.find((h) => h.id === this.hostId) || draft.hosts[0]
+    this.contextTracker?.dispose()
+    this.contextTracker = host.id !== 'local' && host.platform === 'linux' ? new TerminalContextTracker(this.contextToken, this.id, this.projectId, host) : undefined
+    this.context = null
     const files = shellFiles()
     this.phase = 'starting'
     this.osc = new OscStrip()
@@ -336,9 +344,9 @@ class Session {
       })
     } else {
       this.shell = shellForHost(host.platform, this.shell)
-      const boot = remoteBootstrap(host.platform, this.cwd)
+      const boot = remoteBootstrap(host.platform, this.cwd, this.contextToken)
       this.remoteAbort = new AbortController()
-      proc = host.auth === 'password' ? await passwordTerminal(host, boot, this.remoteAbort.signal) : pty.spawn('ssh', sshArgs(host, [remoteCommand(host, boot)]), {
+      proc = needsSshClient(host) ? await passwordTerminal(host, boot, this.remoteAbort.signal) : pty.spawn('ssh', sshArgs(host, [remoteCommand(host, boot)]), {
         name: 'xterm-256color',
         cols: 80,
         rows: 24,
@@ -495,6 +503,7 @@ class Session {
   }
 
   private beginDispose(killTree = true): void {
+    this.contextTracker?.dispose()
     if (this.disposeStarted) return
     this.disposeStarted = true
     this.disposed = true
@@ -665,6 +674,11 @@ class Session {
 
   private async onData(chunk: string): Promise<void> {
     if (this.disposed) return
+    if (this.contextTracker) {
+      const report = this.contextTracker.push(chunk)
+      chunk = report.text
+      if (report.context !== undefined) { this.context = report.context; this.emit(false) }
+    }
     if (this.closing) {
       // The renderer snapshot was already flushed. Keep the complete journal,
       // but do not turn shutdown-generated prompts into a saved Shell session.
@@ -778,6 +792,7 @@ class Session {
     if (this.disposed || this.closing) return
     this.send({
       type: 'state',
+      context: this.context,
       id: this.id,
       state: this.state,
       exitCode: this.exitCode,

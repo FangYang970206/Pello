@@ -37,6 +37,7 @@ export function rememberPassword(host: Host): void {
 }
 
 export function publicHost(host: Host): Host {
-  const { password: _password, hasPassword: _hasPassword, ...clean } = host
+  const { password: _password, hasPassword: _hasPassword, terminalRoute: _terminalRoute, ...clean } = host
+  Reflect.deleteProperty(clean, 'jumpHostId')
   return { ...clean, hasPassword: !!hostPassword(clean) }
 }

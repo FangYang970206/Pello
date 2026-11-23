@@ -84,7 +84,9 @@ function skillInfo(file: string): { name: string; description: string; enabled: 
   if (!front) throw new Error(t("SKILL.md 缺少 YAML 文档属性"))
   const value = object(parseYaml(front[1]))
   if (typeof value.name !== 'string' || value.name.length > 64 || !namePattern.test(value.name)) throw new Error(t("Skill 名称须为小写字母、数字和单连字符，最多 64 字符"))
-  if (typeof value.description !== 'string' || !value.description.trim() || value.description.length > 1024) throw new Error(t("Skill 需要 1 到 1024 字符的 description"))
+  // Some published Anthropic Skills exceed the specification's suggested 1024 characters.
+  // Preserve upstream content while bounding metadata rendered by the workbench.
+  if (typeof value.description !== 'string' || !value.description.trim() || value.description.length > 8192) throw new Error(t("Skill 需要 1 到 8192 字符的 description"))
   return { name: value.name, description: value.description.trim(), enabled: value.enabled !== false }
 }
 function safeRelative(value: string) {
@@ -386,6 +388,14 @@ export class ResourceManager {
   }
   scanSkills(source: string): { name: string; description: string; path: string }[] {
     return this.withSkills(source, (skills, staging) => skills.map((skill) => ({ name: skill.name, description: skillInfo(path.join(skill.folder, 'SKILL.md')).description, path: path.relative(staging, skill.folder) || '.' })))
+  }
+  previewSkill(source: string, name: string): ResourceDetail {
+    return this.withSkills(source, (skills) => {
+      const skill = skills.find((item) => item.name === name)
+      if (!skill) throw new Error(t('请选择扫描结果中的 Skill'))
+      const file = path.join(skill.folder, 'SKILL.md')
+      return { ...skillInfo(file), path: name, content: readText(file) }
+    })
   }
   importSkills(targets: ResourceTarget[], source: string, agents: string[], names?: string[]): ResourceResult[] {
     return this.withSkills(source, (discovered) => {

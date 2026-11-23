@@ -5,6 +5,8 @@ import { ResourceDialog } from './ResourceDialog'
 import { ResourceImportPreview } from './ResourceImportPreview'
 import { ResourceItemMenu } from './ResourceItemMenu'
 import { Icon } from './icons'
+import { SkillDiscoveryDialog } from './SkillDiscoveryDialog'
+import { SkillReadme } from './SkillReadme'
 
 export function ResourceSettings({ kind }: { kind: 'mcp' | 'skills' }) {
   const [targets, setTargets] = useState<ResourceTarget[]>([])
@@ -14,6 +16,7 @@ export function ResourceSettings({ kind }: { kind: 'mcp' | 'skills' }) {
   const [listing, setListing] = useState<ResourcePage | null>(null)
   const [error, setError] = useState('')
   const [adding, setAdding] = useState(false)
+  const [discovering, setDiscovering] = useState(false)
   const [selected, setSelected] = useState<string[]>([])
   const [name, setName] = useState('')
   const [config, setConfig] = useState('')
@@ -90,10 +93,11 @@ export function ResourceSettings({ kind }: { kind: 'mcp' | 'skills' }) {
     catch (reason) { setDeleteError(String(reason)) } finally { setBusy(false) }
   }
   return <div className="group resources">
+    {discovering ? <SkillDiscoveryDialog targets={targets} agent={agent} onClose={() => setDiscovering(false)} onInstalled={(results) => { setResults(results); setTick((value) => value + 1) }} /> : null}
     {details ? <ResourceDialog title={details.name} compact={kind === 'skills'} dismissOnBackdrop returnFocus={detailOpener.current} onClose={() => setDetails(null)} footer={<><span className="grow" /><button className="btn" onClick={() => setDetails(null)}>{t("关闭")}</button></>}>
       <dl className="resource-details"><dt>Agent</dt><dd>{target?.name}</dd><dt>{t("状态")}</dt><dd>{details.enabled === false ? t("已停用") : t("已启用")}</dd><dt>{t("位置")}</dt><dd>{details.path}</dd>
       {details.description ? <><dt>{t("说明")}</dt><dd>{details.description}</dd></> : null}</dl>
-      {details.notice ? <p className="resource-help">{details.notice}</p> : null}<pre className="resource-content">{details.content}</pre>
+      {details.notice ? <p className="resource-help">{details.notice}</p> : null}{kind === 'skills' ? <SkillReadme content={details.content} /> : <pre className="resource-content">{details.content}</pre>}
     </ResourceDialog> : null}
     {deleting ? <ResourceDialog title={t("删除 Skill")} onClose={() => setDeleting(null)} busy={busy} footer={<>
       <span className="grow" /><button className="btn" disabled={busy} onClick={() => setDeleting(null)}>{t("取消")}</button><button className="btn dangerf" disabled={busy} onClick={() => void removeSkill()}>{busy ? t("正在删除…") : t("删除")}</button>
@@ -105,7 +109,8 @@ export function ResourceSettings({ kind }: { kind: 'mcp' | 'skills' }) {
         onClick={() => { setAgent(item.id); setQuery(''); setResults([]) }}>{item.name}</button>)}
     </div>
     <h2><span className="grow">{target?.name} · {kind === 'mcp' ? 'MCP' : 'Skill'}</span>
-      <button className="btn sm" disabled={busy} onClick={() => { setAdding(!adding); setSelected([agent]); setError(''); setResults([]) }}><Icon name="plus" className="s" />{kind === 'mcp' ? t("添加 MCP") : t("添加 Skill")}</button>
+      <span className="resource-header-actions">{kind === 'skills' ? <button className="btn sm" disabled={busy} onClick={() => { setDiscovering(true); setError(''); setResults([]) }}>{t('发现')}</button> : null}
+      <button className="btn sm" disabled={busy} onClick={() => { setAdding(!adding); setSelected([agent]); setError(''); setResults([]) }}>{kind === 'mcp' ? <Icon name="plus" className="s" /> : null}{kind === 'mcp' ? t("添加 MCP") : t("添加")}</button></span>
     </h2>
     {adding ? <ResourceDialog title={kind === 'mcp' ? t("添加 MCP") : t("添加 Skill")} onClose={closeAdd} busy={busy} footer={<>
       <span className="grow" /><button className="btn" disabled={busy} onClick={closeAdd}>{t("取消")}</button><button className="btn pri" form="resource-add" type="submit" disabled={busy || !selected.length || ((kind === 'skills' || importMode) && (!source || !selectedItems.length))}>{scanning ? t("正在扫描…") : busy ? t("正在添加…") : t("添加到所选 Agent")}</button>
@@ -137,7 +142,7 @@ export function ResourceSettings({ kind }: { kind: 'mcp' | 'skills' }) {
     {listing?.errors.map((value) => <p key={value} className="file-error" role="alert">{value}</p>)}
     <div className="card" role="tabpanel" aria-label={`${target?.name || agent} ${kind}`}>
       {!listing ? <div className="srow">{t("正在读取…")}</div> : listing.items.length ? listing.items.map((item) => <div className="srow resource-item" key={item.path + item.name}>
-        <b className="resource-name">{item.name}</b><span className="grow" />
+        {kind === 'skills' ? <button className="resource-name resource-open" disabled={!!pending} onClick={(event) => void inspect(item, event.currentTarget)}>{item.name}</button> : <b className="resource-name">{item.name}</b>}<span className="grow" />
         <button className="ib" aria-label={t("查看 {{0}} 详情", item.name)} disabled={!!pending} onClick={(event) => void inspect(item, event.currentTarget)}><Icon name="eye" /></button>
         <button className={`switch ${item.enabled !== false ? 'on' : ''}`} role="switch" aria-checked={item.enabled !== false} aria-label={t("启用 {{0}}", item.name)} disabled={!!pending}
           onClick={() => void toggle(item)} />

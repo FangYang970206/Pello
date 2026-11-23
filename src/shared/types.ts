@@ -59,6 +59,8 @@ export interface Host {
   /** Supplied only while editing; removed before saving workbench.json. */
   password?: string
   hasPassword?: boolean
+  /** Main-process-only route through a terminal's already authenticated SSH master. */
+  terminalRoute?: TerminalRoute[]
   color?: string
 }
 
@@ -212,6 +214,7 @@ export interface HostTest {
 }
 
 export interface PtyStateEvent {
+  context?: TerminalContext | null
   type: 'state'
   id: string
   state: ProcState
@@ -223,6 +226,8 @@ export interface PtyStateEvent {
   announce: boolean
   reason?: 'exit' | 'kill' | 'ctrlc'
 }
+export type TerminalRoute = { socket: string; destination: string }
+export type TerminalContext = { id: string; cwd: string; user: string; hostname: string }
 
 export interface PtyDataEvent {
   type: 'data'

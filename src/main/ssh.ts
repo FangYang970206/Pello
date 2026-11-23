@@ -8,12 +8,13 @@ import type { Readable, Writable } from 'node:stream'
 import type { Host } from '../shared/types'
 import { hostPassword, rememberPassword } from './credentials'
 import { bashQuote, sshBatchArgs } from './platform'
+export const needsSshClient = (host: Host): boolean => host.auth === 'password'
 
 /** Password connections pin the first authenticated server key, like accept-new. */
 export function connectPasswordHost(host: Host, signal?: AbortSignal): Promise<Client> {
   if (signal?.aborted) return Promise.reject(new Error(t("SSH 连接已取消")))
-  const password = hostPassword(host)
-  if (!password) return Promise.reject(new Error(t("请填写 SSH 登录密码")))
+  const password = host.auth === 'password' ? hostPassword(host) : undefined
+  if (host.auth === 'password' && !password) return Promise.reject(new Error(t("请填写 SSH 登录密码")))
   const file = path.join(app.getPath('userData'), 'ssh-host-keys.json')
   const identity = JSON.stringify([host.addr, host.port || 22])
   let fingerprint = ''
@@ -56,13 +57,18 @@ export function connectPasswordHost(host: Host, signal?: AbortSignal): Promise<C
     })
     client.on('keyboard-interactive', (_name, _instructions, _language, prompts, finish) => {
       // Keyboard-interactive password auth is common on PAM-enabled SSH servers.
-      if (prompts.length === 1 && !prompts[0].echo && /password/i.test(prompts[0].prompt)) finish([password])
+      if (password && prompts.length === 1 && !prompts[0].echo && /password/i.test(prompts[0].prompt)) finish([password])
       else finish([])
     })
   })
 }
 
 export function remoteCommand(host: Host, args: string[]): string {
+  if (host.terminalRoute?.length) {
+    let command = args.map(bashQuote).join(' ')
+    for (const hop of [...host.terminalRoute].reverse()) command = 'command ' + ['ssh', '-S', hop.socket, '-o', 'ControlMaster=no', '-o', 'BatchMode=yes', '-o', 'ProxyCommand=false', '--', hop.destination, command].map(bashQuote).join(' ')
+    return command
+  }
   if (host.platform !== 'windows') return args.map(bashQuote).join(' ')
   const scriptAt = args.indexOf('-Command')
   if (args[0] === 'powershell.exe' && scriptAt > 0) {
@@ -82,7 +88,7 @@ export interface RemoteStream {
 export async function openRemoteStream(host: Host, args: string[], signal: AbortSignal): Promise<RemoteStream> {
   if (signal.aborted) throw new Error(t("传输已取消"))
   const command = remoteCommand(host, args)
-  if (host.auth === 'password') {
+  if (needsSshClient(host)) {
     const client = await connectPasswordHost(host, signal)
     try {
       if (signal.aborted) throw new Error(t("传输已取消"))

@@ -9,8 +9,9 @@ import { createHash, randomUUID } from 'node:crypto'
 import { isUtf8 } from 'node:buffer'
 import type { DirListing, FileContent, FileDiff, GitFile, GitPanel, Host, OsKind, PathCheck, TreeNode } from '../shared/types'
 import { bashQuote, hostPlatform, isAbsPath, joinPath, parentPath, psQuote, sshBatchArgs } from './platform'
-import { remoteCommand, runPasswordCommand } from './ssh'
+import { needsSshClient, remoteCommand, runPasswordCommand } from './ssh'
 import { LINUX_CREATE_SCRIPT, LINUX_RENAME_SCRIPT } from './linux-rename'
+import { remoteGitProgram } from './remote-git'
 
 const exec = promisify(execFile)
 export const TREE_DEFAULT_IGNORE = ['.git', 'node_modules', 'dist', 'out', '.next', '__pycache__', '.cache']
@@ -43,7 +44,7 @@ async function run(target: Target, command: string, input?: string, maxBuffer = 
     target.platform === 'windows'
       ? ['powershell.exe', '-NoProfile', '-Command', command]
       : ['bash', '-lc', command]
-  if (target.host.auth === 'password') return runPasswordCommand(target.host, remoteCommand(target.host, remote), input, maxBuffer)
+  if (needsSshClient(target.host)) return runPasswordCommand(target.host, remoteCommand(target.host, remote), input, maxBuffer)
   const args = sshBatchArgs(target.host, [remoteCommand(target.host, remote)])
   const operation = exec('ssh', args, { timeout: 20000, maxBuffer, windowsHide: true })
   if (input !== undefined) operation.child.stdin?.end(input)
@@ -52,14 +53,15 @@ async function run(target: Target, command: string, input?: string, maxBuffer = 
 }
 
 function gitBin(target: Target, args: string[]): string {
+  if (target.platform === 'linux') return ['python3', '-c', remoteGitProgram(), target.cwd, ...args].map(bashQuote).join(' ')
   const quoted = args.map((a) => (target.platform === 'windows' ? psQuote(a) : bashQuote(a))).join(' ')
   const cwd = target.platform === 'windows' ? psQuote(target.cwd) : bashQuote(target.cwd)
-  return `${target.platform === 'windows' ? '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); ' : ''}git -C ${cwd} -c core.quotepath=false ${quoted}`
+  return `${target.platform === 'windows' ? '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); ' : ''}git --no-optional-locks -C ${cwd} -c core.quotepath=false -c diff.autoRefreshIndex=false ${quoted}`
 }
 
 async function git(target: Target, args: string[]): Promise<string> {
   if (!target.host || target.host.id === 'local') {
-    const { stdout } = await exec('git', ['-C', target.cwd, '-c', 'core.quotepath=false', ...args], { timeout: 20000, maxBuffer: 12_000_000, windowsHide: true })
+    const { stdout } = await exec('git', ['--no-optional-locks', '-C', target.cwd, '-c', 'core.quotepath=false', '-c', 'diff.autoRefreshIndex=false', ...args], { timeout: 20000, maxBuffer: 12_000_000, windowsHide: true })
     return stdout
   }
   return run(target, gitBin(target, args))
@@ -193,7 +195,7 @@ async function singleGitStatus(target: Target): Promise<GitPanel & { flags: Reco
 type Discovery = { roots: string[]; errors: string[] }
 const discoveries = new Map<string, { at: number; value: Promise<Discovery> }>()
 const statusRequests = new Map<string, Promise<GitPanel & { flags: Record<string, boolean> }>>()
-const targetKey = (target: Target) => `${target.host?.id || 'local'}:${target.platform}:${target.cwd}`
+const targetKey = (target: Target) => `${target.host?.id || 'local'}:${JSON.stringify(target.host?.terminalRoute || [])}:${target.platform}:${target.cwd}`
 
 async function discoverRepositories(target: Target): Promise<Discovery> {
   const key = targetKey(target), cached = discoveries.get(key)

@@ -6,6 +6,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import type { OsKind, ShellKind } from '../shared/types'
 import { localShell } from './local-shells'
+import { terminalContextShell } from './terminal-context-shell'
 
 export const execFileP = promisify(execFile)
 
@@ -167,9 +168,11 @@ if [ -r "$HOME/.bashrc" ]; then
 fi
 unset HISTFILE
 PS1='\\w\\$ '
+${terminalContextShell()}
 __awb_prompt() {
   local c=$?
   printf '\\033]777;awb;prompt;%s\\007' "$c"
+  __pello_context
 }
 PROMPT_COMMAND=__awb_prompt
 if [ -n "$AWB_CWD" ] && [ -d "$AWB_CWD" ]; then
@@ -233,9 +236,9 @@ export function sshBatchArgs(host: { user: string; addr: string; port: number; a
   return ['-T', '-o', 'BatchMode=yes', ...sshArgs(host, remote).filter((a) => a !== '-tt')]
 }
 
-export function remoteBootstrap(platform: OsKind, cwd: string): string[] {
+export function remoteBootstrap(platform: OsKind, cwd: string, token = ''): string[] {
   if (platform === 'linux') {
-    const script = `export AWB_CWD=${bashQuote(cwd)}; exec bash --noprofile --rcfile <(cat << 'AWB_RC'
+    const script = `export AWB_CWD=${bashQuote(cwd)} PELLO_CONTEXT_TOKEN=${bashQuote(token)}; exec bash --noprofile --rcfile <(cat << 'AWB_RC'
 ${bashRc()}
 AWB_RC
 ) -i`

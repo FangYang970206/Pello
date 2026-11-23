@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process'
 import type { Readable, Writable } from 'node:stream'
 import type { Host } from '../shared/types'
 import { bashQuote, psQuote, sshBatchArgs } from './platform'
-import { connectPasswordHost, remoteCommand } from './ssh'
+import { needsSshClient, connectPasswordHost, remoteCommand } from './ssh'
 
 /** Allocate a durable native thread without a model request, then attach the CLI by ID. */
 export async function createCodexThread(cwd: string, host?: Host, signal?: AbortSignal): Promise<string> {
@@ -12,7 +12,7 @@ export async function createCodexThread(cwd: string, host?: Host, signal?: Abort
   const boot = host?.platform === 'windows'
     ? ['powershell.exe', '-NoProfile', '-Command', `Set-Location -LiteralPath ${psQuote(cwd)}; codex --no-daemon app-server`]
     : ['bash', '-lc', `[ ! -f ~/.bashrc ] || source ~/.bashrc; cd -- ${bashQuote(cwd)} && codex --no-daemon app-server`]
-  if (remote && host.auth === 'password') {
+  if (remote && needsSshClient(host)) {
     const client = await connectPasswordHost(host)
     const stream = await new Promise<import('ssh2').ClientChannel>((resolve, reject) => client.exec(remoteCommand(host, boot), (error, stream) => error ? reject(error) : resolve(stream)))
     input = output = stream

@@ -64,7 +64,7 @@ try {
       await page.mouse.click(point.x, point.y)
       await page.getByRole('dialog').waitFor({ state: 'detached' })
       assert.equal(await inspect.evaluate((element) => element === document.activeElement), true, 'Backdrop dismissal returns focus to the detail button')
-      await page.getByRole('button', { name: '添加 Skill', exact: true }).click(); await aligned()
+      await page.getByRole('button', { name: '添加', exact: true }).click(); await aligned()
       await page.screenshot({ path: path.join(shots, `skill-add-${theme}-${width}.png`) })
       await page.keyboard.press('Escape')
       await section('mcp')
