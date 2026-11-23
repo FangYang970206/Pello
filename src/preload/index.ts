@@ -93,7 +93,6 @@ const api: WorkbenchApi = {
   documentMenu: (options) => ipcRenderer.invoke('file:menu', options),
   documentLink: (projectId, source, href) => ipcRenderer.invoke('file:link', projectId, source, href),
   paneMenu: (options) => ipcRenderer.invoke('workspace:menu', options),
-  terminalMenu: (options) => ipcRenderer.invoke('terminal:menu', options),
   onPreviewSource: (cb) => {
     const listener = (_event: Electron.IpcRendererEvent, url: string) => cb(url)
     ipcRenderer.on('file:preview-source', listener)

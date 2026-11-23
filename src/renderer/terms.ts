@@ -184,7 +184,7 @@ if (typeof window !== 'undefined') {
     if (!term) return null
     const buffer = term.buffer.active
     const visibleText = Array.from({ length: term.rows }, (_, row) => buffer.getLine(buffer.viewportY + row)?.translateToString(true) || '').join('\n')
-    return { cols: term.cols, rows: term.rows, viewportY: buffer.viewportY, baseY: buffer.baseY, cursorY: buffer.cursorY, visibleText, buffer: buffer.type, mouse: term.modes.mouseTrackingMode }
+    return { cols: term.cols, rows: term.rows, viewportY: buffer.viewportY, baseY: buffer.baseY, cursorY: buffer.cursorY, visibleText, buffer: buffer.type, mouse: term.modes.mouseTrackingMode, selection: term.getSelection() }
   }
 }
 

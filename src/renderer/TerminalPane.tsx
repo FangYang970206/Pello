@@ -202,6 +202,6 @@ export function TerminalPane({
   // only redraw; they must not take focus back from the restored control.
   useLayoutEffect(() => { if (visible && focused) termRef.current?.focus() }, [visible, focused, id, groupId])
 
-  const search = useTerminalSearch({ root: rootRef, terminal: termRef, id, visible, focused, theme })
-  return <div className="termhost" data-term={id} ref={rootRef} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); void search.menu() }}><div className="termframe" ref={hostRef} />{search.panel}</div>
+  const search = useTerminalSearch({ root: rootRef, terminal: termRef, id, visible, focused })
+  return <div className="termhost" data-term={id} ref={rootRef} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); search.menu(event.clientX, event.clientY) }}><div className="termframe" ref={hostRef} />{search.panel}</div>
 }

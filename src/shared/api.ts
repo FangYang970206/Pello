@@ -109,7 +109,6 @@ export interface WorkbenchApi {
   documentMenu(options: { markdown: boolean; visual: boolean; undo: boolean; redo: boolean; editable: boolean; layout?: PaneLayoutOptions }): Promise<string | null>
   documentLink(projectId: string, source: string, href: string): Promise<{ path: string; anchor?: string } | null>
   paneMenu(options: PaneLayoutOptions & { terminal: boolean; reconnect?: boolean }): Promise<string | null>
-  terminalMenu(options: { selection: boolean; highlighted: boolean }): Promise<string | null>
   onPreviewSource(cb: (url: string) => void): () => void
   ptyCreate(req: PtyCreateRequest): Promise<{ id: string; state: string; exitCode: number | null; startedAt: number | null; inputReady: boolean; shell: ShellKind; kind: string; agentKind?: string | null; agentSessionId?: string | null }>
   ptyWrite(id: string, data: string, binary?: boolean): void

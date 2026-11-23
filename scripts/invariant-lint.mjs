@@ -318,10 +318,12 @@ export function checkInvariants(files) {
     called(named(pty, 'spawn'), 'customResumeCommand').length && called(named(pty, 'closeAllSessions'), 'prepareShutdown').length && scripts['check:custom-agent']?.includes('scripts/custom-agent-check.mjs'),
     'AWB084', 'src/main/pty.ts', '自定义执行器按机器解析、复用实际终端启动测试、识别手动启动并按原生 ID 续接，保留行为回归')
   const terminalSearch = files.get('src/renderer/TerminalSearch.tsx') || ''
-  require(terminalSearch.includes("from '@xterm/addon-search'") && terminalSearch.includes('window.awb.terminalMenu(') &&
+  require(terminalSearch.includes("from '@xterm/addon-search'") && terminalSearch.includes('<TerminalContextMenu') &&
+    !terminalSearch.includes('decorations:') && !files.get('src/renderer/TerminalHighlights.tsx')?.includes('.select(') &&
+    files.get('src/renderer/TerminalContextMenu.tsx')?.includes('terminal-color-ball') &&
     terminalSearch.includes('event.stopPropagation(); show()') && terminalSearch.includes('term.paste(text)') &&
     files.get(workspaceFile)?.includes("tab.type !== 'term' && !event.defaultPrevented") && scripts.check?.includes('scripts/terminal-search-check.mjs'),
-    'AWB085', 'src/renderer/TerminalSearch.tsx', '终端搜索拦截快捷键，正文使用文字菜单及括号粘贴，分栏保留在标签菜单，并保留行为回归')
+    'AWB085', 'src/renderer/TerminalSearch.tsx', '终端文字菜单提供高亮色球，绘制不抢占选区，保留括号粘贴、搜索及标签分栏回归')
   const rightPanel = files.get('src/renderer/RightPanel.tsx') || ''
   require(rightPanel.includes('data-a="git-view"') && rightPanel.includes('data-a="git-refresh"') &&
     !rightPanel.includes('<span>git status</span>') && !rightPanel.includes('repository-discovery') && files.get('src/renderer/GitChangeRows.tsx')?.includes('<VirtualFileRows') && scripts.check?.includes('scripts/git-about-check.mjs'),
