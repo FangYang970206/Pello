@@ -102,6 +102,7 @@ export function App() {
   const documentsRef = useRef(documents)
   documentsRef.current = documents
   const savingDocuments = useRef(new Set<string>())
+  const refreshingDocuments = useRef(new Map<string, symbol>())
   const pathMutations = useRef(new Map<string, { projectId: string; path: string; directory: boolean; caseInsensitive?: boolean }>())
   const [fileReadTick, setFileReadTick] = useState(0)
   function replacementAt(projectId: string, path: string): boolean {
@@ -161,9 +162,9 @@ export function App() {
         try {
           const file = await window.awb.gitRead(previous.projectId, previous.path)
           const doc = documentsRef.current[key]
-          if (doc) {
+          if (doc === previous) {
             const next = recordChange({ ...doc, editAt: 0 }, editableText(file.text))
-            putDocument(key, { ...next, ...file, replacing: false, replacementId: event.id, saving: false, error: undefined })
+            putDocument(key, { ...next, ...file, tooBig: file.tooBig, assetToken: file.assetToken, fileStamp: file.fileStamp, replacing: false, replacementId: event.id, saving: false, error: undefined })
             setTabs((list) => list.map((tab) => tab.type === 'file' && fileTarget(tab) === previous.projectId && tab.path === previous.path ? { ...tab, dirty: false } : tab))
           }
         } catch (error) {
@@ -652,7 +653,7 @@ export function App() {
       const saved = await window.awb.gitWrite(fileTarget(tab), tab.path, fileText(doc), doc.version)
       const latest = documentsRef.current[key] || doc
       const draft = latest.draft === doc.draft ? editableText(saved.text) : latest.draft
-      putDocument(key, { ...latest, ...saved, draft, saving: false, error: undefined })
+      putDocument(key, { ...latest, ...saved, draft, assetToken: saved.assetToken, fileStamp: saved.fileStamp, saving: false, error: undefined })
       setTabs((list) => list.map((item) => item.type !== 'term' && fileTarget(item) === fileTarget(tab) && item.path === tab.path ? { ...item, dirty: draft !== editableText(saved.text) } : item))
       setGitTick((tick) => tick + 1)
       toast(automatic ? t("已自动保存") : t("文件已保存"))
@@ -695,21 +696,57 @@ export function App() {
     try { await window.awb.openHtmlPreview(fileTarget(tab), tab.path) } catch (error) { toast(String(error), true) }
   }
 
-  function reloadFile(id: string) {
-    const tab = tabs.find((item) => item.id === id && item.type !== 'term')
-    if (!tab || tab.type === 'term') return
-    const key = documentKey(fileTarget(tab), tab.path)
-    const reload = () => {
-      setModal(null)
-      void window.awb.gitRead(fileTarget(tab), tab.path).then((file) => {
-        putDocument(key, { ...file, projectId: fileTarget(tab), path: tab.path, draft: editableText(file.text) })
-        setTabs((list) => list.map((item) => item.type !== 'term' && fileTarget(item) === fileTarget(tab) && item.path === tab.path ? { ...item, dirty: false } : item))
-      }).catch((error) => toast(String(error), true))
+  async function refreshDocument(target: string, path: string, force: boolean) {
+    const key = documentKey(target, path), previous = documentsRef.current[key]
+    const blocked = () => [...pathMutations.current.values()].some((operation) => operation.projectId === target &&
+      (operation.path === path || (operation.directory && (!operation.path || path.startsWith(`${operation.path}/`)))))
+    if (!previous || blocked() || previous.saving || previous.composing || (!force && (isDirty(previous) || refreshingDocuments.current.has(key)))) return
+    const ticket = Symbol()
+    refreshingDocuments.current.set(key, ticket)
+    try {
+      const file = await window.awb.gitRefresh(target, path, force ? undefined : previous.fileStamp)
+      if (!file || refreshingDocuments.current.get(key) !== ticket || documentsRef.current[key] !== previous || blocked()) return
+      if (!force && previous.version === file.version && previous.missing === file.missing && previous.tooBig === file.tooBig) {
+        if (previous.fileStamp !== file.fileStamp) putDocument(key, { ...previous, fileStamp: file.fileStamp })
+        return
+      }
+      const draft = editableText(file.text)
+      putDocument(key, { ...recordChange({ ...previous, editAt: 0 }, draft), ...file, draft,
+        assetToken: file.assetToken, fileStamp: file.fileStamp, tooBig: file.tooBig, error: undefined, replacementId: crypto.randomUUID() })
+      setTabs((list) => list.map((tab) => tab.type !== 'term' && fileTarget(tab) === target && tab.path === path ? { ...tab, dirty: false } : tab))
+      if (force || tabs.some((tab) => tab.type === 'diff' && fileTarget(tab) === target && tab.path === path)) setGitTick((tick) => tick + 1)
+    } catch (error) {
+      if (force && documentsRef.current[key] === previous) toast(error instanceof Error ? error.message : t("无法读取文件"), true)
+    } finally {
+      if (refreshingDocuments.current.get(key) === ticket) refreshingDocuments.current.delete(key)
     }
-    if (documentsRef.current[key] && isDirty(documentsRef.current[key])) {
-      setModal({ type: 'confirm', title: t("重新读取文件？"), body: t("这会放弃此文件尚未保存的更改。"), ok: t("放弃并重新读取"), run: reload })
-    } else reload()
   }
+
+  function reloadPath(target: string, path: string) {
+    const doc = documentsRef.current[documentKey(target, path)]
+    if (!doc) { openFile(path, undefined, undefined, target); return }
+    if (doc.saving || doc.composing) { toast(t("文件操作正在进行"), true); return }
+    const reload = () => { setModal(null); void refreshDocument(target, path, true) }
+    if (isDirty(doc)) setModal({ type: 'confirm', title: t("重新读取文件？"), body: t("这会放弃此文件尚未保存的更改。"), ok: t("放弃并重新读取"), run: reload })
+    else reload()
+  }
+
+  function reloadFile(id: string) {
+    const tab = tabs.find((item) => item.id === id)
+    if (tab && tab.type !== 'term') reloadPath(fileTarget(tab), tab.path)
+  }
+
+  const refreshTarget = active && active.type !== 'term' ? fileTarget(active) : undefined
+  const refreshPath = active && active.type !== 'term' ? active.path : undefined
+  const refreshLocal = refreshTarget === project?.id && project?.host === 'local'
+  useEffect(() => {
+    if (route !== 'work' || !refreshTarget || !refreshPath) return
+    const check = () => { void refreshDocument(refreshTarget, refreshPath, false) }
+    check()
+    window.addEventListener('focus', check)
+    const timer = refreshLocal ? window.setInterval(() => { if (document.visibilityState === 'visible') check() }, 2000) : undefined
+    return () => { window.removeEventListener('focus', check); window.clearInterval(timer) }
+  }, [route, refreshTarget, refreshPath, refreshLocal, active?.id])
 
   async function closeTab(id: string) {
     const tab = tabs.find((item) => item.id === id)
@@ -1022,7 +1059,7 @@ export function App() {
   function openFile(rel: string, anchor?: string, location?: import('../shared/types').SearchLocation, targetId = panelProject?.id) {
     if (!project || !targetId) return
     const opened = openedDocument('file', rel, targetId)
-    if (opened) { setTabs((list) => list.map((tab) => tab.id === opened.id ? { ...tab, anchor, location } : tab)); selectTab(opened.id); return }
+    if (opened) { setTabs((list) => list.map((tab) => tab.id === opened.id ? { ...tab, anchor, location } : tab)); selectTab(opened.id); void refreshDocument(targetId, rel, false); return }
     if (replacementAt(targetId, rel)) { toast(t("此目录正在替换，完成后可打开文件")); return }
     const id = uid('f')
     const doc = documentsRef.current[documentKey(targetId, rel)]
@@ -1038,7 +1075,7 @@ export function App() {
     await relocateTree(projectId, rel, directory, () => window.awb.treeMove(projectId, rel, parent, directory))
   }
 
-  async function relocateTree(projectId: string, rel: string, directory: boolean, operation: () => Promise<string>): Promise<void> {
+  async function relocateTree(projectId: string, rel: string, directory: boolean, operation: () => Promise<string | null>): Promise<void> {
     const affected = (value: string) => value === rel || (directory && value.startsWith(`${rel}/`))
     const pending = Object.values(documentsRef.current).filter((doc) => doc.projectId === projectId && affected(doc.path))
     if (pending.some((doc) => doc.saving || savingDocuments.current.has(documentKey(projectId, doc.path)))) throw new Error(t("文件正在保存，请稍候"))
@@ -1051,25 +1088,35 @@ export function App() {
     }
     try {
       const nextPath = await operation()
+      if (!nextPath || nextPath === rel) return
       const remap = (value: string) => affected(value) ? nextPath + value.slice(rel.length) : value
+      const destination = (value: string) => value === nextPath || (directory && value.startsWith(`${nextPath}/`))
       const parentOf = (value: string) => value.split('/').slice(0, -1).join('/')
       const oldParent = parentOf(rel), newParent = parentOf(nextPath)
       const oldList = oldParent ? treeChildren[`${projectId}:${oldParent}`] || [] : tree
       const movingNode = oldList.find((node) => node.path === rel)
       const docs: Record<string, DocumentDraft> = {}
       for (const [key, doc] of Object.entries(documentsRef.current)) {
-        if (doc.projectId === projectId && affected(doc.path)) { const newPath = remap(doc.path); docs[documentKey(projectId, newPath)] = { ...doc, path: newPath } }
-        else docs[key] = doc
+        if (doc.projectId !== projectId || !affected(doc.path)) docs[key] = doc
+      }
+      for (const doc of Object.values(documentsRef.current)) {
+        if (doc.projectId !== projectId || !affected(doc.path)) continue
+        const path = remap(doc.path)
+        docs[documentKey(projectId, path)] = { ...doc, path, assetToken: undefined }
       }
       documentsRef.current = docs; setDocuments(docs)
-      setTabs((list) => list.map((tab) => tab.type !== 'term' && fileTarget(tab) === projectId && affected(tab.path) ? { ...tab, path: remap(tab.path) } : tab))
+      setTabs((list) => list.map((tab) => {
+        if (tab.type === 'term' || fileTarget(tab) !== projectId || (!affected(tab.path) && !destination(tab.path))) return tab
+        const path = remap(tab.path), doc = docs[documentKey(projectId, path)]
+        return { ...tab, path, dirty: !!doc && isDirty(doc) }
+      }))
       const rewriteNodes = (nodes: TreeNode[], parent: string) => {
         const result = nodes.filter((node) => oldParent === newParent || node.path !== rel).map((node) => affected(node.path) ? { ...node, path: remap(node.path), name: node.path === rel ? nextPath.split('/').pop()! : node.name } : node)
         if (oldParent !== newParent && parent === newParent && movingNode && !result.some((node) => node.path === nextPath)) result.push({ ...movingNode, path: nextPath, name: nextPath.split('/').pop()! })
         return result
       }
       if (projectIdRef.current === projectId) setTree((nodes) => rewriteNodes(nodes, ''))
-      setTreeChildren((current) => Object.fromEntries(Object.entries(current).map(([key, nodes]) => {
+      setTreeChildren((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${projectId}:`) || !destination(key.slice(projectId.length + 1))).map(([key, nodes]) => {
         const prefix = `${projectId}:`
         if (!key.startsWith(prefix)) return [key, nodes]
         const path = key.slice(prefix.length)
@@ -1449,6 +1496,7 @@ export function App() {
                     onToggleDir={(dir) => void toggleDirectory(dir)}
                     onOpenDiff={openDiff}
                     onOpenFile={openFile}
+                    onReloadFile={reloadPath}
                     onRevealFile={revealFile}
                     onTreeRulesChanged={() => setGitTick((tick) => tick + 1)}
                     referenceTerms={tabs.filter((tab): tab is TermTab => tab.type === 'term' && tab.projectId === project.id && tab.state !== 'exited' && tab.state !== 'failed').sort((a, b) => Number(b.id === lastTerminal.current[project.id]) - Number(a.id === lastTerminal.current[project.id]))}

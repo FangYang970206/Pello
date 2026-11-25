@@ -118,6 +118,7 @@ export function RightPanel({
   onToggleDir,
   onOpenDiff,
   onOpenFile,
+  onReloadFile,
   onRevealFile,
   onTreeRulesChanged,
   referenceTerms,
@@ -162,6 +163,7 @@ export function RightPanel({
   onToggleDir: (path: string) => void
   onOpenDiff: (path: string) => void
   onOpenFile: (path: string, anchor?: string, location?: SearchLocation) => void
+  onReloadFile: (projectId: string, path: string) => void
   onRevealFile: (projectId: string, path: string) => Promise<boolean>
   onTreeRulesChanged: () => void
   referenceTerms: TermTab[]
@@ -204,6 +206,8 @@ export function RightPanel({
   const [moving, setMoving] = useState<{ projectId: string; path: string; dir: boolean } | null>(null)
   const [renameFocus, setRenameFocus] = useState<{ projectId: string; path: string } | null>(null)
   const [dropTarget, setDropTarget] = useState<string | null>(null)
+  const [movingDrop, setMovingDrop] = useState(false)
+  const treeDrag = useRef<{ projectId: string; path: string; dir: boolean } | null>(null)
   const attention = transfers.filter(transferNeedsAttention)
   const query = queries[project.id] || ''
   const contentQuery = contentQueries[project.id] || ''
@@ -245,22 +249,55 @@ export function RightPanel({
   }, [project.id, query, mode])
   const selection = selections[project.id]
   function parentOf(file: string) { const index = file.lastIndexOf('/'); return index < 0 ? '' : file.slice(0, index) }
-  function dragDirectory(element: EventTarget | null): string {
+  function dragDirectory(element: EventTarget | null, internal = false): string {
     const row = element instanceof Element ? element.closest<HTMLElement>('[data-a="tog"], [data-a="preview"], [data-a="search-file"]') : null
     if (row?.dataset.id !== undefined) return row.dataset.a === 'tog' ? row.dataset.id : parentOf(row.dataset.id)
+    if (internal) return ''
     return selection ? (selection.dir ? selection.path : parentOf(selection.path)) : ''
   }
+  const treeDragType = 'application/x-pello-tree-entry'
+  function dragEntry(path: string, dir: boolean) {
+    return {
+      draggable: true,
+      onDragStart: (event: React.DragEvent) => {
+        treeDrag.current = { projectId: project.id, path, dir }
+        event.dataTransfer.setData(treeDragType, path)
+        event.dataTransfer.effectAllowed = 'move'
+        setMovingDrop(true)
+      },
+      onDragEnd: () => { treeDrag.current = null; setDropTarget(null); setMovingDrop(false) }
+    }
+  }
+  function validMove(parent: string) {
+    const source = treeDrag.current
+    if (!source || source.projectId !== project.id) return false
+    const normalize = (value: string) => host.platform === 'windows' ? value.toLowerCase() : value
+    const from = normalize(source.path), to = normalize(parent)
+    const destination = [to, from.split('/').at(-1)].filter(Boolean).join('/')
+    return to !== parentOf(from) && (!source.dir || (to !== from && !to.startsWith(`${from}/`))) && !from.startsWith(`${destination}/`)
+  }
   function onTreeDragOver(event: React.DragEvent<HTMLDivElement>) {
-    if (!Array.from(event.dataTransfer.types).includes('Files')) return
+    const internal = event.dataTransfer.types.includes(treeDragType)
+    if (!internal && !event.dataTransfer.types.includes('Files')) return
     event.preventDefault()
-    event.dataTransfer.dropEffect = 'copy'
-    setDropTarget(dragDirectory(event.target))
+    const destination = dragDirectory(event.target, internal)
+    const allowed = !internal || validMove(destination)
+    event.dataTransfer.dropEffect = allowed ? internal ? 'move' : 'copy' : 'none'
+    setDropTarget(allowed ? destination : null)
   }
   function onTreeDrop(event: React.DragEvent<HTMLDivElement>) {
-    if (!Array.from(event.dataTransfer.types).includes('Files')) return
+    const internal = event.dataTransfer.types.includes(treeDragType)
+    if (!internal && !event.dataTransfer.types.includes('Files')) return
     event.preventDefault()
-    const destination = dragDirectory(event.target)
+    const destination = dragDirectory(event.target, internal)
     setDropTarget(null)
+    if (internal) {
+      const source = treeDrag.current
+      if (!source || !validMove(destination) || event.dataTransfer.getData(treeDragType) !== source.path) return
+      setTreeError('')
+      void onMove(source.projectId, source.path, destination, source.dir).catch((error: unknown) => setTreeError(error instanceof Error ? error.message : t("移动失败")))
+      return
+    }
     try {
       const paths = Array.from(event.dataTransfer.files, (file) => window.awb.droppedFilePath(file))
       if (!paths.length || paths.some((value) => !value)) throw new Error(t("无法读取拖入文件的本机路径"))
@@ -325,6 +362,7 @@ export function RightPanel({
     try {
       const action = await window.awb.treeMenu(project.id, path, dir)
       if (action === 'open') onOpenFile(path)
+      else if (action === 'reload') onReloadFile(project.id, path)
       else if (action === 'reference') setReferencePath(path)
       else if (action === 'trash') onTrash(project.id, path, dir)
       else if (action === 'rename') setRenaming({ projectId: project.id, path, dir })
@@ -364,7 +402,7 @@ export function RightPanel({
         const open = !!openDirs[key]
         return (
           <div key={node.path}>
-            {editor || <button className={`row ${selection?.dir && selection.path === node.path ? 'on' : ''} ${dropTarget === node.path ? 'drop-target' : ''}`} style={{ paddingLeft: pad }} data-a="tog" data-id={node.path} title={node.path} aria-expanded={open} aria-pressed={selection?.dir && selection.path === node.path} onClick={() => selectNode(node)} onDoubleClick={() => onToggleDir(node.path)} onContextMenu={(event) => { event.preventDefault(); void treeMenu(node.path, true) }} onKeyDown={(event) => {
+            {editor || <button {...dragEntry(node.path, true)} className={`row ${selection?.dir && selection.path === node.path ? 'on' : ''} ${dropTarget === node.path ? 'drop-target' : ''}`} style={{ paddingLeft: pad }} data-a="tog" data-id={node.path} title={node.path} aria-expanded={open} aria-pressed={selection?.dir && selection.path === node.path} onClick={() => selectNode(node)} onDoubleClick={() => onToggleDir(node.path)} onContextMenu={(event) => { event.preventDefault(); void treeMenu(node.path, true) }} onKeyDown={(event) => {
               menuKey(event, node.path, true)
               if (event.key === 'F2') { event.preventDefault(); selectNode(node); setRenaming({ projectId: project.id, path: node.path, dir: true }) }
               if ((event.key === 'ArrowRight' && !open) || (event.key === 'ArrowLeft' && open)) { event.preventDefault(); onToggleDir(node.path) }
@@ -382,6 +420,7 @@ export function RightPanel({
       return (
         <button
           key={node.path}
+          {...dragEntry(node.path, false)}
           className={`row ${selection && !selection.dir && selection.path === node.path ? 'on' : ''}`}
           style={{ paddingLeft: 26 + depth * 14 }}
           data-a="preview"
@@ -488,10 +527,10 @@ export function RightPanel({
             setQueries((current) => ({ ...current, [project.id]: value }))
           }} />
         </div>
-        {dropTarget !== null ? <div className="tree-drop-hint" role="status">{host.id !== 'local' ? t("松开以上传") : <>{t("复制到 · ")}{project.path}{dropTarget ? `${host.platform === 'windows' ? '\\' : '/'}${dropTarget.replaceAll('/', host.platform === 'windows' ? '\\' : '/')}` : ''}</>}</div> : null}
+        {dropTarget !== null ? <div className="tree-drop-hint" role="status">{movingDrop ? t("移动到 {{0}}", dropTarget || t("项目根目录")) : host.id !== 'local' ? t("松开以上传") : <>{t("复制到 · ")}{project.path}{dropTarget ? `${host.platform === 'windows' ? '\\' : '/'}${dropTarget.replaceAll('/', host.platform === 'windows' ? '\\' : '/')}` : ''}</>}</div> : null}
         {query.trim() ? <div className="rlist" role="group" aria-label={t("文件搜索结果")} tabIndex={0} {...dropHandlers} onContextMenu={treeBackgroundContext} onKeyDown={treeBackgroundKey}>
           {search.projectId === project.id && search.query === query ? <>
-            <VirtualFileRows key={`${project.id}:${query}`} items={search.items} render={(node) => <button className="row" data-a="search-file" onContextMenu={(event) => { event.preventDefault(); void treeMenu(node.path, false) }} onKeyDown={(event) => menuKey(event, node.path, false)} data-id={node.path} key={node.path} title={node.path} onClick={() => {
+            <VirtualFileRows key={`${project.id}:${query}`} items={search.items} render={(node) => <button {...dragEntry(node.path, false)} className="row" data-a="search-file" onContextMenu={(event) => { event.preventDefault(); void treeMenu(node.path, false) }} onKeyDown={(event) => menuKey(event, node.path, false)} data-id={node.path} key={node.path} title={node.path} onClick={() => {
               selectNode(node)
               onOpenFile(node.path)
             }}><Icon name="file" className="s" /><span className="nm">{node.path}</span></button>} />

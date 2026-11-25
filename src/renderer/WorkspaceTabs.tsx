@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type DragEvent } from 'react'
 import { t } from '../shared/i18n'
 import { resolveAgent, shellLabel, shellLetter, type AgentInfo } from '../shared/types'
 import { Icon, Mark } from './icons'
@@ -13,11 +13,12 @@ export function WorkspaceTabs({ groupId, index, tabs, activeId, focused, style, 
   onToggleRight: () => void; onSelect: (id: string) => void; onClose: (id: string) => void
   onPaneMenu: (id: string) => void; onRenameTerm: (id: string, name: string) => Promise<void>
   onNewTerm: () => void; renaming: string | null; setRenaming: (id: string | null) => void
-  onMoveTab: (id: string) => void
+  onMoveTab: (id: string, before?: string) => void
 }) {
   const scroller = useRef<HTMLDivElement>(null)
   const [overflow, setOverflow] = useState(false)
   const [fade, setFade] = useState<'none' | 'left' | 'right' | 'both'>('none')
+  const [drop, setDrop] = useState<{ id: string; after: boolean } | null>(null)
   const [menu, setMenu] = useState(false)
   const menuRef = useAnchoredMenu(menu && overflow, () => setMenu(false), { minWidth: 260 })
   const wheelGesture = useRef({ delta: 0, lastEvent: 0, lastSwitch: 0 })
@@ -106,11 +107,51 @@ export function WorkspaceTabs({ groupId, index, tabs, activeId, focused, style, 
     }
   }, [activeId, tabs.length, overflow])
 
+  const tabDragType = 'application/x-pello-tab'
+  function insertion(event: DragEvent<HTMLDivElement>) {
+    const tab = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-drag-tab]') : null
+    if (!tab?.dataset.dragTab) return null
+    const bounds = tab.getBoundingClientRect()
+    return { id: tab.dataset.dragTab, after: event.clientX >= bounds.left + bounds.width / 2 }
+  }
+  function tabDrag(id: string) {
+    return {
+      'data-drag-tab': id,
+      'data-drop-edge': drop?.id === id ? drop.after ? 'after' : 'before' : undefined,
+      draggable: renaming !== id,
+      onDragStart: (event: DragEvent) => { event.dataTransfer.setData(tabDragType, id); event.dataTransfer.effectAllowed = 'move' },
+      onDragEnd: () => setDrop(null)
+    }
+  }
+
   const agentOf = (id: string) => agents.find((item) => item.id === id) || resolveAgent(id, [], installed)
   return (
     <div className="tabbar editor-group-tabs" role="tablist" aria-label={t("编辑器分组 {{0}}", index + 1)} data-a="editor-group" data-group={groupId} data-focused={focused} style={style}
-      onDragOver={(event) => { if (event.dataTransfer.types.includes('application/x-pello-tab')) { event.preventDefault(); event.dataTransfer.dropEffect = 'move' } }}
-      onDrop={(event) => { event.preventDefault(); const id = event.dataTransfer.getData('application/x-pello-tab'); if (id) onMoveTab(id) }}
+      onDragOver={(event) => {
+        if (!event.dataTransfer.types.includes(tabDragType)) return
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'move'
+        const list = scroller.current
+        if (list && overflow) {
+          const bounds = list.getBoundingClientRect()
+          if (event.clientX >= bounds.left && event.clientX <= bounds.right) {
+            if (event.clientX < bounds.left + 16) list.scrollLeft -= 24
+            else if (event.clientX > bounds.right - 16) list.scrollLeft += 24
+          }
+        }
+        const next = insertion(event)
+        setDrop((current) => current?.id === next?.id && current?.after === next?.after ? current : next)
+      }}
+      onDragLeave={(event) => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDrop(null) }}
+      onDrop={(event) => {
+        if (!event.dataTransfer.types.includes(tabDragType)) return
+        event.preventDefault()
+        setDrop(null)
+        const id = event.dataTransfer.getData(tabDragType), target = insertion(event)
+        if (!id || target?.id === id) return
+        const index = target ? tabs.findIndex((tab) => tab.id === target.id) + Number(target.after) : tabs.length
+        onMoveTab(id, tabs[index]?.id)
+      }}
     >
       <div className={`tabs ${overflow ? 'over' : ''} ${fade === 'both' ? 'fade-l fade-r' : fade === 'left' ? 'fade-l' : fade === 'right' ? 'fade-r' : ''}`} ref={scroller}>
         {tabs.map((tab) => {
@@ -118,7 +159,7 @@ export function WorkspaceTabs({ groupId, index, tabs, activeId, focused, style, 
           if (tab.type !== 'term') {
             const label = tab.path.split('/').pop() || tab.path
             return (
-              <div key={tab.id} draggable={renaming !== tab.id} onDragStart={(event) => { event.dataTransfer.setData('application/x-pello-tab', tab.id); event.dataTransfer.effectAllowed = 'move' }} className={`tab ${on ? 'on' : ''}`} role="tab" aria-selected={on} onContextMenu={(event) => { event.preventDefault(); void onPaneMenu(tab.id) }}>
+              <div key={tab.id} {...tabDrag(tab.id)} className={`tab ${on ? 'on' : ''}`} role="tab" aria-selected={on} onContextMenu={(event) => { event.preventDefault(); void onPaneMenu(tab.id) }}>
                 <button
                   className="grow"
                   style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}
@@ -143,7 +184,7 @@ export function WorkspaceTabs({ groupId, index, tabs, activeId, focused, style, 
           const color = tab.kind === 'shell' ? '#8fa3cc' : agent.color
           const status = terminalStatus(tab)
           return (
-            <div key={tab.id} draggable={renaming !== tab.id} onDragStart={(event) => { event.dataTransfer.setData('application/x-pello-tab', tab.id); event.dataTransfer.effectAllowed = 'move' }} className={`tab ${on ? 'on' : ''}`} role="tab" aria-selected={on} onContextMenu={(event) => { event.preventDefault(); void onPaneMenu(tab.id) }}>
+            <div key={tab.id} {...tabDrag(tab.id)} className={`tab ${on ? 'on' : ''}`} role="tab" aria-selected={on} onContextMenu={(event) => { event.preventDefault(); void onPaneMenu(tab.id) }}>
               {renaming === tab.id ? <NameEditor initial={name} onCancel={() => setRenaming(null)} onSave={async (name) => { await onRenameTerm(tab.id, name); setRenaming(null) }} /> : <button style={{ display: 'flex', alignItems: 'center', gap: 8 }} data-a="tab" data-id={tab.id} data-state={tab.state} title={`${name} · ${status.label}`} onClick={() => onSelect(tab.id)} onDoubleClick={() => setRenaming(tab.id)} onKeyDown={(event) => { if (event.key === 'F2') { event.preventDefault(); setRenaming(tab.id) } else if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) { event.preventDefault(); void onPaneMenu(tab.id) } }}>
                 <Mark letter={letter} color={color} />
                 <span className="lbl">{name}</span>

@@ -1,4 +1,7 @@
 import { t } from '../shared/i18n'
+import { execFile } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+import { promisify } from 'node:util'
 import { psQuote } from './platform'
 import { treePath, type Target } from './git'
 import { openRemoteStream } from './ssh'
@@ -103,12 +106,17 @@ function windowsParent(target: Target, relative: string): string {
 }
 
 async function command(target: Target, args: string[], signal: AbortSignal): Promise<string> {
-  if (!target.host || target.host.id === 'local') throw new Error(t("请选择远程项目"))
   const scriptAt = target.platform === 'windows' ? args.indexOf('-Command') : -1
   const script = scriptAt >= 0 ? args[scriptAt + 1] : undefined
   // Keep the Windows command line short even for deep paths and recursive transaction scripts.
   const loader = "$ErrorActionPreference='Stop'; [Console]::InputEncoding=[Text.UTF8Encoding]::new($false); [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); try { & ([ScriptBlock]::Create([Console]::In.ReadToEnd())) } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }"
-  const remote = await openRemoteStream(target.host, scriptAt >= 0 ? [...args.slice(0, scriptAt), '-Command', loader] : args, signal)
+  const launch = scriptAt >= 0 ? [...args.slice(0, scriptAt), '-Command', loader] : args
+  if (!target.host || target.host.id === 'local') {
+    const operation = promisify(execFile)(launch[0], launch.slice(1), { signal, windowsHide: true, maxBuffer: 16384 })
+    operation.child.stdin?.end(script ? Buffer.from(script, 'utf8') : undefined)
+    return (await operation).stdout.trim()
+  }
+  const remote = await openRemoteStream(target.host, launch, signal)
   remote.stdin.end(script ? Buffer.from(script, 'utf8') : undefined)
   let output = ''
   try {
@@ -119,7 +127,7 @@ async function command(target: Target, args: string[], signal: AbortSignal): Pro
 }
 
 /** Recursive version of a regular file or directory; refuses every linked descendant. */
-export async function remoteEntryVersion(target: Target, path: string, signal: AbortSignal): Promise<string> {
+export async function treeEntryVersion(target: Target, path: string, signal: AbortSignal): Promise<string> {
   const relative = treePath(target, path).relative
   if (relative === '.') throw new Error(t("不能替换项目根目录"))
   const name = relative.split('/').at(-1)!
@@ -129,6 +137,66 @@ export async function remoteEntryVersion(target: Target, path: string, signal: A
   const version = await command(target, args, signal)
   if (!/^(absent|[df]:[a-f0-9]{64})$/.test(version)) throw new Error(t("远程版本响应无效"))
   return version
+}
+
+/** Replace a same-type entry by move, keeping a recoverable original through publication. */
+export async function replaceTreeMove(target: Target, source: string, destination: string, fromVersion: string, toVersion: string): Promise<string | undefined> {
+  const backup = `.awb-move-backup-${randomUUID()}`
+  const changed = t("目标已更改，原对象已保留")
+  const retained = t("替换失败，原对象保留于 ")
+  const warning = t("AWB_WARNING:替换已完成，旧对象清理失败，保留于 ")
+  let args: string[]
+  if (target.platform === 'windows') {
+    const script = `${WINDOWS_ENTRY()}; ${windowsParent(target, source)};
+$source=Join-Path $parent ${psQuote(source.split('/').at(-1)!)}
+${windowsParent(target, destination)};
+$dest=Join-Path $parent ${psQuote(destination.split('/').at(-1)!)}; $backup=Join-Path $parent ${psQuote(backup)}
+if ((Get-AwbEntryVersion $source) -ne ${psQuote(fromVersion)} -or (Get-AwbEntryVersion $dest) -ne ${psQuote(toVersion)}) { throw ${psQuote(changed)} }
+Move-AwbEntry $dest $backup
+try {
+  if ((Get-AwbEntryVersion $backup) -ne ${psQuote(toVersion)} -or (Get-AwbEntryVersion $source) -ne ${psQuote(fromVersion)}) { throw ${psQuote(changed)} }
+  Move-AwbEntry $source $dest
+} catch {
+  $reason=$_
+  try { Move-AwbEntry $backup $dest } catch { throw (${psQuote(retained)}+$backup) }
+  throw $reason
+}
+try { Remove-AwbStage $backup } catch { Write-Output (${psQuote(warning)}+$backup) }`
+    args = ['powershell.exe', '-NoProfile', '-OutputFormat', 'Text', '-Command', script]
+  } else {
+    const script = `import ctypes, hashlib, os, stat, sys
+${LINUX_ENTRY()}
+root, source, dest, from_version, to_version = sys.argv[1:]
+a, src = open_parent(root, source)
+b, dst = open_parent(root, dest)
+try:
+    if entry_version(a, src) != from_version or entry_version(b, dst) != to_version: raise ValueError(${JSON.stringify(changed)})
+    rename = getattr(ctypes.CDLL(None, use_errno=True), 'renameat2', None)
+    if rename is None: raise ValueError(${JSON.stringify(t("系统不支持安全目录替换"))})
+    rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+    def exchange():
+        if rename(a, os.fsencode(src), b, os.fsencode(dst), 2):
+            code = ctypes.get_errno()
+            raise OSError(code, os.strerror(code))
+    exchange()
+    try:
+        if entry_version(a, src) != to_version or entry_version(b, dst) != from_version: raise ValueError(${JSON.stringify(changed)})
+    except Exception:
+        try:
+            if entry_version(b, dst) != from_version: raise ValueError()
+            exchange()
+        except Exception:
+            raise ValueError(${JSON.stringify(retained)} + os.path.join(root, source))
+        raise
+    try: remove_entry(a, src)
+    except Exception: print(${JSON.stringify(warning)} + os.path.join(root, source))
+finally:
+    os.close(a)
+    os.close(b)`
+    args = ['python3', '-c', script, target.cwd, source, destination, fromVersion, toVersion]
+  }
+  const output = await command(target, args, new AbortController().signal)
+  if (output.startsWith('AWB_WARNING:')) return output.slice('AWB_WARNING:'.length)
 }
 
 /** Publish a completed sibling stage. Linux exchanges atomically; Windows keeps a rollback backup. */

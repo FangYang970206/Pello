@@ -1,4 +1,5 @@
 import { t } from '../shared/i18n'
+import { MAX_DOCUMENT_BYTES } from '../shared/types'
 import { createServer, type Server } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
@@ -87,14 +88,19 @@ async function port(): Promise<number> {
 export async function previewUrl(projectId: string, target: Target, rel: string, draft?: string, assetToken?: string): Promise<string> {
   rel = rel.replace(/\\/g, '/')
   const bytes = takeAsset(target, rel, assetToken) || await readAsset(target, rel)
-  if (draft !== undefined && (!/\.html?$/i.test(rel) || typeof draft !== 'string' || Buffer.byteLength(draft) > 2 * 1024 * 1024)) throw new Error(t("预览草稿必须为 2 MB 以内的 HTML"))
+  if (draft !== undefined && (!/\.html?$/i.test(rel) || typeof draft !== 'string' || Buffer.byteLength(draft) > MAX_DOCUMENT_BYTES)) throw new Error(t("预览草稿必须为 10 MB 以内的 HTML"))
   const identity = `${projectId}:${readTargetKey(target)}`
   let entry = projects.get(identity)
   if (!entry) { entry = { token: randomUUID(), projectId, target, drafts: new Map() }; projects.set(identity, entry) }
   const number = await port()
   const normalized = rel.replace(/\\/g, '/')
   let query = draft === undefined ? `?asset=${stageAsset(target, rel, bytes)}` : ''
-  if (draft !== undefined) { const token = randomUUID(); entry.drafts.set(normalized, { token, text: draft }); query = `?draft=${token}` }
+  if (draft !== undefined) {
+    const previous = entry.drafts.get(normalized)
+    const token = previous?.text === draft ? previous.token : randomUUID()
+    entry.drafts.set(normalized, { token, text: draft })
+    query = `?draft=${token}`
+  }
   return `http://127.0.0.1:${number}/${entry.token}/${normalized.split('/').map(encodeURIComponent).join('/')}${query}`
 }
 

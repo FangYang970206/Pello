@@ -30,11 +30,7 @@ const api: WorkbenchApi = {
   scanResources: (kind, source) => ipcRenderer.invoke('resources:scan', kind, source),
   importMcpConfig: (source, agents, ids) => ipcRenderer.invoke('resources:import-mcp', source, agents, ids),
   importSkills: (source, agents, names) => ipcRenderer.invoke('resources:skills', source, agents, names),
-  discoverSkills: (repository, id) => ipcRenderer.invoke('resources:discover', repository, id),
-  skillRepositories: () => ipcRenderer.invoke('resources:repositories'),
-  previewDiscoveredSkill: (id, name) => ipcRenderer.invoke('resources:discover-preview', id, name),
-  closeSkillDiscovery: (id) => ipcRenderer.invoke('resources:discover-close', id),
-  installDiscoveredSkills: (id, agents, names) => ipcRenderer.invoke('resources:discover-install', id, agents, names),
+  openSkillRecommendation: (id) => ipcRenderer.invoke('resources:open-recommendation', id),
   pickResource: (kind) => ipcRenderer.invoke('resources:pick', kind),
   saveSessions: (projectId, terms, activeId, groups, selected) => ipcRenderer.invoke('db:sessions', projectId, terms, activeId, groups, selected),
   saveBranch: (projectId, branch) => ipcRenderer.invoke('db:branch', projectId, branch),
@@ -81,6 +77,7 @@ const api: WorkbenchApi = {
   contentSearchStart: (projectId, id, query, sensitive, regex, whole) => ipcRenderer.invoke('content:search-start', projectId, id, query, sensitive, regex, whole),
   contentSearchNext: (id) => ipcRenderer.invoke('content:search-next', id),
   contentSearchCancel: (id) => ipcRenderer.invoke('content:search-cancel', id),
+  gitRefresh: (projectId, rel, stamp) => ipcRenderer.invoke('git:refresh', projectId, rel, stamp),
   gitRead: (projectId, rel) => ipcRenderer.invoke('git:read', projectId, rel),
   gitWrite: (projectId, rel, text, version) => ipcRenderer.invoke('git:write', projectId, rel, text, version),
   previewUrl: (projectId, rel, draft, assetToken) => ipcRenderer.invoke('file:preview-url', projectId, rel, draft, assetToken),
@@ -93,10 +90,10 @@ const api: WorkbenchApi = {
   documentMenu: (options) => ipcRenderer.invoke('file:menu', options),
   documentLink: (projectId, source, href) => ipcRenderer.invoke('file:link', projectId, source, href),
   paneMenu: (options) => ipcRenderer.invoke('workspace:menu', options),
-  onPreviewSource: (cb) => {
-    const listener = (_event: Electron.IpcRendererEvent, url: string) => cb(url)
-    ipcRenderer.on('file:preview-source', listener)
-    return () => ipcRenderer.removeListener('file:preview-source', listener)
+  onPreviewCommand: (cb) => {
+    const listener = (_event: Electron.IpcRendererEvent, url: string, command: 'source' | 'reload') => cb(url, command)
+    ipcRenderer.on('file:preview-command', listener)
+    return () => ipcRenderer.removeListener('file:preview-command', listener)
   },
   ptyCreate: (req) => ipcRenderer.invoke('pty:create', req),
   ptyWrite: (id, data, binary) => ipcRenderer.send('pty:write', id, data, binary),

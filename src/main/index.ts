@@ -6,7 +6,7 @@ import { UpdateScheduler } from './update-scheduler'
 import { t } from '../shared/i18n'
 import { validateCustomSession } from './agent-resume'
 import type { PaneLayoutOptions } from '../shared/api'
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, net, shell, type MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, shell, type MenuItemConstructorOptions } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { PRESETS, type Executor, type Host, type Project, type SavedTerm, type Settings, type ShellKind, type ResourceTarget, type WorkSession } from '../shared/types'
@@ -33,7 +33,8 @@ import { needsSshClient, runPasswordCommand } from './ssh'
 import { closeRemoteReaders } from './remote-read'
 import { clearAssetSnapshots } from './asset-snapshots'
 import { terminalTarget } from './terminal-context'
-import { SkillDiscovery } from './skill-discovery'
+import { SKILL_REPOSITORIES } from '../shared/skill-catalog'
+import { treeEntryVersion, replaceTreeMove } from './remote-replace'
 import { invalidatePreview, isPreviewUrl, openHtmlPreview, previewUrl } from './preview'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -62,7 +63,6 @@ if (process.env.AWB_CAPTURE) {
 }
 
 let win: BrowserWindow | null = null
-let skillDiscovery: SkillDiscovery | undefined
 let resourceListing: AbortController | undefined
 const appUpdates = createAppUpdates((state) => { if (win && !win.isDestroyed()) win.webContents.send('app:update', state) })
 const automaticUpdates = new UpdateScheduler(() => appUpdates.check())
@@ -116,7 +116,7 @@ async function guardReplacement(projectId: string, destination: string, operatio
   const { target, host } = projectTarget(projectId)
   const relative = host.id === 'local' ? path.relative(fs.realpathSync(target.cwd), fs.realpathSync(destination)).replaceAll('\\', '/') : destination
   const resolved = treePath(target, relative)
-  if (resolved.relative === '.' || (host.id === 'local' && !fs.lstatSync(destination).isFile())) throw new Error(t("不能覆盖项目根目录或不支持的对象"))
+  if (resolved.relative === '.' || (host.id === 'local' && !(directory ? fs.lstatSync(destination).isDirectory() : fs.lstatSync(destination).isFile()))) throw new Error(t("不能覆盖项目根目录或不支持的对象"))
   const key = fileWriteKey(target, resolved.relative)
   if (replacementBlocked(key, directory) || [...activeFileWrites].some((active) => active === key || (directory && withinWriteKey(active, key)))) throw new Error(t("文件正在保存或进行其他操作"))
   const targets = [{ projectId, path: resolved.relative }]
@@ -356,7 +356,8 @@ function createWindow(): void {
   win.webContents.on('context-menu', (_event, params) => {
     if (!isPreviewUrl(params.frameURL)) return
     Menu.buildFromTemplate([
-      { id: 'source', label: t("源码模式"), click: () => win?.webContents.send('file:preview-source', params.frameURL) },
+      { id: 'source', label: t("源码模式"), click: () => win?.webContents.send('file:preview-command', params.frameURL, 'source') },
+      { id: 'reload', label: t("刷新文件"), click: () => win?.webContents.send('file:preview-command', params.frameURL, 'reload') },
       { type: 'separator' }, { role: 'copy', label: t("复制") }, { role: 'selectAll', label: t("全选") }
     ]).popup({ window: win! })
   })
@@ -378,7 +379,7 @@ function createWindow(): void {
     closingWindow = true
     const closing = win
     // Preserve the PTY parent processes until their complete trees are killed.
-    void flushRendererHistory(closing).then(() => Promise.all([closeAllSessions(), closeTransfers(), skillDiscovery?.dispose()])).catch((error) => console.error('Failed to close workbench tasks', error)).finally(() => {
+    void flushRendererHistory(closing).then(() => Promise.all([closeAllSessions(), closeTransfers()])).catch((error) => console.error('Failed to close workbench tasks', error)).finally(() => {
       sessionsClosed = true
       if (closing && !closing.isDestroyed()) closing.destroy()
       app.quit()
@@ -395,7 +396,6 @@ function createWindow(): void {
     disposeDiagramRenderer()
     win = null
   })
-  win.webContents.on('render-process-gone', () => { void skillDiscovery?.dispose() })
   win.webContents.on('will-prevent-unload', (event) => {
     if (!win) return
     if (allowWindowClose || confirmUnsavedClose()) {
@@ -436,7 +436,7 @@ function registerIpc(): void {
       closingWindow = true
       try {
         await flushRendererHistory(win)
-        await Promise.all([closeAllSessions(), closeTransfers(), skillDiscovery?.dispose()])
+        await Promise.all([closeAllSessions(), closeTransfers()])
         sessionsClosed = true
         return true
       } catch (error) {
@@ -509,14 +509,13 @@ function registerIpc(): void {
     })
   })
   const resources = new ResourceManager(app.getPath('userData'))
-  const discovery = skillDiscovery = new SkillDiscovery(path.join(app.getPath('userData'), 'skill-discovery'), resources, (url, init) => net.fetch(url, init))
   const targets = () => resources.targets(db().custom)
   ipcMain.handle('resources:targets', () => targets())
-  ipcMain.handle('resources:discover', (_e, repository: string, id: string) => discovery.scan(repository, id))
-  ipcMain.handle('resources:repositories', () => discovery.repositories())
-  ipcMain.handle('resources:discover-preview', (_e, id: string, name: string) => discovery.preview(id, name))
-  ipcMain.handle('resources:discover-close', (_e, id: string) => discovery.close(id))
-  ipcMain.handle('resources:discover-install', (_e, id: string, agents: string[], names: string[]) => discovery.install(id, targets(), agents, names))
+  ipcMain.handle('resources:open-recommendation', async (_e, id: string) => {
+    const item = SKILL_REPOSITORIES.find((entry) => entry.id === id)
+    if (!item) throw new Error(t("推荐仓库不存在"))
+    await shell.openExternal(`https://github.com/${item.repository}`)
+  })
   ipcMain.handle('resources:target', (_e, target: ResourceTarget) => resources.saveTarget(target, db().custom))
   ipcMain.handle('resources:list', async (_e, kind: 'mcp' | 'skills', agent: string, page: number, query: string) => {
     resourceListing?.abort()
@@ -622,9 +621,34 @@ function registerIpc(): void {
   })
   ipcMain.handle('tree:move', async (_e, projectId: string, rel: string, parent: string, directory: boolean) => {
     if (typeof rel !== 'string' || typeof parent !== 'string' || typeof directory !== 'boolean') throw new Error(t("移动参数无效"))
-    const next = await moveTreeEntry(projectTarget(projectId).target, rel, parent, directory)
-    invalidatePreview(projectId, rel.replace(/\\/g, '/'))
-    return next
+    const { target, host } = projectTarget(projectId)
+    const source = treePath(target, rel).relative
+    const key = fileWriteKey(target, source)
+    if (replacementBlocked(key, directory) || [...activeFileWrites].some((active) => active === key || (directory && withinWriteKey(active, key)))) throw new Error(t("文件正在保存或进行其他操作"))
+    replacementLocks.set(key, directory)
+    try {
+      const next = await moveTreeEntry(target, source, parent, directory)
+      if (next.conflict) {
+        const signal = new AbortController().signal
+        const [fromVersion, toVersion] = await Promise.all([treeEntryVersion(target, source, signal), treeEntryVersion(target, next.path, signal)])
+        const kind = directory ? 'd:' : 'f:'
+        if (!fromVersion.startsWith(kind) || !toVersion.startsWith(kind)) throw new Error(t("移动冲突：文件类型不同或对象已更改"))
+        const answer = await dialog.showMessageBox(win!, {
+          type: 'warning', title: t("覆盖同名对象？"),
+          message: t("目标已存在：{{0}}", next.path),
+          detail: directory ? t("覆盖将替换整个目标文件夹及其内容。") : t("覆盖将替换目标文件的内容。"),
+          buttons: [t("取消"), t("覆盖")], defaultId: 0, cancelId: 0, noLink: true
+        })
+        if (answer.response !== 1) return null
+        let warning: string | undefined
+        await guardReplacement(projectId, host.id === 'local' ? treePath(target, next.path).full : next.path, async () => {
+          warning = await replaceTreeMove(target, source, next.path, fromVersion, toVersion)
+        }, signal, directory)
+        if (warning) void dialog.showMessageBox(win!, { type: 'warning', message: warning })
+      }
+      invalidatePreview(projectId, source)
+      return next.path
+    } finally { replacementLocks.delete(key) }
   })
   ipcMain.handle('tree:trash', async (_e, projectId: string, rel: string, directory: boolean) => {
     if (typeof rel !== 'string' || typeof directory !== 'boolean') throw new Error(t("删除参数无效"))
@@ -786,6 +810,8 @@ function registerIpc(): void {
     const { target } = projectTarget(projectId)
     return readFile(target, rel)
   })
+  ipcMain.handle('git:refresh', (_e, projectId: string, rel: string, stamp?: string) =>
+    readFile(projectTarget(projectId).target, rel, typeof stamp === 'string' ? stamp : undefined))
   ipcMain.handle('git:write', async (_e, projectId: string, rel: string, text: string, version: string | null) => {
     const { target } = projectTarget(projectId)
     const key = fileWriteKey(target, rel, version === null)
@@ -807,7 +833,7 @@ function registerIpc(): void {
       template.push(action(host.id === 'local' ? t("导入文件…") : t("上传文件…"), 'import-files'), action(host.id === 'local' ? t("导入文件夹…") : t("上传文件夹…"), 'import-directory'))
       template.push({ type: 'separator' })
     }
-    if (!directory) template.push(action(t("打开"), 'open'), action(t("引用到当前终端"), 'reference'), { type: 'separator' })
+    if (!directory) template.push(action(t("打开"), 'open'), action(t("刷新文件"), 'reload'), action(t("引用到当前终端"), 'reference'), { type: 'separator' })
     if (resolved.relative !== '.') template.push(action(t("重命名"), 'rename'), action(t("移动到…"), 'move'))
     if (resolved.relative !== '.') template.push(action(t("删除"), 'trash'))
     template.push({ label: t("复制路径"), submenu: [action(t("复制完整路径"), 'copy-full'), action(t("复制项目相对路径"), 'copy-relative')] })
@@ -911,7 +937,7 @@ function registerIpc(): void {
 
   ipcMain.handle('workspace:menu', (_e, options: PaneLayoutOptions & { terminal: boolean; reconnect?: boolean }) => new Promise<string | null>((resolve) => {
     const action = (label: string, id: string, enabled = true): MenuItemConstructorOptions => ({ id, label, enabled, click: () => resolve(id) })
-    Menu.buildFromTemplate([...(options.terminal ? [...(options.reconnect ? [action(t("重新连接会话"), 'reconnect'), { type: 'separator' as const }] : []), action(t("重命名终端"), 'rename'), action(t("导出完整终端记录"), 'export-history'), { type: 'separator' as const }] : []), ...layoutMenuItems(options, resolve)]).popup({ window: win!, callback: () => resolve(null) })
+    Menu.buildFromTemplate([...(options.terminal ? [...(options.reconnect ? [action(t("重新连接会话"), 'reconnect'), { type: 'separator' as const }] : []), action(t("重命名终端"), 'rename'), action(t("导出完整终端记录"), 'export-history'), { type: 'separator' as const }] : [action(t("刷新文件"), 'reload'), { type: 'separator' as const }]), ...layoutMenuItems(options, resolve)]).popup({ window: win!, callback: () => resolve(null) })
   }))
   ipcMain.handle('terminal:export', async (_event, id: string) => {
     if (typeof id !== 'string' || !Object.values(db().sessions).flat().some((term) => term.id === id)) throw new Error(t("终端不存在"))
@@ -1015,7 +1041,7 @@ app.on('before-quit', (event) => {
     allowWindowClose = true
   }
   quitting = true
-  void Promise.all([closeAllSessions(), closeTransfers(), skillDiscovery?.dispose()]).catch((error) => console.error('Failed to close workbench tasks', error)).finally(() => {
+  void Promise.all([closeAllSessions(), closeTransfers()]).catch((error) => console.error('Failed to close workbench tasks', error)).finally(() => {
     sessionsClosed = true
     app.quit()
   })

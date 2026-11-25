@@ -186,6 +186,8 @@ class Session {
   exitCode: number | null = null
   startedAt: number | null = null
   private proc: TerminalProcess | null = null
+  private pendingInput: { data: string; binary: boolean; offset: number }[] = []
+  private inputTimer?: ReturnType<typeof setTimeout>
   private cols = 80
   private rows = 24
   private remoteAbort: AbortController | null = null
@@ -388,8 +390,10 @@ class Session {
 
   write(data: string, binary = false): void {
     if (!this.proc || this.phase === 'dead') return
-    if (!binary && (data.includes('\r') || data.includes('\n')) && this.phase === 'prompt' && this.state !== 'running') {
-      const command = this.shellInput + data.split(/[\r\n]/)[0]
+    const bracketed = !binary && data.startsWith('\x1b[200~') && data.endsWith('\x1b[201~')
+    const submitted = !binary && !bracketed && (data.includes('\r') || data.includes('\n'))
+    if (submitted && this.phase === 'prompt' && this.state !== 'running') {
+      const command = this.shellInput + data.slice(0, data.search(/[\r\n]/))
       const custom = submittedCustomAgent(command, db().custom, this.hostId)
       this.activeAgent = custom?.id || submittedAgent(command) || null
       if (custom?.session && isConfiguredLaunch(command, custom, this.hostId)) {
@@ -412,13 +416,52 @@ class Session {
       this.commandSentAt = Date.now()
       this.emit(false)
     } else if (!binary && this.phase === 'prompt') {
-      for (const char of data) {
+      const input = bracketed ? data.slice(6, -6) : data
+      const multilinePaste = bracketed && /[\r\n]/.test(input)
+      if (multilinePaste) this.shellInput = ''
+      for (const char of (multilinePaste ? '' : input.slice(0, 8192))) {
         if (char === '\x7f' || char === '\b') this.shellInput = this.shellInput.slice(0, -1)
         else if (char === '\x03' || char === '\x15') this.shellInput = ''
         else if (char >= ' ' && this.shellInput.length < 8192) this.shellInput += char
       }
     }
-    this.proc.write(binary ? Buffer.from(data, 'latin1') : data)
+    if (!this.pendingInput.length && data.length <= 8192) {
+      this.proc.write(binary ? Buffer.from(data, 'latin1') : data)
+      return
+    }
+    this.pendingInput.push({ data, binary, offset: 0 })
+    if (!this.inputTimer) this.flushInput(this.proc)
+  }
+
+  private flushInput(proc: TerminalProcess): void {
+    this.inputTimer = undefined
+    if (this.proc !== proc || this.disposed || this.procExited) {
+      this.pendingInput = []
+      return
+    }
+    const entry = this.pendingInput[0]
+    if (!entry) return
+    let end = Math.min(entry.offset + 8192, entry.data.length)
+    if (!entry.binary && end < entry.data.length) {
+      const code = entry.data.charCodeAt(end - 1)
+      if (code >= 0xD800 && code <= 0xDBFF) end--
+    }
+    const chunk = entry.data.slice(entry.offset, end)
+    proc.write(entry.binary ? Buffer.from(chunk, 'latin1') : chunk)
+    entry.offset = end
+    if (end === entry.data.length) this.pendingInput.shift()
+    if (this.pendingInput.length) this.inputTimer = setTimeout(() => this.flushInput(proc), 0)
+  }
+
+  private cancelPendingInput(proc: TerminalProcess): void {
+    clearTimeout(this.inputTimer)
+    this.inputTimer = undefined
+    const entry = this.pendingInput[0]
+    this.pendingInput = []
+    if (entry?.offset && !entry.binary && entry.data.startsWith('\x1b[200~') && entry.data.endsWith('\x1b[201~')) {
+      const markerStart = entry.data.length - 6
+      proc.write(entry.offset > markerStart ? entry.data.slice(entry.offset) : '\x1b[201~')
+    }
   }
 
   resize(cols: number, rows: number): void {
@@ -435,6 +478,7 @@ class Session {
 
   async interrupt(): Promise<'hint' | 'exit' | 'signal'> {
     if (!this.proc || this.phase === 'dead') return 'signal'
+    this.cancelPendingInput(this.proc)
     const now = Date.now()
     if (this.state === 'running' && this.lastC && now - this.lastC < 4000) {
       this.lastC = 0
@@ -507,6 +551,9 @@ class Session {
     if (this.disposeStarted) return
     this.disposeStarted = true
     this.disposed = true
+    clearTimeout(this.inputTimer)
+    this.inputTimer = undefined
+    this.pendingInput = []
     this.statusAbort.abort()
     this.lifecycle?.dispose()
     this.lifecycle = null

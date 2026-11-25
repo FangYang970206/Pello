@@ -1,6 +1,6 @@
 import { t } from '../shared/i18n'
 import { lazy, Suspense, useEffect, useId, useMemo, useRef, useState } from 'react'
-import type { DocumentDraft } from './documents'
+import { isDirty, type DocumentDraft } from './documents'
 import { SourceHighlight } from './SourceHighlight'
 import { mediaKind } from '../shared/media'
 import { useContentZoom } from './usePreviewWheel'
@@ -14,8 +14,9 @@ import { textMatches } from '../shared/search'
 const MarkdownEditor = lazy(() => import('./MarkdownEditor'))
 const MediaPreview = lazy(() => import('./MediaPreview'))
 
-export function FilePane({ path, anchor, location, onNavigate, document, onEdit, onSave, onReload, onHistory, onCompose, onToggleRight, layout, onLayout }: {
+export function FilePane({ path, anchor, location, onNavigate, document, onEdit, onSave, onReload, onHistory, onCompose, onToggleRight, layout, onLayout, visible = true }: {
   path: string
+  visible?: boolean
   anchor?: string
   location?: SearchLocation
   onNavigate: (path: string, anchor?: string) => void
@@ -34,11 +35,14 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
   const gutter = useRef<HTMLDivElement>(null)
   const highlight = useRef<HTMLPreElement>(null)
   const format = useRef<((command: string) => void) | null>(null)
-  const [visual, setVisual] = useState(true)
+  const [visualMode, setVisual] = useState<boolean>()
   const [preview, setPreview] = useState<{ url?: string; error?: string; content?: string; replacementId?: string }>({})
   const markdown = /\.(md|markdown|mdown)$/i.test(path)
   const html = /\.html?$/i.test(path)
   const media = mediaKind(path)
+  const visual = visualMode ?? !(markdown && (document?.draft.length || 0) > 2_000_000)
+  const plainSource = (document?.draft.length || 0) > 300_000
+  const showingSource = !((html || markdown) && visual) && !media
   const readonly = !document || !!media || document.binary || document.missing || document.tooBig
   const projectId = document?.projectId
   const { ref: content, zoom, changeZoom } = useContentZoom()
@@ -47,20 +51,26 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
   const source = useRef<HTMLTextAreaElement>(null)
   // Labels depend only on line count. Keep every label in one text node so
   // editing and saving do not reconcile or lay out tens of thousands of divs.
-  const lineCount = useMemo(() => document ? document.draft.split('\n').length : 0, [document?.draft])
+  const lineCount = useMemo(() => {
+    if (!showingSource || !document) return 0
+    let count = 1
+    for (let offset = document.draft.indexOf('\n'); offset >= 0; offset = document.draft.indexOf('\n', offset + 1)) count++
+    return count
+  }, [showingSource, document?.draft])
   const lineNumbers = useMemo(() => Array.from({ length: lineCount }, (_, index) => String(index + 1)).join('\n'), [lineCount])
   const richSearch = useRef<SearchAdapter | null>(null)
   const [renderedText, setRenderedText] = useState('')
   const located = useRef('')
   const [locationError, setLocationError] = useState('')
   const search = useDocumentSearch({ root: content, text: (markdown || html) && visual ? renderedText : document?.draft || '',
-    revision: `${visual}:${preview.url || ''}`,
-    enabled: !readonly,
+    revision: `${visible}:${visual}:${preview.url || ''}`,
+    enabled: visible && !readonly,
     save: onSave,
     replace: !readonly && (!(markdown || html) || !visual) && !document?.replacing ? onEdit : undefined,
     replaceRanges: !readonly && markdown && visual && !document?.replacing ? (matches, value) => richSearch.current?.replace?.(matches, value) : undefined,
     focus: () => { if (markdown && visual) richSearch.current?.focus(); else if (html && visual) frame.current?.focus(); else source.current?.focus() },
     reveal: (match, matches, index) => {
+      if (!visible) return
       if (markdown && visual) { richSearch.current?.reveal(match, matches, index); return }
       if (html && visual) { frame.current?.contentWindow?.postMessage({ type: 'pello-preview-search', matches, current: match, open: search.open }, '*'); return }
       clearSearchHighlights(content.current)
@@ -77,6 +87,7 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
     }
   })
   useEffect(() => {
+    if (!visible) return
     if (!location) { setLocationError(''); return }
     if (readonly || located.current === location.id) return
     // Project results refer to source lines, including Markdown/HTML syntax.
@@ -102,9 +113,13 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
       highlight.current.scrollLeft = field.scrollLeft
     }
     field.dispatchEvent(new Event('scroll'))
-  }, [location, readonly, markdown, html, visual, document])
+  }, [location, readonly, markdown, html, visual, document, visible])
   useEffect(() => { const root = content.current; return () => clearSearchHighlights(root) }, [])
   useEffect(() => {
+    if (!visible && html) frame.current?.contentWindow?.postMessage({ type: 'pello-preview-search', open: false }, '*')
+  }, [html, visible])
+  useEffect(() => {
+    if (!visible || !html) return
     const receive = (event: MessageEvent) => {
       if (event.source !== frame.current?.contentWindow) return
       if (event.data?.type === 'pello-preview-zoom' && Number.isFinite(event.data.deltaY) && event.data.deltaY) changeZoom(event.data.deltaY)
@@ -119,20 +134,28 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
     window.addEventListener('message', receive)
     return () => window.removeEventListener('message', receive)
   })
-  useEffect(() => window.awb.onPreviewSource((url) => { if (html && frame.current?.src === url) { setPreview({}); setVisual(false) } }), [html])
   useEffect(() => {
-    if (!html || !visual || !projectId) return
+    if (!html || !visible) return
+    return window.awb.onPreviewCommand((url, command) => {
+      if (frame.current?.src !== url) return
+      if (command === 'reload') onReload()
+      else { setPreview({}); setVisual(false) }
+    })
+  }, [html, visible, onReload])
+  useEffect(() => {
+    if (!html || !visual || !projectId || readonly) return
     if (document?.replacing) { setPreview({}); return }
     let stopped = false
-    void window.awb.previewUrl(projectId, path, document?.draft).then((url) => {
+    const draft = isDirty(document) ? document.draft : undefined
+    void window.awb.previewUrl(projectId, path, draft, document.assetToken).then((url) => {
       if (!stopped) setPreview({ url, content: document?.draft, replacementId: document?.replacementId })
     }).catch((error) => { if (!stopped) setPreview({ error: String(error) }) })
     return () => { stopped = true }
-  }, [html, visual, projectId, path, document?.version, document?.draft, document?.replacing, document?.replacementId])
+  }, [html, visual, projectId, path, readonly, document?.version, document?.text, document?.draft, document?.replacing, document?.replacementId, document?.assetToken])
   async function contextMenu() {
     const command = await window.awb.documentMenu({ markdown, visual: (markdown || html) && visual,
       undo: !!document?.past?.length, redo: !!document?.future?.length, editable: !readonly, layout })
-    if (command === 'mode') { setPreview({}); setVisual((value) => !value) }
+    if (command === 'mode') { setPreview({}); setVisual(!visual) }
     else if (command === 'save') onSave()
     else if (command === 'reload') onReload()
     else if (command === 'panel') onToggleRight()
@@ -157,18 +180,18 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
           else onHistory(key === 'y' || event.shiftKey)
         }
       }}>
-      <DocumentSearch search={search} scope={html && visual ? t("HTML 预览仅支持查找，切换到源码后可替换") : undefined} />
-      {document?.replacing ? <p className="rmeta" role="status">{t("正在处理文件覆盖…")}</p> : media && document ? <Suspense fallback={null}>
+      {visible ? <DocumentSearch search={search} scope={html && visual ? t("HTML 预览仅支持查找，切换到源码后可替换") : undefined} /> : null}
+      {document?.replacing ? <p className="rmeta" role="status">{t("正在处理文件覆盖…")}</p> : media && document && !document.missing && !document.tooBig ? <Suspense fallback={null}>
         <MediaPreview key={`${document.projectId}:${path}:${document.replacementId || ''}`} projectId={document.projectId} path={path} version={document.version} assetToken={document.assetToken} />
-      </Suspense> : readonly ? <div className="empty"><div className="in"><h2>{!document ? t("正在读取文件…") : document.missing ? t("文件不存在") : document.binary ? t("无法编辑二进制或非 UTF-8 文件") : t("文件超过 2 MB，请使用外部编辑器")}</h2></div></div>
+      </Suspense> : readonly ? <div className="empty"><div className="in"><h2>{!document ? t("正在读取文件…") : document.missing ? t("文件不存在") : media && document.tooBig ? t("预览资源超过 12 MB") : document.binary ? t("无法编辑二进制或非 UTF-8 文件") : t("文件超过 10 MB，请使用外部编辑器")}</h2></div></div>
         : html && visual ? preview.error ? <p className="file-error" role="alert">{preview.error}</p> : preview.url && preview.content === document.draft && preview.replacementId === document.replacementId ?
           <div className="html-preview-viewport"><iframe ref={frame} key={preview.url} className="html-preview" title={t("HTML 预览")} sandbox="allow-scripts" src={`${preview.url}${preview.url.includes('?') ? '&' : '?'}workbenchWheel=1&workbenchView=${encodeURIComponent(viewId)}`} onLoad={() => frame.current?.contentWindow?.postMessage({ type: 'pello-preview-search', matches: search.open ? search.matches : [], current: search.open ? search.matches[search.active] : null, open: search.open }, '*')} style={{ zoom, width: `${100 / zoom}%`, height: `${100 / zoom}%` }} /></div> : null
         : markdown && visual ? <Suspense fallback={null}>
           <MarkdownEditor value={document.draft} projectId={document.projectId} path={path} anchor={anchor} onNavigate={onNavigate} onChange={onEdit} formatRef={format} searchRef={richSearch} onSearchText={setRenderedText} />
         </Suspense> : <div className="file-editor">
           <div className="editor-gutter" ref={gutter} aria-hidden="true">{lineNumbers}</div>
-          <div className="source-editor">
-          <pre ref={highlight} className="source-highlight" aria-hidden="true"><SourceHighlight value={document.draft} path={path} /></pre>
+          <div className={`source-editor${plainSource && !search.open && !location ? ' plain-source' : ''}`}>
+          {!plainSource || search.open || location ? <pre ref={highlight} className="source-highlight" aria-hidden="true"><SourceHighlight value={document.draft} path={path} /></pre> : null}
           <textarea ref={source} aria-label={t("文件内容")} value={document.draft} wrap="off" spellCheck={false} autoCorrect="off" autoCapitalize="off"
             onChange={(event) => onEdit(event.target.value)}
             onScroll={(event) => { if (gutter.current) gutter.current.scrollTop = event.currentTarget.scrollTop; if (highlight.current) { highlight.current.scrollTop = event.currentTarget.scrollTop; highlight.current.scrollLeft = event.currentTarget.scrollLeft } }}

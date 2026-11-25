@@ -1,5 +1,5 @@
 import { t } from '../shared/i18n'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ComponentProps } from 'react'
 import type { AgentInfo, FileDiff, ProcState, Project, SearchLocation, ShellKind, ThemeName } from '../shared/types'
 import { resolveAgent } from '../shared/types'
 import { Icon, Mark } from './icons'
@@ -34,6 +34,13 @@ export type DiffTab = { id: string; type: 'diff'; projectId: string; targetId?: 
 export type FileTab = { id: string; type: 'file'; projectId: string; targetId?: string; path: string; dirty?: boolean; anchor?: string; location?: SearchLocation }
 export type Tab = TermTab | DiffTab | FileTab
 export const fileTarget = (tab: Tab): string => tab.type !== 'term' && tab.targetId || tab.projectId
+
+function RetainedFilePane({ visible, ...props }: ComponentProps<typeof FilePane> & { visible: boolean }) {
+  const html = /\.html?$/i.test(props.path)
+  const [opened, setOpened] = useState(visible)
+  useEffect(() => { if (visible && html) setOpened(true) }, [visible, html])
+  return visible || (html && opened) ? <FilePane {...props} visible={visible} /> : null
+}
 
 export function Workspace({
   project,
@@ -123,6 +130,7 @@ export function Workspace({
   const tabById = new Map(mine.map((tab) => [tab.id, tab]))
   // Tab content keeps one parent and stable keys when its group changes.
   const terms = tabs.filter((tab): tab is TermTab => tab.type === 'term')
+  const htmlTabs = tabs.filter((tab) => tab.type === 'file' && /\.html?$/i.test(tab.path))
   const layoutKey = `${project?.id}:${sessionId}`
   const savedTiles = layouts[layoutKey]
   const lastShown = useRef<Record<string, string | undefined>>({})
@@ -157,9 +165,9 @@ export function Workspace({
     } catch (error) { setLayoutError(String(error)) }
     finally { setSplitting(false) }
   }
-  function moveTab(id: string, target: string) {
+  function moveTab(id: string, target: string, before?: string) {
     if (!mine.some((tab) => tab.id === id) || splitting) return
-    setLayouts((value) => ({ ...value, [layoutKey]: moveGroupTab(groups, id, target) }))
+    setLayouts((value) => ({ ...value, [layoutKey]: moveGroupTab(groups, id, target, before) }))
     lastShown.current[layoutKey] = id
     onSelect(id)
   }
@@ -175,6 +183,7 @@ export function Workspace({
       return
     }
     if (command === 'rename') { setRenaming(id); return }
+    if (command === 'reload') { onReloadFile(id); return }
     await layoutCommand(id, command)
   }
 
@@ -225,9 +234,9 @@ export function Workspace({
                 style={{ gridColumn: `${group.x + 1} / span ${group.width}`, gridRow: `${group.y + 1} / span ${group.height}` }}
                 tabs={group.tabs.map((id) => tabById.get(id)!)} activeId={group.active} agents={agents} installed={installed}
                 rightOpen={rightOpen} onToggleRight={onToggleRight} onSelect={onSelect} onClose={onClose} onPaneMenu={(id) => void paneMenu(id)} onRenameTerm={onRenameTerm}
-                renaming={renaming} setRenaming={setRenaming} onMoveTab={(id) => moveTab(id, group.id)}
+                renaming={renaming} setRenaming={setRenaming} onMoveTab={(id, before) => moveTab(id, group.id, before)}
                 onNewTerm={() => { onSelect(group.active); onNewTerm() }} />)}
-              {[...terms, ...mine.filter((tab) => tab.type !== 'term')].map((tab) => {
+              {[...terms, ...htmlTabs, ...mine.filter((tab) => tab.type === 'diff' || (tab.type === 'file' && !/\.html?$/i.test(tab.path)))].map((tab) => {
                 const tile = groups.find((group) => group.tabs.includes(tab.id))
                 const visible = tab.projectId === project?.id && tile?.active === tab.id
                 const focus = visible && tab.id === shown?.id
@@ -253,9 +262,9 @@ export function Workspace({
                       : visible && tab.type === 'diff' ? <DiffPane diff={diffs[key] || null} mode={diffModes[tab.id] || defaultDiffMode} onMode={(mode) => onDmode(tab.id, mode)} onDiscard={() => onDiscard(tab.id)} untracked={!!untracked[tab.path]}
                         document={documents[key] || null} baseline={baselines[key]?.draft} onBaseline={(text) => onBaseline(tab.id, text)} onBaselineHistory={(redo) => onBaselineHistory(tab.id, redo)}
                         onEdit={(text) => onEditFile(tab.id, text)} onSave={() => onSaveFile(tab.id)} onReload={() => onReloadFile(tab.id)} onCompose={(value) => onComposeFile(tab.id, value)} onHistory={(redo) => onHistoryFile(tab.id, redo)} />
-                      : visible && tab.type === 'file' ? <FilePane path={tab.path} anchor={tab.anchor} location={tab.location} onNavigate={(path, anchor) => onNavigateFile(path, anchor, fileTarget(tab))} document={documents[key] || null}
+                      : tab.type === 'file' ? <RetainedFilePane visible={visible} path={tab.path} anchor={tab.anchor} location={tab.location} onNavigate={(path, anchor) => onNavigateFile(path, anchor, fileTarget(tab))} document={documents[key] || null}
                         onEdit={(text) => onEditFile(tab.id, text)} onSave={() => onSaveFile(tab.id)} onReload={() => onReloadFile(tab.id)} onHistory={(redo) => onHistoryFile(tab.id, redo)} onCompose={(value) => onComposeFile(tab.id, value)} onPreviewHtml={() => onPreviewHtml(tab.id)}
-                        rightOpen={rightOpen} onToggleRight={onToggleRight} layout={layoutOptions(tab.id)} onLayout={(command) => void layoutCommand(tab.id, command)} /> : null}
+                        rightOpen={rightOpen} onToggleRight={onToggleRight} layout={tile ? layoutOptions(tab.id) : { horizontal: false, vertical: false, merge: false }} onLayout={(command) => void layoutCommand(tab.id, command)} /> : null}
                   </div>
                 )
               })}

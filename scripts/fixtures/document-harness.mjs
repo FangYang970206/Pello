@@ -26,5 +26,5 @@ export async function installDocumentHarness(app, page, accelerate = true) {
 
 export async function documentCommand(app, page, command) {
   await app.evaluate((_electron, command) => { globalThis.__documentMenuCommand = command }, command)
-  await page.locator('.file-content').dispatchEvent('contextmenu')
+  await page.locator('.pane.focus .file-content').dispatchEvent('contextmenu')
 }

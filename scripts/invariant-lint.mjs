@@ -106,14 +106,14 @@ export function checkInvariants(files) {
     'AWB092', 'src/main/remote-git.ts', '远程 Git 只读操作不刷新索引，跨用户写入须以仓库所有者执行')
   require(hasString(named(ssh, 'remoteCommand'), 'ProxyCommand=false') && hasString(named(ssh, 'remoteCommand'), '-S') && called(named(ssh, 'openRemoteStream'), 'remoteCommand').length && files.get('src/main/terminal-context-shell.ts')?.includes('ControlPersist=no') && files.get('src/main/terminal-context.ts')?.includes('this.token'),
     'AWB093', 'src/main/ssh.ts', '终端 SSH 跟随须复用已认证连接、校验会话报告且禁止失败后重新连接')
-  const discovery = source('src/main/skill-discovery.ts')
-  require(called(named(discovery, 'scan'), 'bytes').some((call) => call.arguments[0]?.getText().includes('/zip/${revision}')) && called(named(discovery, 'install'), 'importSkills').length && called(named(discovery, 'close'), 'abort').length,
-    'AWB094', 'src/main/skill-discovery.ts', 'Skill 发现须固定仓库版本、沿用校验安装并支持取消')
+  const recommendations = files.get('src/renderer/SkillRecommendations.tsx') || ''
+  require(recommendations.includes('SKILL_REPOSITORIES.map(') && recommendations.includes('window.awb.openSkillRecommendation(id)') && !recommendations.includes('importSkills') && files.get('package.json')?.includes('scripts/skill-discovery-ui-check.mjs'),
+    'AWB094', 'src/renderer/SkillRecommendations.tsx', 'Skill 推荐使用固定仓库入口并由主进程打开浏览器，导入仍使用独立的添加入口')
   require(named(save, 'saveFile')?.getText().includes('gitWrite(fileTarget(tab),') || named(source('src/renderer/App.tsx'), 'saveFile')?.getText().includes('gitWrite(fileTarget(tab),'),
     'AWB095', 'src/renderer/App.tsx', '文件保存必须绑定打开时的终端目标，不能使用后来切换的机器或目录')
-  const catalog = named(source('src/shared/skill-catalog.ts'), 'githubSkillRepository')
-  require(hasString(catalog, 'https:') && hasString(catalog, 'github.com') && catalog?.getText().includes('url.password') && called(named(discovery, 'preview'), 'previewSkill').length,
-    'AWB096', 'src/shared/skill-catalog.ts', '手动 Skill 链接只接受 GitHub HTTPS 地址，预览读取已校验快照')
+  const recommendationHandler = files.get('src/main/index.ts')?.split("ipcMain.handle('resources:open-recommendation'")[1]?.split('ipcMain.handle(')[0] || ''
+  require(recommendationHandler.includes('SKILL_REPOSITORIES.find((entry) => entry.id === id)') && recommendationHandler.includes('if (!item) throw') && recommendationHandler.includes('shell.openExternal(`https://github.com/${item.repository}`)'),
+    'AWB096', 'src/main/index.ts', '只允许在系统浏览器打开固定的 GitHub 推荐仓库')
   const preview = source('src/main/preview.ts')
   require(called(preview, 'listen').some((call) => call.arguments[1]?.text === '127.0.0.1') && called(preview, 'readAsset').length &&
     called(preview, 'openExternal').every((call) => call.arguments[0]?.getText() === 'url'), 'AWB021', 'src/main/preview.ts', '浏览器预览限本机、项目资源与受控 URL')
@@ -289,7 +289,7 @@ export function checkInvariants(files) {
     'AWB090', 'src/renderer/styles/markdown.css', 'Markdown 代码选区使用主题半透明背景，关闭叠加的原生背景并使用清晰的主题正文色')
   require(groupTabs.includes('useAnchoredMenu(menu && overflow') && groupTabs.includes("el.addEventListener('wheel', wheel, { passive: false })") && groupTabs.includes('event.ctrlKey || event.metaKey || event.altKey || renaming') && groupTabs.includes('role="listbox"') && declarations('.tabs-popover[popover]').get('position') === 'fixed' && scripts.check?.includes('scripts/tab-navigation-check.mjs'),
     'AWB081', 'src/renderer/WorkspaceTabs.tsx', '标签滚轮切换只影响当前栏，全部标签列表锚定箭头并复用外侧关闭与键盘导航，保留行为回归')
-  require(workspaceText.includes('[...terms, ...mine.filter') && workspaceText.includes('documents[key]') && workspaceText.includes('diffs[key]') && workspaceText.includes('onBaseline(tab.id, text)') && workspaceText.includes('reconcileGroups(') && workspaceText.includes('tabs={group.tabs.map((id) => tabById.get(id)!)}') && groupTabs.includes('tabs.map((tab)') && !workspaceText.includes('pane-caption') && declarations('.panes').get('display') === 'grid' && search.includes("closest('.pane:not(.focus)')") && files.get('src/main/index.ts')?.includes('...layoutMenuItems(options.layout, resolve)') && scripts.check?.includes('scripts/workspace-split-check.mjs') && scripts.check?.includes('scripts/editor-groups-check.mjs'),
+  require(workspaceText.includes('[...terms, ...htmlTabs, ...mine.filter') && workspaceText.includes('documents[key]') && workspaceText.includes('diffs[key]') && workspaceText.includes('onBaseline(tab.id, text)') && workspaceText.includes('reconcileGroups(') && workspaceText.includes('tabs={group.tabs.map((id) => tabById.get(id)!)}') && groupTabs.includes('tabs.map((tab)') && !workspaceText.includes('pane-caption') && declarations('.panes').get('display') === 'grid' && search.includes("closest('.pane:not(.focus)')") && files.get('src/main/index.ts')?.includes('...layoutMenuItems(options.layout, resolve)') && scripts.check?.includes('scripts/workspace-split-check.mjs') && scripts.check?.includes('scripts/editor-groups-check.mjs'),
     'AWB077', workspaceFile, '终端、文件与 Diff 统一分栏，按内容管理草稿与比较基准，查找只接管当前栏并保留混合分栏回归')
   require(files.get('src/renderer/MarkdownEditor.tsx')?.includes('revealSearchRect(scroller') && scripts.check?.includes('scripts/search-navigation-check.mjs'),
     'AWB072', 'src/renderer/MarkdownEditor.tsx', '查找和上下导航定位实际匹配文字，使用所属视口并保留长文档及虚拟代码块回归')
@@ -354,6 +354,16 @@ export function checkInvariants(files) {
     files.get('src/shared/app-info.ts')?.includes("'zh-CN': '方阳', en: 'FangYang'") && !files.get('src/renderer/styles/extra.css')?.includes('about-nav') &&
     files.get(mainFile)?.includes('version: app.getVersion()') && files.get(mainFile)?.includes('shell.openExternal(APP_HOMEPAGE)') && files.get('src/renderer/styles/extra.css')?.includes('.about-eye, .git-scanning { animation: none; }'),
     'AWB087', 'src/renderer/AboutView.tsx', '关于页展示真实版本和品牌，固定主页经主进程打开，眨眼尊重减少动态效果')
+  const moveHandler = files.get(mainFile)?.split("ipcMain.handle('tree:move'")[1]?.split('ipcMain.handle(')[0] || ''
+  require(moveHandler.includes('await guardReplacement(') && moveHandler.includes('answer.response !== 1') && moveHandler.includes('replaceTreeMove(target, source, next.path, fromVersion, toVersion)') &&
+    rightPanel.includes('validMove(destination)') && groupTabs.includes('onMoveTab(id, tabs[index]?.id)') && scripts.check?.includes('scripts/drag-move-check.mjs'),
+    'AWB106', mainFile, '文件移动冲突须确认并按版本发布，标签拖放须按插入位置排序，保留原生拖放回归')
+  require(workspaceText.includes('html && opened') && files.get('src/renderer/App.tsx')?.includes('force ? undefined : previous.fileStamp') &&
+    files.get('src/main/git.ts')?.includes('bytes.length > MAX_DOCUMENT_BYTES') && files.get('src/main/preview.ts')?.includes('Buffer.byteLength(draft) > MAX_DOCUMENT_BYTES') &&
+    scripts.check?.includes('scripts/file-tab-refresh-check.mjs'),
+    'AWB107', workspaceFile, '保留 HTML 预览实例，按磁盘版本刷新，文本保存与 HTML 草稿沿用同一上限并保留回归')
+  require(called(named(pty, 'flushInput'), 'setTimeout').length && called(named(pty, 'flushInput'), 'charCodeAt').length && scripts.check?.includes('scripts/terminal-paste-size-check.mjs'),
+    'AWB108', 'src/main/pty.ts', '大文本粘贴分批转发，避免拆分 Unicode 字符并保留真实 PTY 回归')
   return errors
 }
 

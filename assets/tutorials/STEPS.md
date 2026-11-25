@@ -14,7 +14,7 @@
 - [边审阅，边修改](#10-git)
 - [终端、文件与 Diff 混合分栏](#11-split)
 - [MCP 与 Skill 原生资源](#12-resources)
-- [发现并安装 Skill](#13-discovery)
+- [浏览推荐 Skill](#13-discovery)
 - [语言、主题与独立字号](#14-appearance)
 - [更新与数据随安装目录保存](#15-updates)
 - [为临时任务创建独立目录](#16-temporary)
@@ -269,26 +269,11 @@
 
 <a id="13-discovery"></a>
 
-## 发现并安装 Skill
+## 浏览推荐 Skill
 
-[操作指南](https://github.com/FangYang970206/Pello/wiki/Skill-Discovery) · [播放聚焦动图](13-discovery.gif)
+从「设置 → Skill → 推荐」打开 GitHub 仓库。需要导入下载的目录或 ZIP 时，使用 Skill 页的「添加」。
 
-### 01  「发现」打开仓库目录，内置五个来源
-
-[![01  「发现」打开仓库目录，内置五个来源](13-discovery-1.jpg)](13-discovery-1.jpg)
-
-### 02  扫描固定提交，点击名称阅读完整说明
-
-[![02  扫描固定提交，点击名称阅读完整说明](13-discovery-2.jpg)](13-discovery-2.jpg)
-
-### 03  搜索 Skill，勾选需要的项目与目标 Agent
-
-[![03  搜索 Skill，勾选需要的项目与目标 Agent](13-discovery-3.jpg)](13-discovery-3.jpg)
-
-### 04  安装后回到列表，同名资源不会被覆盖
-
-[![04  安装后回到列表，同名资源不会被覆盖](13-discovery-4.jpg)](13-discovery-4.jpg)
-
+[操作指南](https://github.com/FangYang970206/Pello/wiki/Skill-Discovery)
 
 <a id="14-appearance"></a>
 

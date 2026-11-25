@@ -249,7 +249,7 @@ try {
   await page.click('[data-a=rmode][data-id=files]')
   for (const [name, kind] of [['note.txt', 'source'], ['guide.md', 'markdown'], ['page.html', 'html'], ['sample.pdf', 'pdf']]) {
     await open(name)
-    if (kind === 'html') await documentCommand(app, page, 'mode')
+    if (kind === 'html') await page.getByRole('textbox', { name: 'File content', exact: true }).waitFor()
     if (kind === 'pdf') await page.locator('.pdf-page[data-rendered=true]').waitFor()
     await compactSearch(kind)
   }

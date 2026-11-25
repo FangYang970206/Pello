@@ -263,12 +263,17 @@ try {
     await assert.rejects(page.evaluate(() => window.awb.treeRename('p', '', 'new-root', true)))
     await assert.rejects(page.evaluate(() => window.awb.treeRename('p', 'occupied.txt', '../bad', false)))
   })
-  if (process.platform === 'win32') await check('Windows project moves reject collisions and moving into descendants', async () => {
+  if (process.platform === 'win32') await check('Windows project moves preserve a cancelled collision and reject moving into descendants', async () => {
     fs.mkdirSync(path.join(projectDir, 'move-src', 'nested'), { recursive: true })
     fs.mkdirSync(path.join(projectDir, 'move-dst'))
     fs.writeFileSync(path.join(projectDir, 'move-src', 'item.txt'), 'source')
     fs.writeFileSync(path.join(projectDir, 'move-dst', 'item.txt'), 'destination')
-    await assert.rejects(page.evaluate(() => window.awb.treeMove('p', 'move-src/item.txt', 'move-dst', false)))
+    await app.evaluate(({ dialog }) => {
+      const original = dialog.showMessageBox
+      dialog.showMessageBox = (window, options) => options?.title === '覆盖同名对象？'
+        ? Promise.resolve({ response: 0, checkboxChecked: false }) : original.call(dialog, window, options)
+    })
+    assert.equal(await page.evaluate(() => window.awb.treeMove('p', 'move-src/item.txt', 'move-dst', false)), null)
     assert.equal(fs.readFileSync(path.join(projectDir, 'move-dst', 'item.txt'), 'utf8'), 'destination')
     await assert.rejects(page.evaluate(() => window.awb.treeMove('p', 'move-src', 'move-src/nested', true)))
     assert.equal(await page.evaluate(() => window.awb.treeMove('p', 'move-src/nested', 'move-dst', true)), 'move-dst/nested')

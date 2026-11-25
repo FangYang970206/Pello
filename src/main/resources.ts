@@ -420,14 +420,6 @@ export class ResourceManager {
   scanSkills(source: string): { name: string; description: string; path: string }[] {
     return this.withSkills(source, (skills, staging) => skills.map((skill) => ({ name: skill.name, description: skillInfo(path.join(skill.folder, 'SKILL.md')).description, path: path.relative(staging, skill.folder) || '.' })))
   }
-  previewSkill(source: string, name: string): ResourceDetail {
-    return this.withSkills(source, (skills) => {
-      const skill = skills.find((item) => item.name === name)
-      if (!skill) throw new Error(t('请选择扫描结果中的 Skill'))
-      const file = path.join(skill.folder, 'SKILL.md')
-      return { ...skillInfo(file), path: name, content: readText(file) }
-    })
-  }
   importSkills(targets: ResourceTarget[], source: string, agents: string[], names?: string[]): ResourceResult[] {
     return this.withSkills(source, (discovered) => {
       const skills = names ? discovered.filter((skill) => names.includes(skill.name)) : discovered

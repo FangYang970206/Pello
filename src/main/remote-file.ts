@@ -10,7 +10,7 @@ import { psQuote } from './platform'
 import { openRemoteStream } from './ssh'
 import { LINUX_FILE_VERSION, WINDOWS_FILE_VERSION, remoteFileVersion } from './remote-version'
 import { createTreeEntry, fileTree, treePath, validateEntryName, type Target } from './git'
-import { publishRemoteStage, remoteEntryVersion, removeRemoteStage } from './remote-replace'
+import { publishRemoteStage, treeEntryVersion, removeRemoteStage } from './remote-replace'
 
 const READ_LINUX = () => `import os, stat, sys
 root, relative = sys.argv[1:]
@@ -158,7 +158,7 @@ export async function uploadRemoteSources(target: Target, parent: string, source
       const existing = listing.get(key(original))
       if (options.automatic && existing && (item.directory || existing.dir)) {
         if (existing.reserved) throw new Error(t("本批次存在重复目标名称"))
-        item.replacementVersion = await remoteEntryVersion(target, item.relative, signal)
+        item.replacementVersion = await treeEntryVersion(target, item.relative, signal)
         if (item.replacementVersion === 'absent') throw new Error(t("目标已更改，请重新上传"))
       } else if (existing) {
         if (options.automatic && existing.reserved) throw new Error(t("本批次存在重复目标名称"))

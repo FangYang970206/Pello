@@ -19,6 +19,7 @@ let interruptUpload = ''
 let failDownload = ''
 let failVersion = false
 let alterUpload = false
+let alterDownloadTarget = ''
 let uploadPaused
 let releaseUpload = () => {}
 const server = new ssh2.Server({ hostKeys: [hostKey] }, (client) => {
@@ -35,6 +36,10 @@ const server = new ssh2.Server({ hostKeys: [hostKey] }, (client) => {
       }
       if (failDownload && info.command.includes(failDownload) && info.command.includes('sys.stdout.buffer.write')) {
         failDownload = ''; stream.stderr.write('fixture download failure'); stream.exit(1); stream.end(); return
+      }
+      if (alterDownloadTarget && info.command.includes('large 中文.bin') && info.command.includes('sys.stdout.buffer.write')) {
+        fs.writeFileSync(alterDownloadTarget, 'do not overwrite')
+        alterDownloadTarget = ''
       }
       if (alterUpload && info.command.includes('传输未确认')) { alterUpload = false; wsl('python3', '-c', "import pathlib,sys; pathlib.Path(sys.argv[1], '上传 大文件.bin').write_text('external content must survive')", remoteRoot) }
       const encoded = Buffer.from(info.command, 'utf8').toString('base64')
@@ -87,6 +92,21 @@ try {
   wsl('mkdir', '-p', `${remoteRoot}/destination`)
   assert.equal(await page.evaluate(() => window.awb.treeMove('linux-project', 'renamed-folder', 'destination', true)), 'destination/renamed-folder')
   assert.equal((await page.evaluate(() => window.awb.gitRead('linux-project', 'destination/renamed-folder/child'))).text, 'child')
+  wsl('python3', '-c', "import pathlib,sys; p=pathlib.Path(sys.argv[1])/'renamed-folder'; p.mkdir(); (p/'new').write_text('replacement')", remoteRoot)
+  await app.evaluate(({ dialog }) => {
+    globalThis.__treeMoveResponse = 0
+    const show = dialog.showMessageBox
+    dialog.showMessageBox = (window, options) => options?.title === '覆盖同名对象？'
+      ? Promise.resolve({ response: globalThis.__treeMoveResponse, checkboxChecked: false }) : show.call(dialog, window, options)
+  })
+  assert.equal(await page.evaluate(() => window.awb.treeMove('linux-project', 'renamed-folder', 'destination', true)), null)
+  assert.equal((await page.evaluate(() => window.awb.gitRead('linux-project', 'destination/renamed-folder/child'))).text, 'child')
+  await app.evaluate(() => { globalThis.__treeMoveResponse = 1 })
+  assert.equal(await page.evaluate(() => window.awb.treeMove('linux-project', 'renamed-folder', 'destination', true)), 'destination/renamed-folder')
+  assert.equal((await page.evaluate(() => window.awb.gitRead('linux-project', 'destination/renamed-folder/new'))).text, 'replacement')
+  assert.equal((await page.evaluate(() => window.awb.gitRead('linux-project', 'destination/renamed-folder/child'))).missing, true)
+  assert.equal((await page.evaluate(() => window.awb.gitRead('linux-project', 'renamed-folder/new'))).missing, true)
+  console.log('PASS Linux SSH folder move preserves both sides on cancel and replaces the complete folder on confirmation')
   const batchRoot = path.join(data, 'batch-input')
   fs.mkdirSync(path.join(batchRoot, 'batch-folder', 'deep'), { recursive: true })
   for (const name of ['batch-a.txt', 'batch-b.txt', 'batch-folder/deep/a.txt', 'batch-folder/deep/b.txt']) fs.writeFileSync(path.join(batchRoot, name), `new ${name}`)
@@ -242,7 +262,8 @@ try {
   assert.equal(wsl('python3', '-c', "import pathlib,sys; p=pathlib.Path(sys.argv[1])/'Linux 上传目录'/'deep'; assert (p/'empty').is_dir(); assert (p/'data.bin').read_text()=='new binary version'; assert not (p/'data (1).bin').exists(); print((p/'fresh.txt').read_text())", remoteRoot), 'new child')
   assert.deepEqual(fs.readFileSync(uploadSource), expected)
   console.log('PASS Linux SSH streaming uploads preserve sources, cancel cleanly and replace entire same-name directories automatically')
-  fs.writeFileSync(download, 'do not overwrite')
+  fs.writeFileSync(download, 'approved destination before transfer')
+  alterDownloadTarget = download
   const conflictId = await page.evaluate(() => window.awb.transferDownload('linux-project', 'large 中文.bin'))
   await page.waitForFunction((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'completed'), conflictId, { timeout: 30000 })
   const conflict = await page.evaluate((id) => window.__downloadStates.filter((item) => item.id === id).at(-1), conflictId)

@@ -6,9 +6,10 @@ import { onTerminalRouteClosed } from './terminal-context'
 
 export type ReadTarget = { cwd: string; host: Host | null; platform: 'linux' | 'windows' }
 export const readTargetKey = (target: ReadTarget) => JSON.stringify([target.cwd, target.platform, target.host?.id, target.host?.addr, target.host?.port, target.host?.user, target.host?.auth, target.host?.terminalRoute])
-type Job = { root: string; path: string; limit: number; resolve: (bytes: Buffer) => void; reject: (error: Error) => void }
+type ReadResult = { bytes: Buffer; stamp?: string; unchanged?: boolean; tooBig?: boolean }
+type Job = { root: string; path: string; limit: number; stamp?: string; resolve: (result: ReadResult) => void; reject: (error: Error) => void }
 const readers = new Map<string, RemoteReader>()
-const pending = new Map<string, Promise<Buffer>>()
+const pending = new Map<string, Promise<ReadResult>>()
 
 /** One framed binary command per target, shared by all reads and authentication types. */
 class RemoteReader {
@@ -20,6 +21,7 @@ class RemoteReader {
   private body?: Buffer
   private received = 0
   private status = ''
+  private stamp?: string
   private timer?: ReturnType<typeof setTimeout>
   private idle?: ReturnType<typeof setTimeout>
   private closed = false
@@ -41,10 +43,10 @@ class RemoteReader {
       this.next()
     } catch (error) { this.close(error instanceof Error ? error : new Error(String(error))) }
   }
-  read(root: string, path: string, limit: number): Promise<Buffer> {
+  read(root: string, path: string, limit: number, stamp?: string): Promise<ReadResult> {
     if (this.closed) return Promise.reject(new Error(t('SSH 连接中断')))
     return new Promise((resolve, reject) => {
-      this.jobs.push({ root, path, limit, resolve, reject })
+      this.jobs.push({ root, path, limit, stamp, resolve, reject })
       this.next()
     })
   }
@@ -55,20 +57,20 @@ class RemoteReader {
     this.timer ??= setTimeout(() => this.close(new Error(t('远程命令执行超时'))), 20000)
     if (!this.stream) return
     this.current = this.jobs.shift()!
-    const { root, path, limit } = this.current
-    this.stream.stdin.write(JSON.stringify({ root, path, limit }) + '\n')
+    const { root, path, limit, stamp } = this.current
+    this.stream.stdin.write(JSON.stringify({ root, path, limit, stamp }) + '\n')
   }
   private receive(chunk: Buffer): void {
     if (this.closed) return
     if (!this.current) { this.close(new Error(t('SSH 连接中断'))); return }
     if (!this.body) {
       const end = chunk.indexOf(10)
-      if (this.header.length + (end < 0 ? chunk.length : end) > 128) { this.close(new Error(t('远程输出过大'))); return }
+      if (this.header.length + (end < 0 ? chunk.length : end) > 256) { this.close(new Error(t('远程输出过大'))); return }
       this.header = Buffer.concat([this.header, end < 0 ? chunk : chunk.subarray(0, end)])
       if (end < 0) return
-      const match = /^PELLO1 (OK|MISSING|LARGE|CHANGED|ERROR) (\d+)$/.exec(this.header.toString('ascii'))
+      const match = /^PELLO1 (OK|MISSING|LARGE|UNCHANGED|CHANGED|ERROR) (\d+)(?: ([\d:.-]{1,160}))?$/.exec(this.header.toString('ascii'))
       if (!match || Number(match[2]) > this.current.limit || (match[1] !== 'OK' && Number(match[2]) !== 0)) { this.close(new Error(t('远程输出过大'))); return }
-      this.status = match[1]; this.body = Buffer.alloc(Number(match[2]))
+      this.status = match[1]; this.stamp = match[3]; this.body = Buffer.alloc(Number(match[2]))
       chunk = chunk.subarray(end + 1)
     }
     if (this.received + chunk.length > this.body.length) { this.close(new Error(t('远程输出过大'))); return }
@@ -77,9 +79,8 @@ class RemoteReader {
     const job = this.current, bytes = this.body, status = this.status
     this.current = undefined; this.body = undefined; this.header = Buffer.alloc(0); this.received = 0
     clearTimeout(this.timer); this.timer = undefined
-    if (status === 'OK') job.resolve(bytes)
+    if (status === 'OK' || status === 'LARGE' || status === 'UNCHANGED') job.resolve({ bytes, stamp: this.stamp, tooBig: status === 'LARGE', unchanged: status === 'UNCHANGED' })
     else if (status === 'MISSING') job.reject(Object.assign(new Error(t('文件不存在')), { code: 'ENOENT' }))
-    else if (status === 'LARGE') job.reject(Object.assign(new Error(t('远程输出过大')), { code: 'EFBIG' }))
     else job.reject(new Error(status === 'CHANGED' ? t('文件已被其他程序修改，请重新读取后合并更改') : t('资源不存在或不可访问')))
     if (this.jobs.length) this.next()
     else { this.idle = setTimeout(() => this.close(), 60000); this.idle.unref() }
@@ -97,14 +98,27 @@ class RemoteReader {
   }
 }
 
-export function readRemoteBytes(target: ReadTarget, path: string, limit = 12_000_000): Promise<Buffer> {
-  const identity = readTargetKey(target), key = JSON.stringify([identity, path, limit])
+export function readRemoteEntry(target: ReadTarget, path: string, limit: number, stamp?: string): Promise<ReadResult> {
+  const identity = readTargetKey(target), key = JSON.stringify([identity, path, limit, stamp])
   const previous = pending.get(key)
   if (previous) return previous
   let reader = readers.get(identity)
   if (!reader) { reader = new RemoteReader(target, identity); readers.set(identity, reader) }
-  const request = reader.read(target.cwd, path, limit).finally(() => { if (pending.get(key) === request) pending.delete(key) })
+  const request = reader.read(target.cwd, path, limit, stamp).finally(() => { if (pending.get(key) === request) pending.delete(key) })
   pending.set(key, request)
+  return request
+}
+
+const byteRequests = new WeakMap<Promise<ReadResult>, Promise<Buffer>>()
+export function readRemoteBytes(target: ReadTarget, path: string, limit = 12_000_000): Promise<Buffer> {
+  const entry = readRemoteEntry(target, path, limit)
+  const existing = byteRequests.get(entry)
+  if (existing) return existing
+  const request = entry.then((result) => {
+    if (result.tooBig) throw Object.assign(new Error(t('远程输出过大')), { code: 'EFBIG' })
+    return result.bytes
+  })
+  byteRequests.set(entry, request)
   return request
 }
 

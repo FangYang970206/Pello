@@ -54,11 +54,7 @@ export interface WorkbenchApi {
   scanResources(kind: 'mcp' | 'skills', source: string): Promise<import('./types').ResourceSourceItem[]>
   importMcpConfig(source: string, agents: string[], ids: string[]): Promise<ResourceResult[]>
   importSkills(source: string, agents: string[], names?: string[]): Promise<ResourceResult[]>
-  discoverSkills(repository: string, id: string): Promise<import('./skill-catalog').DiscoveredSkills>
-  skillRepositories(): Promise<import('./skill-catalog').SkillRepository[]>
-  previewDiscoveredSkill(id: string, name: string): Promise<import('./types').ResourceDetail>
-  closeSkillDiscovery(id: string): Promise<void>
-  installDiscoveredSkills(id: string, agents: string[], names: string[]): Promise<ResourceResult[]>
+  openSkillRecommendation(id: string): Promise<void>
   pickResource(kind: 'folder' | 'zip' | 'config'): Promise<string | null>
   saveSessions(projectId: string, terms: SavedTerm[], activeId?: string | null, groups?: WorkSession[], selected?: string): Promise<Database>
   saveBranch(projectId: string, branch: string): Promise<Database>
@@ -77,7 +73,7 @@ export interface WorkbenchApi {
   treeIgnoreSet(projectId: string, rules: string[]): Promise<void>
   treeCreate(projectId: string, parent: string, name: string, directory: boolean): Promise<string>
   treeRename(projectId: string, rel: string, name: string, directory: boolean): Promise<string>
-  treeMove(projectId: string, rel: string, parent: string, directory: boolean): Promise<string>
+  treeMove(projectId: string, rel: string, parent: string, directory: boolean): Promise<string | null>
   treeTrash(projectId: string, rel: string, directory: boolean): Promise<void>
   transferPick(projectId: string, parent: string, kind: 'files' | 'directory'): Promise<string | null>
   droppedFilePath(file: File): string
@@ -97,6 +93,7 @@ export interface WorkbenchApi {
   contentSearchStart(projectId: string, id: string, query: string, sensitive: boolean, regex?: boolean, whole?: boolean): Promise<void>
   contentSearchNext(id: string): Promise<import('./types').ContentSearchBatch>
   contentSearchCancel(id: string): Promise<void>
+  gitRefresh(projectId: string, rel: string, stamp?: string): Promise<FileContent | null>
   gitRead(projectId: string, rel: string): Promise<FileContent>
   gitWrite(projectId: string, rel: string, text: string, version: string | null): Promise<FileContent>
   previewUrl(projectId: string, rel: string, draft?: string, assetToken?: string): Promise<string>
@@ -109,7 +106,7 @@ export interface WorkbenchApi {
   documentMenu(options: { markdown: boolean; visual: boolean; undo: boolean; redo: boolean; editable: boolean; layout?: PaneLayoutOptions }): Promise<string | null>
   documentLink(projectId: string, source: string, href: string): Promise<{ path: string; anchor?: string } | null>
   paneMenu(options: PaneLayoutOptions & { terminal: boolean; reconnect?: boolean }): Promise<string | null>
-  onPreviewSource(cb: (url: string) => void): () => void
+  onPreviewCommand(cb: (url: string, command: 'source' | 'reload') => void): () => void
   ptyCreate(req: PtyCreateRequest): Promise<{ id: string; state: string; exitCode: number | null; startedAt: number | null; inputReady: boolean; shell: ShellKind; kind: string; agentKind?: string | null; agentSessionId?: string | null }>
   ptyWrite(id: string, data: string, binary?: boolean): void
   ptyResize(id: string, cols: number, rows: number): void

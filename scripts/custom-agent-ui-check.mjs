@@ -36,10 +36,14 @@ try{
  assert.ok(rejected,'main process must reject a session protocol that cannot identify the terminal conversation')
  await page.fill('[data-ce=start-args]','--session-id {sessionId}')
  await page.fill('[data-ce=resume-args]','--resume {sessionId}')
+ assert.equal(await page.locator('#modal .sws .sw').count(),16)
+ await page.locator('#modal .sws .sw').last().press('Space')
+ assert.equal(await page.locator('#modal .sws .sw').last().getAttribute('aria-pressed'),'true')
  await page.click('[data-a=ce-save]');await page.getByRole('dialog').waitFor({state:'detached'})
  const saved=(await page.evaluate(()=>window.awb.getState())).db.custom[0]
  assert.equal(saved.hosts.linux.cmd,'qwen-linux');assert.equal(saved.hosts.linux.shell,'bash');assert.equal(saved.cmd,'node')
  assert.equal(saved.session.resumeArgs,'--resume {sessionId}')
+ assert.equal(saved.color,'#e6a2a9')
  console.log('PASS per-machine commands, Linux shell choices, native local Bash tests, missing-command failure, and saved resume settings')
  for(const [theme,language,width,height,font,narrow] of [['light','zh-CN',1440,900,12,false],['dark','en',1024,680,16,false],['dark','zh-CN',1024,680,12,true],['light','en',1440,900,16,true]]){
    await app.evaluate(({BrowserWindow},{width,height})=>{const win=BrowserWindow.getAllWindows()[0];win.setSize(width,height)}, {width,height})
@@ -58,6 +62,17 @@ try{
    })
    assert.ok(geometry.width>=64&&geometry.ratio>.25,JSON.stringify(geometry));assert.ok(geometry.saveVisible&&geometry.bodyHeight>100,JSON.stringify(geometry));assert.ok(geometry.scrollWidth<=geometry.clientWidth+1,JSON.stringify(geometry))
    await page.screenshot({path:path.join(shots,`${dpi}-${theme}-${language}-${font}-${narrow?'narrow':'normal'}.png`)})
+   const palette = page.locator('#modal .sws')
+   await palette.scrollIntoViewIfNeeded()
+   const swatchesFit = await palette.evaluate((node) => {
+     const body = node.closest('.bdy').getBoundingClientRect()
+     return Array.from(node.querySelectorAll('.sw')).every((swatch) => {
+       const rect = swatch.getBoundingClientRect()
+       return rect.left >= body.left && rect.right <= body.right && rect.width >= 18
+     })
+   })
+   assert.ok(swatchesFit)
+   await page.screenshot({path:path.join(shots,`palette-${dpi}-${theme}-${language}-${font}.png`)})
  }
  console.log(`PASS rendered custom dialog, light/dark, Chinese/English, 12/16px, both window sizes, and a 360px container at ${dpi*100}% DPI`)
 }finally{await app.close()}

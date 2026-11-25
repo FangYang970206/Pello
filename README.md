@@ -113,11 +113,9 @@ Ctrl+F 查找，Ctrl+H 替换，自动定位匹配并保留撤销记录。[使�
 
 [![MCP 与 Skill](assets/tutorials/12-resources.gif)](assets/tutorials/12-resources.gif)
 
-### 发现 Skill
+### 推荐 Skill
 
-浏览 GitHub 仓库、搜索并阅读说明，选择所需 Skill 安装到目标 Agent。[使用指南](https://github.com/FangYang970206/Pello/wiki/Skill-Discovery)
-
-[![发现 Skill](assets/tutorials/13-discovery.gif)](assets/tutorials/13-discovery.gif)
+在设置的 Skill 页打开推荐仓库。下载目录或 ZIP 后，可用“添加”导入到目标 Agent。[使用指南](https://github.com/FangYang970206/Pello/wiki/Skill-Discovery)
 
 ### 外观与语言
 

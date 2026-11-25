@@ -43,11 +43,16 @@ export function mergeGroups(groups: EditorGroup[], id: string): EditorGroup[] {
   return [{ ...target, x: 0, y: 0, width: 2, height: 2, tabs: groups.flatMap((group) => group.tabs), active: id }]
 }
 
-export function moveGroupTab(groups: EditorGroup[], id: string, targetId: string): EditorGroup[] {
+export function moveGroupTab(groups: EditorGroup[], id: string, targetId: string, before?: string): EditorGroup[] {
   const target = groups.find((group) => group.id === targetId)
-  if (!target || target.tabs.includes(id)) return groups
+  const source = groups.find((group) => group.tabs.includes(id))
+  if (!source || !target || before === id) return groups
   const moved = groups.map((group) => {
-    const tabs = group === target ? [...group.tabs, id] : group.tabs.filter((tab) => tab !== id)
+    const tabs = group.tabs.filter((tab) => tab !== id)
+    if (group === target) {
+      const index = before ? tabs.indexOf(before) : -1
+      tabs.splice(index < 0 ? tabs.length : index, 0, id)
+    }
     return { ...group, tabs, active: group === target ? id : tabs.includes(group.active) ? group.active : tabs[0] }
   }).filter((group) => group.tabs.length)
   return moved.length === groups.length ? moved : fillGroups(moved)

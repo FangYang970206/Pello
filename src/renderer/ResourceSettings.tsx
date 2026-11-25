@@ -5,7 +5,7 @@ import { ResourceDialog } from './ResourceDialog'
 import { ResourceImportPreview } from './ResourceImportPreview'
 import { ResourceItemMenu } from './ResourceItemMenu'
 import { Icon } from './icons'
-import { SkillDiscoveryDialog } from './SkillDiscoveryDialog'
+import { SkillRecommendations } from './SkillRecommendations'
 import { SkillReadme } from './SkillReadme'
 
 export function ResourceSettings({ kind }: { kind: 'mcp' | 'skills' }) {
@@ -16,7 +16,7 @@ export function ResourceSettings({ kind }: { kind: 'mcp' | 'skills' }) {
   const [listing, setListing] = useState<ResourcePage | null>(null)
   const [error, setError] = useState('')
   const [adding, setAdding] = useState(false)
-  const [discovering, setDiscovering] = useState(false)
+  const [recommending, setRecommending] = useState(false)
   const [selected, setSelected] = useState<string[]>([])
   const [name, setName] = useState('')
   const [config, setConfig] = useState('')
@@ -93,7 +93,7 @@ export function ResourceSettings({ kind }: { kind: 'mcp' | 'skills' }) {
     catch (reason) { setDeleteError(String(reason)) } finally { setBusy(false) }
   }
   return <div className="group resources">
-    {discovering ? <SkillDiscoveryDialog targets={targets} agent={agent} onClose={() => setDiscovering(false)} onInstalled={(results) => { setResults(results); setTick((value) => value + 1) }} /> : null}
+    {recommending ? <SkillRecommendations onClose={() => setRecommending(false)} /> : null}
     {details ? <ResourceDialog title={details.name} compact={kind === 'skills'} dismissOnBackdrop returnFocus={detailOpener.current} onClose={() => setDetails(null)} footer={<><span className="grow" /><button className="btn" onClick={() => setDetails(null)}>{t("关闭")}</button></>}>
       <dl className="resource-details"><dt>Agent</dt><dd>{target?.name}</dd><dt>{t("状态")}</dt><dd>{details.enabled === false ? t("已停用") : t("已启用")}</dd><dt>{t("位置")}</dt><dd>{details.path}</dd>
       {details.description ? <><dt>{t("说明")}</dt><dd>{details.description}</dd></> : null}</dl>
@@ -109,7 +109,7 @@ export function ResourceSettings({ kind }: { kind: 'mcp' | 'skills' }) {
         onClick={() => { setAgent(item.id); setQuery(''); setResults([]) }}>{item.name}</button>)}
     </div>
     <h2><span className="grow">{target?.name} · {kind === 'mcp' ? 'MCP' : 'Skill'}</span>
-      <span className="resource-header-actions">{kind === 'skills' ? <button className="btn sm" disabled={busy} onClick={() => { setDiscovering(true); setError(''); setResults([]) }}>{t('发现')}</button> : null}
+      <span className="resource-header-actions">{kind === 'skills' ? <button className="btn sm" disabled={busy} onClick={() => { setRecommending(true); setError(''); setResults([]) }}>{t('推荐')}</button> : null}
       <button className="btn sm" disabled={busy} onClick={() => { setAdding(!adding); setSelected([agent]); setError(''); setResults([]) }}>{kind === 'mcp' ? <Icon name="plus" className="s" /> : null}{kind === 'mcp' ? t("添加 MCP") : t("添加")}</button></span>
     </h2>
     {adding ? <ResourceDialog title={kind === 'mcp' ? t("添加 MCP") : t("添加 Skill")} onClose={closeAdd} busy={busy} footer={<>

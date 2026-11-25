@@ -17,7 +17,7 @@
 | 阅读项目、定位问题 | [项目搜索](Project-Search) → [Markdown / HTML](Markdown-and-HTML) → [PDF / 图片](Media-Preview) |
 | 改文件并检查结果 | [文件编辑](Files-and-Editing) → [查找替换](Find-and-Replace) → [Git 审阅](Git-Review) |
 | 在另一台机器上工作 | [SSH、目录浏览与传输](SSH-and-Transfer) |
-| 给 Agent 增加工具与方法 | [MCP / Skill](Agent-Resources) → [发现 Skill](Skill-Discovery) |
+| 给 Agent 增加工具与方法 | [MCP / Skill](Agent-Resources) → [推荐 Skill](Skill-Discovery) |
 
 ## 全部功能课
 
@@ -36,7 +36,7 @@
 - [看见变更，再决定保留什么](Git-Review)
 - [把远程项目带进同一个工作区](SSH-and-Transfer)
 - [MCP 与 Skill，按 Agent 管理](Agent-Resources)
-- [发现一个 Skill，读懂再安装](Skill-Discovery)
+- [浏览推荐 Skill](Skill-Discovery)
 - [让界面适合你的阅读习惯](Appearance)
 - [更新入口集中，工作数据随安装目录保存](Updates-and-Data)
 

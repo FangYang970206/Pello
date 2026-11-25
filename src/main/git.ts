@@ -1,5 +1,6 @@
 import { t } from '../shared/i18n'
 import { mediaKind } from '../shared/media'
+import { MAX_DOCUMENT_BYTES } from '../shared/types'
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -12,7 +13,7 @@ import { bashQuote, hostPlatform, isAbsPath, joinPath, parentPath, psQuote, sshB
 import { needsSshClient, remoteCommand, runPasswordCommand } from './ssh'
 import { LINUX_CREATE_SCRIPT, LINUX_RENAME_SCRIPT } from './linux-rename'
 import { remoteGitProgram } from './remote-git'
-import { readRemoteBytes } from './remote-read'
+import { readRemoteBytes, readRemoteEntry } from './remote-read'
 import { stageAsset } from './asset-snapshots'
 
 const exec = promisify(execFile)
@@ -320,15 +321,38 @@ const versionOf = (buffer: Buffer) => createHash('sha256').update(buffer).digest
 const missingFile = (): FileContent => ({ text: '', binary: false, missing: true, version: null })
 function decodeFile(buf: Buffer): FileContent {
   const binary = looksBinary(buf) || !isUtf8(buf)
-  return { text: binary ? '' : buf.toString('utf8'), binary, missing: false, version: versionOf(buf), tooBig: buf.length > 2_000_000 }
+  return { text: binary ? '' : buf.toString('utf8'), binary, missing: false, version: versionOf(buf) }
 }
+
+async function readLocalBytes(cwd: string, rel: string, limit: number, knownStamp?: string) {
+  const abs = localPath(cwd, rel)
+  const handle = await fs.promises.open(abs, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0) | (fs.constants.O_NOFOLLOW || 0))
+  try {
+    const stat = await handle.stat({ bigint: true })
+    if (!stat.isFile()) throw new Error(t("不是安全的普通文件"))
+    const stampOf = (value: typeof stat) => `${value.dev}:${value.ino}:${value.size}:${value.mtimeNs}:${value.ctimeNs}`
+    const stamp = stampOf(stat)
+    if (stamp === knownStamp) return { stamp, unchanged: true }
+    if (stat.size > limit) return { stamp, tooBig: true }
+    const bytes = Buffer.alloc(Number(stat.size))
+    let offset = 0
+    while (offset < bytes.length) {
+      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset)
+      if (!bytesRead) break
+      offset += bytesRead
+    }
+    if (offset !== bytes.length || stampOf(await handle.stat({ bigint: true })) !== stamp) throw new Error(t("读取版本期间文件已更改"))
+    return { stamp, bytes }
+  } finally { await handle.close() }
+}
+
+const oversizedFile = (): FileContent => ({ text: '', binary: false, missing: false, version: null, tooBig: true })
 
 async function readLocal(cwd: string, rel: string): Promise<FileContent> {
   try {
-    return decodeFile(await fs.promises.readFile(localPath(cwd, rel)))
-  } catch {
-    return missingFile()
-  }
+    const result = await readLocalBytes(cwd, rel, 2_000_000)
+    return result.bytes ? decodeFile(result.bytes) : oversizedFile()
+  } catch { return missingFile() }
 }
 
 async function readRemote(target: Target, rel: string): Promise<FileContent> {
@@ -338,7 +362,7 @@ async function readRemote(target: Target, rel: string): Promise<FileContent> {
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code
     if (code === 'ENOENT') return missingFile()
-    if (code === 'EFBIG') return { text: '', binary: false, missing: false, version: null, tooBig: true }
+    if (code === 'EFBIG') return oversizedFile()
     throw error
   }
 }
@@ -445,15 +469,15 @@ export async function createTreeEntry(target: Target, parent: string, name: stri
 /** Rename without replacing an existing destination. */
 export async function renameTreeEntry(target: Target, rel: string, name: string, directory: boolean): Promise<string> {
   const clean = cleanRelative(rel)
-  return relocateTreeEntry(target, clean, clean.split('/').slice(0, -1).join('/'), name, directory)
+  return (await relocateTreeEntry(target, clean, clean.split('/').slice(0, -1).join('/'), name, directory, false)).path
 }
 
-export async function moveTreeEntry(target: Target, rel: string, destinationParent: string, directory: boolean): Promise<string> {
+export async function moveTreeEntry(target: Target, rel: string, destinationParent: string, directory: boolean) {
   const clean = cleanRelative(rel)
-  return relocateTreeEntry(target, clean, destinationParent, clean.split('/').pop() || '', directory)
+  return relocateTreeEntry(target, clean, destinationParent, clean.split('/').pop() || '', directory, true)
 }
 
-async function relocateTreeEntry(target: Target, rel: string, destinationParent: string, name: string, directory: boolean): Promise<string> {
+async function relocateTreeEntry(target: Target, rel: string, destinationParent: string, name: string, directory: boolean, detectConflict: boolean) {
   rel = cleanRelative(rel)
   if (!rel) throw new Error(t("不能重命名项目根目录"))
   destinationParent = cleanRelative(destinationParent)
@@ -463,18 +487,22 @@ async function relocateTreeEntry(target: Target, rel: string, destinationParent:
   const nextRel = [destinationParent, name].filter(Boolean).join('/')
   const comparable = (value: string) => target.platform === 'windows' ? value.toLowerCase() : value
   if (directory && (comparable(destinationParent) === comparable(rel) || comparable(destinationParent).startsWith(`${comparable(rel)}/`))) throw new Error(t("不能移入自身或子目录"))
-  if (rel === nextRel) return rel
+  if (comparable(rel).startsWith(`${comparable(nextRel)}/`)) throw new Error(t("不能覆盖包含来源的目录"))
+  if (rel === nextRel) return { path: rel, conflict: false }
   if (target.platform === 'linux') {
-    await run(target, `python3 -c ${bashQuote(LINUX_RENAME_SCRIPT())} ${bashQuote(target.cwd)} ${bashQuote(rel)} ${bashQuote(name)} ${directory ? '1' : '0'} ${bashQuote(destinationParent)}`)
-    return nextRel
+    const output = await run(target, `python3 -c ${bashQuote(LINUX_RENAME_SCRIPT())} ${bashQuote(target.cwd)} ${bashQuote(rel)} ${bashQuote(name)} ${directory ? '1' : '0'} ${bashQuote(destinationParent)}${detectConflict ? ' conflict' : ''}`)
+    return { path: nextRel, conflict: output.trim() === 'PELLO_MOVE_CONFLICT' }
   }
   const walk = [...parts, oldName].map((part) => `$walk=Join-Path $walk ${psQuote(part)}; $item=Get-Item -LiteralPath $walk -Force -ErrorAction Stop; if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw ${psQuote(t("不支持通过符号链接重命名"))} }`).join('; ')
   const targetWalk = destinationParent ? destinationParent.split('/').map((part) => `$parent=Join-Path $parent ${psQuote(part)}; $parentItem=Get-Item -LiteralPath $parent -Force -ErrorAction Stop; if (($parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or -not $parentItem.PSIsContainer) { throw ${psQuote(t("目标不是安全目录"))} }`).join('; ') : ''
   const move = directory ? '[IO.Directory]::Move' : '[IO.File]::Move'
   const temporary = `.awb-rename-${randomUUID()}`
-  const command = `$ErrorActionPreference='Stop'; $root=(Resolve-Path -LiteralPath ${psQuote(target.cwd)} -ErrorAction Stop).Path; $walk=$root; ${walk}; if ($item.PSIsContainer -ne $${directory ? 'true' : 'false'}) { throw ${psQuote(t("文件类型已更改"))} }; $parent=$root; ${targetWalk ? `${targetWalk}; ` : ''}$dest=Join-Path $parent ${psQuote(name)}; if ([String]::Equals($walk,$dest,[StringComparison]::OrdinalIgnoreCase)) { $temp=Join-Path $parent ${psQuote(temporary)}; ${move}($walk,$temp); try { ${move}($temp,$dest) } catch { try { ${move}($temp,$walk) } catch { throw (${psQuote(t("重命名失败，原对象保留于 "))}+$temp) }; throw } } else { ${move}($walk,$dest) }`
-  await run(target, command)
-  return nextRel
+  const moveAcross = detectConflict
+    ? `try { ${move}($walk,$dest) } catch { if (Test-Path -LiteralPath $dest) { 'PELLO_MOVE_CONFLICT' } else { throw } }`
+    : `${move}($walk,$dest)`
+  const command = `$ErrorActionPreference='Stop'; $root=(Resolve-Path -LiteralPath ${psQuote(target.cwd)} -ErrorAction Stop).Path; $walk=$root; ${walk}; if ($item.PSIsContainer -ne $${directory ? 'true' : 'false'}) { throw ${psQuote(t("文件类型已更改"))} }; $parent=$root; ${targetWalk ? `${targetWalk}; ` : ''}$dest=Join-Path $parent ${psQuote(name)}; if ([String]::Equals($walk,$dest,[StringComparison]::OrdinalIgnoreCase)) { $temp=Join-Path $parent ${psQuote(temporary)}; ${move}($walk,$temp); try { ${move}($temp,$dest) } catch { try { ${move}($temp,$walk) } catch { throw (${psQuote(t("重命名失败，原对象保留于 "))}+$temp) }; throw } } else { ${moveAcross} }`
+  const output = await run(target, command)
+  return { path: nextRel, conflict: output.trim() === 'PELLO_MOVE_CONFLICT' }
 }
 
 /** Permanently remove a remote descendant after checking every path component. */
@@ -521,15 +549,25 @@ export async function fileTree(target: Target, rel = '', ignored: ReadonlySet<st
   return sorted ? sortNodes(nodes) : nodes
 }
 
-export async function readFile(target: Target, rel: string): Promise<FileContent> {
-  if (mediaKind(rel)) {
-    try {
-      const bytes = await readAsset(target, rel)
-      return { text: '', binary: true, missing: false, version: versionOf(bytes), assetToken: stageAsset(target, cleanRelative(rel), bytes) }
-    } catch { return missingFile() }
+export function readFile(target: Target, rel: string): Promise<FileContent>
+export function readFile(target: Target, rel: string, stamp: string | undefined): Promise<FileContent | null>
+export async function readFile(target: Target, rel: string, stamp?: string): Promise<FileContent | null> {
+  rel = cleanRelative(rel)
+  const media = mediaKind(rel)
+  const limit = media ? 12_000_000 : MAX_DOCUMENT_BYTES
+  try {
+    const result = !target.host || target.host.id === 'local'
+      ? await readLocalBytes(target.cwd, rel, limit, stamp)
+      : await readRemoteEntry(target, rel, limit, stamp)
+    if (result.unchanged) return null
+    if (!result.bytes || result.tooBig) return { ...oversizedFile(), fileStamp: result.stamp }
+    const bytes = result.bytes
+    if (media) return { text: '', binary: true, missing: false, version: versionOf(bytes), fileStamp: result.stamp, assetToken: stageAsset(target, rel, bytes) }
+    return { ...decodeFile(bytes), fileStamp: result.stamp, assetToken: /\.html?$/i.test(rel) ? stageAsset(target, rel, bytes) : undefined }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return missingFile()
+    throw error
   }
-  if (!target.host || target.host.id === 'local') return readLocal(target.cwd, rel)
-  return readRemote(target, rel)
 }
 
 /** Read preview assets through the same project boundary as the editor. */
@@ -537,9 +575,9 @@ export async function readAsset(target: Target, rel: string): Promise<Buffer> {
   rel = cleanRelative(rel)
   if (!rel) throw new Error(t("文件路径不能为空"))
   if (!target.host || target.host.id === 'local') {
-    const abs = localPath(target.cwd, rel)
-    if (fs.statSync(abs).size > 12_000_000) throw new Error(t("预览资源超过 12 MB"))
-    return fs.readFileSync(abs)
+    const result = await readLocalBytes(target.cwd, rel, 12_000_000)
+    if (!result.bytes) throw new Error(t("预览资源超过 12 MB"))
+    return result.bytes
   }
   try { return await readRemoteBytes(target, rel) }
   catch (error) {
@@ -560,7 +598,7 @@ async function createMissingFile(target: Target, rel: string, bytes: Buffer): Pr
       // replace another writer's newly created file on POSIX, link() cannot.
       fs.linkSync(temporary, destination)
     } finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary) }
-    return readLocal(target.cwd, rel)
+    return decodeFile(bytes)
   }
   if (target.platform === 'windows') {
     const command = `$ErrorActionPreference='Stop'
@@ -591,32 +629,33 @@ finally:
 `
     await run(target, `python3 -c ${bashQuote(program)} ${bashQuote(target.cwd)} ${bashQuote(parent)} ${bashQuote(name)}`, bytes.toString('base64'))
   }
-  return readRemote(target, rel)
+  return decodeFile(bytes)
 }
 
 export async function writeFile(target: Target, rel: string, text: string, version: string | null): Promise<FileContent> {
   rel = cleanRelative(rel)
   if (!rel || (version !== null && !/^[a-f0-9]{64}$/.test(version))) throw new Error(t("请先读取文件再保存"))
   const bytes = Buffer.from(text, 'utf8')
-  if (bytes.length > 2_000_000) throw new Error(t("文件超过 2 MB，无法在内置编辑器中保存"))
+  if (bytes.length > MAX_DOCUMENT_BYTES) throw new Error(t("文件超过 10 MB，无法在内置编辑器中保存"))
   if (version === null) return createMissingFile(target, rel, bytes)
   const conflict = () => new Error(t("文件已被其他程序修改，请重新读取后合并更改"))
   if (!target.host || target.host.id === 'local') {
     const abs = localPath(target.cwd, rel)
-    const current = await fs.promises.readFile(abs)
-    if (versionOf(current) !== version) throw conflict()
+    const { bytes: current } = await readLocalBytes(target.cwd, rel, MAX_DOCUMENT_BYTES)
+    if (!current || versionOf(current) !== version) throw conflict()
     if (looksBinary(current) || !isUtf8(current)) throw new Error(t("只能编辑 UTF-8 文本文件"))
     const temp = `${abs}.awb-${randomUUID()}.tmp`
     try {
       await fs.promises.writeFile(temp, bytes, { flag: 'wx', mode: (await fs.promises.stat(abs)).mode })
-      if (localPath(target.cwd, rel) !== abs || versionOf(await fs.promises.readFile(abs)) !== version) throw conflict()
+      const { bytes: latest } = await readLocalBytes(target.cwd, rel, MAX_DOCUMENT_BYTES)
+      if (!latest || localPath(target.cwd, rel) !== abs || versionOf(latest) !== version) throw conflict()
       await fs.promises.rename(temp, abs)
     } finally {
       await fs.promises.unlink(temp).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error })
     }
     return decodeFile(bytes)
   }
-  const before = await readRemote(target, rel)
+  const before = await readFile(target, rel)
   if (before.missing) throw new Error(t("文件不存在"))
   if (before.version !== version) throw conflict()
   if (before.binary) throw new Error(t("只能编辑 UTF-8 文本文件"))
@@ -667,7 +706,7 @@ printf saved`
     if (detail.includes('AWB_UNSAFE_PATH')) throw new Error(t("无法保存项目目录外的文件或符号链接"), { cause: error })
     throw error
   }
-  return readRemote(target, rel)
+  return decodeFile(bytes)
 }
 
 export async function checkPath(target: Target, input: string): Promise<PathCheck> {

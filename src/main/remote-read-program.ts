@@ -2,7 +2,7 @@
 export function remoteReadProgram(platform: 'linux' | 'windows'): string[] {
   if (platform === 'linux') return ['python3', '-u', '-c', `import sys,os,json,stat
 for line in sys.stdin.buffer:
- data=b''; status='ERROR'; handles=[]
+ data=b''; status='ERROR'; stamp=''; handles=[]
  try:
   req=json.loads(line); root=os.path.realpath(req['root']); rel=req['path']; limit=req['limit']
   parts=rel.split('/')
@@ -13,7 +13,9 @@ for line in sys.stdin.buffer:
   fd=os.open(parts[-1],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=fd); handles.append(fd)
   before=os.fstat(fd)
   if not stat.S_ISREG(before.st_mode): raise ValueError()
-  if before.st_size>limit: status='LARGE'
+  stamp=':'.join(str(v) for v in (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns))
+  if stamp==req.get('stamp'): status='UNCHANGED'
+  elif before.st_size>limit: status='LARGE'
   else:
    chunks=[]; remaining=limit+1
    while remaining:
@@ -28,14 +30,14 @@ for line in sys.stdin.buffer:
  except Exception: status='ERROR'; data=b''
  finally:
   for fd in reversed(handles): os.close(fd)
- sys.stdout.buffer.write(('PELLO1 '+status+' '+str(len(data))+'\\n').encode()); sys.stdout.buffer.write(data); sys.stdout.buffer.flush()
+ sys.stdout.buffer.write(('PELLO1 '+status+' '+str(len(data))+(' '+stamp if stamp and status in ('OK','LARGE','UNCHANGED') else '')+'\\n').encode()); sys.stdout.buffer.write(data); sys.stdout.buffer.flush()
 `]
   return ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', `
 $ErrorActionPreference='Stop'
 [Console]::InputEncoding=[Text.UTF8Encoding]::new($false)
 $output=[Console]::OpenStandardOutput()
 while ($null -ne ($line=[Console]::ReadLine())) {
- $bytes=[byte[]]@(); $status='ERROR'; $stream=$null
+ $bytes=[byte[]]@(); $status='ERROR'; $stream=$null; $stamp=''
  try {
   $req=$line|ConvertFrom-Json; $limit=[int]$req.limit
   $root=(Resolve-Path -LiteralPath $req.root -ErrorAction Stop).Path.TrimEnd('\\')
@@ -50,7 +52,10 @@ while ($null -ne ($line=[Console]::ReadLine())) {
   }
   if ($item.PSIsContainer) { throw 'Invalid file' }
   $stream=[IO.FileStream]::new($file,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
-  if ($stream.Length -gt $limit) { $status='LARGE' }
+  $item.Refresh()
+  $stamp=([string]$stream.Length)+':'+$item.LastWriteTimeUtc.Ticks+':'+$item.CreationTimeUtc.Ticks
+  if ($stamp -ceq [string]$req.stamp) { $status='UNCHANGED' }
+  elseif ($stream.Length -gt $limit) { $status='LARGE' }
   else {
    $bytes=[byte[]]::new([int]$stream.Length); $offset=0
    while ($offset -lt $bytes.Length) { $read=$stream.Read($bytes,$offset,$bytes.Length-$offset); if (-not $read) { throw 'Changed file' }; $offset+=$read }
@@ -61,7 +66,8 @@ while ($null -ne ($line=[Console]::ReadLine())) {
  catch [System.IO.DirectoryNotFoundException] { $status='MISSING' }
  catch { $bytes=[byte[]]@(); $status='ERROR' }
  finally { if ($stream) { $stream.Dispose() } }
- $header=[Text.Encoding]::ASCII.GetBytes('PELLO1 '+$status+' '+$bytes.Length+[char]10)
+ $suffix=if($status -in @('OK','LARGE','UNCHANGED')) {' '+$stamp} else {''}
+ $header=[Text.Encoding]::ASCII.GetBytes('PELLO1 '+$status+' '+$bytes.Length+$suffix+[char]10)
  $output.Write($header,0,$header.Length); $output.Write($bytes,0,$bytes.Length); $output.Flush()
 }
 `]
@@ -74,7 +80,7 @@ for line in sys.stdin.buffer:
  try:
   result=subprocess.run(['bash','-c',sys.argv[1]],input=line,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=18)
   data=result.stdout
-  if result.returncode or not data.startswith(b'PELLO1 ') or len(data)>12000128: data=b'PELLO1 ERROR 0\\n'
+  if result.returncode or not data.startswith(b'PELLO1 ') or len(data)>12000256: data=b'PELLO1 ERROR 0\\n'
  except Exception: data=b'PELLO1 ERROR 0\\n'
  sys.stdout.buffer.write(data); sys.stdout.buffer.flush()
 `, command]

@@ -21,7 +21,7 @@
 
 - [SSH、目录浏览与传输](SSH-and-Transfer)
 - [MCP 与 Skill](Agent-Resources)
-- [发现 Skill](Skill-Discovery)
+- [推荐 Skill](Skill-Discovery)
 - [外观与语言](Appearance)
 - [更新、备份与数据](Updates-and-Data)
 - [常见问题](Troubleshooting)

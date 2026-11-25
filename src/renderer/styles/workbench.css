@@ -349,7 +349,9 @@ kbd.enter{margin-left:6px;opacity:.7;font:11px var(--mono);border:1px solid curr
 .env{display:grid;grid-template-columns:1fr 1.4fr 32px 32px;gap:6px;margin-bottom:6px}
 .sw{width:24px;height:24px;border-radius:50%;border:2px solid transparent;box-shadow:inset 0 0 0 1px rgba(0,0,0,.15)}
 .sw.on{border-color:var(--elev);box-shadow:0 0 0 2px var(--accent)}
-.sws{display:flex;gap:8px;align-items:center;height:32px}
+.sws{display:flex;gap:8px;align-items:center;flex-wrap:wrap;min-height:32px;max-width:320px}
+.tab[data-drop-edge=before]{box-shadow:inset 2px 0 var(--accent)}
+.tab[data-drop-edge=after]{box-shadow:inset -2px 0 var(--accent)}
 .out{font:12px/1.7 var(--mono);background:var(--bg);border:1px solid var(--line);border-radius:var(--r1);padding:12px;min-height:96px;white-space:pre-wrap;overflow-wrap:anywhere}
 .disc{display:flex;align-items:center;gap:8px;width:100%;font-size:calc(var(--ui-size,13px) - 1px);color:var(--muted);padding:4px 0;margin-bottom:12px}
 .disc:hover{color:var(--text)}

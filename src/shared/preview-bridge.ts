@@ -28,6 +28,11 @@ export function htmlPreviewBridge() {
   addEventListener('message', (event) => {
     if (event.source !== parent || event.data?.type !== 'pello-preview-search') return
     searchOpen = !!event.data.open
+    if (!searchOpen) {
+      CSS.highlights.delete('document-matches')
+      CSS.highlights.delete('document-current')
+      return
+    }
     collect()
     const ranges: Range[] = []
     const range = (from: number, to: number) => {
@@ -52,8 +57,7 @@ export function htmlPreviewBridge() {
     const style = document.createElement('style')
     style.textContent = '::highlight(document-matches){background:#fff0a6;color:#211d00}::highlight(document-current){background:#d6bbff;color:#201138}'
     document.head.append(style)
-    collect()
     let timer: ReturnType<typeof setTimeout>
-    new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(collect, 100) }).observe(document.body, { childList: true, characterData: true, subtree: true })
+    new MutationObserver(() => { if (searchOpen) { clearTimeout(timer); timer = setTimeout(collect, 100) } }).observe(document.body, { childList: true, characterData: true, subtree: true })
   })
 }

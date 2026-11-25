@@ -151,7 +151,7 @@ export const SHELL_AGENT: AgentInfo = {
   installed: true
 }
 
-export const EXEC_COLORS = ['#c4aedb', '#a9c3df', '#95cfaa', '#dcc07f', '#e39e9c', '#cdd0d6']
+export const EXEC_COLORS = ['#c4aedb', '#a9c3df', '#95cfaa', '#dcc07f', '#e39e9c', '#cdd0d6', '#72c8c3', '#82baff', '#a1ce76', '#efad78', '#eda8c8', '#b2a9f0', '#e8d18a', '#91cde4', '#d6ab90', '#e6a2a9']
 
 export interface GitFile {
   path: string
@@ -185,12 +185,15 @@ export interface TreeNode {
   children?: TreeNode[]
 }
 
+export const MAX_DOCUMENT_BYTES = 10_000_000
+
 export interface FileContent {
   text: string
   binary: boolean
   missing: boolean
   version: string | null
   tooBig?: boolean
+  fileStamp?: string
   /** Short-lived token for the validated media version opened by this document. */
   assetToken?: string
 }

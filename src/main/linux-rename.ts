@@ -1,6 +1,6 @@
 import { t } from '../shared/i18n'
 export const LINUX_RENAME_SCRIPT = () => `import ctypes, errno, os, stat, sys
-root, relative, name, want_dir, target_parent = sys.argv[1:]
+root, relative, name, want_dir, target_parent = sys.argv[1:6]
 parts = relative.split('/')
 target_parts = target_parent.split('/') if target_parent else []
 if not parts or any(p in ('', '.', '..') for p in parts + target_parts) or name in ('', '.', '..') or '/' in name:
@@ -28,7 +28,10 @@ try:
     rename.restype = ctypes.c_int
     if rename(fd, os.fsencode(parts[-1]), dest_fd, os.fsencode(name), 1) != 0:
         code = ctypes.get_errno()
-        raise OSError(code, os.strerror(code))
+        if len(sys.argv) == 7 and code in (errno.EEXIST, errno.ENOTEMPTY):
+            print('PELLO_MOVE_CONFLICT')
+        else:
+            raise OSError(code, os.strerror(code))
 finally:
     os.close(fd)
     os.close(dest_fd)
