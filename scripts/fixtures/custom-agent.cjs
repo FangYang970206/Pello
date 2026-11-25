@@ -10,6 +10,10 @@ if (args.includes('--resume') && !fs.existsSync(file)) { console.error('MISSING_
 const messages = args.includes('--resume') ? JSON.parse(fs.readFileSync(file, 'utf8')) : []
 console.log('CUSTOM_READY ' + id + ' ' + JSON.stringify(messages))
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
+  if (line.startsWith('FIXTURE_STATUS_')) {
+    process.stdout.write('\x1b]7501;state=' + line.slice('FIXTURE_STATUS_'.length) + ':app=custom-fixture\x07')
+    return
+  }
   messages.push(line)
   fs.writeFileSync(file, JSON.stringify(messages))
   console.log('CUSTOM_REPLY ' + JSON.stringify(messages))

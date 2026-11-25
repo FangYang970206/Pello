@@ -137,6 +137,23 @@ export class ResourceManager {
     return [...new Set(roots.filter(Boolean))]
   }
   list(targets: ResourceTarget[], kind: 'mcp' | 'skills', agent: string, page = 1, query = '', all = false): ResourcePage {
+    const scan = this.scanList(targets, kind, agent, page, query, all)
+    let result = scan.next()
+    while (!result.done) result = scan.next()
+    return result.value
+  }
+  /** Yield between directories so a large native Skill collection cannot block PTY input. */
+  async listAsync(targets: ResourceTarget[], kind: 'mcp' | 'skills', agent: string, page = 1, query = '', all = false, signal?: AbortSignal): Promise<ResourcePage> {
+    const scan = this.scanList(targets, kind, agent, page, query, all)
+    let deadline = performance.now() + 8
+    for (;;) {
+      if (signal?.aborted) throw new Error(t("已取消"))
+      const result = scan.next()
+      if (result.done) return result.value
+      if (performance.now() >= deadline) { await new Promise<void>((resolve) => setImmediate(resolve)); deadline = performance.now() + 8 }
+    }
+  }
+  private *scanList(targets: ResourceTarget[], kind: 'mcp' | 'skills', agent: string, page: number, query: string, all: boolean): Generator<void, ResourcePage> {
     const target = this.target(targets, agent), items: ResourceItem[] = [], errors: string[] = []
     if (kind === 'mcp' && target.mcpPath) {
       try {
@@ -155,20 +172,35 @@ export class ResourceManager {
       } catch (error) { errors.push(`${target.mcpPath}: ${message(error)}`) }
     } else if (kind === 'skills') {
       const seen = new Set<string>()
-      const scan = (folder: string) => {
+      // Scope this snapshot to one discovery. A later refresh or
+      // mutation must always read native settings again, including errors.
+      let settings: ObjectValue | undefined, settingsError: unknown
+      const config = () => {
+        if (settingsError) throw settingsError
+        if (!settings) {
+          try {
+            const raw = readText(this.settingsFile(target))
+            settings = target.skillAdapter === 'codex' ? parseToml(raw.replace(/^\ufeff/, '')) : target.skillAdapter === 'omp' ? object(parseYaml(raw) || {}) : json(raw)
+          } catch (error) { settingsError = error; throw error }
+        }
+        return settings
+      }
+      const enabled = (file: string, info: ReturnType<typeof skillInfo>) => this.skillEnabled(target, file, info, config)
+      function* scan(folder: string): Generator<void> {
+        yield
         let real: string
-        try { real = fs.realpathSync(folder); if (seen.has(real)) return; seen.add(real) }
+        try { real = fs.realpathSync.native(folder); if (seen.has(real)) return; seen.add(real) }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') errors.push(`${folder}: ${message(error)}`); return }
         try {
           const file = path.join(folder, 'SKILL.md')
           const source = fs.existsSync(file) ? file : file + '.awb-disabled'
-          if (fs.existsSync(source)) { items.push({ ...skillInfo(source), path: file, enabled: this.skillEnabled(target, file, skillInfo(source).name) }); return }
+          if (fs.existsSync(source)) { const info = skillInfo(source); items.push({ ...info, path: file, enabled: enabled(file, info) }); return }
           for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
-            if (entry.isDirectory() || entry.isSymbolicLink()) scan(path.join(folder, entry.name))
+            if (entry.isDirectory() || entry.isSymbolicLink()) yield* scan(path.join(folder, entry.name))
           }
         } catch (error) { errors.push(`${folder}: ${message(error)}`) }
       }
-      for (const folder of this.skillRoots(target)) scan(folder)
+      for (const folder of this.skillRoots(target)) yield* scan(folder)
     }
     const filtered = items.filter((item) => `${item.name} ${item.description}`.toLowerCase().includes(String(query).toLowerCase())).sort((a, b) => a.name.localeCompare(b.name))
     const pages = Math.max(1, Math.ceil(filtered.length / 12)), current = Math.max(1, Math.min(Number(page) || 1, pages))
@@ -181,20 +213,19 @@ export class ResourceManager {
     if (target.skillAdapter === 'omp') return target.skillPath ? path.join(path.dirname(target.skillPath), 'config.yml') : ''
     return target.skillPath ? path.join(path.dirname(target.skillPath), 'settings.json') : ''
   }
-  private skillEnabled(target: ResourceTarget, file: string, name: string): boolean {
+  private skillEnabled(target: ResourceTarget, file: string, info: ReturnType<typeof skillInfo>, readConfig: () => ObjectValue): boolean {
     if (fs.existsSync(file + '.awb-disabled') && !fs.existsSync(file)) return false
     if (!target.skillAdapter || target.skillAdapter === 'portable') return true
     const settings = this.settingsFile(target)
     if (!settings) return true
-    const raw = readText(settings)
+    const config = readConfig(), { name } = info
     if (target.skillAdapter === 'codex') {
-      const entries = (parseToml(raw.replace(/^\ufeff/, '')).skills as { config?: { path?: string; name?: string; enabled?: boolean }[] } | undefined)?.config || []
+      const entries = (config.skills as { config?: { path?: string; name?: string; enabled?: boolean }[] } | undefined)?.config || []
       return entries.filter((item) => item.path === file || item.name === name).at(-1)?.enabled !== false
     }
-    const config = target.skillAdapter === 'omp' ? object(parseYaml(raw) || {}) : json(raw)
     if (target.skillAdapter === 'omp') {
       const skills = object(config.skills || {}), include = (skills.includeSkills || []) as string[]
-      return skillInfo(file).enabled && skills.enabled !== false && !((config.disabledExtensions || []) as string[]).includes(`skill:${name}`) &&
+      return info.enabled && skills.enabled !== false && !((config.disabledExtensions || []) as string[]).includes(`skill:${name}`) &&
         !((skills.ignoredSkills || []) as string[]).some((pattern) => wildcardMatches(pattern, name)) && (!include.length || include.some((pattern) => wildcardMatches(pattern, name)))
     }
     if (target.skillAdapter === 'claude') return object(config.skillOverrides || {})[name] !== 'off'

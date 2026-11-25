@@ -40,6 +40,7 @@ fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: {
 const env = { ...process.env, AWB_USER_DATA: data }; delete env.ELECTRON_RUN_AS_NODE
 const report = { phase, repository: git('remote', 'get-url', 'origin').trim(), commit: git('rev-parse', 'HEAD').trim(), trackedFiles: tracked.length,
   untrackedCopies: source.length + 1, largeFileSource: large, measurements: {} }
+const runRecord = path.join(output, 'runs', `${metrics.at.replace(/[:.]/g, '-')}-${process.pid}.json`)
 if (enforce) {
   assert.equal(report.repository, budgets.github.repository)
   assert.equal(report.commit, budgets.github.commit)
@@ -181,4 +182,13 @@ try {
       sourceUnchanged: git('diff', 'HEAD', '--name-only').trim() === '' })
     finishPerformance(metrics, { baselinePath: process.argv.find((arg) => arg.startsWith('--compare='))?.slice(10), outputPath: process.argv.find((arg) => arg.startsWith('--output='))?.slice(9) })
   }
-} finally { await app.close() }
+} catch (error) {
+  report.failure = error instanceof Error ? error.message : String(error)
+  throw error
+} finally {
+  try {
+    fs.mkdirSync(path.dirname(runRecord), { recursive: true })
+    fs.writeFileSync(runRecord, JSON.stringify({ report, metrics }, null, 2))
+    console.log(`Benchmark run retained: ${runRecord}`)
+  } finally { await app.close() }
+}

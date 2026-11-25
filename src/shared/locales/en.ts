@@ -1051,5 +1051,16 @@ export const en: Record<string, string> = {
   "滚轮": "Wheel",
   "PDF 上一页": "Previous PDF page",
   "PDF 下一页": "Next PDF page",
-  "PDF 滚动 / 边缘翻页": "Scroll PDF / turn page at edge"
+  "PDF 滚动 / 边缘翻页": "Scroll PDF / turn page at edge",
+  "下载文件": "Download file",
+  "目标不是普通文件或包含链接": "The destination is not a regular file or contains a link",
+  "传输完成，需处理提示": "Transfer completed with warnings",
+  "下载成功": "Download complete",
+  "导入成功": "Import complete",
+  "取消下载": "Cancel download",
+  "关闭传输提示": "Dismiss transfer notice",
+  "收起详情": "Hide details",
+  "详情": "Details",
+  "部分项目已跳过": "Some items were skipped",
+  "传输详情": "Transfer details"
 }

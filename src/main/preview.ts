@@ -5,11 +5,16 @@ import path from 'node:path'
 import { shell } from 'electron'
 import { readAsset, type Target } from './git'
 import { htmlPreviewBridge } from '../shared/preview-bridge'
+import { clearAssetSnapshots, stageAsset, takeAsset } from './asset-snapshots'
+import { terminalTarget } from './terminal-context'
+import { db } from './store'
+import { readTargetKey } from './remote-read'
 
-const projects = new Map<string, { token: string; target: Target; drafts: Map<string, { token: string; text: string }> }>()
+const projects = new Map<string, { token: string; projectId: string; target: Target; drafts: Map<string, { token: string; text: string }> }>()
 export function invalidatePreview(projectId: string, rel: string): void {
   for (const [identity, entry] of projects) {
     if (!identity.startsWith(`${projectId}:`)) continue
+    clearAssetSnapshots(entry.target, rel)
     for (const key of entry.drafts.keys()) if (!rel || key === rel || key.startsWith(`${rel}/`)) entry.drafts.delete(key)
   }
 }
@@ -40,9 +45,16 @@ async function port(): Promise<number> {
         const [token, ...parts] = url.pathname.slice(1).split('/')
         const project = [...projects.values()].find((entry) => entry.token === token)
         if (!project) { response.writeHead(404).end(); return }
+        if (project.projectId.startsWith('terminal:') && !terminalTarget(project.projectId)) { response.writeHead(404).end(); return }
+        const host = project.target.host
+        if (host && host.id !== 'local') {
+          const current = db().hosts.find((item) => item.id === host.id)
+          if (!current?.on || ['addr', 'port', 'user', 'auth'].some((key) => current[key as keyof typeof current] !== host[key as keyof typeof host])) { response.writeHead(404).end(); return }
+        }
         const rel = parts.map(decodeURIComponent).join('/')
         const draft = project.drafts.get(rel)
-        let bytes = draft && url.searchParams.get('draft') === draft.token ? Buffer.from(draft.text, 'utf8') : await readAsset(project.target, rel)
+        let bytes = draft && url.searchParams.get('draft') === draft.token ? Buffer.from(draft.text, 'utf8') :
+          takeAsset(project.target, rel, url.searchParams.get('asset') || undefined, request.method !== 'HEAD') || await readAsset(project.target, rel)
         if (/\.html?$/i.test(rel) && url.searchParams.get('workbenchWheel') === '1') {
           // Only report a zoom gesture to the owning sandbox iframe; no workbench API is exposed.
           const bridge = `<script>(${htmlPreviewBridge.toString()})()</script>`
@@ -72,15 +84,16 @@ async function port(): Promise<number> {
   return started
 }
 
-export async function previewUrl(projectId: string, target: Target, rel: string, draft?: string): Promise<string> {
-  await readAsset(target, rel)
+export async function previewUrl(projectId: string, target: Target, rel: string, draft?: string, assetToken?: string): Promise<string> {
+  rel = rel.replace(/\\/g, '/')
+  const bytes = takeAsset(target, rel, assetToken) || await readAsset(target, rel)
   if (draft !== undefined && (!/\.html?$/i.test(rel) || typeof draft !== 'string' || Buffer.byteLength(draft) > 2 * 1024 * 1024)) throw new Error(t("预览草稿必须为 2 MB 以内的 HTML"))
-  const identity = `${projectId}:${target.cwd}:${target.host?.id || 'local'}`
+  const identity = `${projectId}:${readTargetKey(target)}`
   let entry = projects.get(identity)
-  if (!entry) { entry = { token: randomUUID(), target, drafts: new Map() }; projects.set(identity, entry) }
+  if (!entry) { entry = { token: randomUUID(), projectId, target, drafts: new Map() }; projects.set(identity, entry) }
   const number = await port()
   const normalized = rel.replace(/\\/g, '/')
-  let query = ''
+  let query = draft === undefined ? `?asset=${stageAsset(target, rel, bytes)}` : ''
   if (draft !== undefined) { const token = randomUUID(); entry.drafts.set(normalized, { token, text: draft }); query = `?draft=${token}` }
   return `http://127.0.0.1:${number}/${entry.token}/${normalized.split('/').map(encodeURIComponent).join('/')}${query}`
 }

@@ -12,6 +12,8 @@ import { bashQuote, hostPlatform, isAbsPath, joinPath, parentPath, psQuote, sshB
 import { needsSshClient, remoteCommand, runPasswordCommand } from './ssh'
 import { LINUX_CREATE_SCRIPT, LINUX_RENAME_SCRIPT } from './linux-rename'
 import { remoteGitProgram } from './remote-git'
+import { readRemoteBytes } from './remote-read'
+import { stageAsset } from './asset-snapshots'
 
 const exec = promisify(execFile)
 export const TREE_DEFAULT_IGNORE = ['.git', 'node_modules', 'dist', 'out', '.next', '__pycache__', '.cache']
@@ -111,10 +113,10 @@ function parseNumstat(text: string): Map<string, [number, number]> {
 }
 
 const lineCounts = new Map<string, { stamp: string; lines: number }>()
-async function countLines(target: Target, rel: string): Promise<number> {
+async function countLines(target: Target, rel: string, resolvedRoot?: string): Promise<number> {
   try {
     if (!target.host || target.host.id === 'local') {
-      const root = await fs.promises.realpath(target.cwd)
+      const root = resolvedRoot ?? await fs.promises.realpath(target.cwd)
       const candidate = path.resolve(root, cleanRelative(rel))
       const abs = await fs.promises.realpath(candidate)
       if (!inside(root, abs)) return 0
@@ -172,11 +174,14 @@ async function singleGitStatus(target: Target): Promise<GitPanel & { flags: Reco
   const files: GitFile[] = []
   const counts = new Map<string, number>()
   const untracked = parsed.files.filter((file) => file.untracked)
+  // Keep one physical root for this scan. Each candidate still resolves its
+  // current ancestors and checks the boundary before consulting line counts.
+  const resolvedRoot = untracked.length && (!target.host || target.host.id === 'local') ? await fs.promises.realpath(target.cwd).catch(() => undefined) : undefined
   let next = 0
   await Promise.all(Array.from({ length: Math.min(8, untracked.length) }, async () => {
     while (next < untracked.length) {
       const file = untracked[next++]
-      counts.set(file.path, await countLines(target, file.path))
+      counts.set(file.path, await countLines(target, file.path, resolvedRoot))
     }
   }))
   for (const f of parsed.files) {
@@ -328,18 +333,13 @@ async function readLocal(cwd: string, rel: string): Promise<FileContent> {
 
 async function readRemote(target: Target, rel: string): Promise<FileContent> {
   rel = cleanRelative(rel)
-  const abs = joinPath(target.platform, target.cwd, rel)
-  const q = target.platform === 'windows' ? psQuote(abs) : bashQuote(abs)
   try {
-    const b64 =
-      target.platform === 'windows'
-        ? `[Convert]::ToBase64String([IO.File]::ReadAllBytes(${q}))`
-        : `base64 -w 0 ${q} 2>/dev/null || base64 ${q}`
-    const out = (await run(target, b64)).trim()
-    const buf = Buffer.from(out, 'base64')
-    return decodeFile(buf)
-  } catch {
-    return missingFile()
+    return decodeFile(await readRemoteBytes(target, rel, 2_000_000))
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') return missingFile()
+    if (code === 'EFBIG') return { text: '', binary: false, missing: false, version: null, tooBig: true }
+    throw error
   }
 }
 
@@ -361,7 +361,7 @@ export async function gitDiff(target: Target, rel: string, untracked: boolean): 
   const before = head
   const after = work.missing ? '' : work.text
   const fileSt: GitFile['st'] = work.missing && !untracked ? 'D' : untracked ? 'A' : 'M'
-  if (before.length + after.length > MAX_DIFF) {
+  if (work.tooBig || before.length + after.length > MAX_DIFF) {
     return { path: rel, st: fileSt, before: '', after: '', binary: false, tooBig: true }
   }
   return { path: rel, st: fileSt, before, after, binary: false, tooBig: false }
@@ -525,7 +525,7 @@ export async function readFile(target: Target, rel: string): Promise<FileContent
   if (mediaKind(rel)) {
     try {
       const bytes = await readAsset(target, rel)
-      return { text: '', binary: true, missing: false, version: versionOf(bytes) }
+      return { text: '', binary: true, missing: false, version: versionOf(bytes), assetToken: stageAsset(target, cleanRelative(rel), bytes) }
     } catch { return missingFile() }
   }
   if (!target.host || target.host.id === 'local') return readLocal(target.cwd, rel)
@@ -541,14 +541,11 @@ export async function readAsset(target: Target, rel: string): Promise<Buffer> {
     if (fs.statSync(abs).size > 12_000_000) throw new Error(t("预览资源超过 12 MB"))
     return fs.readFileSync(abs)
   }
-  const abs = joinPath(target.platform, target.cwd, rel)
-  const q = target.platform === 'windows' ? psQuote(abs) : bashQuote(abs)
-  const command = target.platform === 'windows'
-    ? `$ErrorActionPreference='Stop'; $root=(Resolve-Path -LiteralPath ${psQuote(target.cwd)} -ErrorAction Stop).Path.TrimEnd('\\')+'\\'; $file=[IO.Path]::GetFullPath(${q}); if (-not $file.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)) { throw ${psQuote(t("非法路径"))} }; $walk=$root; foreach ($part in $file.Substring($root.Length).Split('\\')) { $walk=Join-Path $walk $part; if ((Get-Item -LiteralPath $walk -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw ${psQuote(t("符号链接不可预览"))} } }; if ((Get-Item -LiteralPath $file).Length -gt 12000000) { throw ${psQuote(t("预览资源超过 12 MB"))} }; [Convert]::ToBase64String([IO.File]::ReadAllBytes($file))`
-    : `root=$(cd -P -- ${bashQuote(target.cwd)} && pwd); file=${q}; [ ! -L "$file" ] || exit 1; parent=$(cd -P -- "$(dirname -- "$file")" && pwd) || exit 1; root=\${root%/}; case "$parent/" in "$root/"*) if [ "$(wc -c < "$file")" -gt 12000000 ]; then printf '%s' ${bashQuote(t("预览资源超过 12 MB"))} >&2; exit 1; fi; base64 "$file" ;; *) exit 1;; esac`
-  const bytes = Buffer.from((await run(target, command, undefined, 17_000_000)).trim(), 'base64')
-  if (bytes.length > 12_000_000) throw new Error(t("预览资源超过 12 MB"))
-  return bytes
+  try { return await readRemoteBytes(target, rel) }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EFBIG') throw new Error(t('预览资源超过 12 MB'), { cause: error })
+    throw error
+  }
 }
 
 async function createMissingFile(target: Target, rel: string, bytes: Buffer): Promise<FileContent> {

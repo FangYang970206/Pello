@@ -27,10 +27,19 @@ const env = { ...process.env, AWB_USER_DATA: data }; delete env.ELECTRON_RUN_AS_
 const failures = []
 const check = async (name, run) => { try { await run(); console.log('PASS ' + name) } catch (error) { failures.push(name); console.error('FAIL ' + name + ': ' + error.message) } }
 let app
+const launch = () => electron.launch({ executablePath: process.env.AWB_APP_EXE, args: process.env.AWB_APP_EXE ? [] : [root], env })
 try {
- app = await electron.launch({ args: [root], env })
+ app = await launch()
  let page = await app.firstWindow(); page.setDefaultTimeout(15000)
  await page.waitForFunction(() => ['a', 'b'].every(id => window.__awbBuffer?.(id)?.includes('CUSTOM_READY')))
+ await check('custom agents without native activity reports are available and do not spin', async () => {
+   assert.equal(await page.locator('[data-a=tab][data-id=a]').locator('..').locator('.terminal-status.spinning').count(), 0, 'Missing activity protocol defaults to available')
+   await page.evaluate(() => window.awb.ptyWrite('a', 'FIXTURE_STATUS_working\r'))
+   await page.locator('[data-a=tab][data-id=a] .terminal-status.spinning').waitFor()
+   await page.evaluate(() => window.awb.ptyWrite('a', 'FIXTURE_STATUS_idle\r'))
+   await page.locator('[data-a=tab][data-id=a] .terminal-status.ready').waitFor()
+   assert.equal(await page.locator('[data-a=tab][data-id=b] .terminal-status.spinning').count(), 0, 'Reports must not change another terminal')
+ })
  await check('legacy custom history without native identity is retained without guessing a new conversation',async()=>{
    await page.waitForFunction(()=>window.__awbBuffer?.('legacy')?.includes('缺少原生 ID'))
    const text=await page.evaluate(()=>window.__awbBuffer('legacy'))
@@ -59,7 +68,7 @@ try {
    await page.waitForFunction(()=>window.__awbBuffer('manual').includes('CUSTOM_REPLY ["MANUAL_FIRST"]'))
  })
  await app.close(); app=null
- app=await electron.launch({args:[root],env}); page=await app.firstWindow()
+ app=await launch(); page=await app.firstWindow()
  await page.waitForFunction(()=>window.__awbBuffer?.('a')?.includes('CUSTOM_READY'))
  await check('relaunch resumes each native conversation, beyond transcript replay',async()=>{
    const text=await page.evaluate(()=>window.__awbBuffer('a'))
@@ -68,6 +77,22 @@ try {
    await page.waitForFunction(()=>window.__awbBuffer?.('manual')?.includes('CUSTOM_READY'))
    const manual=await page.evaluate(()=>window.__awbBuffer('manual'))
    assert.ok(manual.slice(manual.lastIndexOf('CUSTOM_READY')).includes('MANUAL_FIRST'))
+ })
+ await check('available status survives submit and renders in light/dark narrow and wide workspaces', async () => {
+   const output = path.resolve('output/remote-agent-status'); fs.mkdirSync(output, { recursive: true })
+   for (const [theme, width, height, fontSize] of [['light', 1024, 680, 16], ['dark', 1440, 900, 12]]) {
+     await page.click('[data-a=settings]'); await page.click('[data-a=sec][data-id=look]')
+     await page.locator(`[data-a=theme][data-id="${theme}"]`).click()
+     await page.locator(`[data-a=theme][data-id="${theme}"][aria-checked=true]`).waitFor()
+     await page.getByLabel('界面字号', { exact: true }).selectOption(String(fontSize))
+     await page.waitForFunction(async (size) => (await window.awb.getState()).db.settings.uiFontSize === size, fontSize)
+     await page.click('[data-a=back]'); await page.setViewportSize({ width, height })
+     await page.locator('[data-a=tab][data-id=a]').click()
+     await page.locator('[data-a=tab][data-id=a] .terminal-status.ready').waitFor()
+     assert.equal(await page.locator('[data-a=tab][data-id=a] .terminal-status.spinning').count(), 0)
+     await page.waitForFunction(() => window.__awbBuffer('a')?.includes('FIRST_A'))
+     await page.screenshot({ path: path.join(output, `${theme}-${width}.png`) })
+   }
  })
 }finally{await app?.close()}
 console.log('Evidence: '+data)

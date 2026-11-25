@@ -58,7 +58,7 @@ for (const scale of baseline ? [1] : [1, 1.25, 1.5, 2]) for (const theme of base
       await open('move', page.locator('[data-a=preview]').filter({ hasText: filename }), '移动到')
       await open('reference', page.locator('[data-a=preview]').filter({ hasText: filename }), '引用到当前终端')
       await page.evaluate((source) => window.awb.transferDrop('p', '', [source]), conflictSource)
-      const task = page.locator('.transfer-task').last()
+      const task = page.locator('.upload-status').last()
       const batch = task.getByLabel('应用到本批次同类冲突')
       await batch.waitFor()
       assert.equal(await batch.isChecked(), false)
@@ -74,9 +74,9 @@ for (const scale of baseline ? [1] : [1, 1.25, 1.5, 2]) for (const theme of base
       await page.keyboard.press('Tab')
       assert.equal(await task.getByRole('button', { name: '跳过冲突项', exact: true }).evaluate((element) => document.activeElement === element), true)
       await page.keyboard.press('Enter')
-      await task.getByText('导入结束', { exact: true }).waitFor()
+      await task.getByText('部分项目已跳过', { exact: true }).waitFor()
       assert.equal(fs.readFileSync(path.join(project, 'conflict-task.txt'), 'utf8'), 'old task content')
-      await task.getByRole('button', { name: '关闭', exact: true }).click()
+      await task.getByRole('button', { name: '关闭传输提示', exact: true }).click()
       const uploadId = `upload-layout-${theme}-${width}-${scale}`
       const upload = { id: uploadId, projectId: 'p', direction: 'upload', state: 'running', phase: 'transferring', current: filename, destination: `${project}/${'中文长目录/'.repeat(12)}`, bytes: 1048576, total: 4194304, overallBytes: 5242880, overallTotal: 10485760, items: [] }
       await app.evaluate(({ BrowserWindow }, upload) => BrowserWindow.getAllWindows()[0].webContents.send('transfer:update', upload), upload)
@@ -91,7 +91,7 @@ for (const scale of baseline ? [1] : [1, 1.25, 1.5, 2]) for (const theme of base
         return { left: box.left, right: box.right, top: box.top, bottom: box.bottom, overflow: element.scrollWidth > element.clientWidth + 1, viewport: innerWidth, height: innerHeight }
       })
       assert.ok(!uploadBounds.overflow && uploadBounds.left >= 0 && uploadBounds.right <= width && uploadBounds.top >= 0 && uploadBounds.bottom <= height, JSON.stringify(uploadBounds))
-      assert.ok(uploadBounds.bottom - uploadBounds.top <= 36, JSON.stringify(uploadBounds))
+      assert.ok(uploadBounds.bottom - uploadBounds.top <= 52, JSON.stringify(uploadBounds))
       await page.screenshot({ path: path.join(captures, `${theme}-${width}-${scale}-upload-status.png`), animations: 'disabled' })
       await app.evaluate(({ BrowserWindow }, upload) => BrowserWindow.getAllWindows()[0].webContents.send('transfer:update', { ...upload, state: 'completed' }), upload)
       await uploading.getByText('上传成功', { exact: true }).waitFor()

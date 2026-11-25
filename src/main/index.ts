@@ -30,6 +30,8 @@ import {
 import { sshBatchArgs } from './platform'
 import { publicHost, rememberPassword } from './credentials'
 import { needsSshClient, runPasswordCommand } from './ssh'
+import { closeRemoteReaders } from './remote-read'
+import { clearAssetSnapshots } from './asset-snapshots'
 import { terminalTarget } from './terminal-context'
 import { SkillDiscovery } from './skill-discovery'
 import { invalidatePreview, isPreviewUrl, openHtmlPreview, previewUrl } from './preview'
@@ -47,7 +49,7 @@ import type { TransferSnapshot, ReplacementEvent } from '../shared/types'
 import { ConflictPolicy } from '../shared/file-conflicts'
 import { discoverLocalShells } from './local-shells'
 import { cancelDiagramRenderer, DiagramCancelled, disposeDiagramRenderer, renderMermaid } from './diagram-renderer'
-import { deleteTerminalHistory, loadTerminalHistory, pruneTerminalHistory, saveTerminalHistory, terminalRecording } from './terminal-history'
+import { deleteTerminalHistory, flushTerminalRecording, loadTerminalHistory, pruneTerminalHistory, saveTerminalHistory, terminalRecording } from './terminal-history'
 
 const execFileP = promisify(execFile)
 const windowsAppId = app.isPackaged ? 'com.pello.app' : 'com.pello.app.dev'
@@ -61,6 +63,7 @@ if (process.env.AWB_CAPTURE) {
 
 let win: BrowserWindow | null = null
 let skillDiscovery: SkillDiscovery | undefined
+let resourceListing: AbortController | undefined
 const appUpdates = createAppUpdates((state) => { if (win && !win.isDestroyed()) win.webContents.send('app:update', state) })
 const automaticUpdates = new UpdateScheduler(() => appUpdates.check())
 const transfers = new TransferManager((snapshot) => { if (win && !win.isDestroyed()) win.webContents.send('transfer:update', snapshot) }, guardReplacement)
@@ -382,6 +385,9 @@ function createWindow(): void {
     })
   })
   win.on('closed', () => {
+    resourceListing?.abort()
+    closeRemoteReaders()
+    clearAssetSnapshots()
     for (const search of treeSearches.values()) { search.cancelled = true; search.controller.abort() }
     treeSearches.clear()
     for (const value of contentSearches.values()) value.search.cancel()
@@ -489,6 +495,8 @@ function registerIpc(): void {
       }
     }
     return mutate((draft) => {
+      closeRemoteReaders()
+      clearAssetSnapshots()
       const local = hosts.find((h) => h.id === 'local')
       if (local) {
         local.on = true
@@ -510,7 +518,12 @@ function registerIpc(): void {
   ipcMain.handle('resources:discover-close', (_e, id: string) => discovery.close(id))
   ipcMain.handle('resources:discover-install', (_e, id: string, agents: string[], names: string[]) => discovery.install(id, targets(), agents, names))
   ipcMain.handle('resources:target', (_e, target: ResourceTarget) => resources.saveTarget(target, db().custom))
-  ipcMain.handle('resources:list', (_e, kind: 'mcp' | 'skills', agent: string, page: number, query: string) => resources.list(targets(), kind, agent, page, query))
+  ipcMain.handle('resources:list', async (_e, kind: 'mcp' | 'skills', agent: string, page: number, query: string) => {
+    resourceListing?.abort()
+    const controller = resourceListing = new AbortController()
+    try { return await resources.listAsync(targets(), kind, agent, page, query, false, controller.signal) }
+    finally { if (resourceListing === controller) resourceListing = undefined }
+  })
   ipcMain.handle('resources:toggle', (_e, kind, agent, item, enabled) => resources.toggle(targets(), kind, agent, item, enabled))
   ipcMain.handle('resources:detail', (_e, kind, agent, item) => resources.detail(targets(), kind, agent, item))
   ipcMain.handle('resources:skill-open', async (_e, agent, item) => {
@@ -653,7 +666,7 @@ function registerIpc(): void {
       if (choice.canceled || !choice.filePaths[0]) return null
       destination = choice.filePaths[0]
     } else {
-      const choice = await dialog.showSaveDialog(win, { title: t("下载文件（请选择新文件名）"), defaultPath: rel.split('/').pop(), properties: ['createDirectory'] })
+      const choice = await dialog.showSaveDialog(win, { title: t("下载文件"), defaultPath: rel.split('/').pop(), properties: ['createDirectory', 'showOverwriteConfirmation'] })
       if (choice.canceled || !choice.filePath) return null
       destination = choice.filePath
     }
@@ -781,7 +794,7 @@ function registerIpc(): void {
     try { return await writeFile(target, rel, text, version) } finally { activeFileWrites.delete(key) }
   })
   ipcMain.on('file:replacement-ready', (_e, id: string, allow: boolean) => { if (typeof allow === 'boolean') replacementAnswers.get(id)?.(allow) })
-  ipcMain.handle('file:preview-url', async (_e, projectId: string, rel: string, draft?: string) => previewUrl(projectId, projectTarget(projectId).target, rel, draft))
+  ipcMain.handle('file:preview-url', async (_e, projectId: string, rel: string, draft?: string, assetToken?: string) => previewUrl(projectId, projectTarget(projectId).target, rel, draft, assetToken))
   ipcMain.handle('file:open-html', async (_e, projectId: string, rel: string) => openHtmlPreview(projectId, projectTarget(projectId).target, rel))
   ipcMain.handle('tree:menu', (_e, projectId: string, rel: string, directory: boolean) => new Promise<string | null>((resolve) => {
     const { target, host } = projectTarget(projectId)
@@ -902,10 +915,11 @@ function registerIpc(): void {
   }))
   ipcMain.handle('terminal:export', async (_event, id: string) => {
     if (typeof id !== 'string' || !Object.values(db().sessions).flat().some((term) => term.id === id)) throw new Error(t("终端不存在"))
+    await flushTerminalRecording(id)
     const source = terminalRecording(id)
     if (!fs.existsSync(source)) throw new Error(t("此终端尚无完整记录"))
     const choice = await dialog.showSaveDialog(win!, { defaultPath: 'terminal-history.ansi', filters: [{ name: t("ANSI 终端记录"), extensions: ['ansi'] }] })
-    if (!choice.canceled && choice.filePath) await fs.promises.copyFile(source, choice.filePath)
+    if (!choice.canceled && choice.filePath) { await flushTerminalRecording(id); await fs.promises.copyFile(source, choice.filePath) }
   })
 
   ipcMain.handle('pty:create', (_e, req: { id: string; projectId: string; kind: string; shell: ShellKind; agentSessionId?: string }) => {
@@ -927,7 +941,7 @@ function registerIpc(): void {
   ipcMain.handle('pty:close', async (_e, id: string) => {
     if (closingWindow || quitting) return closeAllSessions()
     await closeSession(id)
-    deleteTerminalHistory(id)
+    await deleteTerminalHistory(id)
   })
 
   ipcMain.handle('exec:test', async (_e, req: { cmd: string; args: string; shell: ShellKind; env: { k: string; v: string; secret: boolean }[]; cwd?: string; hostId?: string }) => {

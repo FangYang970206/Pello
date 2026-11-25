@@ -34,7 +34,15 @@ const env = { ...process.env, AWB_USER_DATA: data }
 delete env.ELECTRON_RUN_AS_NODE
 const shots = path.resolve('output/playwright/sidebar-sessions')
 fs.mkdirSync(shots, { recursive: true })
-let app = await electron.launch({ args: ['.'], env })
+const launchedProcesses = []
+async function launch() {
+  const instance = await electron.launch({ args: ['.'], env })
+  const child = instance.process()
+  launchedProcesses.push(child)
+  child.once('exit', (code, signal) => { if (code !== 0) console.error('Sidebar application exited unexpectedly', { pid: child.pid, code, signal }) })
+  return instance
+}
+let app = await launch()
 try {
   let page = await app.firstWindow()
   page.setDefaultTimeout(15000)
@@ -76,7 +84,8 @@ try {
   await page.locator('[data-a=proj][data-id=p1]').press('ArrowRight')
   await session('session:p1').waitFor()
   await page.locator('[data-a=agents-toggle]').click()
-  await agent('busy').filter({ has: page.locator('.spinning') }).waitFor()
+  await agent('busy').filter({ has: page.locator('.terminal-status.ready') }).waitFor()
+  assert.equal(await agent('busy').locator('.spinning').count(), 0, 'No activity report defaults to available')
   await agent('native').waitFor()
   assert.equal(await page.locator('.sidebar-term .more').count(), 0, 'Agent entries have no ellipsis buttons')
   await agent('native').press('Shift+F10')
@@ -101,7 +110,8 @@ try {
   await nativeInput('done')
   await page.locator('[data-a=side-term][data-id=native][data-status=waiting]').waitFor()
   await toggleFilter('运行中')
-  assert.equal(await agent('busy').count(), 0)
+  await agent('busy').waitFor()
+  assert.equal(await agent('busy').getAttribute('data-status'), 'waiting', 'Unreported agents follow the available filter')
   await agent('native').waitFor()
   await toggleFilter('运行中')
   await page.locator('[data-a=agents-toggle]').click({ button: 'right' })
@@ -201,7 +211,7 @@ try {
   await session(newGroup.id).click()
   // Restart proves grouping, names, active terminal and actual output survive.
   await app.close()
-  app = await electron.launch({ args: ['.'], env }); page = await app.firstWindow(); page.setDefaultTimeout(15000)
+  app = await launch(); page = await app.firstWindow(); page.setDefaultTimeout(15000)
   await session(newGroup.id).waitFor()
   assert.equal(await page.locator('[data-a=agents-toggle]').getAttribute('aria-expanded'), 'false')
   await session(newGroup.id).click()
@@ -246,4 +256,7 @@ try {
   await page.getByRole('button', { name: '打开项目 跨项目排查', exact: true }).waitFor({ state: 'detached' })
   assert.equal(fs.readFileSync(path.join(data, 'keep.txt'), 'utf8'), 'Keep the actual project files')
   console.log('PASS compact sidebar, session migration/isolation/restore, double-click and keyboard collapse, native running/waiting spinners, Agents filters/jumps, host colors, persistent names and safe process-tree/session/project deletion; four theme/size captures')
-} finally { await app.close() }
+} finally {
+  await app.close()
+  for (const child of launchedProcesses) assert.equal(child.exitCode, 0, `Sidebar app ${child.pid}: normal exit after native PTY cleanup`)
+}

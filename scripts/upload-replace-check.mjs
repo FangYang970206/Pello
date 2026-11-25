@@ -86,6 +86,21 @@ try {
   const file = path.join(sources, 'same.txt'); fs.writeFileSync(file, 'new file')
   await done(await start([file])); assert.equal(remoteText('same.txt'), 'new file')
   assert.equal(fs.readFileSync(file, 'utf8'), 'new file')
+  const downloaded = path.join(data, 'confirmed-download.txt')
+  fs.writeFileSync(downloaded, 'old local content')
+  await app.evaluate(({ dialog }, filePath) => {
+    globalThis.__originalDownloadDialog = dialog.showSaveDialog
+    dialog.showSaveDialog = async (_win, options) => {
+      if (!options.properties.includes('showOverwriteConfirmation')) throw new Error('Download must request native overwrite confirmation')
+      return { canceled: false, filePath }
+    }
+  }, downloaded)
+  try {
+    const id = await page.evaluate(() => window.awb.transferDownload('p', 'same.txt', false))
+    await done(id)
+    assert.equal(fs.readFileSync(downloaded, 'utf8'), 'new file')
+    console.log('PASS native save-dialog confirmed download replaces existing local bytes through the real SSH pipeline')
+  } finally { await app.evaluate(({ dialog }) => { dialog.showSaveDialog = globalThis.__originalDownloadDialog }) }
   await done(await start([source]))
   assert.equal(remoteExists('same folder/old-only.txt'), false)
   assert.equal(remoteText('same folder/note.txt'), 'new note 中文')

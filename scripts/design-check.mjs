@@ -94,7 +94,7 @@ try {
         await page.click(`[data-a=sec][data-id=${section}]`)
         await shot(`settings-${section}`, theme, size)
         if (section === 'mcp' || section === 'skills') {
-          const label = section === 'mcp' ? '添加 MCP' : '添加 Skill'
+          const label = section === 'mcp' ? '添加 MCP' : '添加'
           await page.getByRole('button', { name: label, exact: true }).click()
           await shot(`settings-${section}-add`, theme, size)
           await page.locator('.resource-dialog header [data-a=mclose]').click()

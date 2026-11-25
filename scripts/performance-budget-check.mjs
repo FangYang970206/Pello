@@ -13,6 +13,24 @@ assert.equal(median([300, 10, 20]), 20)
 assert.equal(median([1, 3]), 2)
 assert.throws(() => median([])); assert.throws(() => median([NaN]))
 assert.deepEqual(performanceFailures(good, budget), [])
+for (const name of ['hotspots', 'hotspotUi']) {
+  const item = budgets[name]
+  const complete = { schemaVersion: 1, suite: name, fixture: item.fixture, environment: 'same-machine',
+    metrics: Object.fromEntries(Object.entries(item.limits).map(([key, limit]) => [key, limit / 2])),
+    samples: Object.fromEntries(Object.keys(item.requiredSamples).map((key) => [key, Array(3).fill(item.limits[key] / 2)])),
+    checks: Object.fromEntries(item.requiredChecks.map((key) => [key, true])) }
+  assert.deepEqual(performanceFailures(complete, item), [])
+  for (const key of Object.keys(item.limits)) {
+    const missing = structuredClone(complete); delete missing.metrics[key]
+    assert.ok(performanceFailures(missing, item).some((failure) => failure.startsWith(`${key}:`)))
+    const slow = structuredClone(complete); slow.metrics[key] = item.limits[key] + 1
+    assert.ok(performanceFailures(slow, item).some((failure) => failure.startsWith(`${key}:`)))
+  }
+  for (const key of item.requiredChecks) {
+    const incomplete = structuredClone(complete); incomplete.checks[key] = false
+    assert.ok(performanceFailures(incomplete, item).some((failure) => failure.startsWith(`${key}:`)))
+  }
+}
 for (const name of Object.keys(budget.limits)) {
   const slow = structuredClone(good); slow.metrics[name] = budget.limits[name] + 1
   assert.ok(performanceFailures(slow, budget).some((failure) => failure.startsWith(`${name}:`)), `Must reject over-budget ${name}`)

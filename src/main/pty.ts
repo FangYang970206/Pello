@@ -19,7 +19,7 @@ import { replyProgramStatus } from './windows-status'
 import { claudeLifecycle, nativeAgent, submittedAgent } from './agent-lifecycle'
 import { agentResumeCommand, customResumeCommand, validAgentSession, terminalSessionKey } from './agent-resume'
 import { createCodexThread } from './codex-session'
-import { loadTerminalHistory, recordTerminalOutput } from './terminal-history'
+import { flushTerminalRecording, loadTerminalHistory, recordTerminalOutput } from './terminal-history'
 import { legacyConversations, matchLegacyConversation } from './legacy-agent-session'
 import { needsSshClient, passwordTerminal, remoteCommand, type TerminalProcess } from './ssh'
 import {
@@ -403,7 +403,7 @@ class Session {
       this.nativeStatus = false
       if (this.activeAgent === 'claude' && this.lifecycleFile && !command.includes('--settings')) data = data.replace(/[\r\n]/, (enter) => ` --settings ${this.quoteLifecycleFile()}${enter}`)
       this.shellInput = ''
-      this.programWaiting = !!this.activeAgent && !custom
+      this.programWaiting = !!this.activeAgent
       this.phase = 'command'
       this.state = 'running'
       this.startedAt = Date.now()
@@ -632,7 +632,7 @@ class Session {
     this.phase = 'command'
     this.activeAgent = this.kind === 'shell' ? null : this.kind
     this.nativeStatus = false
-    this.programWaiting = !!nativeAgent(this.kind)
+    this.programWaiting = !!this.activeAgent
     this.state = 'running'
     this.startedAt = Date.now()
     this.exitCode = null
@@ -870,14 +870,31 @@ export function restartSession(id: string): Promise<void> {
   return session.restart()
 }
 
+let terminalCloseQueue = Promise.resolve()
+function enqueueTerminalClose(close: () => Promise<void>): Promise<void> {
+  if (process.platform !== 'win32') return close()
+  // Session/project deletion issues concurrent IPC calls. Share the same fence
+  // with window shutdown so taskkill and ConPTY native teardown stay serial.
+  const next = terminalCloseQueue.then(close)
+  terminalCloseQueue = next.catch(() => undefined)
+  return next
+}
+
 export async function closeSession(id: string): Promise<void> {
-  const session = sessions.get(id)
-  if (!session) return
-  await session.dispose()
-  if (sessions.get(id) === session) sessions.delete(id)
+  return enqueueTerminalClose(async () => {
+    const session = sessions.get(id)
+    if (!session) return
+    await session.dispose()
+    await flushTerminalRecording(id)
+    if (sessions.get(id) === session) sessions.delete(id)
+  })
 }
 
 export async function closeAllSessions(): Promise<void> {
+  return enqueueTerminalClose(closeAllSessionsNow)
+}
+
+async function closeAllSessionsNow(): Promise<void> {
   const results: PromiseSettledResult<void>[] = []
   for (const session of sessions.values()) session.prepareShutdown()
   if (process.platform === 'win32') {
@@ -906,6 +923,7 @@ export async function closeAllSessions(): Promise<void> {
       if (sessions.get(id) === session) sessions.delete(id)
     }
   } else results.push(...await Promise.allSettled([...sessions.keys()].map(closeSession)))
+  results.push(...await Promise.allSettled([flushTerminalRecording()]))
   const errors = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
   if (errors.length) throw new AggregateError(errors.map((result) => result.reason), 'Failed to close terminal sessions')
 }

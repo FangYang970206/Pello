@@ -166,4 +166,8 @@ assert.ok(fs.existsSync(path.join(outside, 'SKILL.md')))
 fs.writeFileSync(path.join(target('claude').skillPath, 'SKILL.md'), '---\nname: root-skill\ndescription: Discovery root fixture\n---\nBody')
 const rootSkill = manager.list(targets, 'skills', 'claude', 1, 'root-skill').items[0]
 assert.throws(() => manager.skillDirectory(targets, 'claude', rootSkill, true), /资源范围|整个 Skill/)
+for (const agent of ['claude', 'codex', 'opencode', 'pi', 'omp']) {
+  assert.deepEqual(await manager.listAsync(targets, 'skills', agent, 1, '', true), manager.list(targets, 'skills', agent, 1, '', true), `${agent}: yielding discovery keeps native state, sorting, duplicates and errors`)
+  assert.deepEqual(await manager.listAsync(targets, 'mcp', agent), manager.list(targets, 'mcp', agent), `${agent}: async and synchronous MCP discovery agree`)
+}
 console.log('PASS Skill folder actions accept listed native/portable directories and reject forged paths, external linked deletion and discovery-root deletion')

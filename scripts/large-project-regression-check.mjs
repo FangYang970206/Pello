@@ -49,7 +49,13 @@ fs.writeFileSync(path.join(root, 'ignored-by-git.txt'), 'Pello must still find t
 let gap = 0, last = performance.now()
 const timer = setInterval(() => { const now = performance.now(); gap = Math.max(gap, now - last); last = now }, 5)
 try {
-  const panel = await measured('gitColdMs', () => gitStatus(target))
+  let rootResolutions = 0
+  const realpath = fs.promises.realpath
+  fs.promises.realpath = async (file, ...args) => { if (file === root) rootResolutions++; return realpath.call(fs.promises, file, ...args) }
+  let panel
+  try { panel = await measured('gitColdMs', () => gitStatus(target)) }
+  finally { fs.promises.realpath = realpath }
+  assert.equal(rootResolutions, 1, 'Resolve the repository root once per status; revalidate every file boundary independently')
   assert.equal(panel.files.find((file) => file.path === 'file-0.txt').add, 2)
   fs.writeFileSync(path.join(root, 'file-0.txt'), 'updated\n')
   const updated = await measured('gitWarmMs', () => gitStatus(target), 3)

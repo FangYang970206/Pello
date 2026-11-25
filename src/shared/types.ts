@@ -191,6 +191,8 @@ export interface FileContent {
   missing: boolean
   version: string | null
   tooBig?: boolean
+  /** Short-lived token for the validated media version opened by this document. */
+  assetToken?: string
 }
 
 export interface PathCheck {

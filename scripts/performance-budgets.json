@@ -1,5 +1,17 @@
 {
   "schemaVersion": 1,
+  "hotspots": {
+    "fixture": "diff-4000-skills-600-journal-8000-v1",
+    "requiredSamples": { "diffMs": 3, "unrelatedDiffMs": 3, "skillsMs": 3, "journalMs": 3 },
+    "limits": { "diffMs": 50, "unrelatedDiffMs": 50, "skillsMs": 1500, "skillsGapMs": 100, "journalMs": 250, "configReadsPerList": 1, "syncAppends": 0 },
+    "requiredChecks": ["exactDiff", "externalConfigChange", "losslessJournal", "journalRetry", "pendingDeletion"]
+  },
+  "hotspotUi": {
+    "fixture": "dom-12000-ranges-2000-source-50001-v1",
+    "requiredSamples": { "savePaintMs": 3, "domRangesMs": 3 },
+    "limits": { "savePaintMs": 500, "domRangesMs": 100 },
+    "requiredChecks": ["unicodeRanges", "savedContent", "latestResources"]
+  },
   "regression": {
     "fixture": "generated-1800-files-8kb-v1",
     "requiredSamples": { "gitWarmMs": 3, "filenameMs": 3, "contentMs": 3, "saveMs": 3, "savePaintMs": 3 },

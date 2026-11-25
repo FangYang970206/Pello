@@ -3,6 +3,9 @@ import type { Host, TerminalContext, TerminalRoute } from '../shared/types'
 
 type Context = { projectId: string; terminalId: string; cwd: string; host: Host; route: TerminalRoute[] }
 const contexts = new Map<string, Context>()
+const routeClosed = new Set<(hostId: string, route: TerminalRoute[]) => void>()
+export function onTerminalRouteClosed(listener: (hostId: string, route: TerminalRoute[]) => void): void { routeClosed.add(listener) }
+function notifyRouteClosed(hostId: string, route: TerminalRoute[]): void { for (const listener of routeClosed) listener(hostId, route) }
 export const terminalTarget = (id: string): Context | undefined => contexts.get(id)
 
 /** Strip only this session's private reports; never interpret ordinary prompt text. */
@@ -35,7 +38,10 @@ export class TerminalContextTracker {
         if (signature === this.signature) continue
         this.signature = signature
         for (const [id, item] of contexts) {
-          if (item.terminalId === this.terminalId && (item.route.length > value.route.length || item.route.some((hop, index) => JSON.stringify(hop) !== JSON.stringify(value.route[index])))) contexts.delete(id)
+          if (item.terminalId === this.terminalId && (item.route.length > value.route.length || item.route.some((hop, index) => JSON.stringify(hop) !== JSON.stringify(value.route[index])))) {
+            contexts.delete(id)
+            notifyRouteClosed(item.host.id, item.route)
+          }
         }
         if (!signature) { context = null; continue }
         const previous = [...contexts].find(([, item]) => item.terminalId === this.terminalId && JSON.stringify([item.route, item.cwd]) === signature)
@@ -46,5 +52,10 @@ export class TerminalContextTracker {
     }
     return { text, ...(context !== undefined ? { context } : {}) }
   }
-  dispose(): void { for (const [id, value] of contexts) if (value.terminalId === this.terminalId) contexts.delete(id) }
+  dispose(): void {
+    for (const [id, value] of contexts) if (value.terminalId === this.terminalId) {
+      contexts.delete(id)
+      notifyRouteClosed(value.host.id, value.route)
+    }
+  }
 }

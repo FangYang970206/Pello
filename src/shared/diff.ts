@@ -25,23 +25,77 @@ export function splitLines(text: string): string[] {
 }
 
 export function lcs(before: string[], after: string[]): DiffLine[] {
-  const n = before.length
-  const m = after.length
-  const d: number[][] = Array.from({ length: n + 1 }, () => Array(m + 1).fill(0))
-  for (let i = n - 1; i >= 0; i--) {
-    for (let j = m - 1; j >= 0; j--) {
-      d[i][j] = before[i] === after[j] ? d[i + 1][j + 1] + 1 : Math.max(d[i + 1][j], d[i][j + 1])
+  const out: DiffLine[] = []
+  const n = before.length, m = after.length
+  let i = 0, j = 0
+  // A shared prefix is always taken by the original deletion-first LCS.
+  // Stripping a shared suffix is unsafe when repeated lines create ties.
+  while (i < n && j < m && before[i] === after[j]) { out.push(['', before[i], i++, j++]) }
+  const from = i, width = m - j
+  const positions = new Map<string, number[]>()
+  for (let index = j; index < m; index++) {
+    const found = positions.get(after[index])
+    if (found) found.push(index); else positions.set(after[index], [index])
+  }
+  let pairs = 0
+  for (let index = i; index < n; index++) pairs += positions.get(before[index])?.length || 0
+  let remove: (row: number, column: number) => boolean = () => true
+  if (pairs) {
+    const depth = Math.ceil(Math.log2(Math.max(1, width))) + 1
+    if (pairs * depth <= 2_000_000 && pairs * depth < (n - from) * width) {
+      // Sparse files need only matching pairs. Persistent suffix maxima let
+      // reconstruction ask the exact same scores as the full DP table, so
+      // repeated-line ties and original line indices remain unchanged.
+      const capacity = pairs * depth + 1
+      const left = new Uint32Array(capacity), right = new Uint32Array(capacity), score = new Uint32Array(capacity)
+      const roots = new Uint32Array(n - from + 1)
+      let used = 0
+      const suffix = (node: number, low: number, high: number, start: number): number => {
+        if (!node || high <= start) return 0
+        if (start <= low) return score[node]
+        const middle = (low + high) >>> 1
+        return Math.max(suffix(left[node], low, middle, start), suffix(right[node], middle, high, start))
+      }
+      const update = (node: number, low: number, high: number, column: number, value: number): number => {
+        const copy = ++used
+        left[copy] = left[node]; right[copy] = right[node]; score[copy] = Math.max(score[node], value)
+        if (high - low > 1) {
+          const middle = (low + high) >>> 1
+          if (column < middle) left[copy] = update(left[node], low, middle, column, value)
+          else right[copy] = update(right[node], middle, high, column, value)
+        }
+        return copy
+      }
+      for (let row = n - 1; row >= from; row--) {
+        const previous = roots[row - from + 1]
+        let root = previous
+        for (const column of positions.get(before[row]) || []) root = update(root, from, m, column, suffix(previous, from, m, column + 1) + 1)
+        roots[row - from] = root
+      }
+      remove = (row, column) => suffix(roots[row - from + 1], from, m, column) >= suffix(roots[row - from], from, m, column + 1)
+    } else {
+      // Dense repeated lines use one score row and one bit per decision,
+      // instead of a JavaScript number and array slot for every matrix cell.
+      const decisions = new Uint8Array(Math.ceil((n - from) * width / 8)), scores = new Uint32Array(width + 1)
+      for (let row = n - 1; row >= from; row--) {
+        let diagonal = 0
+        for (let column = m - 1; column >= from; column--) {
+          const offset = column - from, below = scores[offset]
+          if (before[row] === after[column]) scores[offset] = diagonal + 1
+          else if (below >= scores[offset + 1]) { const bit = (row - from) * width + offset; decisions[Math.floor(bit / 8)] |= 1 << (bit % 8) }
+          else scores[offset] = scores[offset + 1]
+          diagonal = below
+        }
+      }
+      remove = (row, column) => { const bit = (row - from) * width + column - from; return !!(decisions[Math.floor(bit / 8)] & (1 << (bit % 8))) }
     }
   }
-  const out: DiffLine[] = []
-  let i = 0
-  let j = 0
   while (i < n || j < m) {
     if (i < n && j < m && before[i] === after[j]) {
       out.push(['', before[i], i, j])
       i++
       j++
-    } else if (i < n && (j === m || d[i + 1][j] >= d[i][j + 1])) {
+    } else if (i < n && (j === m || remove(i, j))) {
       out.push(['del', before[i], i, null])
       i++
     } else {

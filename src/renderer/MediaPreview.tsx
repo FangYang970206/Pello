@@ -5,15 +5,15 @@ import { Icon } from './icons'
 import { isZoomWheel, usePreviewWheel } from './usePreviewWheel'
 import { DocumentSearch, useDocumentSearch } from './DocumentSearch'
 
-export default function MediaPreview({ projectId, path, version }: { projectId: string; path: string; version: string | null }) {
+export default function MediaPreview({ projectId, path, version, assetToken }: { projectId: string; path: string; version: string | null; assetToken?: string }) {
   const [source, setSource] = useState<{ url?: string; error?: string }>({})
   const [attempt, setAttempt] = useState(0)
   useEffect(() => {
     let stopped = false
-    void window.awb.previewUrl(projectId, path).then((url) => { if (!stopped) setSource({ url }) })
+    void window.awb.previewUrl(projectId, path, undefined, attempt ? undefined : assetToken).then((url) => { if (!stopped) setSource({ url }) })
       .catch((error) => { if (!stopped) setSource({ error: String(error) }) })
     return () => { stopped = true }
-  }, [projectId, path, version, attempt])
+  }, [projectId, path, version, assetToken, attempt])
   const retry = () => { setSource({}); setAttempt((value) => value + 1) }
   return <section className="media-preview" aria-label={mediaKind(path) === 'pdf' ? t("PDF 预览") : t("图片预览")}>
     {source.error ? <PreviewError error={source.error} retry={retry} /> : source.url ? mediaKind(path) === 'pdf' ?

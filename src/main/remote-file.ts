@@ -367,8 +367,8 @@ export async function downloadRemoteDirectory(target: Target, rel: string, local
   }
 }
 
-/** Binary download to a new local file. The target is published only on complete success. */
-export async function downloadRemoteFile(target: Target, rel: string, destination: string, signal: AbortSignal, progress: (bytes: number) => void): Promise<void> {
+/** Publish complete downloads; replacement is allowed only after the save dialog confirms it. */
+export async function downloadRemoteFile(target: Target, rel: string, destination: string, signal: AbortSignal, progress: (bytes: number) => void, replaceExisting = false): Promise<void> {
   if (!target.host || target.host.id === 'local') throw new Error(t("请选择远程文件"))
   const resolved = treePath(target, rel)
   if (resolved.relative === '.') throw new Error(t("请选择文件"))
@@ -380,17 +380,25 @@ export async function downloadRemoteFile(target: Target, rel: string, destinatio
     args = ['powershell.exe', '-NoProfile', '-Command', script]
   } else args = ['python3', '-c', READ_LINUX(), target.cwd, resolved.relative]
   const temp = path.join(path.dirname(destination), `.awb-download-${randomUUID()}.tmp`)
+  const expected = replaceExisting ? await fsp.lstat(destination).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error }) : null
+  if (expected && (!expected.isFile() || expected.isSymbolicLink())) throw new Error(t("目标不是普通文件或包含链接"))
   let reserved = false
   let remote: Awaited<ReturnType<typeof openRemoteStream>> | undefined
+  let writing: Promise<void> | undefined
   try {
     const handle = await fsp.open(temp, 'wx'); reserved = true; await handle.close()
     remote = await openRemoteStream(target.host, args, signal)
     remote.stdin.end()
     let bytes = 0
     const meter = new Transform({ transform(chunk: Buffer, _encoding, callback) { bytes += chunk.length; progress(bytes); callback(null, chunk) } })
-    await Promise.all([pipeline(remote.stdout, meter, fs.createWriteStream(temp), { signal }), remote.completion])
+    writing = pipeline(remote.stdout, meter, fs.createWriteStream(temp), { signal })
+    await Promise.all([writing, remote.completion])
     if (signal.aborted) throw new Error(t("传输已取消"))
-    await fsp.link(temp, destination)
-  } catch (error) { remote?.close(); throw error }
+    if (expected) {
+      const current = await fsp.lstat(destination)
+      if (!current.isFile() || current.isSymbolicLink() || current.dev !== expected.dev || current.ino !== expected.ino || current.size !== expected.size || current.mtimeMs !== expected.mtimeMs || current.ctimeMs !== expected.ctimeMs) throw new Error(t("目标文件已更改，请重新检查冲突"))
+      await fsp.rename(temp, destination)
+    } else await fsp.link(temp, destination)
+  } catch (error) { remote?.close(); await writing?.catch(() => undefined); throw error }
   finally { if (reserved) await fsp.unlink(temp).catch(() => undefined) }
 }

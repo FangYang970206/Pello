@@ -10,9 +10,14 @@ export function domText(root: HTMLElement) {
   }
   const range = ({ from, to }: TextMatch) => {
     const result = document.createRange()
-    let start = 0, end = 0
-    while (start < nodes.length - 1 && starts[start + 1] <= from) start++
-    while (end < nodes.length - 1 && starts[end] + nodes[end].length < to) end++
+    // Starts and ends are ordered, including empty text nodes. Preserve the
+    // original boundary affinity without walking the entire document per hit.
+    let low = 0, high = nodes.length
+    while (low < high) { const mid = (low + high) >>> 1; if (starts[mid] <= from) low = mid + 1; else high = mid }
+    const start = Math.max(0, low - 1)
+    low = 0; high = nodes.length
+    while (low < high) { const mid = (low + high) >>> 1; if (starts[mid] + nodes[mid].length < to) low = mid + 1; else high = mid }
+    const end = Math.min(low, nodes.length - 1)
     if (!nodes[start] || !nodes[end]) return null
     result.setStart(nodes[start], Math.min(nodes[start].length, from - starts[start]))
     result.setEnd(nodes[end], Math.min(nodes[end].length, to - starts[end]))

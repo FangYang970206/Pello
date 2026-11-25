@@ -99,7 +99,7 @@ export interface WorkbenchApi {
   contentSearchCancel(id: string): Promise<void>
   gitRead(projectId: string, rel: string): Promise<FileContent>
   gitWrite(projectId: string, rel: string, text: string, version: string | null): Promise<FileContent>
-  previewUrl(projectId: string, rel: string, draft?: string): Promise<string>
+  previewUrl(projectId: string, rel: string, draft?: string, assetToken?: string): Promise<string>
   renderMermaid(source: string): Promise<string>
   cancelDiagrams(): Promise<void>
   openHtmlPreview(projectId: string, rel: string): Promise<string>

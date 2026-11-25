@@ -347,10 +347,12 @@ try {
   await app.evaluate(({ dialog }, source) => { globalThis.__conflictOpenDialog = dialog.showOpenDialog; dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [source] }); globalThis.__documentMenuCommand = 'import-files' }, uploadSource)
   try {
     await page.click('[data-a=rmode][data-id=files]')
+    const previousTasks = await page.evaluate(() => [...new Set(window.__downloadStates.map((item) => item.id))])
     await page.getByRole('group', { name: '文件树', exact: true }).dispatchEvent('contextmenu')
-    const task = page.locator('.upload-status').last()
+    await page.waitForFunction((ids) => window.__downloadStates.some((item) => item.direction === 'upload' && !ids.includes(item.id)), previousTasks)
+    const taskId = await page.evaluate((ids) => window.__downloadStates.find((item) => item.direction === 'upload' && !ids.includes(item.id)).id, previousTasks)
+    const task = page.locator(`.upload-status[data-transfer-id="${taskId}"]`)
     await task.getByText('上传成功', { exact: true }).waitFor({ timeout: 30000 })
-    const taskId = await task.getAttribute('data-transfer-id')
     assert.equal(await task.getByRole('button', { name: '冲突项保留两者', exact: true }).count(), 0)
     assert.equal(await task.getByRole('progressbar').count(), 0)
     assert.deepEqual(fs.readFileSync(path.join(projectDir, "上传 data's.bin")), binaryData)
@@ -404,19 +406,26 @@ try {
   await page.evaluate(() => { window.__autosaveDelay = 5000 })
   await remoteEditor.fill('remote draft must survive cancellation')
   for (const allow of [false, true]) {
-    await page.evaluate((source) => window.awb.transferDrop('remote-project', '', [source]), overwriteSource)
+    const taskId = await page.evaluate((source) => window.awb.transferDrop('remote-project', '', [source]), overwriteSource)
     const confirm = page.getByRole('dialog', { name: '覆盖未保存的文件？', exact: true })
     await confirm.waitFor()
-    const taskId = await page.locator('.upload-status').last().getAttribute('data-transfer-id')
     const task = page.locator(`.upload-status[data-transfer-id="${taskId}"]`)
     const version = (await page.evaluate(() => window.awb.gitRead('remote-project', 'README.md'))).version
     await assert.rejects(page.evaluate((version) => window.awb.gitWrite('remote-project', 'README.md', 'blocked during replacement', version), version))
     await confirm.getByRole('button', { name: allow ? '放弃草稿并覆盖' : '取消', exact: true }).click()
-    await task.getByText(allow ? '上传成功' : '上传失败', { exact: true }).waitFor({ timeout: 30000 })
+    await page.waitForFunction((id) => window.__downloadStates.some((item) => item.id === id && item.state === 'completed'), taskId, { timeout: 30000 })
+    const result = await page.evaluate((id) => window.__downloadStates.filter((item) => item.id === id).at(-1), taskId)
+    assert.equal(result.items.every((item) => item.status === 'done'), allow)
+    if (allow) await task.getByText('上传成功', { exact: true }).waitFor()
+    else {
+      await page.locator('.transfer-details-toggle').click()
+      await page.locator(`[data-issue-id="${taskId}"]`).waitFor()
+      await page.keyboard.press('Escape')
+    }
     try {
       await page.waitForFunction((expected) => document.querySelector('textarea[aria-label="文件内容"]')?.value === expected, allow ? 'remote replacement text' : 'remote draft must survive cancellation', { timeout: 5000 })
     } catch (error) {
-      console.error('Overwrite diagnostic', { allow, task: await task.innerText(), editor: await remoteEditor.inputValue(), disk: fs.readFileSync(path.join(projectDir, 'README.md'), 'utf8').slice(0, 120) })
+      console.error('Overwrite diagnostic', { allow, task: await page.locator('.transfer-list').innerText(), editor: await remoteEditor.inputValue(), disk: fs.readFileSync(path.join(projectDir, 'README.md'), 'utf8').slice(0, 120) })
       throw error
     }
     assert.equal(fs.readFileSync(path.join(projectDir, 'README.md'), 'utf8'), allow ? 'remote replacement text' : originalBeforeOverwrite)

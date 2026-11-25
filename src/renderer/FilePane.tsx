@@ -45,9 +45,10 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
   const frame = useRef<HTMLIFrameElement>(null)
   const viewId = useId()
   const source = useRef<HTMLTextAreaElement>(null)
-  // Saving toggles document flags without changing the text. Reuse the line
-  // number nodes instead of rebuilding a large gutter for each save phase.
-  const lineNumbers = useMemo(() => document?.draft.split('\n').map((_, i) => <div key={i}>{i + 1}</div>), [document?.draft])
+  // Labels depend only on line count. Keep every label in one text node so
+  // editing and saving do not reconcile or lay out tens of thousands of divs.
+  const lineCount = useMemo(() => document ? document.draft.split('\n').length : 0, [document?.draft])
+  const lineNumbers = useMemo(() => Array.from({ length: lineCount }, (_, index) => String(index + 1)).join('\n'), [lineCount])
   const richSearch = useRef<SearchAdapter | null>(null)
   const [renderedText, setRenderedText] = useState('')
   const located = useRef('')
@@ -158,7 +159,7 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
       }}>
       <DocumentSearch search={search} scope={html && visual ? t("HTML 预览仅支持查找，切换到源码后可替换") : undefined} />
       {document?.replacing ? <p className="rmeta" role="status">{t("正在处理文件覆盖…")}</p> : media && document ? <Suspense fallback={null}>
-        <MediaPreview key={`${document.projectId}:${path}:${document.replacementId || ''}`} projectId={document.projectId} path={path} version={document.version} />
+        <MediaPreview key={`${document.projectId}:${path}:${document.replacementId || ''}`} projectId={document.projectId} path={path} version={document.version} assetToken={document.assetToken} />
       </Suspense> : readonly ? <div className="empty"><div className="in"><h2>{!document ? t("正在读取文件…") : document.missing ? t("文件不存在") : document.binary ? t("无法编辑二进制或非 UTF-8 文件") : t("文件超过 2 MB，请使用外部编辑器")}</h2></div></div>
         : html && visual ? preview.error ? <p className="file-error" role="alert">{preview.error}</p> : preview.url && preview.content === document.draft && preview.replacementId === document.replacementId ?
           <div className="html-preview-viewport"><iframe ref={frame} key={preview.url} className="html-preview" title={t("HTML 预览")} sandbox="allow-scripts" src={`${preview.url}${preview.url.includes('?') ? '&' : '?'}workbenchWheel=1&workbenchView=${encodeURIComponent(viewId)}`} onLoad={() => frame.current?.contentWindow?.postMessage({ type: 'pello-preview-search', matches: search.open ? search.matches : [], current: search.open ? search.matches[search.active] : null, open: search.open }, '*')} style={{ zoom, width: `${100 / zoom}%`, height: `${100 / zoom}%` }} /></div> : null

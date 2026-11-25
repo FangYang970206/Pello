@@ -17,20 +17,23 @@ function scanFiles(config: Config, scan: typeof scanContent): void {
   const root = fs.realpathSync.native(config.root), ignored = new Set(config.ignored)
   const pattern = new RegExp(config.source, config.flags)
   const directories = [''], pending: string[] = []
-  let remaining = 2000, finished = false, pendingIndex = 0
-  const read = async (rel: string): Promise<{ rel: string; text?: string; skipped?: number; errors?: number }> => {
+  let remaining = 2000, finished = false, pendingIndex = 0, visitedFiles = 0
+  const read = async (rel: string, direct: boolean): Promise<{ rel: string; text?: string; skipped?: number; errors?: number }> => {
     const full = path.join(root, rel)
     try {
       if (fs.realpathSync.native(full) !== full) return { rel, errors: 1 }
-      const handle = await fs.promises.open(full, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK)
+      const flags = fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK
+      // Opening a file can wait on storage/security filters even with hot data.
+      // Keep these opens overlapped within the bounded batch in both modes.
+      const handle = await fs.promises.open(full, flags)
       try {
-        const stat = await handle.stat()
+        const stat = direct ? fs.fstatSync(handle.fd) : await handle.stat()
         if (!stat.isFile()) return { rel }
         if (stat.size > 2_000_000) return { rel, skipped: 1 }
         const buffer = Buffer.allocUnsafe(Math.min(stat.size + 1, 2_000_001))
         let length = 0
         while (length < buffer.length) {
-          const { bytesRead } = await handle.read(buffer, length, buffer.length - length, null)
+          const bytesRead = direct ? fs.readSync(handle.fd, buffer, length, buffer.length - length, null) : (await handle.read(buffer, length, buffer.length - length, null)).bytesRead
           if (!bytesRead) break
           length += bytesRead
         }
@@ -65,8 +68,12 @@ function scanFiles(config: Config, scan: typeof scanContent): void {
           }
           paths.push(pending[pendingIndex++])
         }
-        // Bound open handles and buffered text while overlapping filesystem latency.
-        for (const { rel, text, skipped, errors } of await Promise.all(paths.map(read))) {
+        // Small scans overlap disk latency. Long scans switch to this dedicated
+        // worker's direct reads to avoid queueing every stat/read in the shared
+        // libuv pool. File opens remain overlapped. This is not a result limit.
+        const direct = visitedFiles >= 4096
+        visitedFiles += paths.length
+        for (const { rel, text, skipped, errors } of await Promise.all(paths.map((rel) => read(rel, direct)))) {
           if (skipped || errors) events.push({ skipped, errors })
           if (text === undefined) continue
           if (config.regex) parentPort!.postMessage({ type: 'matching' })

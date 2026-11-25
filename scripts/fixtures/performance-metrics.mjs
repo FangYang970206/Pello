@@ -72,14 +72,18 @@ export function performanceFailures(report, budget, baseline) {
 export async function savePaintSample(page, editor) {
   await page.evaluate(() => {
     window.__pelloSaveMetricCleanup?.()
-    window.__pelloSaveMetric = { start: 0, ms: null }
+    window.__pelloSaveMetric = { start: 0, ms: null, toastMs: null, firstFrameMs: null, focused: document.hasFocus(), visibility: document.visibilityState }
     const start = (event) => {
       if (event.ctrlKey && event.key.toLowerCase() === 's') { window.__pelloSaveMetric.start = performance.now(); document.removeEventListener('keydown', start, true) }
     }
     const observer = new MutationObserver(() => {
       if (!window.__pelloSaveMetric.start || !document.querySelector('#toasts')?.textContent.includes('文件已保存')) return
       observer.disconnect()
-      requestAnimationFrame(() => requestAnimationFrame(() => { window.__pelloSaveMetric.ms = performance.now() - window.__pelloSaveMetric.start }))
+      window.__pelloSaveMetric.toastMs = performance.now() - window.__pelloSaveMetric.start
+      requestAnimationFrame(() => {
+        window.__pelloSaveMetric.firstFrameMs = performance.now() - window.__pelloSaveMetric.start
+        requestAnimationFrame(() => { window.__pelloSaveMetric.ms = performance.now() - window.__pelloSaveMetric.start })
+      })
     })
     window.__pelloSaveMetricCleanup = () => { observer.disconnect(); document.removeEventListener('keydown', start, true) }
     document.addEventListener('keydown', start, true)
@@ -88,7 +92,9 @@ export async function savePaintSample(page, editor) {
   try {
     await editor.press('Control+s')
     await page.waitForFunction(() => window.__pelloSaveMetric.ms !== null, null, { timeout: 10000 })
-    return await page.evaluate(() => window.__pelloSaveMetric.ms)
+    const sample = await page.evaluate(() => window.__pelloSaveMetric)
+    console.log('Save paint sample ' + JSON.stringify(sample))
+    return sample.ms
   } finally { await page.evaluate(() => window.__pelloSaveMetricCleanup?.()) }
 }
 

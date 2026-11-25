@@ -17,7 +17,7 @@ import { codeFont, uiFont } from '../shared/fonts'
 import { themeVariables, workbenchTheme } from '../shared/themes'
 import { AUTO_SAVE_DELAY, documentKey, editableText, fileText, isDirty, recordChange, undoDocument, type DocumentDraft } from './documents'
 import type { TransferSnapshot } from '../shared/types'
-import { UPLOAD_SUCCESS_DURATION, uploadSucceeded } from './UploadStatus'
+import { TRANSFER_SUCCESS_DURATION, transferSucceeded } from './UploadStatus'
 import { loadTerminalLayouts } from './terminal-layout'
 import { preferredGroupTab } from './workspace-layout'
 import { executorForHost } from '../shared/executor'
@@ -125,10 +125,10 @@ export function App() {
     const timers = uploadDismissTimers.current
     const unsubscribe = window.awb.onTransfer((snapshot) => {
       if (snapshot.state === 'completed' || snapshot.state === 'cancelled') setGitTick((tick) => tick + 1)
-      if (snapshot.direction === 'upload' && snapshot.state === 'cancelled' && !snapshot.warnings?.length && !snapshot.items.some((item) => hasMessageFragment(item.error, '保留于'))) { dismissTransfer(snapshot.id); return }
+      if (snapshot.state === 'cancelled' && !snapshot.warnings?.length && !snapshot.items.some((item) => hasMessageFragment(item.error, '保留于'))) { dismissTransfer(snapshot.id); return }
       setTransferStates((current) => ({ ...current, [snapshot.id]: snapshot }))
-      if (uploadSucceeded(snapshot)) {
-        if (!timers.has(snapshot.id)) timers.set(snapshot.id, setTimeout(() => dismissTransfer(snapshot.id), UPLOAD_SUCCESS_DURATION))
+      if (transferSucceeded(snapshot)) {
+        if (!timers.has(snapshot.id)) timers.set(snapshot.id, setTimeout(() => dismissTransfer(snapshot.id), TRANSFER_SUCCESS_DURATION))
       } else {
         clearTimeout(timers.get(snapshot.id)); timers.delete(snapshot.id)
       }
@@ -388,7 +388,7 @@ export function App() {
       state: kind === 'shell' ? 'idle' : 'running',
       startedAt: kind === 'shell' ? null : Date.now(),
       exitCode: null,
-      inputReady: false,
+      inputReady: true,
       name: existingName,
       hasRun: kind !== 'shell',
       agentKind: kind === 'shell' ? null : kind,
@@ -525,7 +525,7 @@ export function App() {
 
   useEffect(() => {
     const project = panelProject
-    if (!project || route !== 'work') return
+    if (!project || route !== 'work' || !right) return
     let stop = false
     let loading = false
     const load = () => {
@@ -560,7 +560,7 @@ export function App() {
       stop = true
       clearInterval(timer)
     }
-  }, [panelProject?.id, route, rmode, gitTick])
+  }, [panelProject?.id, route, right, rmode, gitTick])
 
   useEffect(() => {
     setGit(null)
@@ -583,13 +583,19 @@ export function App() {
   }, [projectId, openDiffPaths, untrackedPaths, gitTick])
 
   const openDocumentPaths = JSON.stringify(tabs.filter((tab): tab is FileTab | DiffTab => tab.projectId === projectId && tab.type !== 'term').map((tab) => ({ path: tab.path, target: fileTarget(tab) })))
+  const documentReads = useRef(new Map<string, Promise<import('../shared/types').FileContent>>())
   useEffect(() => {
     if (!projectId) return
     let stop = false
     for (const { path, target } of JSON.parse(openDocumentPaths) as { path: string; target: string }[]) {
       const key = documentKey(target, path)
       if (replacementAt(target, path) || documentsRef.current[key]) continue
-      void window.awb.gitRead(target, path).then((file) => {
+      let request = documentReads.current.get(key)
+      if (!request) {
+        request = window.awb.gitRead(target, path).finally(() => documentReads.current.delete(key))
+        documentReads.current.set(key, request)
+      }
+      void request.then((file) => {
         if (!stop && !documentsRef.current[key]) putDocument(key, { ...file, projectId: target, path, draft: editableText(file.text) })
       }).catch((error) => { if (!stop) toast(error instanceof Error ? error.message : t("无法读取文件"), true) })
     }

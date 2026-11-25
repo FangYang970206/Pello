@@ -36,7 +36,8 @@ fs.writeFileSync(path.join(home, 'config.toml'), `model = "fixture"\nmodel_provi
 process.env.CODEX_HOME = home
 let source = fs.readFileSync(path.join(root, 'src/main/codex-session.ts'), 'utf8')
 source = source.replace(/import \{ bashQuote, psQuote, sshBatchArgs \} from '.\/platform'/, 'const bashQuote = JSON.stringify, psQuote = JSON.stringify, sshBatchArgs = () => []')
-source = source.replace(/import \{ connectPasswordHost, remoteCommand \} from '.\/ssh'/, 'const connectPasswordHost = () => { throw new Error("unexpected remote") }, remoteCommand = () => ""')
+source = source.replace(/import \{ needsSshClient, connectPasswordHost, remoteCommand \} from '.\/ssh'/, 'const needsSshClient = () => { throw new Error("unexpected remote") }, connectPasswordHost = () => { throw new Error("unexpected remote") }, remoteCommand = () => ""')
+assert.ok(!source.includes("from './ssh'"), 'The local native CLI fixture must replace its complete SSH seam')
 const { createCodexThread } = await loadTypeScript(path.join(root, 'src/main/codex-session.ts'), () => source)
 const ids = [await createCodexThread(project), await createCodexThread(project)]
 assert.notEqual(ids[0], ids[1], 'same-directory terminals must own different native threads')

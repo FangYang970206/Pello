@@ -70,7 +70,7 @@ export class DownloadManager {
               await downloadRemoteDirectory(target, entry.source, entry.destination, controller.signal, progress, (source, destination, error, directory) => result({ source, destination, kind: directory ? 'directory' : 'file' }, error))
             } else {
               if (entry.kind === 'directory') await fs.mkdir(entry.destination)
-              else await downloadRemoteFile(target, entry.source, entry.destination, controller.signal, (bytes) => progress(entry.source, bytes))
+              else await downloadRemoteFile(target, entry.source, entry.destination, controller.signal, (bytes) => progress(entry.source, bytes), true)
               result(entry)
             }
           } catch (error) {

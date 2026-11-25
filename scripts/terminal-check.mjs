@@ -98,23 +98,23 @@ try {
   await check('toolbar and shortcut badges are absent', async () => {
     assert.equal(await page.locator('[data-a=ctrlc], [data-a=kill], [data-a=restart], [data-a=split], .pstate, .side kbd, .empty kbd').count(), 0)
   })
-  await check('running agent spins yellow; exited and shell terminals stay gray and still', async () => {
+  await check('unreported agent is available without spinning; exited and shell terminals stay gray', async () => {
     const colors = await page.evaluate(() => {
       const css = getComputedStyle(document.documentElement)
       return ['busy', 'ready', 'shell'].map((id, i) => {
         const dot = document.querySelector(`[data-a=tab][data-id=${id}] .dot`)
         const probe = document.createElement('span')
-        probe.style.color = css.getPropertyValue(['--amber', '--faint', '--faint'][i])
+        probe.style.color = css.getPropertyValue(['--green', '--faint', '--faint'][i])
         document.body.append(probe)
         const expected = getComputedStyle(probe).color
         probe.remove()
         const style = getComputedStyle(dot)
-        return [i === 0 ? style.borderTopColor : style.backgroundColor, expected, style.animationName]
+        return [style.backgroundColor, expected, style.animationName]
       })
     })
-    colors.forEach(([actual, expected, animation], index) => {
+    colors.forEach(([actual, expected, animation]) => {
       assert.equal(actual, expected)
-      assert.equal(animation === 'terminal-spin', index === 0)
+      assert.notEqual(animation, 'terminal-spin')
     })
   })
   await page.evaluate(() => window.awb.winResize(1440, 900))
