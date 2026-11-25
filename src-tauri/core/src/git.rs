@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::Command;
 
 pub fn status(root: &Path, language: &str) -> Result<Value, String> {
-    let root = std::fs::canonicalize(root).map_err(|error| error.to_string())?;
+    let root = crate::real_path(root).map_err(|error| error.to_string())?;
     let single = single_status(&root)?;
     if single["isRepo"] == true {
         return Ok(single);

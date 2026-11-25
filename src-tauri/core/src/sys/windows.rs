@@ -91,7 +91,7 @@ fn open_child(parent: &File, name: &str) -> io::Result<File> {
 pub struct Chain(Vec<File>);
 
 pub fn open_chain(root: &Path, parts: &[&str]) -> io::Result<Chain> {
-    let mut held = vec![open_directory(&std::fs::canonicalize(root)?)?];
+    let mut held = vec![open_directory(&crate::real_path(root)?)?];
     for part in parts {
         held.push(open_child(held.last().expect("root is held"), part)?);
     }

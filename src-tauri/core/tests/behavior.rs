@@ -284,7 +284,7 @@ fn settings_projects_and_temporary_sessions_persist_under_the_install_layout() {
     assert_eq!(fs::read_to_string(project_path.join("CLAUDE.md")).unwrap(), "@AGENTS.md\n");
     assert!(fs::read_to_string(project_path.join("AGENTS.md")).unwrap().contains(project_path.display().to_string().as_str()));
     let config: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join("pello.config.json")).unwrap()).unwrap();
-    assert_eq!(config["temporarySessionsDirectory"], fs::canonicalize(&directory).unwrap().display().to_string());
+    assert_eq!(config["temporarySessionsDirectory"], pello_core::real_path(&directory).unwrap().display().to_string());
     assert_eq!(bench.dispatch("temporary:directory", &[]).unwrap(), config["temporarySessionsDirectory"]);
     let again = bench.dispatch("temporary:create", &[]).unwrap();
     assert_ne!(again["projectId"], project_id);
@@ -335,6 +335,90 @@ fn file_writes_reject_conflicts_escapes_and_replacement() {
     let bad_ignore = bench.dispatch("tree:ignore-set", &[json!("p"), json!(["../secret"])]).unwrap_err();
     assert!(bad_ignore.contains("有效的目录名称") || bad_ignore.contains("valid directory"));
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn windows_powershell_terminal_reaches_its_prompt() {
+    // Windows PowerShell 5.1 fails at start when it is launched by a path in
+    // the extended form that `fs::canonicalize` gives on Windows: the terminal
+    // then says the shell could not start and ends at once. The Electron build
+    // resolves the shell without that form, and PowerShell is what a default
+    // terminal gets on Windows.
+    if !cfg!(windows) { return }
+    let root = temp_dir("pty-pwsh");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let (bench, events) = workbench(&root);
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    let info = bench.dispatch("pty:create", &[json!({ "id": "term-ps", "projectId": "p", "kind": "shell", "shell": "pwsh" })]).unwrap();
+    assert_eq!(info["shell"], "pwsh");
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let mut output = String::new();
+    let mut seen = 0;
+    let mut idle = false;
+    let mut ended = false;
+    while std::time::Instant::now() < deadline {
+        // Each event is read once, so a failure prints what the terminal showed and not copies of it.
+        let list = events.lock().unwrap();
+        for event in list.iter().skip(seen) {
+            if event["channel"] != "pty:event" || event["payload"]["id"] != "term-ps" { continue }
+            output.push_str(event["payload"]["data"].as_str().unwrap_or(""));
+            if event["payload"]["inputReady"] == true && event["payload"]["state"] == "idle" { idle = true }
+            if event["payload"]["state"] == "exited" || event["payload"]["state"] == "failed" { ended = true }
+        }
+        seen = list.len();
+        drop(list);
+        if idle || ended { break }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!ended, "the PowerShell terminal ended at start:\n{output}");
+    assert!(idle, "the PowerShell terminal did not reach its prompt:\n{output}");
+    assert!(!output.contains("ServicePointManager"), "PowerShell failed at start:\n{output}");
+    bench.dispatch("pty:close", &[json!("term-ps")]).unwrap();
+    let _ = fs::remove_dir_all(root);
+}
+
+/// Windows: a terminal that starts an executor in PowerShell must actually run
+/// its command, not only reach the prompt. The executor is the detached tree
+/// fixture of the Electron shutdown regression (`session-tree.cjs`); the file
+/// it writes is what tells the command ran, so a launch that is typed but
+/// never submitted cannot pass.
+#[test]
+#[cfg(windows)]
+fn windows_powershell_terminal_runs_the_executor_command() {
+    let root = temp_dir("pty-pwsh-executor");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let (bench, events) = workbench(&root);
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    let pid_file = root.join("executor-pids.txt");
+    let fixture = PathBuf::from(env!("CARGO_BIN_EXE_awb-session-tree"));
+    // As the settings dialog writes a custom executor for PowerShell: the call
+    // operator and the two paths in single quotes.
+    let quote = |path: &Path| format!("'{}'", path.display().to_string().replace('\'', "''"));
+    let cmd = format!("& {}", quote(&fixture));
+    let args = quote(&pid_file);
+    bench.dispatch("db:custom", &[json!([{ "id": "tree", "name": "Tree", "cmd": cmd, "args": args, "shell": "pwsh" }])]).unwrap();
+    let info = bench.dispatch("pty:create", &[json!({ "id": "term-tree", "projectId": "p", "kind": "tree", "shell": "pwsh" })]).unwrap();
+    assert_eq!(info["shell"], "pwsh");
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let mut output = String::new();
+    let mut seen = 0;
+    while std::time::Instant::now() < deadline && tree_pids(&pid_file).is_empty() {
+        // Each event is read once, so a failure prints what the terminal showed.
+        let list = events.lock().unwrap();
+        for event in list.iter().skip(seen) {
+            if event["channel"] == "pty:event" && event["payload"]["id"] == "term-tree" { output.push_str(event["payload"]["data"].as_str().unwrap_or("")); }
+        }
+        seen = list.len();
+        drop(list);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let pids = tree_pids(&pid_file);
+    end_tree(&pid_file);
+    bench.dispatch("pty:close", &[json!("term-tree")]).unwrap();
+    let _ = fs::remove_dir_all(root);
+    assert!(!pids.is_empty(), "the executor command did not run in the PowerShell terminal:\n{output}");
 }
 
 #[test]
@@ -1258,7 +1342,7 @@ fn mcp_and_skills_keep_native_config_and_do_not_execute() {
     assert_eq!(fs::read_to_string(home.join(".claude/skills/demo-skill/SKILL.md")).unwrap(), demo_body);
     let opened = bench.dispatch("resources:skill-open", &[json!("claude"), demo]).unwrap();
     let opened = opened.as_str().unwrap();
-    assert_eq!(fs::canonicalize(opened).unwrap(), fs::canonicalize(home.join(".claude/skills/demo-skill")).unwrap());
+    assert_eq!(pello_core::real_path(opened).unwrap(), pello_core::real_path(home.join(".claude/skills/demo-skill")).unwrap());
     assert!(fs::read_to_string(Path::new(opened).join("SKILL.md")).unwrap().contains("demo-skill"));
 
     let box_skills = bench.dispatch("resources:list", &[json!("skills"), json!("box"), json!(1), json!("")]).unwrap();
@@ -1293,7 +1377,7 @@ fn mcp_and_skills_keep_native_config_and_do_not_execute() {
     let listed = bench.dispatch("resources:list", &[json!("skills"), json!("claude"), json!(1), json!("")]).unwrap();
     let outside_item = listed["items"].as_array().unwrap().iter().find(|item| item["name"] == "outside-skill").unwrap().clone();
     let opened = bench.dispatch("resources:skill-open", &[json!("claude"), outside_item.clone()]).unwrap();
-    assert_eq!(fs::canonicalize(opened.as_str().unwrap()).unwrap(), fs::canonicalize(&outside).unwrap());
+    assert_eq!(pello_core::real_path(opened.as_str().unwrap()).unwrap(), pello_core::real_path(&outside).unwrap());
     let refused = bench.dispatch("resources:skill-delete", &[json!("claude"), outside_item]).unwrap_err();
     assert!(refused.contains("超出") || refused.contains("符号链接"), "{refused}");
     assert!(fs::read_to_string(outside.join("SKILL.md")).unwrap().contains("secret-outside"));
@@ -2136,7 +2220,7 @@ fn native_menu_translates_labels_and_project_actions_keep_the_record() {
     assert!(english.as_array().unwrap().iter().any(|item| item["label"] == "Copy path"));
     assert_eq!(bench.dispatch("menu:app", &[]).unwrap()[0]["label"], "File");
     let copied = bench.dispatch("tree:action", &[json!("p"), json!(""), json!(true), json!("copy-full")]).unwrap();
-    assert_eq!(copied.as_str().unwrap(), fs::canonicalize(&project).unwrap().to_str().unwrap());
+    assert_eq!(copied.as_str().unwrap(), pello_core::real_path(&project).unwrap().to_str().unwrap());
     let open_log = root.join("open.log");
     let save_log = root.join("save.log");
     let save_path = root.join("history.ansi");
@@ -2145,7 +2229,7 @@ fn native_menu_translates_labels_and_project_actions_keep_the_record() {
     let _save_path = var_guard("AWB_SAVE_PATH", save_path.to_str().unwrap());
     let _save_log = var_guard("AWB_SAVE_LOG", save_log.to_str().unwrap());
     bench.dispatch("tree:action", &[json!("p"), json!(""), json!(true), json!("reveal")]).unwrap();
-    assert_eq!(fs::read_to_string(&open_log).unwrap(), fs::canonicalize(&project).unwrap().display().to_string());
+    assert_eq!(fs::read_to_string(&open_log).unwrap(), pello_core::real_path(&project).unwrap().display().to_string());
     let history = root.join("data/terminal-history").join(format!("{}.ansi", pello_core::pty::history_name("term-1")));
     fs::create_dir_all(history.parent().unwrap()).unwrap();
     fs::write(&history, "recorded-history").unwrap();
@@ -2460,6 +2544,9 @@ fn pty_close_kills_the_leaf_before_the_root() {
     let project = root.join("project");
     fs::create_dir_all(&project).unwrap();
     let log = root.join("shutdown.log");
+    // The log is named by an environment variable, which is the whole process's:
+    // tests that set it run one at a time.
+    let _lock = env_lock();
     let _log = var_guard("AWB_SHUTDOWN_LOG", log.to_str().unwrap());
     let (bench, _) = workbench(&root);
     bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
@@ -2479,6 +2566,58 @@ fn pty_close_kills_the_leaf_before_the_root() {
     let _ = fs::remove_dir_all(root);
 }
 
+/// Windows: closing every terminal at once reads the process table once. Each
+/// read starts a shell and takes longer than a second, so one per terminal is
+/// seconds per terminal when the window closes on many. The descendants of
+/// all terminals end before the first root, and none outlives the closing.
+#[test]
+#[cfg(windows)]
+fn closing_the_workbench_takes_one_process_snapshot_for_every_terminal() {
+    let root = temp_dir("close-all");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let log = root.join("shutdown.log");
+    // The log is named by an environment variable, which is the whole process's:
+    // tests that set it run one at a time.
+    let _lock = env_lock();
+    let _log = var_guard("AWB_SHUTDOWN_LOG", log.to_str().unwrap());
+    let (bench, _) = workbench(&root);
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    let fixture = PathBuf::from(env!("CARGO_BIN_EXE_awb-session-tree"));
+    // One executor per terminal, each running the tree fixture on its own pid
+    // file, as three terminals of one Agent would each run their own process.
+    let executors: Vec<serde_json::Value> = (0..3).map(|index| {
+        let pid_file = root.join(format!("close-all-pids-{index}.txt"));
+        json!({ "id": format!("tree-{index}"), "name": "Tree", "cmd": shell_word(&fixture), "args": shell_word(&pid_file), "shell": "bash" })
+    }).collect();
+    bench.dispatch("db:custom", &[json!(executors)]).unwrap();
+    let mut roots = Vec::new();
+    let mut pid_files = Vec::new();
+    for index in 0..3 {
+        let pid_file = root.join(format!("close-all-pids-{index}.txt"));
+        pid_files.push(pid_file.clone());
+        let info = bench.dispatch("pty:create", &[json!({ "id": format!("term-all-{index}"), "projectId": "p", "kind": format!("tree-{index}"), "shell": "bash" })]).unwrap();
+        roots.push(info["rootPid"].as_u64().unwrap() as u32);
+    }
+    // Every tree is up before the closing, so each has leaves to be ended.
+    for pid_file in &pid_files { wait_tree(pid_file, &root); }
+    bench.shutdown_sessions();
+    let text = fs::read_to_string(&log).unwrap_or_default();
+    // Whatever the assertions find, the trees must not outlive the test.
+    for pid_file in &pid_files { end_tree(pid_file); }
+    let _ = fs::remove_dir_all(root);
+    let snapshots = text.lines().filter(|line| *line == "snapshot").count();
+    assert_eq!(snapshots, 1, "closing three terminals read the process table {snapshots} times:\n{text}");
+    let lines: Vec<&str> = text.lines().collect();
+    let first_end = lines.iter().position(|line| line.starts_with("end ")).unwrap_or_else(|| panic!("no root was ended:\n{text}"));
+    let kills: Vec<usize> = lines.iter().enumerate().filter(|(_, line)| line.starts_with("kill ")).map(|(at, _)| at).collect();
+    assert!(!kills.is_empty(), "no descendant was ended:\n{text}");
+    assert!(kills.iter().all(|at| *at < first_end), "a descendant was ended after the first root:\n{text}");
+    for pid in roots {
+        assert!(!process_alive(pid), "root {pid} outlived the closing:\n{text}");
+    }
+}
+
 /// Windows: closing ends the leaves first and the root last, and leaves
 /// nothing behind. The tree is the detached three-level one of the Electron
 /// shutdown regression (`session-tree.cjs`): its pids come from the file the
@@ -2490,6 +2629,9 @@ fn pty_close_ends_a_detached_tree_leaf_first_and_quickly() {
     let project = root.join("project");
     fs::create_dir_all(&project).unwrap();
     let log = root.join("shutdown.log");
+    // The log is named by an environment variable, which is the whole process's:
+    // tests that set it run one at a time.
+    let _lock = env_lock();
     let _log = var_guard("AWB_SHUTDOWN_LOG", log.to_str().unwrap());
     let (bench, _) = workbench(&root);
     bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
@@ -2748,7 +2890,7 @@ fn legacy_history_uses_the_unique_message_and_keeps_failures() {
     let claude = root.join("claude");
     let marker = "unique-legacy-marker-alpha-one-23456789";
     let other = "different-legacy-marker-beta-two-987654321";
-    let project_path = fs::canonicalize(&project).unwrap();
+    let project_path = pello_core::real_path(&project).unwrap();
     let session_dir = claude.join("projects").join("one");
     fs::create_dir_all(&session_dir).unwrap();
     let cwd = project_path.display().to_string();

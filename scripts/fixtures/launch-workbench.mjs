@@ -5,7 +5,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { _electron as electron } from 'playwright'
+import { _electron as electron, chromium } from 'playwright'
 import { connectWebKitPage } from './webkit-page.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
@@ -82,8 +82,9 @@ async function waitForInspector(port, child) {
 
 /**
  * Launch the workbench. The default is the existing Electron app.
- * `AWB_SHELL=tauri` starts the Tauri binary on a virtual display and drives
- * that WebKit webview through its inspector socket.
+ * `AWB_SHELL=tauri` starts the Tauri binary and drives its webview: on Windows
+ * through the WebView2 debugging port, elsewhere on a virtual display through
+ * the WebKit inspector socket.
  */
 export async function launchWorkbench({ args = ['.'], env = process.env, cwd, scale = 1 } = {}) {
   if (process.env.AWB_SHELL !== 'tauri') {
@@ -91,6 +92,7 @@ export async function launchWorkbench({ args = ['.'], env = process.env, cwd, sc
     app.shell = 'electron'
     return app
   }
+  if (process.platform === 'win32') return launchWebView2({ env, cwd })
   await ensureDisplay()
   await ensureDevServer()
   const binary = process.env.AWB_TAURI_BIN || path.join(root, 'src-tauri/target/debug/pello')
@@ -164,6 +166,78 @@ export async function launchWorkbench({ args = ['.'], env = process.env, cwd, sc
     },
   }
   return app
+}
+
+// Measured on this WebView2: 9333 through 9620 open within a second; 9630 and
+// above never listen, so the range stays below what was measured. The port is
+// drawn for each start and never shared: a second app on the port of one that
+// has not finished exiting attaches to the old one, and reads its data.
+const nextDebugPort = () => 9333 + Math.floor(Math.random() * 267)
+
+async function launchWebView2({ env, cwd }) {
+  const binary = process.env.AWB_TAURI_BIN || path.join(root, 'src-tauri/target/debug/pello.exe')
+  if (!fs.existsSync(binary)) throw new Error(`Tauri binary is missing: ${binary}. Build it with: npx tauri build --debug --no-bundle`)
+  const port = nextDebugPort()
+  const menuFile = path.join(os.tmpdir(), `pello-menu-${process.pid}-${port}.txt`)
+  fs.writeFileSync(menuFile, '')
+  const child = spawn(binary, [], {
+    cwd: cwd || root,
+    env: { ...env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}`, AWB_MENU_FILE: menuFile },
+    stdio: 'ignore',
+  })
+  let page
+  let browser
+  try {
+    let open = false
+    for (let tries = 0; tries < 60 && !open; tries++) {
+      if (child.exitCode !== null) throw new Error(`Tauri exited ${child.exitCode} before the webview opened`)
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      open = await httpText(`http://127.0.0.1:${port}/json/version`).then((result) => result.status === 200, () => false)
+    }
+    if (!open) throw new Error(`WebView2 did not open its debugging port on 127.0.0.1:${port}`)
+    browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`)
+    for (let tries = 0; tries < 40 && !page; tries++) {
+      await new Promise((resolve) => setTimeout(resolve, 250))
+      page = browser.contexts().flatMap((context) => context.pages()).find((candidate) => candidate.url().startsWith('http://tauri.localhost') && !candidate.url().includes('diagram-renderer'))
+    }
+    if (!page) throw new Error('The workbench window did not open')
+    await page.waitForFunction(() => typeof window.awb?.renderMermaid === 'function' && document.documentElement.getAttribute('data-theme') !== null, null, { timeout: 20000 })
+    page.setDefaultTimeout(15000)
+  } catch (error) {
+    if (browser) await browser.close().catch(() => {})
+    if (child.exitCode === null) child.kill()
+    fs.rmSync(menuFile, { force: true })
+    throw error
+  }
+  // Whether the app is gone is asked of the system, not of Node: after the
+  // debugging connection is closed, Node can hold the exit notice back.
+  const alive = () => { try { process.kill(child.pid, 0); return true } catch { return false } }
+  return {
+    shell: 'tauri',
+    menuFile,
+    async firstWindow() { return page },
+    windows() { return browser.contexts().flatMap((context) => context.pages()).filter((candidate) => !candidate.url().includes('diagram-renderer')) },
+    process() { return child },
+    async evaluate() { throw new Error('Tauri webview has no Electron main process') },
+    waitForEvent(name) {
+      if (name !== 'close') throw new Error(`Unsupported Tauri event ${name}`)
+      return new Promise((resolve) => {
+        const check = () => { if (!alive() || child.exitCode !== null || child.signalCode) resolve(); else setTimeout(check, 100) }
+        check()
+      })
+    },
+    async close() {
+      try { await page.evaluate(() => window.awb.winClose()) } catch { /* The page can already be gone. */ }
+      const deadline = Date.now() + 8000
+      while (alive() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100))
+      if (alive()) child.kill()
+      const last = Date.now() + 10000
+      while (alive() && Date.now() < last) await new Promise((resolve) => setTimeout(resolve, 100))
+      await browser.close().catch(() => {})
+      fs.rmSync(menuFile, { force: true })
+      if (alive()) throw new Error(`The app (pid ${child.pid}) did not exit after it was closed`)
+    },
+  }
 }
 
 export function stopDisplay() {

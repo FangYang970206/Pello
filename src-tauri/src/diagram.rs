@@ -11,7 +11,7 @@
 
 use pello_core::preview::DiagramRenderer;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{SyncSender, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex};
@@ -48,6 +48,8 @@ struct Shared {
 
 pub struct WindowRenderer {
     app: AppHandle,
+    /// The directory the app's web views store under, the workbench's own.
+    data: PathBuf,
     shared: Arc<Shared>,
 }
 
@@ -59,9 +61,10 @@ pub fn diagram_result(renderer: tauri::State<'_, Arc<WindowRenderer>>, window: W
 }
 
 impl WindowRenderer {
-    pub fn new(app: &AppHandle) -> Arc<Self> {
+    pub fn new(app: &AppHandle, data: &Path) -> Arc<Self> {
         Arc::new(Self {
             app: app.clone(),
+            data: crate::window::webview_data(data),
             shared: Arc::new(Shared {
                 state: Mutex::new(State { current: 0, loaded: false, waiting: HashMap::new() }),
                 changed: Condvar::new(),
@@ -107,6 +110,9 @@ impl WindowRenderer {
             // Nothing the page stores reaches the disk or the main window's
             // profile, as the Electron build's own `partition` keeps it apart.
             .incognito(true)
+            // The same directory as the main window, which it may share: both
+            // are started with the same browser arguments.
+            .data_directory(self.data.clone())
             // Only the bundled page may be loaded, whatever a diagram asks
             // for. The app's own origin is `tauri.localhost` in a build and
             // `localhost` on the development server.

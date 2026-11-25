@@ -30,6 +30,20 @@ type Modal =
 
 type GitState = GitPanel & { untracked: Record<string, boolean> }
 
+// The settings after a change made in the settings view. The view hands back
+// the settings it was drawn with, `seen`, with its change. Two changes made
+// one right after the other are drawn with the same settings, so the second
+// would carry the first back to what it was. So only what the change altered
+// is taken, and it is laid on `latest`, the settings as the last save left
+// them.
+function settingsWithChange<T extends object>(seen: T, changed: T, latest: T): T {
+  const next = { ...latest }
+  for (const key of Object.keys(changed) as (keyof T)[]) {
+    if (seen[key] !== changed[key]) next[key] = changed[key]
+  }
+  return next
+}
+
 function shellFor(host: Host | undefined, pref: ShellKind): ShellKind {
   if (host?.platform === 'linux') return pref === 'zsh' ? 'zsh' : 'bash'
   if (host?.id === 'local' && pref === 'bash') return 'bash'
@@ -54,6 +68,8 @@ export function App() {
   const sessionsRef = useRef(workSessions)
   const [selectedSessions, setSelectedSessions] = useState<Record<string, string>>({})
   const selectedSessionsRef = useRef(selectedSessions)
+  // The settings as the last save left them, which the next change is laid on.
+  const settingsLatest = useRef<Database['settings'] | null>(null)
   function putSessions(next: Record<string, WorkSession[]>) { sessionsRef.current = next; setWorkSessions(next) }
   function pickSession(project: string, id: string) {
     const next = { ...selectedSessionsRef.current, [project]: id }
@@ -1403,7 +1419,10 @@ export function App() {
               }}
               onBack={() => closeSettings()}
               onSettings={(settings, options) => {
-                return window.awb.saveSettings(settings).then((saved) => { setLanguage(saved.settings.language); setDb(saved); return true }).catch((error) => { if (!options?.inlineError) toast(String(error), true); return false })
+                const latest = settingsLatest.current ?? db.settings
+                const next = settingsWithChange(db.settings, settings, latest)
+                settingsLatest.current = next
+                return window.awb.saveSettings(next).then((saved) => { settingsLatest.current = saved.settings; setLanguage(saved.settings.language); setDb(saved); return true }).catch((error) => { settingsLatest.current = latest; if (!options?.inlineError) toast(String(error), true); return false })
               }}
               onEditExec={(id) => setModal({ type: 'exec', id })}
               onNewExec={() => setModal({ type: 'exec' })}

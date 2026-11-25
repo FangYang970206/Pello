@@ -8,6 +8,9 @@ description = "Pello workbench behavior shared by the Tauri shell"
 [dependencies]
 aes-gcm = "0.10"
 base64 = "0.22"
+# The real path of a file in the form programs and the page expect: on Windows
+# the extended form is left off, as Node's `realpathSync` leaves it off.
+dunce = "1.0"
 fancy-regex = "0.14"
 getrandom = "0.2"
 libc = "0.2"

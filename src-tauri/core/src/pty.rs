@@ -361,51 +361,30 @@ impl Manager {
 
     pub fn close(&self, id: &str) {
         let Some(session) = self.sessions.lock().expect("pty").remove(id) else { return };
-        session.hook_stop.store(true, Ordering::Relaxed);
-        if let Some(addr) = session.hook_addr { let _ = TcpStream::connect_timeout(&addr, Duration::from_millis(200)); }
         let root = session.root_pid;
-        let rows: Vec<crate::pty::ProcessRow> = crate::sys::process_table().into_iter().map(|(pid, parent)| ProcessRow { pid, parent }).collect();
+        let rows = snapshot_table();
         let steps = windows_shutdown_plan(&rows, &[root], root != 0 && !rows.is_empty());
-        let mut ended = false;
-        for step in steps {
-            match step {
-                ShutdownStep::KillDescendant(pid) => {
-                    crate::sys::kill_process(pid);
-                    record_shutdown(&format!("kill {pid}"));
-                }
-                ShutdownStep::EndRoot(pid) => {
-                    if !ended {
-                        if let Some(stop) = session.stop.lock().expect("stop").take() { stop(); }
-                        ended = true;
-                    }
-                    record_shutdown(&format!("end {pid}"));
-                }
-                ShutdownStep::WaitNativeExit(pid) => {
-                    if crate::sys::process_exited(pid) {
-                        record_shutdown(&format!("wait {pid}"));
-                        continue;
-                    }
-                    // The console is closed but the root is still there, as a
-                    // shell that ignores the closing of its terminal is. It is
-                    // ended with its tree, as the Electron build does, and
-                    // waited for again.
-                    let tree = crate::sys::kill_tree(pid);
-                    record_shutdown(&format!("tree {pid} {}", tree as u8));
-                    crate::sys::process_exited(pid);
-                    record_shutdown(&format!("wait {pid}"));
-                }
-            }
-        }
-        if !ended {
-            if let Some(stop) = session.stop.lock().expect("stop").take() { stop(); }
-        }
-        session.live.lock().expect("pty live").phase = Phase::Dead;
-        record_lifecycle("exit", Some(root));
+        run_shutdown_plan(&[(&session, root)], &steps);
     }
 
+    /// End every terminal. On Windows the process table is read once for all
+    /// of them, and every descendant is ended before the first root: reading
+    /// it once per terminal costs a shell start each, which is seconds per
+    /// terminal when many close together, as they do when the window closes.
     pub fn close_all(&self) {
-        let ids: Vec<String> = self.sessions.lock().expect("pty").keys().cloned().collect();
-        for id in ids { self.close(&id); }
+        let sessions: Vec<(String, Session)> = {
+            let mut table = self.sessions.lock().expect("pty");
+            table.drain().collect()
+        };
+        if sessions.is_empty() {
+            record_lifecycle("quit", None);
+            return;
+        }
+        let rows = snapshot_table();
+        let roots: Vec<u32> = sessions.iter().map(|(_, session)| session.root_pid).collect();
+        let snapshot_ok = roots.iter().any(|root| *root != 0) && !rows.is_empty();
+        let steps = windows_shutdown_plan(&rows, &roots, snapshot_ok);
+        run_shutdown_plan(&sessions.iter().map(|(_, session)| (session, session.root_pid)).collect::<Vec<_>>(), &steps);
         record_lifecycle("quit", None);
     }
 
@@ -662,7 +641,11 @@ fn arm(id: &str, live: &Mutex<Live>, writer: &Mutex<Box<dyn Write + Send>>, emit
     let shell_returned = live.kind == "shell" && live.phase == Phase::Command && prompt_code.is_some();
     if live.native_working && !shell_returned { return }
     if !live.launched && !live.command.is_empty() {
-        let command = format!("{}\n", live.command);
+        // The line ends with a carriage return, as the Electron build sends
+        // it: Windows PowerShell takes a bare line feed for a line break
+        // inside a command and waits at `>>` for the rest of it, so the
+        // command is typed but never runs.
+        let command = format!("{}\r", live.command);
         live.launched = true;
         live.phase = Phase::Command;
         live.state = "running".into();
@@ -882,6 +865,62 @@ fn record_shutdown(line: &str) {
 pub struct ProcessRow {
     pub pid: u32,
     pub parent: u32,
+}
+
+/// Every process and their parents as the system lists them now. The log
+/// notes each read, which tells how many a closing took.
+fn snapshot_table() -> Vec<ProcessRow> {
+    record_shutdown("snapshot");
+    crate::sys::process_table().into_iter().map(|(pid, parent)| ProcessRow { pid, parent }).collect()
+}
+
+/// Close the given terminals by the plan, which names their roots. The
+/// session of a root is stopped when its root is ended, and each is marked
+/// dead and reported exited once its root has gone.
+fn run_shutdown_plan(sessions: &[(&Session, u32)], steps: &[ShutdownStep]) {
+    for (session, _) in sessions {
+        session.hook_stop.store(true, Ordering::Relaxed);
+        if let Some(addr) = session.hook_addr { let _ = TcpStream::connect_timeout(&addr, Duration::from_millis(200)); }
+    }
+    let mut ended: Vec<bool> = vec![false; sessions.len()];
+    for step in steps {
+        match step {
+            ShutdownStep::KillDescendant(pid) => {
+                crate::sys::kill_process(*pid);
+                record_shutdown(&format!("kill {pid}"));
+            }
+            ShutdownStep::EndRoot(pid) => {
+                if let Some(index) = sessions.iter().position(|(_, root)| *root == *pid) {
+                    if !ended[index] {
+                        if let Some(stop) = sessions[index].0.stop.lock().expect("stop").take() { stop(); }
+                        ended[index] = true;
+                    }
+                }
+                record_shutdown(&format!("end {pid}"));
+            }
+            ShutdownStep::WaitNativeExit(pid) => {
+                if crate::sys::process_exited(*pid) {
+                    record_shutdown(&format!("wait {pid}"));
+                    continue;
+                }
+                // The console is closed but the root is still there, as a
+                // shell that ignores the closing of its terminal is. It is
+                // ended with its tree, as the Electron build does, and
+                // waited for again.
+                let tree = crate::sys::kill_tree(*pid);
+                record_shutdown(&format!("tree {pid} {}", tree as u8));
+                crate::sys::process_exited(*pid);
+                record_shutdown(&format!("wait {pid}"));
+            }
+        }
+    }
+    for (index, (session, root)) in sessions.iter().enumerate() {
+        if !ended[index] {
+            if let Some(stop) = session.stop.lock().expect("stop").take() { stop(); }
+        }
+        session.live.lock().expect("pty live").phase = Phase::Dead;
+        record_lifecycle("exit", Some(*root));
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

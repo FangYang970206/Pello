@@ -44,7 +44,7 @@ pub fn validate_entry_name(name: &str, windows: bool, language: &str) -> Result<
 }
 
 fn canonical_dir(path: &Path) -> Result<PathBuf, String> {
-    fs::canonicalize(path).map_err(|error| error.to_string())
+    crate::real_path(path).map_err(|error| error.to_string())
 }
 
 fn inside(root: &Path, path: &Path) -> bool {
@@ -305,7 +305,7 @@ pub fn list_dir(input: &str) -> Value {
         dirs.push(json!({ "name": name, "path": entry.path().display().to_string() }));
     }
     dirs.sort_by(|left, right| left["name"].as_str().unwrap_or("").cmp(right["name"].as_str().unwrap_or("")));
-    json!({ "path": fs::canonicalize(&path).unwrap_or(path).display().to_string(), "parent": parent_of(&current), "dirs": dirs })
+    json!({ "path": crate::real_path(&path).unwrap_or(path).display().to_string(), "parent": parent_of(&current), "dirs": dirs })
 }
 
 fn parent_of(value: &str) -> Value {

@@ -10,18 +10,7 @@
     "frontendDist": "../dist/tauri"
   },
   "app": {
-    "windows": [
-      {
-        "label": "main",
-        "title": "Pello",
-        "width": 1280,
-        "height": 800,
-        "minWidth": 1024,
-        "minHeight": 680,
-        "decorations": false,
-        "resizable": true
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }

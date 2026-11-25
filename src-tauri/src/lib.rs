@@ -1,5 +1,6 @@
 use pello_core::paths::Paths;
 mod diagram;
+mod window;
 use pello_core::workbench::Workbench;
 use serde_json::Value;
 use std::sync::Arc;
@@ -36,15 +37,35 @@ async fn awb(window: Window, state: State<'_, Arc<Workbench>>, channel: String, 
         "win:resize" => {
             let requested_width = args.first().and_then(|value| value.as_f64()).unwrap_or(1280.0).max(1024.0);
             let requested_height = args.get(1).and_then(|value| value.as_f64()).unwrap_or(800.0).max(680.0);
-            // GTK logical size is CSS pixels times the DPI scale. Electron's content size is the CSS viewport.
-            let dpi = std::env::var("GDK_DPI_SCALE").ok().and_then(|value| value.parse::<f64>().ok()).filter(|value| *value > 0.0).unwrap_or(1.0);
-            // The Linux menu bar sits inside the window, so the WebKit viewport is shorter than the logical height.
-            let menu = [(1.0, 28.0), (1.25, 27.0), (1.5, 25.0), (2.0, 24.0)].into_iter()
-                .find(|(scale, _)| (dpi - scale).abs() < 0.02).map_or(28.0, |(_, gap)| gap);
-            window.set_size(tauri::Size::Logical(tauri::LogicalSize {
-                width: requested_width * dpi,
-                height: (requested_height + menu) * dpi,
-            })).map_err(|error| error.to_string())?;
+            // The size is the page's, as Electron's `useContentSize` makes it,
+            // and logical units already carry the scale factor. The Linux menu
+            // bar sits inside the window, so the page there is shorter than
+            // the size asked for; on Windows it does not.
+            let menu = if cfg!(target_os = "linux") {
+                let dpi = std::env::var("GDK_DPI_SCALE").ok().and_then(|value| value.parse::<f64>().ok()).filter(|value| *value > 0.0).unwrap_or(1.0);
+                [(1.0, 28.0), (1.25, 27.0), (1.5, 25.0), (2.0, 24.0)].into_iter().find(|(scale, _)| (dpi - scale).abs() < 0.02).map_or(28.0, |(_, gap)| gap)
+            } else { 0.0 };
+            let width = requested_width;
+            let mut height = requested_height + menu;
+            // Sizing a maximized window takes it out of maximizing first, and
+            // the border it carries while changing is not the one it settles
+            // on, so the window is back to normal before its size is set.
+            if window.is_maximized().map_err(|error| error.to_string())? { window.unmaximize().map_err(|error| error.to_string())?; }
+            window.set_size(tauri::Size::Logical(tauri::LogicalSize { width, height })).map_err(|error| error.to_string())?;
+            // An undecorated window on Windows keeps a border for its shadow,
+            // and the window library counts that border into the size it sets,
+            // by the same amount whatever the size. The size the window then
+            // reports is taken off the one asked for, which leaves the page
+            // exactly that size.
+            if cfg!(windows) {
+                let scale = window.scale_factor().map_err(|error| error.to_string())?;
+                let inner = window.inner_size().map_err(|error| error.to_string())?;
+                let gotten = inner.height as f64 / scale;
+                if (gotten - height).abs() > 0.5 {
+                    height -= gotten - height;
+                    window.set_size(tauri::Size::Logical(tauri::LogicalSize { width, height })).map_err(|error| error.to_string())?;
+                }
+            }
             Ok(Value::Null)
         }
         "preview:menu" => {
@@ -145,6 +166,9 @@ pub fn run() {
                 std::env::current_exe().ok().and_then(|path| path.parent().map(|parent| parent.to_path_buf())).unwrap_or(debug_dir)
             };
             let paths = Paths::resolve(&installation);
+            // The web views store under the data directory, which the
+            // workbench takes with it.
+            let webview_data = paths.data.clone();
             let handle = app.handle().clone();
             let workbench = Workbench::open(paths, Arc::new(move |event| {
                 let _ = handle.emit("awb", &event);
@@ -153,10 +177,16 @@ pub fn run() {
                 Box::new(std::io::Error::other(error))
             })?;
             let workbench = Arc::new(workbench);
+            // The workbench window opens in the saved theme's color, hidden
+            // until its page is ready, as the Electron build opens it.
+            let theme = workbench.dispatch("db:get", &[]).ok()
+                .and_then(|db| db["db"]["settings"]["theme"].as_str().map(str::to_string))
+                .unwrap_or_else(|| "light".to_string());
+            window::open(app, &theme, &webview_data).map_err(|error| -> Box<dyn std::error::Error> { Box::new(std::io::Error::other(error.to_string())) })?;
             // Diagrams are drawn in a hidden window of this app, as the
             // Electron build draws them. It is managed before the workbench so
             // the command it calls finds it from the start.
-            let renderer = diagram::WindowRenderer::new(app.handle());
+            let renderer = diagram::WindowRenderer::new(app.handle(), &webview_data);
             workbench.set_diagram_renderer(renderer.clone());
             app.manage(renderer);
             let ticking = workbench.clone();

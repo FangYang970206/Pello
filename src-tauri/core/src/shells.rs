@@ -98,7 +98,7 @@ fn registry_git_root(hive: &str) -> Option<PathBuf> {
 }
 
 fn real(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    crate::real_path(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 pub fn command_exists(name: &str) -> bool {
@@ -109,14 +109,14 @@ pub fn which(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     for directory in std::env::split_paths(&path) {
         let candidate = directory.join(name);
-        if is_executable(&candidate) { return Some(std::fs::canonicalize(&candidate).unwrap_or(candidate)) }
+        if is_executable(&candidate) { return Some(crate::real_path(&candidate).unwrap_or(candidate)) }
     }
     None
 }
 
 fn existing(path: &str) -> Option<PathBuf> {
     let path = PathBuf::from(path);
-    is_executable(&path).then(|| std::fs::canonicalize(&path).unwrap_or(path))
+    is_executable(&path).then(|| crate::real_path(&path).unwrap_or(path))
 }
 
 fn is_executable(path: &Path) -> bool {

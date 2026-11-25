@@ -20,6 +20,14 @@ pub mod updates;
 pub mod upload;
 pub mod workbench;
 
+/// The real path of a file as the rest of the workbench spells paths. It is
+/// `fs::canonicalize`, except that on Windows the extended form is left off:
+/// Windows PowerShell 5.1 cannot start when it is launched by a path of that
+/// form, and the Electron build's `realpathSync` never gives one either.
+pub fn real_path(path: impl AsRef<std::path::Path>) -> std::io::Result<std::path::PathBuf> {
+    dunce::canonicalize(path)
+}
+
 pub fn random_id() -> String {
     let mut bytes = [0u8; 16];
     getrandom::getrandom(&mut bytes).expect("system random");

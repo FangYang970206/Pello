@@ -33,6 +33,16 @@ try {
   await page.locator('[data-a=dmode][data-id=split]').click()
   assert.equal(await page.locator('.diff-split .cm-content[contenteditable=true]').count(), 2, 'both diff panes must be editable')
   const contents = page.locator('.diff-split .cm-content')
+  // A save is finished in the workbench, not by the click: the file is read
+  // once it holds what was saved, and a file that never does is reported.
+  const savedIs = async (name, text, message) => {
+    const file = path.join(project, name)
+    for (let waited = 0; waited < 10000; waited += 20) {
+      if (fs.existsSync(file) && fs.readFileSync(file, 'utf8') === text) return
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    assert.equal(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '<missing>', text, message)
+  }
   const checkChangedLineStyle = async () => {
     await page.waitForFunction(() => document.querySelectorAll('.diff-split .cm-changedText').length >= 2)
     const styles = await page.locator('.diff-split .cm-changedText').evaluateAll((nodes) => nodes.map((node) => {
@@ -79,7 +89,7 @@ try {
   }
   await contents.nth(1).fill('edited right\n')
   await page.getByRole('button', { name: '保存文件', exact: true }).click()
-  assert.equal(fs.readFileSync(path.join(project, 'fixture.txt'), 'utf8'), 'edited right\n')
+  await savedIs('fixture.txt', 'edited right\n', 'the working tree pane saves its edit')
   await contents.nth(0).fill('editable baseline\n')
   await page.evaluate(() => { window.__diffFontNodes = [...document.querySelectorAll('.diff-split .cm-content')] })
   for (const size of [10, 18, 24, 13]) {
@@ -104,7 +114,7 @@ try {
   await page.getByRole('button', { name: '还原此处更改', exact: true }).first().click()
   await page.waitForFunction(() => document.querySelector('.cm-merge-b .cm-content')?.textContent.includes('editable baseline'))
   await page.getByRole('button', { name: '保存文件', exact: true }).click()
-  assert.equal(fs.readFileSync(path.join(project, 'fixture.txt'), 'utf8'), 'editable baseline\n')
+  await savedIs('fixture.txt', 'editable baseline\n', 'a revert from the baseline pane saves to the working tree')
   // An external modification must be rejected by the usual version guard.
   await contents.nth(1).fill('unsaved conflict\n')
   // Git status can briefly hold a Windows file handle; wait for the external

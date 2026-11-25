@@ -121,8 +121,8 @@ fn message_text(value: &Value) -> String {
 fn same_path(left: &str, right: &str) -> bool {
     let left = Path::new(left);
     let right = Path::new(right);
-    let left = fs::canonicalize(left).unwrap_or_else(|_| left.to_path_buf());
-    let right = fs::canonicalize(right).unwrap_or_else(|_| right.to_path_buf());
+    let left = crate::real_path(left).unwrap_or_else(|_| left.to_path_buf());
+    let right = crate::real_path(right).unwrap_or_else(|_| right.to_path_buf());
     left == right
 }
 

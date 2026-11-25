@@ -22,7 +22,7 @@ pub fn resolve_directory(configured: Option<&Path>, language: &str) -> Result<Pa
         return Err(translate(language, "请选择临时会话的绝对目录", &[] as &[String]));
     }
     fs::create_dir_all(configured).map_err(|error| error.to_string())?;
-    let base = fs::canonicalize(configured).map_err(|error| error.to_string())?;
+    let base = crate::real_path(configured).map_err(|error| error.to_string())?;
     if !base.is_dir() {
         return Err(translate(language, "临时会话路径必须是文件夹", &[] as &[String]));
     }

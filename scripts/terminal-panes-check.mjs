@@ -38,6 +38,9 @@ try {
   }
   await page.locator('[data-a=tab][data-id=shell-1]').waitFor()
   await page.waitForFunction(() => !!document.querySelector('[data-a=pane][data-id=shell-1]'))
+  // The pane is drawn before its terminal has started. A split asked for in
+  // between is refused, as the terminal is not there to split yet.
+  await page.locator('[data-a=tab][data-id=shell-1][data-state=idle]').waitFor()
   await split('shell-1', 'split-right')
   await page.waitForFunction(() => document.querySelectorAll('.pane:not([hidden])').length === 2)
   const second = await page.locator('.tab.on [data-a=tab]').getAttribute('data-id')
@@ -46,10 +49,28 @@ try {
   await split(second, 'split-down')
   await page.waitForFunction(() => document.querySelectorAll('.pane:not([hidden])').length === 4)
   const before = await page.locator('.pane:not([hidden])').count()
-  await split(second, 'split-right')
-  await page.getByRole('alert').filter({ hasText: '最多支持四个终端分栏' }).waitFor()
-  assert.equal(await page.locator('.pane:not([hidden])').count(), before)
   assert.equal(before, 4)
+  // With four panes the menu offers no further split, so the limit is seen
+  // before anything is asked for; merging stays offered. A split asked for
+  // all the same does nothing: no pane and no terminal is added.
+  fs.rmSync(`${app.menuFile}.json`, { force: true })
+  fs.writeFileSync(app.menuFile, '')
+  await page.locator(`[data-a=pane][data-id="${second}"]`).dispatchEvent('contextmenu')
+  let items
+  const menuDeadline = Date.now() + 5000
+  while (Date.now() < menuDeadline && !items) {
+    if (fs.existsSync(`${app.menuFile}.json`)) items = JSON.parse(fs.readFileSync(`${app.menuFile}.json`, 'utf8'))
+    else await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  assert.ok(items, 'The terminal menu must open on a fourth pane')
+  assert.deepEqual(['split-left', 'split-right', 'split-up', 'split-down'].map((id) => items.find((item) => item.id === id)?.enabled), [false, false, false, false])
+  assert.equal(items.find((item) => item.id === 'merge')?.enabled, true)
+  const terminals = await page.evaluate(async () => (await window.awb.getState()).db.sessions.p.length)
+  await split(second, 'split-right')
+  await new Promise((resolve) => setTimeout(resolve, 800))
+  assert.equal(fs.readFileSync(app.menuFile, 'utf8'), '', 'The menu must have been shown for the split that was asked for')
+  assert.equal(await page.locator('.pane:not([hidden])').count(), before)
+  assert.equal(await page.evaluate(async () => (await window.awb.getState()).db.sessions.p.length), terminals, 'A split past four must not create a terminal')
   console.log('PASS a terminal splits into at most four panes')
 
   await page.locator('[data-a=tab][data-id=shell-1][data-state=idle]').waitFor()

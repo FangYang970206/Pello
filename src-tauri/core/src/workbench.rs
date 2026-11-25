@@ -998,7 +998,7 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
         let relative = files::clean_relative(rel, language).unwrap_or_default();
         let local = before["host"].as_str().unwrap_or("local") == "local" || before["host"].as_str().unwrap_or("").is_empty();
         let full = if relative.is_empty() {
-            if local { fs::canonicalize(root).map(|path| path.display().to_string()).unwrap_or_else(|_| root.to_string()) } else { root.to_string() }
+            if local { crate::real_path(root).map(|path| path.display().to_string()).unwrap_or_else(|_| root.to_string()) } else { root.to_string() }
         } else if root.contains('\\') {
             format!("{}\\{}", root.trim_end_matches('\\'), relative.replace('/', "\\"))
         } else {

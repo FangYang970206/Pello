@@ -479,7 +479,7 @@ fn remote_asset_error(error: &str, language: &str) -> String {
 
 pub fn read_asset(root: &Path, rel: &str, language: &str) -> Result<Vec<u8>, String> {
     let relative = normalize_rel(rel, language)?;
-    let root = fs::canonicalize(root).map_err(|_| translate(language, "目录不存在", &[] as &[String]))?;
+    let root = crate::real_path(root).map_err(|_| translate(language, "目录不存在", &[] as &[String]))?;
     let mut walk = root.clone();
     for part in relative.split('/') {
         walk.push(part);

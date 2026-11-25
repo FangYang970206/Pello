@@ -2878,6 +2878,7 @@ version = "0.1.12"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
+ "dunce",
  "fancy-regex",
  "getrandom 0.2.17",
  "libc",

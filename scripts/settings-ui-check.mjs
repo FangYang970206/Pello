@@ -59,6 +59,31 @@ try {
   assert.equal(saved.settings.language, 'en')
   assert.equal(saved.settings.autoCheckUpdates, false)
   console.log('PASS language switch keeps the terminal and the draft, resource dialogs cancel cleanly, and the app-update column saves its switch')
+
+  // The page is in English by now, so the controls are named as it names them.
+  // Two changes made one right after the other are drawn with the same
+  // settings. The second must not carry the first back to what it was: each
+  // change keeps, in the app and in the file on disk.
+  await page.click('[data-a=settings]')
+  await page.click('[data-a=sec][data-id=look]')
+  const appearance = async () => {
+    const settings = (await page.evaluate(() => window.awb.getState())).db.settings
+    return { fontSize: settings.fontSize, editorFontSize: settings.editorFontSize, density: settings.density }
+  }
+  await page.getByLabel('Interface density', { exact: true }).selectOption('comfortable')
+  await page.waitForFunction(async () => (await window.awb.getState()).db.settings.density === 'comfortable')
+  await page.getByLabel('Font size', { exact: true }).selectOption('18')
+  await page.getByLabel('Source font size', { exact: true }).selectOption('17')
+  await page.getByLabel('Interface density', { exact: true }).selectOption('compact')
+  await page.waitForFunction(async () => {
+    const settings = (await window.awb.getState()).db.settings
+    return settings.fontSize === 18 && settings.editorFontSize === 17 && settings.density === 'compact'
+  }, null, { timeout: 8000 }).catch(async () => { throw new Error(`three changes in a row kept ${JSON.stringify(await appearance())}`) })
+  await page.waitForTimeout(800)
+  const onDisk = JSON.parse(fs.readFileSync(path.join(data, 'workbench.json'), 'utf8')).settings
+  assert.deepEqual([onDisk.fontSize, onDisk.editorFontSize, onDisk.density], [18, 17, 'compact'], 'three changes made one right after the other must all reach the file')
+  assert.deepEqual(await appearance(), { fontSize: 18, editorFontSize: 17, density: 'compact' })
+  console.log('PASS three settings changed one right after the other all keep, in the app and in the file')
 } finally {
   await app.close()
 }

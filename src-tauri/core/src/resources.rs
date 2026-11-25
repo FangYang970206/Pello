@@ -262,7 +262,7 @@ fn skill_roots(target: &Target) -> Vec<PathBuf> {
 }
 
 fn scan_skills(folder: &Path, target: &Target, seen: &mut Vec<PathBuf>, items: &mut Vec<Value>, errors: &mut Vec<String>, language: &str) -> Result<(), String> {
-    let real = match folder.canonicalize() {
+    let real = match crate::real_path(folder) {
         Ok(path) => path,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => { errors.push(format!("{}: {error}", folder.display())); return Ok(()); }
@@ -810,8 +810,8 @@ fn toggle_skill(target: &Target, item: &Value, enabled: bool, language: &str) ->
     let dest = if enabled { file.clone() } else { PathBuf::from(format!("{}.awb-disabled", file.display())) };
     let meta = fs::symlink_metadata(&source).map_err(|_| t(language, "MCP 配置已改变"))?;
     if meta.file_type().is_symlink() { return Err(t(language, "不能切换指向其他目录的 Skill 链接")); }
-    let root = fs::canonicalize(Path::new(&target.skill_path)).map_err(|error| error.to_string())?;
-    let real = fs::canonicalize(&source).map_err(|error| error.to_string())?;
+    let root = crate::real_path(Path::new(&target.skill_path)).map_err(|error| error.to_string())?;
+    let real = crate::real_path(&source).map_err(|error| error.to_string())?;
     if !real.starts_with(&root) { return Err(t(language, "不能切换指向其他目录的 Skill 链接")); }
     if dest.exists() { return Err(t(language, "目标文件已存在，未覆盖")); }
     fs::rename(&source, &dest).map_err(|error| error.to_string())
@@ -889,10 +889,10 @@ pub fn skill_directory(resources: &Resources, data: &Path, custom: &Value, agent
     let inside = roots.iter().any(|root| folder.starts_with(root));
     if !inside { return Err(t(language, "Skill 路径不属于当前 Agent")); }
     if !removing { return Ok(folder); }
-    let real = fs::canonicalize(&folder).map_err(|error| error.to_string())?;
+    let real = crate::real_path(&folder).map_err(|error| error.to_string())?;
     let mut contained = false;
     for root in roots.iter().filter(|root| root.exists()) {
-        let root_real = fs::canonicalize(root).map_err(|error| error.to_string())?;
+        let root_real = crate::real_path(root).map_err(|error| error.to_string())?;
         if real == root_real { return Err(t(language, "不能删除整个 Skill 发现目录")); }
         if let Ok(relative) = real.strip_prefix(&root_real) {
             if !relative.as_os_str().is_empty() { contained = true; }
@@ -914,7 +914,7 @@ pub fn skill_directory(resources: &Resources, data: &Path, custom: &Value, agent
 
 pub fn open_skill(resources: &Resources, data: &Path, custom: &Value, agent: &str, item: &Value, language: &str) -> Result<Value, String> {
     let folder = skill_directory(resources, data, custom, agent, item, false, language)?;
-    let real = fs::canonicalize(&folder).unwrap_or(folder);
+    let real = crate::real_path(&folder).unwrap_or(folder);
     if std::env::var_os("AWB_OPEN_BIN").is_some() || std::env::var_os("AWB_OPEN_LOG").is_some() {
         crate::menu::reveal_path(&real, language)?;
     } else if std::env::var("AWB_OPEN_SKILL").ok().as_deref() != Some("0") {
@@ -1534,7 +1534,7 @@ fn install_skills(target: &Target, skills: &[StagedSkill], language: &str) -> Re
     if target.skill_path.is_empty() { return Err(t(language, "请先设置这个 Agent 的 Skill 目录")); }
     let root = PathBuf::from(&target.skill_path);
     fs::create_dir_all(&root).map_err(|error| error.to_string())?;
-    let root = fs::canonicalize(&root).map_err(|error| error.to_string())?;
+    let root = crate::real_path(&root).map_err(|error| error.to_string())?;
     for skill in skills {
         if root.join(&skill.name).exists() { return Err(translate(language, "已存在 {{0}}，保留原文件", &[skill.name.clone()])); }
     }
@@ -1719,8 +1719,8 @@ fn safe_relative(value: &str, language: &str) -> Result<String, String> {
 
 fn remove_inside(root: &Path, target: &Path) -> Result<(), String> {
     if !target.exists() { return Ok(()); }
-    let root = fs::canonicalize(root).map_err(|error| error.to_string())?;
-    let absolute = fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
+    let root = crate::real_path(root).map_err(|error| error.to_string())?;
+    let absolute = crate::real_path(target).unwrap_or_else(|_| target.to_path_buf());
     let relative = absolute.strip_prefix(&root).map_err(|_| "临时清理路径超出预期目录".to_string())?;
     if relative.as_os_str().is_empty() { return Err("临时清理路径超出预期目录".into()); }
     if absolute.is_dir() { fs::remove_dir_all(&absolute) } else { fs::remove_file(&absolute) }.map_err(|error| error.to_string())
