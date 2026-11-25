@@ -18,7 +18,7 @@ for (const scale of process.argv.includes('--quick') ? [1] : [1, 1.25, 1.5, 2]) 
     projects: [{ id: 'p', name: 'Input fixture', host: 'local', path: data, agent: 'input' }],
     custom: [{ id: 'input', name: 'Input fixture', cmd: `${isWin ? '& ' : ''}${quote(process.execPath)}`,
       args: `${quote(path.join(root, 'scripts/fixtures/terminal-input.cjs'))} ${quote(log)}`, shell, letter: 'I', color: '#c4aedb', env: [] }],
-    sessions: { p: [{ id: 'input', kind: 'input', shell }] }, activeTab: { p: 'input' }
+    sessions: { p: [{ id: 'input', kind: 'input', shell }, { id: 'shell', kind: 'shell', shell }] }, activeTab: { p: 'input' }
   }))
   const env = { ...process.env, AWB_USER_DATA: data }
   delete env.ELECTRON_RUN_AS_NODE
@@ -85,5 +85,19 @@ for (const scale of process.argv.includes('--quick') ? [1] : [1, 1.25, 1.5, 2]) 
       await page.screenshot({ path: path.join(shots, `${theme}-${scale * 100}.png`) })
       console.log(`PASS ${scale * 100}% ${theme} ${width}x${height}: short/long IME, commit, cancel, ASCII, fixed bounds and intact header/footer`)
     }
+    const input = page.locator('[data-term=input] .xterm-helper-textarea')
+    await input.dispatchEvent('keydown', { key: 'Enter', keyCode: 13, shiftKey: true, isComposing: true })
+    await input.press('Shift+Enter')
+    await input.press('Enter')
+    await page.keyboard.type('KEYBOARD_END')
+    await page.waitForFunction(() => window.__awbBuffer('input').includes('KEYBOARD_END'))
+    assert.equal(fs.readFileSync(log, 'utf8').slice(expected.length), '\x1b[13;2u\rKEYBOARD_END', 'The PTY must receive distinct Shift+Enter and Enter inputs exactly once and in order')
+    await page.locator('[data-a=tab][data-id=shell]').click()
+    const shellInput = page.locator('[data-term=shell] .xterm-helper-textarea')
+    await shellInput.focus()
+    await page.keyboard.type("echo SHELL_KEYBOARD_'END'")
+    await shellInput.press('Shift+Enter')
+    await page.waitForFunction(() => window.__awbBuffer('shell').includes('SHELL_KEYBOARD_END'))
+    console.log(`PASS ${scale * 100}% distinct Agent Shift+Enter and Enter bytes, IME guard, and legacy shell input`)
   } finally { await app.close() }
 }

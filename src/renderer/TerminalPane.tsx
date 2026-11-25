@@ -85,7 +85,19 @@ export function TerminalPane({
       host.dataset.renderer = 'dom'
     }
     term.attachCustomKeyEventHandler((ev) => {
-      if (ev.type !== 'keydown' || !ev.ctrlKey || ev.altKey || ev.metaKey) return true
+      if (ev.type !== 'keydown' || ev.altKey || ev.metaKey) return true
+      if (ev.key === 'Enter' && ev.shiftKey && !ev.ctrlKey) {
+        if (ev.isComposing) return false
+        if (ev.keyCode === 229) return true
+        ev.preventDefault()
+        if (!term.options.disableStdin) {
+          if (term.options.scrollOnUserInput) term.scrollToBottom()
+          term.clearSelection()
+          window.awb.ptyShiftEnter(id)
+        }
+        return false
+      }
+      if (!ev.ctrlKey) return true
       const key = ev.key.toLowerCase()
       if (key === 'c' && !ev.shiftKey) {
         if (term.hasSelection()) {

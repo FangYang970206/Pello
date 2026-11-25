@@ -25,7 +25,8 @@ import {
   resizeSession,
   restartSession,
   testExecutor,
-  writeSession
+  writeSession,
+  writeSessionShiftEnter
 } from './pty'
 import { sshBatchArgs } from './platform'
 import { publicHost, rememberPassword } from './credentials'
@@ -957,6 +958,7 @@ function registerIpc(): void {
     if (typeof id === 'string' && id && typeof text === 'string') saveTerminalHistory(id, text)
   })
   ipcMain.on('pty:write', (_e, id: string, data: string, binary = false) => { if (!closingWindow && !quitting) writeSession(id, String(data), !!binary) })
+  ipcMain.on('pty:shift-enter', (_e, id: string) => { if (!closingWindow && !quitting) writeSessionShiftEnter(id) })
   ipcMain.on('pty:resize', (_e, id: string, cols: number, rows: number) => { if (!closingWindow && !quitting) resizeSession(id, cols, rows) })
   ipcMain.handle('pty:interrupt', (_e, id: string) => closingWindow || quitting ? 'signal' : interruptSession(id))
   ipcMain.handle('pty:kill', (_e, id: string) => { if (!closingWindow && !quitting) return killSession(id) })

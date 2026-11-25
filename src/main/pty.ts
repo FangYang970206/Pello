@@ -464,6 +464,17 @@ class Session {
     }
   }
 
+  writeShiftEnter(): void {
+    if (!this.activeAgent) {
+      this.write('\r')
+      return
+    }
+    // Native Codex reads console key events on Windows. ConPTY decodes this
+    // Win32 input record as VK_RETURN with SHIFT_PRESSED.
+    const nativeCodex = this.activeAgent === 'codex' && this.hostId === 'local' && process.platform === 'win32'
+    this.write(nativeCodex ? '\x1b[13;28;13;1;16;1_' : '\x1b[13;2u')
+  }
+
   resize(cols: number, rows: number): void {
     if (cols < 2 || rows < 2) return
     this.cols = cols
@@ -893,6 +904,10 @@ export async function createSession(
 
 export function writeSession(id: string, data: string, binary = false): void {
   sessions.get(id)?.write(data, binary)
+}
+
+export function writeSessionShiftEnter(id: string): void {
+  sessions.get(id)?.writeShiftEnter()
 }
 
 export function resizeSession(id: string, cols: number, rows: number): void {

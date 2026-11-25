@@ -97,6 +97,7 @@ const api: WorkbenchApi = {
   },
   ptyCreate: (req) => ipcRenderer.invoke('pty:create', req),
   ptyWrite: (id, data, binary) => ipcRenderer.send('pty:write', id, data, binary),
+  ptyShiftEnter: (id) => ipcRenderer.send('pty:shift-enter', id),
   ptyResize: (id, cols, rows) => ipcRenderer.send('pty:resize', id, cols, rows),
   ptyInterrupt: (id) => ipcRenderer.invoke('pty:interrupt', id),
   ptyKill: (id) => ipcRenderer.invoke('pty:kill', id),

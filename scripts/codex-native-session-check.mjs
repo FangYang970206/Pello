@@ -12,10 +12,12 @@ const home = path.join(data, 'codex-home'), project = path.join(data, 'project')
 fs.mkdirSync(home); fs.mkdirSync(project)
 // The actual CLI writes native history against a local deterministic Responses
 // fixture. No real credentials, external requests, or model charges.
+const submittedBodies = []
 const server = createServer((req, res) => {
   let body = ''
   req.on('data', (part) => { body += part })
   req.on('end', () => {
+    if (body.includes('NATIVE_USER_MESSAGE_0')) submittedBodies.push(body)
     const index = body.includes('NATIVE_USER_MESSAGE_1') ? 1 : 0
     const text = body.includes('NATIVE_USER_CONTINUED') ? `NATIVE_CONTINUED_REPLY_${index}` : `NATIVE_ASSISTANT_REPLY_${index}`
     const message = { id: 'message_fixture', type: 'message', role: 'assistant', content: [{ type: 'output_text', text, annotations: [] }] }
@@ -73,13 +75,22 @@ for (let launch = 0; launch < 2; launch++) {
         window.awb.ptyWrite('a-term', 'NATIVE_USER_MESSAGE_0')
         window.awb.ptyWrite('b-term', 'NATIVE_USER_MESSAGE_1')
       })
-      await page.waitForTimeout(300)
-      await page.evaluate(() => { window.awb.ptyWrite('a-term', '\r'); window.awb.ptyWrite('b-term', '\r') })
+      await page.waitForFunction(() => window.__awbBuffer?.('a-term')?.includes('NATIVE_USER_MESSAGE_0'))
+      const input = page.locator('[data-term=a-term] .xterm-helper-textarea')
+      await input.press('Shift+Enter')
+      await page.keyboard.type('NATIVE_SECOND_LINE')
+      await page.waitForFunction(() => window.__awbBuffer?.('a-term')?.includes('NATIVE_SECOND_LINE'))
+      await input.press('Enter')
+      await page.evaluate(() => window.awb.ptyWrite('b-term', '\r'))
     }
     await page.waitForFunction(() => ['a-term', 'b-term'].every((id, index) => {
       const text = window.__awbBuffer?.(id) || ''
       return text.includes(`NATIVE_USER_MESSAGE_${index}`) && text.includes(`NATIVE_ASSISTANT_REPLY_${index}`)
     }))
+    if (launch === 0) {
+      assert.equal(submittedBodies.length, 1, 'Native Codex must submit only on plain Enter')
+      assert.ok(submittedBodies[0].includes('NATIVE_USER_MESSAGE_0\\nNATIVE_SECOND_LINE'), 'Native Codex must keep the Shift+Enter line break in the submitted draft')
+    }
     const db = (await page.evaluate(() => window.awb.getState())).db
     assert.deepEqual(db.sessions.p.slice(0, 2).map((term) => term.agentSessionId), ids)
     await page.waitForFunction(() => window.__awbBuffer?.('new-term')?.includes('Ask Codex'))
