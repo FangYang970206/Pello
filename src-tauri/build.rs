@@ -1,7 +1,7 @@
 fn main() {
     tauri_build::try_build(
         tauri_build::Attributes::new()
-            .app_manifest(tauri_build::AppManifest::new().commands(&["awb"])),
+            .app_manifest(tauri_build::AppManifest::new().commands(&["awb", "diagram_result"])),
     )
     .expect("failed to build Tauri context");
 }

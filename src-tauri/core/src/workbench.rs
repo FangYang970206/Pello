@@ -86,6 +86,14 @@ impl Workbench {
         Ok(Self { paths, db: Mutex::new(db), pty: Manager::new(), dirty: Mutex::new(false), content_searches: Mutex::new(HashMap::new()), tree_searches: Mutex::new(HashMap::new()), layouts: Mutex::new(HashMap::new()), restore_failures: Mutex::new(HashMap::new()), preview: preview::Service::new(), resources: resources::Resources::new(), updates: Mutex::new(updates), uploads: upload::Service::new(), imports: import::Imports::new(), pickers: Mutex::new(HashMap::new()), history_flushed: Mutex::new(false), closing: AtomicBool::new(false), emit })
     }
 
+    /// The shell renders a diagram in a hidden window of its own, as the
+    /// Electron build does, and installs that renderer here once it is ready.
+    /// Until then a diagram fails with a clear message instead of launching a
+    /// browser that is not there.
+    pub fn set_diagram_renderer(&self, renderer: preview::Renderer) {
+        self.preview.set_renderer(renderer);
+    }
+
     /// The window close handler calls this once. Later terminal creates fail
     /// while the existing sessions are still being closed.
     pub fn begin_shutdown(&self) -> bool {

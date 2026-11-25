@@ -24,10 +24,11 @@
     "check:i18n": "node scripts/i18n-check.mjs",
     "check:installation": "node scripts/installation-check.mjs",
     "check:rust": "node scripts/rust-port-check.mjs",
+    "check:diagram": "node scripts/tauri-diagram-check.mjs",
     "dev:tauri:web": "vite --config vite.tauri.config.ts",
     "build:tauri:web": "vite build --config vite.tauri.config.ts",
-    "dev:tauri": "tauri dev",
-    "build:tauri": "tauri build",
+    "dev:tauri": "node scripts/tauri-helper.mjs && tauri dev",
+    "build:tauri": "node scripts/tauri-helper.mjs && tauri build",
     "check:media:ssh-linux": "node scripts/linux-media-check.mjs"
   },
   "dependencies": {

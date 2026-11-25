@@ -2,7 +2,7 @@
 //! Process liveness, Enter, and silence do not mark an agent idle. OSC 7501 wins over OSC 9;4.
 
 use crate::i18n::translate;
-use crate::shells::{self, discover};
+use crate::shells;
 use crate::ssh;
 use portable_pty::{CommandBuilder, PtySize};
 use serde_json::{json, Value};
@@ -124,6 +124,8 @@ struct Live {
     native_working: bool,
     pending: String,
     program: ProgramStatus,
+    /// The process that owns the terminal's console; a reply goes to it.
+    root_pid: u32,
 }
 
 pub struct Manager {
@@ -149,26 +151,27 @@ impl Manager {
         if kind != "shell" && agent_session.unwrap_or("").is_empty() && !load_history(data, id).is_empty() {
             return Err(translate(language, "无法唯一定位旧 Agent 对话，原终端历史已保留；未创建空白对话", &[] as &[String]));
         }
-        let shells = discover();
-        let use_zsh = shell == "zsh" && shells.iter().any(|item| item.id == "zsh");
-        let shell_id = if use_zsh { "zsh" } else { "bash" };
-        let binary = shells.iter().find(|item| item.id == shell_id).map(|item| item.path.clone())
-            .ok_or_else(|| translate(language, "未检测到 {{0}}，请在设置中选择可用 Shell", &[shell_id.to_string()]))?;
-        let (bash_rc, zsh_rc) = shells::ensure_shell_files(data)?;
+        let rc = shells::ensure_shell_files(data)?;
+        let spec = shells::resolve_local_shell(shell, &rc, language)?;
+        let shell_id = spec.shell.clone();
         let system = portable_pty::native_pty_system();
         let pair = system.openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 }).map_err(|error| error.to_string())?;
-        let mut builder = CommandBuilder::new(binary);
-        if use_zsh {
-            builder.arg("-i");
-            builder.env("ZDOTDIR", zsh_rc.parent().unwrap_or(Path::new(".")));
-        } else {
-            builder.arg("--noprofile");
-            builder.arg("--rcfile");
-            builder.arg(bash_rc.to_string_lossy().into_owned());
-            builder.arg("-i");
+        let mut builder = CommandBuilder::new(&spec.file);
+        builder.args(spec.args.iter().map(String::as_str));
+        // Windows names its environment without regard to case. One PATH key
+        // keeps the shell's own lookup from seeing a stale duplicate.
+        let replaces_path = cfg!(windows) && spec.env.iter().any(|(key, _)| key == "PATH");
+        if replaces_path {
+            for (key, _) in std::env::vars_os() {
+                if key.to_string_lossy().eq_ignore_ascii_case("PATH") && key != "PATH" { builder.env_remove(key); }
+            }
         }
-        builder.env("AWB_CWD", cwd);
+        for (key, value) in &spec.env { builder.env(key, value); }
+        // A POSIX shell inside Windows reads forward slashes; PowerShell and
+        // CMD want the path as the system spells it.
+        builder.env("AWB_CWD", if cfg!(windows) && shell_id == "bash" { cwd.to_string_lossy().replace('\\', "/") } else { cwd.display().to_string() });
         builder.env("TERM", "xterm-256color");
+        builder.env("COLORTERM", "truecolor");
         builder.env("PI_PROGRAM_STATUS", "1");
         if cfg!(windows) { builder.env("PI_HARDWARE_CURSOR", "1"); }
         builder.cwd(cwd);
@@ -182,14 +185,14 @@ impl Manager {
         let resize_master = master.clone();
         let stop: Box<dyn FnOnce() + Send> = Box::new(move || { let _ = stop_child.lock().expect("child").kill(); });
         let resize: Box<dyn Fn(u16, u16) + Send + Sync> = Box::new(move |cols, rows| { let _ = resize_master.lock().expect("master").resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }); });
-        self.start_session(data, id, cwd, kind, shell_id, command, agent_session, restore, language, emit, reader, writer, stop, resize, root_pid)
+        self.start_session(data, id, cwd, kind, &shell_id, command, agent_session, restore, language, emit, reader, writer, stop, resize, root_pid)
     }
 
     pub fn create_remote(&self, data: &Path, id: &str, cwd: &str, kind: &str, shell: &str, command: &str, agent_session: Option<&str>, restore: bool, host: &Value, language: &str, emit: Emit) -> Result<Value, String> {
         if kind != "shell" && agent_session.unwrap_or("").is_empty() && !load_history(data, id).is_empty() {
             return Err(translate(language, "无法唯一定位旧 Agent 对话，原终端历史已保留；未创建空白对话", &[] as &[String]));
         }
-        let shell_id = if host["platform"] == "windows" { "pwsh" } else if shell == "zsh" { "zsh" } else { "bash" };
+        let shell_id = shells::shell_for_host(host["platform"].as_str().unwrap_or("linux"), shell);
         let remote = ssh::open_shell(data, host, cwd, language)?;
         self.start_session(data, id, Path::new(cwd), kind, shell_id, command, agent_session, restore, language, emit, remote.output, remote.input, remote.stop, Box::new(|_, _| {}), 0)
     }
@@ -220,6 +223,7 @@ impl Manager {
             native_working: false,
             pending: String::new(),
             program: ProgramStatus { pending: String::new() },
+            root_pid,
         }));
         let writer = Arc::new(Mutex::new(writer));
         let hook_live = live.clone();
@@ -244,7 +248,7 @@ impl Manager {
         if kind == "claude" {
             if let Some(addr) = hook_addr {
                 let file = claude_settings_file(data, addr.port(), &settings_token);
-                let quoted = if shell == "pwsh" || shell == "cmd" { crate::ssh::ps_quote(&file.display().to_string()) } else { crate::ssh::bash_quote(&file.display().to_string()) };
+                let quoted = if shell == "pwsh" || shell == "cmd" { crate::ssh::ps_quote(&file.display().to_string()) } else { crate::ssh::bash_path_quote(&file) };
                 live.lock().expect("pty live").command = format!("{command} --settings {quoted}");
             }
         }
@@ -360,13 +364,13 @@ impl Manager {
         session.hook_stop.store(true, Ordering::Relaxed);
         if let Some(addr) = session.hook_addr { let _ = TcpStream::connect_timeout(&addr, Duration::from_millis(200)); }
         let root = session.root_pid;
-        let rows = process_snapshot();
+        let rows: Vec<crate::pty::ProcessRow> = crate::sys::process_table().into_iter().map(|(pid, parent)| ProcessRow { pid, parent }).collect();
         let steps = windows_shutdown_plan(&rows, &[root], root != 0 && !rows.is_empty());
         let mut ended = false;
         for step in steps {
             match step {
                 ShutdownStep::KillDescendant(pid) => {
-                    kill_descendant(pid);
+                    crate::sys::kill_process(pid);
                     record_shutdown(&format!("kill {pid}"));
                 }
                 ShutdownStep::EndRoot(pid) => {
@@ -377,7 +381,17 @@ impl Manager {
                     record_shutdown(&format!("end {pid}"));
                 }
                 ShutdownStep::WaitNativeExit(pid) => {
-                    wait_native(pid);
+                    if crate::sys::process_exited(pid) {
+                        record_shutdown(&format!("wait {pid}"));
+                        continue;
+                    }
+                    // The console is closed but the root is still there, as a
+                    // shell that ignores the closing of its terminal is. It is
+                    // ended with its tree, as the Electron build does, and
+                    // waited for again.
+                    let tree = crate::sys::kill_tree(pid);
+                    record_shutdown(&format!("tree {pid} {}", tree as u8));
+                    crate::sys::process_exited(pid);
                     record_shutdown(&format!("wait {pid}"));
                 }
             }
@@ -481,6 +495,36 @@ fn spawn_reader(id: String, mut reader: Box<dyn Read + Send>, live: Arc<Mutex<Li
     });
 }
 
+/// The helper beside this program; `AWB_CONSOLE_REPLY_BIN` names another.
+fn console_reply_helper() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("AWB_CONSOLE_REPLY_BIN") { return Some(PathBuf::from(path)) }
+    let program = std::env::current_exe().ok()?;
+    let name = program.file_name()?.to_string_lossy();
+    let stem = name.strip_suffix(".exe").unwrap_or(&name);
+    Some(program.with_file_name(format!("{stem}-console-reply.exe")))
+}
+
+/// Answer `queries` capability queries in the console of `root_pid`. `None`
+/// where the reply goes to the terminal itself.
+fn console_reply(root_pid: u32, queries: usize) -> Option<Box<dyn FnOnce() + Send>> {
+    if !cfg!(windows) || root_pid == 0 { return None }
+    let created = crate::sys::process_created(root_pid)?;
+    let helper = console_reply_helper()?;
+    Some(Box::new(move || {
+        for _ in 0..queries {
+            // The helper owns its console, so it is the one that attaches.
+            #[cfg(windows)]
+            let status = {
+                use std::os::windows::process::CommandExt;
+                std::process::Command::new(&helper).arg(root_pid.to_string()).arg(created.to_string()).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).creation_flags(0x0800_0000).status()
+            };
+            #[cfg(not(windows))]
+            let status: Result<std::process::ExitStatus, std::io::Error> = Err(std::io::Error::other("no console reply here"));
+            if !matches!(status, Ok(status) if status.success()) { break }
+        }
+    }))
+}
+
 fn handle_chunk(id: &str, live: &Arc<Mutex<Live>>, writer: &Arc<Mutex<Box<dyn Write + Send>>>, chunk: &str, emit: &Emit) {
     let mut guard = live.lock().expect("pty live");
     let activity = guard.program.push(chunk);
@@ -492,12 +536,19 @@ fn handle_chunk(id: &str, live: &Arc<Mutex<Live>>, writer: &Arc<Mutex<Box<dyn Wr
     let _recorded_for_restore = guard.restore;
     let data = guard.data.clone();
     let state_event = if changed { Some(snapshot(id, &guard)) } else { None };
-    drop(guard);
     if queries > 0 {
-        let reply = b"\x1b]7501;?\x1b\\";
-        let mut output = writer.lock().expect("writer");
-        for _ in 0..queries { let _ = output.write_all(reply); }
+        // ConPTY drops an unknown OSC sequence written to its input pipe, so
+        // Windows hands the reply to the console as key strokes from a helper.
+        match console_reply(guard.root_pid, queries) {
+            Some(reply) => drop(std::thread::spawn(reply)),
+            None => {
+                let reply = b"\x1b]7501;?\x1b\\";
+                let mut output = writer.lock().expect("writer");
+                for _ in 0..queries { let _ = output.write_all(reply); }
+            }
+        }
     }
+    drop(guard);
     if !chunk.is_empty() { let _ = append_ansi(&data, id, chunk); }
     if !visible.is_empty() {
         emit(json!({ "channel": "pty:event", "payload": { "type": "data", "id": id, "data": visible } }));
@@ -568,6 +619,8 @@ fn native_agent(app: &str) -> Option<&'static str> {
 
 pub fn resume_command(kind: &str, command: &str, session: Option<&str>, directory: &Path, shell: &str) -> (String, Option<String>) {
     let quote = |text: &str| if shell == "pwsh" || shell == "cmd" { crate::ssh::ps_quote(text) } else { crate::ssh::bash_quote(text) };
+    // A directory is a path, which a POSIX shell on Windows writes with forward slashes.
+    let quote_path = |path: &Path| if shell == "pwsh" || shell == "cmd" { crate::ssh::ps_quote(&path.display().to_string()) } else { crate::ssh::bash_path_quote(path) };
     let id = session.and_then(valid_agent_session);
     match kind {
         "claude" => {
@@ -588,7 +641,7 @@ pub fn resume_command(kind: &str, command: &str, session: Option<&str>, director
                 let flag = if kind == "pi" { "--session" } else { "--resume" };
                 (format!("{command} {flag} {}", quote(&id)), Some(id))
             } else {
-                (format!("{command} --session-dir {} --continue", quote(&directory.display().to_string())), Some(id.unwrap_or_else(|| "pello:directory".into())))
+                (format!("{command} --session-dir {} --continue", quote_path(directory)), Some(id.unwrap_or_else(|| "pello:directory".into())))
             }
         }
         _ => (command.to_string(), id),
@@ -748,6 +801,11 @@ pub fn load_history(data: &Path, id: &str) -> String {
     std::fs::read_to_string(data.join("terminal-history").join(format!("{}.log", history_name(id)))).unwrap_or_default()
 }
 
+/// The terminal's output as it has arrived so far, status reports included.
+pub fn load_journal(data: &Path, id: &str) -> String {
+    std::fs::read_to_string(data.join("terminal-history").join(format!("{}.ansi", history_name(id)))).unwrap_or_default()
+}
+
 pub fn save_history(data: &Path, id: &str, text: &str) -> Result<(), String> {
     if id.is_empty() || text.is_empty() { return Ok(()) }
     let dir = data.join("terminal-history");
@@ -796,41 +854,6 @@ fn claude_settings_file(data: &Path, port: u16, token: &str) -> PathBuf {
     }});
     let _ = std::fs::write(&file, settings.to_string());
     file
-}
-
-fn process_snapshot() -> Vec<ProcessRow> {
-    let mut rows = Vec::new();
-    let Ok(entries) = std::fs::read_dir("/proc") else { return rows };
-    for entry in entries.flatten() {
-        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else { continue };
-        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else { continue };
-        let Some(end) = stat.rfind(')') else { continue };
-        let mut fields = stat[end + 1..].split_whitespace();
-        let _state = fields.next();
-        let parent = fields.next().and_then(|value| value.parse().ok()).unwrap_or(0);
-        if pid > 0 && parent > 0 { rows.push(ProcessRow { pid, parent }); }
-    }
-    rows
-}
-
-fn kill_descendant(pid: u32) {
-    if pid <= 1 { return }
-    if cfg!(windows) {
-        let _ = std::process::Command::new("taskkill").args(["/F", "/PID", &pid.to_string()]).status();
-        return;
-    }
-    unsafe { libc::kill(pid as i32, libc::SIGKILL); }
-}
-
-fn wait_native(pid: u32) {
-    if pid == 0 { return }
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        let mut status = 0;
-        let result = unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) };
-        if result == pid as i32 || result < 0 || Instant::now() >= deadline { return }
-        std::thread::sleep(Duration::from_millis(20));
-    }
 }
 
 fn record_lifecycle(kind: &str, pid: Option<u32>) {

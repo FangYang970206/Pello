@@ -11,7 +11,8 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use crate::sys::Helper;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -118,8 +119,10 @@ struct Project { token: String, source: Source, drafts: HashMap<String, Draft>, 
 
 struct Diagrams {
     generation: AtomicU64,
-    child: Mutex<Option<Child>>,
+    child: Mutex<Option<Helper>>,
     gate: Mutex<()>,
+    /// Runs one diagram in strict mode and returns its SVG. The shell sets it.
+    renderer: Mutex<Option<Renderer>>,
     cache: Mutex<Vec<(String, String)>>,
 }
 
@@ -138,7 +141,7 @@ impl Service {
             alive: AtomicBool::new(true),
             port: Mutex::new(None),
             projects: Mutex::new(HashMap::new()),
-            diagrams: Diagrams { generation: AtomicU64::new(0), child: Mutex::new(None), gate: Mutex::new(()), cache: Mutex::new(Vec::new()) },
+            diagrams: Diagrams { generation: AtomicU64::new(0), child: Mutex::new(None), gate: Mutex::new(()), renderer: Mutex::new(None), cache: Mutex::new(Vec::new()) },
         }) }
     }
 
@@ -193,7 +196,15 @@ impl Service {
         let svg = if let Some(bin) = std::env::var("AWB_DIAGRAM_BIN").ok().filter(|value| !value.is_empty()) {
             self.render_external(&bin, source, generation, language)?
         } else {
-            self.render_browser(source, generation, language)?
+            let renderer = self.inner.diagrams.renderer.lock().expect("diagram renderer").clone();
+            let Some(render) = renderer else {
+                return Err(translate(language, "图表渲染器不可用", &[] as &[String]));
+            };
+            let outcome = render.render(source, generation);
+            if self.inner.diagrams.generation.load(Ordering::SeqCst) != generation {
+                return Err(translate(language, "图表渲染已取消", &[] as &[String]));
+            }
+            outcome?
         };
         self.store_diagram(source, &svg);
         Ok(svg)
@@ -224,21 +235,19 @@ impl Service {
         if let Some(path) = std::env::var_os("PATH") { command.env("PATH", path); }
         command.args(["--security-level", "strict", "--sandbox", "--no-node", "--no-workbench"]);
         command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
-        #[cfg(unix)]
-        { use std::os::unix::process::CommandExt; command.process_group(0); }
-        let mut child = command.spawn().map_err(|_| translate(language, "图表渲染器不可用", &[] as &[String]))?;
-        let mut stdout = child.stdout.take().ok_or_else(|| translate(language, "图表渲染器不可用", &[] as &[String]))?;
+        let mut helper = Helper::spawn(&mut command).map_err(|_| translate(language, "图表渲染器不可用", &[] as &[String]))?;
+        let mut stdout = helper.child.stdout.take().ok_or_else(|| translate(language, "图表渲染器不可用", &[] as &[String]))?;
         let reader = std::thread::spawn(move || { let mut buf = Vec::new(); let _ = stdout.read_to_end(&mut buf); buf });
-        if let Some(mut stdin) = child.stdin.take() { let _ = stdin.write_all(source.as_bytes()); }
+        if let Some(mut stdin) = helper.child.stdin.take() { let _ = stdin.write_all(source.as_bytes()); }
         {
             let mut slot = self.inner.diagrams.child.lock().expect("child");
             if self.inner.diagrams.generation.load(Ordering::SeqCst) != generation {
-                stop_child(&mut child);
+                helper.stop();
                 drop(slot);
                 let _ = reader.join();
                 return Err(translate(language, "图表渲染已取消", &[] as &[String]));
             }
-            *slot = Some(child);
+            *slot = Some(helper);
         }
         let started = Instant::now();
         loop {
@@ -252,7 +261,7 @@ impl Service {
                 let _ = reader.join();
                 return Err(translate(language, "图表渲染超时，请简化图表后重试", &[] as &[String]));
             }
-            let finished = self.inner.diagrams.child.lock().expect("child").as_mut().and_then(|child| child.try_wait().ok()).flatten().is_some();
+            let finished = self.inner.diagrams.child.lock().expect("child").as_mut().is_some_and(Helper::done);
             if finished { break; }
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -265,176 +274,15 @@ impl Service {
         Ok(svg)
     }
 
-    /// Hidden Chrome process. The page loads mermaid with `securityLevel: 'strict'`
-    /// and has no Node and no workbench preload. Chrome's sandbox is the first
-    /// path. `--no-sandbox` is used only after that process fails to start.
-    fn render_browser(&self, source: &str, generation: u64, language: &str) -> Result<String, String> {
-        let browser = std::env::var_os("AWB_CHROME_BIN").map(PathBuf::from).filter(|path| path.is_file())
-            .or_else(browser_bin)
-            .ok_or_else(|| translate(language, "图表渲染器不可用", &[] as &[String]))?;
-        let library = mermaid_library().ok_or_else(|| translate(language, "图表渲染器不可用", &[] as &[String]))?;
-        let root = std::env::temp_dir().join(format!("pello-diagram-{}", random_id()));
-        fs::create_dir_all(root.join("profile")).map_err(|error| error.to_string())?;
-        std::os::unix::fs::symlink(&library, root.join("mermaid.min.js")).map_err(|error| error.to_string())?;
-        let html = format!(
-            "<!DOCTYPE html><meta charset=\"utf-8\"><body><script src=\"mermaid.min.js\"></script><script>\nconst source = {};\nmermaid.initialize({{ startOnLoad: false, securityLevel: 'strict', theme: 'neutral', suppressErrorRendering: true, maxTextSize: 100000 }});\nmermaid.render('pelloDiagram', source).then((result) => {{ document.documentElement.setAttribute('data-pello-ready', '1'); document.body.innerHTML = result.svg; }}).catch((error) => {{ document.documentElement.setAttribute('data-pello-error', '1'); document.body.textContent = String(error && error.message || error); }});\n</script></body>",
-            serde_json::to_string(source).unwrap_or_else(|_| "\"\"".into())
-        );
-        fs::write(root.join("render.html"), html).map_err(|error| error.to_string())?;
-        let mut sandboxed = true;
-        let svg = loop {
-            match self.browser_attempt(&browser, &root, generation, language, sandboxed) {
-                Ok(svg) => break svg,
-                Err(BrowserFailure::Sandbox) if sandboxed => sandboxed = false,
-                Err(BrowserFailure::Sandbox) => {
-                    let _ = fs::remove_dir_all(&root);
-                    return Err(translate(language, "图表渲染器不可用", &[] as &[String]));
-                }
-                Err(BrowserFailure::Message(message)) => {
-                    let _ = fs::remove_dir_all(&root);
-                    return Err(message);
-                }
-            }
-        };
-        let _ = fs::remove_dir_all(&root);
-        if self.inner.diagrams.generation.load(Ordering::SeqCst) != generation {
-            return Err(translate(language, "图表渲染已取消", &[] as &[String]));
-        }
-        Ok(svg)
-    }
-
-    fn browser_attempt(&self, browser: &Path, root: &Path, generation: u64, language: &str, sandboxed: bool) -> Result<String, BrowserFailure> {
-        let mut command = Command::new(browser);
-        command.env_clear();
-        if let Some(path) = std::env::var_os("PATH") { command.env("PATH", path); }
-        let profile = root.join(if sandboxed { "profile" } else { "profile-fallback" });
-        let _ = fs::create_dir_all(&profile);
-        command.env("HOME", root);
-        command.env("TMPDIR", root);
-        command.env("XDG_CONFIG_HOME", &profile);
-        command.env("XDG_CACHE_HOME", &profile);
-        command.args(["--headless=new", "--disable-gpu", "--no-first-run", "--disable-extensions", "--disable-background-networking", "--disable-sync", "--disable-default-apps"]);
-        if !sandboxed {
-            command.args(["--no-sandbox", "--disable-dev-shm-usage"]);
-        }
-        command.arg(format!("--user-data-dir={}", profile.display()));
-        command.args(["--virtual-time-budget=8000", "--dump-dom"]);
-        command.arg(format!("file://{}", root.join("render.html").display()));
-        command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        #[cfg(unix)]
-        { use std::os::unix::process::CommandExt; command.process_group(0); }
-        if let Ok(log) = std::env::var("AWB_DIAGRAM_LOG") {
-            let args = command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\n");
-            let mode = if sandboxed { "sandbox" } else { "fallback" };
-            let _ = fs::OpenOptions::new().create(true).append(true).open(log).and_then(|mut file| {
-                use std::io::Write;
-                write!(file, "attempt={mode}\nargv0={}\n{args}\n", browser.display())
-            });
-        }
-        let mut child = command.spawn().map_err(|_| BrowserFailure::Message(translate(language, "图表渲染器不可用", &[] as &[String])))?;
-        let mut stdout = child.stdout.take().ok_or_else(|| BrowserFailure::Message(translate(language, "图表渲染器不可用", &[] as &[String])))?;
-        let mut stderr = child.stderr.take();
-        let buffer = Arc::new(Mutex::new(String::new()));
-        let errors = Arc::new(Mutex::new(String::new()));
-        let collect = buffer.clone();
-        let reader = std::thread::spawn(move || {
-            let mut chunk = [0u8; 8192];
-            loop {
-                match stdout.read(&mut chunk) {
-                    Ok(0) | Err(_) => break,
-                    Ok(size) => collect.lock().expect("diagram").push_str(&String::from_utf8_lossy(&chunk[..size])),
-                }
-            }
-        });
-        let collect_errors = errors.clone();
-        let error_reader = std::thread::spawn(move || {
-            let Some(mut stderr) = stderr.take() else { return };
-            let mut chunk = [0u8; 2048];
-            loop {
-                match stderr.read(&mut chunk) {
-                    Ok(0) | Err(_) => break,
-                    Ok(size) => {
-                        let mut text = collect_errors.lock().expect("diagram");
-                        if text.len() < 8192 { text.push_str(&String::from_utf8_lossy(&chunk[..size])); }
-                    }
-                }
-            }
-        });
-        {
-            let mut slot = self.inner.diagrams.child.lock().expect("child");
-            if self.inner.diagrams.generation.load(Ordering::SeqCst) != generation {
-                stop_child(&mut child);
-                drop(slot);
-                let _ = reader.join();
-                let _ = error_reader.join();
-                return Err(BrowserFailure::Message(translate(language, "图表渲染已取消", &[] as &[String])));
-            }
-            *slot = Some(child);
-        }
-        let started = Instant::now();
-        let probe = Duration::from_millis(2000);
-        let svg = loop {
-            if self.inner.diagrams.generation.load(Ordering::SeqCst) != generation {
-                self.stop_diagram();
-                let _ = reader.join();
-                let _ = error_reader.join();
-                return Err(BrowserFailure::Message(translate(language, "图表渲染已取消", &[] as &[String])));
-            }
-            let current = buffer.lock().expect("diagram").clone();
-            if let Some(svg) = extract_svg(&current) {
-                self.stop_diagram();
-                break svg;
-            }
-            let stderr_text = errors.lock().expect("diagram").clone();
-            let finished = self.inner.diagrams.child.lock().expect("child").as_mut().and_then(|child| child.try_wait().ok()).flatten().is_some();
-            if finished {
-                std::thread::sleep(Duration::from_millis(40));
-                let current = buffer.lock().expect("diagram").clone();
-                if let Some(svg) = extract_svg(&current) {
-                    self.stop_diagram();
-                    break svg;
-                }
-                self.stop_diagram();
-                let _ = reader.join();
-                let _ = error_reader.join();
-                let _ = self.inner.diagrams.child.lock().expect("child").take();
-                if sandboxed { return Err(BrowserFailure::Sandbox); }
-                return Err(BrowserFailure::Message(translate(language, "图表渲染未返回 SVG", &[] as &[String])));
-            }
-            if sandboxed && sandbox_cannot_start(&stderr_text, current.is_empty(), started.elapsed() >= probe) {
-                self.stop_diagram();
-                let _ = reader.join();
-                let _ = error_reader.join();
-                let _ = self.inner.diagrams.child.lock().expect("child").take();
-                return Err(BrowserFailure::Sandbox);
-            }
-            if started.elapsed() > Duration::from_secs(15) {
-                self.stop_diagram();
-                let _ = reader.join();
-                let _ = error_reader.join();
-                return Err(BrowserFailure::Message(translate(language, "图表渲染超时，请简化图表后重试", &[] as &[String])));
-            }
-            if current.contains("data-pello-error") && current.contains("</html>") {
-                self.stop_diagram();
-                let _ = reader.join();
-                let _ = error_reader.join();
-                return Err(BrowserFailure::Message(translate(language, "图表渲染未返回 SVG", &[] as &[String])));
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        };
-        let _ = reader.join();
-        let _ = error_reader.join();
-        let _ = self.inner.diagrams.child.lock().expect("child").take();
-        Ok(svg)
-    }
-
     pub fn cancel(&self) {
         self.inner.diagrams.generation.fetch_add(1, Ordering::SeqCst);
         self.stop_diagram();
+        self.reset_renderer();
     }
 
+
     fn stop_diagram(&self) {
-        if let Some(child) = self.inner.diagrams.child.lock().expect("child").as_mut() { stop_child(child); }
+        if let Some(helper) = self.inner.diagrams.child.lock().expect("child").as_mut() { helper.stop(); }
     }
 
     fn ensure(&self, language: &str) -> Result<u16, String> {
@@ -451,51 +299,33 @@ impl Service {
     }
 }
 
+/// Renders one diagram in Mermaid's strict mode and blocks until the SVG is
+/// ready. `generation` is the cancel counter of the service.
+pub trait DiagramRenderer: Send + Sync {
+    fn render(&self, source: &str, generation: u64) -> Result<String, String>;
+    /// Stop the render in progress and drop what it used, as a window.
+    fn reset(&self);
+}
+
+pub type Renderer = Arc<dyn DiagramRenderer>;
+
+impl Service {
+    /// The shell installs its renderer here once its window can render.
+    pub fn set_renderer(&self, renderer: Renderer) {
+        *self.inner.diagrams.renderer.lock().expect("diagram renderer") = Some(renderer);
+    }
+
+    /// The render in progress is abandoned; a slow or broken window is not
+    /// reused for the next diagram.
+    fn reset_renderer(&self) {
+        if let Some(renderer) = self.inner.diagrams.renderer.lock().expect("diagram renderer").as_ref() {
+            renderer.reset();
+        }
+    }
+}
+
 impl Drop for Service {
     fn drop(&mut self) { self.inner.alive.store(false, Ordering::SeqCst); self.cancel(); }
-}
-
-enum BrowserFailure {
-    Sandbox,
-    Message(String),
-}
-
-/// The sandbox path failed to start. A slow renderer that already produced
-/// output is not this case, and `--no-sandbox` is not the first command.
-fn sandbox_cannot_start(stderr: &str, silent: bool, probe_elapsed: bool) -> bool {
-    let lower = stderr.to_ascii_lowercase();
-    let hinted = ["sandbox", "namespace", "zygote", "setuid"].iter().any(|word| lower.contains(word));
-    if hinted { return true }
-    probe_elapsed && silent && stderr.is_empty()
-}
-
-fn browser_bin() -> Option<PathBuf> {
-    for candidate in ["/usr/bin/google-chrome-stable", "/usr/bin/google-chrome", "/usr/local/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"] {
-        let path = PathBuf::from(candidate);
-        if path.is_file() { return Some(path); }
-    }
-    None
-}
-
-fn mermaid_library() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("AWB_MERMAID_JS") {
-        let path = PathBuf::from(path);
-        if path.is_file() { return Some(path); }
-    }
-    let compiled = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../node_modules/mermaid/dist/mermaid.min.js");
-    if compiled.is_file() { Some(compiled) } else { None }
-}
-
-fn extract_svg(document: &str) -> Option<String> {
-    let start = document.find("<svg")?;
-    let end = document[start..].find("</svg>")?;
-    Some(document[start..start + end + "</svg>".len()].to_string())
-}
-
-fn stop_child(child: &mut Child) {
-    #[cfg(unix)]
-    unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL); }
-    let _ = child.kill();
 }
 
 fn serve(listener: TcpListener, inner: Arc<Inner>) {

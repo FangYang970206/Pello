@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "diagram",
+  "description": "The hidden window that draws a diagram: it may hand back what it drew and nothing else",
+  "windows": ["diagram"],
+  "permissions": [
+    "allow-diagram-result"
+  ]
+}

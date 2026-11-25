@@ -1,4 +1,5 @@
 use pello_core::paths::Paths;
+mod diagram;
 use pello_core::workbench::Workbench;
 use serde_json::Value;
 use std::sync::Arc;
@@ -152,6 +153,12 @@ pub fn run() {
                 Box::new(std::io::Error::other(error))
             })?;
             let workbench = Arc::new(workbench);
+            // Diagrams are drawn in a hidden window of this app, as the
+            // Electron build draws them. It is managed before the workbench so
+            // the command it calls finds it from the start.
+            let renderer = diagram::WindowRenderer::new(app.handle());
+            workbench.set_diagram_renderer(renderer.clone());
+            app.manage(renderer);
             let ticking = workbench.clone();
             std::thread::spawn(move || {
                 let started = std::time::Instant::now();
@@ -164,7 +171,7 @@ pub fn run() {
             install_app_menu(app).map_err(|error| -> Box<dyn std::error::Error> { Box::new(std::io::Error::other(error)) })?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![awb])
+        .invoke_handler(tauri::generate_handler![awb, diagram::diagram_result])
         .run(tauri::generate_context!())
         .expect("error while running Pello");
 }

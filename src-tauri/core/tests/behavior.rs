@@ -7,10 +7,170 @@ use pello_core::workbench::Workbench;
 use serde_json::json;
 use std::fs;
 use std::io::{Read, Write};
-use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+
+/// A directory link the workbench must refuse to follow. POSIX uses a symlink;
+/// Windows uses a junction, which needs no privilege and reports as a link.
+fn link_dir(target: &Path, link: &Path) {
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, link).unwrap();
+    #[cfg(windows)]
+    {
+        // `mklink` takes `/J` style switches, so a `/` in a path would split it.
+        let _ = fs::remove_dir(link);
+        let (link, target) = (link.to_string_lossy().replace('/', "\\"), target.to_string_lossy().replace('/', "\\"));
+        let status = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&link).arg(&target).output().unwrap();
+        assert!(status.status.success(), "mklink /J failed: {}", String::from_utf8_lossy(&status.stderr));
+    }
+}
+
+/// Remove a link without touching what it points at.
+fn remove_link(link: &Path) {
+    if !fs::symlink_metadata(link).map(|meta| meta.file_type().is_symlink()).unwrap_or(false) { return }
+    #[cfg(unix)]
+    fs::remove_file(link).unwrap();
+    #[cfg(windows)]
+    fs::remove_dir(link).unwrap();
+}
+
+/// Make a directory impossible to list, the way a mode-0 directory is on POSIX.
+fn deny_listing(dir: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut mode = fs::metadata(dir).unwrap().permissions();
+        mode.set_mode(0);
+        fs::set_permissions(dir, mode).unwrap();
+    }
+    #[cfg(windows)]
+    icacls(dir, &["/deny", &format!("{}:(OI)(CI)(RX)", whoami())]);
+}
+
+fn allow_listing(dir: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut mode = fs::metadata(dir).unwrap().permissions();
+        mode.set_mode(0o755);
+        fs::set_permissions(dir, mode).unwrap();
+    }
+    #[cfg(windows)]
+    icacls(dir, &["/remove:d", &whoami()]);
+}
+
+#[cfg(windows)]
+fn icacls(dir: &Path, args: &[&str]) {
+    let status = std::process::Command::new("icacls").arg(dir).args(args).output().unwrap();
+    assert!(status.status.success(), "icacls failed: {}", String::from_utf8_lossy(&status.stderr));
+}
+
+#[cfg(windows)]
+fn whoami() -> String {
+    let output = std::process::Command::new("whoami").output().unwrap();
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// Assert a file is reachable by its owner alone, the Windows counterpart of
+/// mode 0o600: its access list is protected from inheritance and holds one
+/// allow entry, for Owner Rights (`S-1-3-4`).
+#[cfg(windows)]
+fn assert_owner_only(path: &Path) {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{ConvertSidToStringSidW, GetSecurityInfo, SE_FILE_OBJECT};
+    use windows_sys::Win32::Security::{GetAce, GetSecurityDescriptorControl, ACL, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED};
+    use windows_sys::Win32::Storage::FileSystem::READ_CONTROL;
+
+    fn check(path: &Path) -> Result<(), String> {
+        // READ_CONTROL is all reading the access list needs.
+        let file = std::fs::OpenOptions::new().read(true).access_mode(READ_CONTROL).open(path).map_err(|error| format!("{}: {error}", path.display()))?;
+        let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        let mut dacl: *mut ACL = std::ptr::null_mut();
+        let result = unsafe {
+            GetSecurityInfo(file.as_raw_handle(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, std::ptr::null_mut(), std::ptr::null_mut(),
+                &mut dacl, std::ptr::null_mut(), &mut descriptor)
+        };
+        if result != 0 { return Err(format!("GetSecurityInfo failed with {result}")) }
+        struct Freed(PSECURITY_DESCRIPTOR);
+        impl Drop for Freed {
+            fn drop(&mut self) { unsafe { LocalFree(self.0 as *mut _) }; }
+        }
+        let _freed = Freed(descriptor);
+        let mut control: u16 = 0;
+        let mut revision: u32 = 0;
+        if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0 { return Err("GetSecurityDescriptorControl failed".into()) }
+        if dacl.is_null() { return Err("the file has no access list, which denies everyone including its owner".into()) }
+        let mut sids = Vec::new();
+        for index in 0..unsafe { (*dacl).AceCount } as u32 {
+            let mut ace = std::ptr::null_mut();
+            if unsafe { GetAce(dacl, index, &mut ace) } == 0 { return Err(format!("GetAce failed for entry {index}")) }
+            let header = unsafe { *(ace as *const windows_sys::Win32::Security::ACE_HEADER) };
+            // ACCESS_ALLOWED_ACE_TYPE; the SID follows the header and mask.
+            let allowed = header.AceType == 0x0;
+            let sid = unsafe { ace.add(std::mem::size_of::<windows_sys::Win32::Security::ACE_HEADER>() + std::mem::size_of::<u32>()) } as PSID;
+            let mut text: *mut u16 = std::ptr::null_mut();
+            // The string is NUL-terminated; no length comes back with it.
+            let name = if unsafe { ConvertSidToStringSidW(sid, &mut text) } != 0 && !text.is_null() {
+                let mut units = Vec::new();
+                let mut cursor = text;
+                while unsafe { *cursor } != 0 {
+                    units.push(unsafe { *cursor });
+                    cursor = unsafe { cursor.add(1) };
+                }
+                unsafe { LocalFree(text as *mut _) };
+                String::from_utf16_lossy(&units)
+            } else {
+                "?".to_string()
+            };
+            sids.push((allowed, name));
+        }
+        if control & SE_DACL_PROTECTED == 0 { return Err(format!("the access list inherits from the directory: {sids:?}")) }
+        if sids.len() != 1 { return Err(format!("expected one access entry, found {}: {sids:?}", sids.len())) }
+        let (allowed, name) = &sids[0];
+        if !allowed || name != "S-1-3-4" { return Err(format!("expected Owner Rights alone, found {sids:?}")) }
+        Ok(())
+    }
+    if let Err(error) = check(path) { panic!("{error}") }
+}
+
+/// True when `text` ends with these path components, whatever the separator.
+fn path_ends_with(text: &str, parts: &[&str]) -> bool {
+    let mut rest = Path::new(text);
+    for part in parts.iter().rev() {
+        if rest.file_name().and_then(|name| name.to_str()) != Some(*part) { return false }
+        rest = rest.parent().unwrap_or(Path::new(""));
+    }
+    true
+}
+/// Copy a directory with its contents, for a restart that must read what the
+/// first run wrote.
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for entry in fs::read_dir(from).unwrap().flatten() {
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() { copy_tree(&entry.path(), &target); } else { fs::copy(entry.path(), target).unwrap(); }
+    }
+}
+
+/// How many entries the Recycle Bin of the drive holding `path` holds.
+#[cfg(windows)]
+fn recycle_bin_entries(path: &Path) -> i64 {
+    use windows_sys::Win32::UI::Shell::{SHQueryRecycleBinW, SHQUERYRBINFO};
+    // The bin is per drive; its root is the first component of the path.
+    let mut drive = path.to_path_buf();
+    while let Some(parent) = drive.parent() {
+        if parent == drive { break }
+        drive = parent.to_path_buf();
+    }
+    let wide: Vec<u16> = drive.to_string_lossy().encode_utf16().chain(Some(0)).collect();
+    let mut info = SHQUERYRBINFO { cbSize: std::mem::size_of::<SHQUERYRBINFO>() as u32, i64Size: 0, i64NumItems: 0 };
+    let result = unsafe { SHQueryRecycleBinW(wide.as_ptr(), &mut info) };
+    assert!(result == 0, "SHQueryRecycleBinW failed for {}: {result}", drive.display());
+    info.i64NumItems
+}
 
 fn temp_dir(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("pello-rust-{name}-{}", pello_core::random_id()));
@@ -39,7 +199,8 @@ fn fresh_database_defaults_to_chinese_light_theme_and_update_checks() {
     assert_eq!(state["db"]["settings"]["language"], "zh-CN");
     assert_eq!(state["db"]["settings"]["theme"], "light");
     assert_eq!(state["db"]["settings"]["autoCheckUpdates"], true);
-    assert_eq!(state["db"]["settings"]["defShell"], "bash");
+    // A Linux host defaults to bash, any other to PowerShell.
+    assert_eq!(state["db"]["settings"]["defShell"], if cfg!(unix) { "bash" } else { "pwsh" });
     assert_eq!(state["db"]["hosts"][0]["id"], "local");
     assert_eq!(state["db"]["hosts"][0]["name"], "本机");
     assert!(root.join("data").join("tmp").is_dir());
@@ -56,11 +217,12 @@ fn migration_publishes_one_copy_and_does_not_overwrite_or_follow_links() {
     fs::write(legacy.join("workbench.json"), br#"{"settings":{"language":"en","theme":"dark"}}"#).unwrap();
     fs::write(legacy.join("keep.txt"), "保留").unwrap();
     fs::write(legacy.join("SingletonLock"), "skip").unwrap();
-    symlink("/etc/hostname", legacy.join("linked")).unwrap();
+    fs::create_dir_all(root.join("elsewhere")).unwrap();
+    link_dir(&root.join("elsewhere"), &legacy.join("linked"));
     let error = prepare_data_directory(&data, &legacy, "zh-CN").unwrap_err();
     assert!(error.contains("数据目录包含链接"));
     assert!(!data.exists());
-    fs::remove_file(legacy.join("linked")).unwrap();
+    remove_link(&legacy.join("linked"));
     prepare_data_directory(&data, &legacy, "en").unwrap();
     assert_eq!(fs::read_to_string(data.join("keep.txt")).unwrap(), "保留");
     assert!(!data.join("SingletonLock").exists());
@@ -158,7 +320,8 @@ fn file_writes_reject_conflicts_escapes_and_replacement() {
     assert!(english.contains("modified by another program") || english.contains("文件已被其他程序修改"));
     let outside = bench.dispatch("git:read", &[json!("p"), json!("../pello.config.json")]).unwrap();
     assert_eq!(outside["missing"], true);
-    symlink("/etc/hostname", project.join("escape")).unwrap();
+    fs::create_dir_all(root.join("elsewhere")).unwrap();
+    link_dir(&root.join("elsewhere"), &project.join("escape"));
     let linked = bench.dispatch("git:read", &[json!("p"), json!("escape")]).unwrap();
     assert_eq!(linked["missing"], true);
     fs::write(project.join("keep.txt"), "stay").unwrap();
@@ -261,13 +424,11 @@ fn local_search_skips_dot_directories_limits_matches_and_names_files() {
     fs::write(project.join("node_modules/pkg/index.js"), "PelloToken\n").unwrap();
     fs::write(project.join("binary.bin"), b"PelloToken\0more").unwrap();
     fs::write(project.join("huge.txt"), vec![b'a'; 2_000_001]).unwrap();
-    symlink("/etc/hostname", project.join("escape")).unwrap();
+    fs::create_dir_all(root.join("elsewhere")).unwrap();
+    link_dir(&root.join("elsewhere"), &project.join("escape"));
     fs::create_dir(project.join("locked")).unwrap();
     fs::write(project.join("locked/secret.txt"), "PelloToken\n").unwrap();
-    let mut locked = fs::metadata(project.join("locked")).unwrap().permissions();
-    locked.set_readonly(false);
-    std::os::unix::fs::PermissionsExt::set_mode(&mut locked, 0);
-    fs::set_permissions(project.join("locked"), locked).unwrap();
+    deny_listing(&project.join("locked"));
     let mut big = String::new();
     for _ in 0..2000 { big.push_str("hit\n"); }
     fs::write(project.join("src/many.txt"), big).unwrap();
@@ -324,10 +485,10 @@ fn local_search_skips_dot_directories_limits_matches_and_names_files() {
     assert!(bad_id.contains("搜索参数无效"));
     bench.dispatch("tree:search-start", &[json!("p"), json!("locked"), json!("app")]).unwrap();
     let unreadable = bench.dispatch("tree:search-next", &[json!("locked")]).unwrap_err();
-    assert!(unreadable.contains("Permission denied") || unreadable.contains("权限"));
-    let mut restore = fs::metadata(project.join("locked")).unwrap().permissions();
-    std::os::unix::fs::PermissionsExt::set_mode(&mut restore, 0o755);
-    fs::set_permissions(project.join("locked"), restore).unwrap();
+    // The system's own wording: "Permission denied", or "拒绝访问" on a
+    // Chinese Windows.
+    assert!(unreadable.contains("Permission denied") || unreadable.contains("权限") || unreadable.contains("拒绝访问"), "{unreadable}");
+    allow_listing(&project.join("locked"));
     bench.dispatch("tree:search-start", &[json!("p"), json!("names"), json!("app")]).unwrap();
     let mut names = Vec::new();
     for _ in 0..20 {
@@ -370,19 +531,32 @@ fn ssh_password_pins_host_key_and_serves_remote_files() {
     let credentials = fs::read_to_string(root.join("data/credentials.json")).unwrap();
     assert!(!database.contains(password), "workbench.json must not contain the password");
     assert!(!credentials.contains(password), "credentials.json stores ciphertext, not the password");
-    let key_mode = std::os::unix::fs::PermissionsExt::mode(&fs::metadata(root.join("data/credentials.key")).unwrap().permissions()) & 0o777;
-    assert_eq!(key_mode, 0o600);
+    // The key that decrypts the stored password is readable by this user alone.
+    let key_file = root.join("data/credentials.key");
+    #[cfg(unix)]
+    {
+        let key_mode = std::os::unix::fs::PermissionsExt::mode(&fs::metadata(&key_file).unwrap().permissions()) & 0o777;
+        assert_eq!(key_mode, 0o600);
+    }
+    #[cfg(windows)]
+    assert_owner_only(&key_file);
     let public = bench.dispatch("db:get", &[]).unwrap();
     assert!(public["db"]["hosts"][1].get("password").is_none());
     assert_eq!(public["db"]["hosts"][1]["hasPassword"], true);
 
     let copied = temp_dir("ssh-restart");
-    assert!(std::process::Command::new("cp").args(["-a", root.join("data").to_str().unwrap(), copied.join("data").to_str().unwrap()]).status().unwrap().success());
+    copy_tree(&root.join("data"), &copied.join("data"));
     fs::copy(root.join("pello.config.json"), copied.join("pello.config.json")).ok();
-    let (reloaded, remote_events) = workbench(&copied);
+    let (reloaded, _remote_events) = workbench(&copied);
     let again = reloaded.dispatch("db:get", &[]).unwrap();
     assert_eq!(again["db"]["hosts"][1]["hasPassword"], true);
     assert!(again["db"]["hosts"][1].get("password").is_none());
+    // The fixture answers remote commands with a POSIX shell, which reads a
+    // POSIX path. The file work is therefore verified on a POSIX host.
+    #[cfg(unix)]
+    let remote_events = _remote_events;
+    #[cfg(unix)]
+    {
     reloaded.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "box", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
     let read = reloaded.dispatch("git:read", &[json!("p"), json!("src/note.txt")]).unwrap();
     assert_eq!(read["text"], "PelloToken\n");
@@ -412,6 +586,7 @@ fn ssh_password_pins_host_key_and_serves_remote_files() {
     }
     assert!(idle, "remote shell prompt marker should mark the terminal idle");
     reloaded.dispatch("pty:close", &[json!("remote-term")]).unwrap();
+    }
 
     let mut settings = reloaded.dispatch("db:get", &[]).unwrap()["db"]["settings"].clone();
     settings["language"] = json!("en");
@@ -478,26 +653,181 @@ fn parse_ssh_calls(log: &str) -> Vec<SshCall> {
     }).collect()
 }
 
+/// Install the stand-in `ssh` the workbench is pointed at, and return its
+/// path and the log it records every call in.
 fn install_ssh_shim(root: &std::path::Path) -> (PathBuf, PathBuf) {
-    let bin = root.join("bin");
-    fs::create_dir_all(&bin).unwrap();
-    let shim = bin.join("ssh");
     let log = root.join("ssh.log");
-    fs::write(bin.join("upload-op.py"), include_str!("upload-op.py")).unwrap();
-    fs::write(&shim, "#!/bin/bash\nlog=\"${AWB_SSH_LOG:?}\"\n{\n  printf 'CALL\\036%s' \"${SSH_AUTH_SOCK-}\"\n  for arg in \"$@\"; do printf '\\036%s' \"$arg\"; done\n  printf '\\n'\n} >> \"$log\"\nlast=\"${@: -1}\"\nkey=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [[ \"$prev\" == -i ]]; then key=\"$arg\"; fi\n  prev=\"$arg\"\ndone\nif [[ -n \"$key\" ]]; then\n  [[ -f \"$key\" ]] || exit 2\n  grep -q \"OPENSSH PRIVATE KEY\" \"$key\" || exit 3\n  printf '%s\\0' \"$@\" | grep -q 'IdentitiesOnly=yes' || exit 4\nelse\n  [[ -S \"${SSH_AUTH_SOCK-}\" ]] || exit 5\nfi\nif [[ \"$last\" == *\"-EncodedCommand \"* ]]; then\n  encoded=\"${last##*-EncodedCommand }\"\n  encoded=\"${encoded%% *}\"\n  script=$(printf '%s' \"$encoded\" | base64 -d | iconv -f UTF-16LE -t UTF-8 || true)\n  if [[ \"$script\" == *\"AWB_UPLOAD_OP\"* ]]; then\n    op=$(printf '%s\\n' \"$script\" | sed -n 's/.*AWB_UPLOAD_OP \\([a-z]*\\).*/\\1/p' | head -1)\n    exec python3 \"$(dirname \"$0\")/upload-op.py\" \"$op\"\n  fi\n  exit 0\nfi\nif [[ \"$last\" == *\"uname -s\"* ]]; then\n  if [[ -n \"${AWB_SSH_OS:-}\" ]]; then printf '%s\\n' \"$AWB_SSH_OS\"; else printf 'Linux\\n'; fi\n  exit 0\nfi\nbash -lc \"$last\"\n").unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    let mut permissions = fs::metadata(&shim).unwrap().permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&shim, permissions).unwrap();
+    #[cfg(unix)]
+    let shim = {
+        let bin = root.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let shim = bin.join("ssh");
+        fs::write(bin.join("upload-op.py"), include_str!("upload-op.py")).unwrap();
+        fs::write(&shim, BASH_SSH_SHIM).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(&shim).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&shim, permissions).unwrap();
+        shim
+    };
+    // Windows cannot run the bash stand-in: a `.cmd` wrapper and the MSYS
+    // runtime both rewrite arguments. A real executable keeps them verbatim.
+    #[cfg(windows)]
+    let shim = PathBuf::from(env!("CARGO_BIN_EXE_awb-fake-ssh"));
     (shim, log)
 }
 
-fn ssh_env(home: &std::path::Path, shim: &std::path::Path, log: &std::path::Path, sock: &std::path::Path) -> Vec<VarGuard> {
+#[cfg(unix)]
+const BASH_SSH_SHIM: &str = r#"#!/bin/bash
+log="${AWB_SSH_LOG:?}"
+{
+  printf 'CALL\036%s' "${SSH_AUTH_SOCK-}"
+  for arg in "$@"; do printf '\036%s' "$arg"; done
+  printf '\n'
+} >> "$log"
+last="${@: -1}"
+key=""
+prev=""
+for arg in "$@"; do
+  if [[ "$prev" == -i ]]; then key="$arg"; fi
+  prev="$arg"
+done
+if [[ -n "$key" ]]; then
+  [[ -f "$key" ]] || exit 2
+  grep -q "OPENSSH PRIVATE KEY" "$key" || exit 3
+  printf '%s\0' "$@" | grep -q 'IdentitiesOnly=yes' || exit 4
+else
+  [[ -S "${SSH_AUTH_SOCK-}" ]] || exit 5
+fi
+if [[ "$last" == *"-EncodedCommand "* ]]; then
+  encoded="${last##*-EncodedCommand }"
+  encoded="${encoded%% *}"
+  script=$(printf '%s' "$encoded" | base64 -d | iconv -f UTF-16LE -t UTF-8 || true)
+  if [[ "$script" == *"AWB_UPLOAD_OP"* ]]; then
+    op=$(printf '%s\n' "$script" | sed -n 's/.*AWB_UPLOAD_OP \([a-z]*\).*/\1/p' | head -1)
+    exec python3 "$(dirname "$0")/upload-op.py" "$op"
+  fi
+  exit 0
+fi
+if [[ "$last" == *"uname -s"* ]]; then
+  if [[ -n "${AWB_SSH_OS:-}" ]]; then printf '%s\n' "$AWB_SSH_OS"; else printf 'Linux\n'; fi
+  exit 0
+fi
+bash -lc "$last"
+"#;
+
+/// Hold an agent endpoint open for the duration of a test, the way a running
+/// `ssh-agent` would. The stand-in `ssh` refuses to connect without one.
+/// POSIX uses a socket at `sock`; Windows uses a named pipe derived from it.
+fn fake_agent(sock: &std::path::Path) -> Agent {
+    #[cfg(unix)]
+    {
+        use std::os::unix::net::UnixListener;
+        let _ = fs::remove_file(sock);
+        Agent { _listener: UnixListener::bind(sock).unwrap(), address: sock.display().to_string() }
+    }
+    #[cfg(windows)]
+    {
+        let address = agent_pipe(sock);
+        Agent { _listener: PipeListener::listen(&address), address }
+    }
+}
+
+/// The address `SSH_AUTH_SOCK` carries to `ssh`: the socket path on POSIX and
+/// the agent's named pipe on Windows. The endpoint lives as long as this does.
+struct Agent {
+    #[cfg(unix)]
+    _listener: std::os::unix::net::UnixListener,
+    #[cfg(windows)]
+    _listener: PipeListener,
+    address: String,
+}
+
+impl Agent {
+    fn address(&self) -> &str { &self.address }
+}
+
+/// OpenSSH for Windows reaches its agent through a named pipe. The name is
+/// derived from the socket path so every test keeps its own agent.
+#[cfg(windows)]
+fn agent_pipe(sock: &std::path::Path) -> String {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(sock.display().to_string().as_bytes());
+    format!(r"\\.\pipe\pello-test-agent-{}", digest[..8].iter().map(|byte| format!("{byte:02x}")).collect::<String>())
+}
+
+/// A named pipe with a thread that accepts every client and closes it at
+/// once, so the pipe stays reachable for as long as this is held.
+#[cfg(windows)]
+struct PipeListener {
+    name: String,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(windows)]
+impl PipeListener {
+    fn listen(name: &str) -> Self {
+        use std::io;
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
+        use windows_sys::Win32::System::Pipes::{ConnectNamedPipe, CreateNamedPipeW, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES};
+
+        fn serve(name: &str, first: bool) -> io::Result<OwnedHandle> {
+            let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+            let handle = unsafe {
+                CreateNamedPipeW(wide.as_ptr(), PIPE_ACCESS_DUPLEX | if first { FILE_FLAG_FIRST_PIPE_INSTANCE } else { 0 },
+                    PIPE_TYPE_BYTE | PIPE_REJECT_REMOTE_CLIENTS, PIPE_UNLIMITED_INSTANCES, 4096, 4096, 0, std::ptr::null())
+            };
+            if handle == INVALID_HANDLE_VALUE as HANDLE { return Err(io::Error::last_os_error()) }
+            Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
+        }
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let running = stop.clone();
+        let pipe = name.to_string();
+        let thread = std::thread::spawn(move || {
+            let mut first = true;
+            while !running.load(Ordering::SeqCst) {
+                let instance = match serve(&pipe, first) {
+                    Ok(instance) => instance,
+                    Err(error) => {
+                        if !running.load(Ordering::SeqCst) { eprintln!("test agent pipe {pipe} failed: {error}") }
+                        break;
+                    }
+                };
+                first = false;
+                if unsafe { ConnectNamedPipe(instance.as_raw_handle(), std::ptr::null_mut()) } == 0 {
+                    // ERROR_PIPE_CONNECTED: a client arrived before the wait began.
+                    if std::io::Error::last_os_error().raw_os_error() != Some(535) { break }
+                }
+            }
+        });
+        Self { name: name.to_string(), stop, thread: Some(thread) }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for PipeListener {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering;
+        self.stop.store(true, Ordering::SeqCst);
+        // A client connection is what wakes the waiting accept.
+        if let Ok(mut client) = std::fs::OpenOptions::new().read(true).write(true).open(&self.name) {
+            let _ = std::io::Write::write_all(&mut client, b"x");
+        }
+        if let Some(thread) = self.thread.take() { let _ = thread.join(); }
+    }
+}
+
+fn ssh_env(home: &std::path::Path, shim: &std::path::Path, log: &std::path::Path, agent: &Agent) -> Vec<VarGuard> {
     vec![
         var_guard("AWB_SSH_HOME", &home.display().to_string()),
         var_guard("AWB_SSH_BIN", &shim.display().to_string()),
         var_guard("AWB_SSH_LOG", &log.display().to_string()),
-        var_guard("SSH_AUTH_SOCK", &sock.display().to_string()),
+        var_guard("SSH_AUTH_SOCK", agent.address()),
     ]
 }
 
@@ -541,8 +871,8 @@ fn ssh_key_and_agent_use_system_ssh_without_leaking_secrets() {
     fs::write(home.join(".ssh/id_ed25519"), format!("-----BEGIN OPENSSH PRIVATE KEY-----\n{material}\n-----END OPENSSH PRIVATE KEY-----\n")).unwrap();
     let (shim, log) = install_ssh_shim(&root);
     let sock = root.join("agent.sock");
-    let _agent = std::os::unix::net::UnixListener::bind(&sock).unwrap();
-    let _env = ssh_env(&home, &shim, &log, &sock);
+    let agent = fake_agent(&sock);
+    let _env = ssh_env(&home, &shim, &log, &agent);
     let (bench, _) = workbench(&root);
     let local = bench.dispatch("db:get", &[]).unwrap()["db"]["hosts"][0].clone();
     bench.dispatch("db:hosts", &[json!([
@@ -551,9 +881,17 @@ fn ssh_key_and_agent_use_system_ssh_without_leaking_secrets() {
         { "id": "agent", "name": "Agent", "addr": "127.0.0.1", "port": 22, "user": "agentuser", "auth": "agent", "password": password }
     ])]).unwrap();
     let key_list = bench.dispatch("path:list", &[json!("key"), json!(project.display().to_string())]).unwrap();
+    // A POSIX remote reads a POSIX path. The listing succeeds on a POSIX host;
+    // on Windows the call still goes out and only its arguments are checked.
+    #[cfg(unix)]
     assert!(key_list["error"].is_null(), "key login should run the remote command: {key_list}");
+    #[cfg(windows)]
+    assert!(!key_list["error"].as_str().unwrap_or_default().is_empty(), "{key_list}");
     let agent_list = bench.dispatch("path:list", &[json!("agent"), json!(project.display().to_string())]).unwrap();
+    #[cfg(unix)]
     assert!(agent_list["error"].is_null(), "agent login should run the remote command: {agent_list}");
+    #[cfg(windows)]
+    assert!(!agent_list["error"].as_str().unwrap_or_default().is_empty(), "{agent_list}");
     let calls = parse_ssh_calls(&fs::read_to_string(&log).unwrap());
     let key_calls: Vec<_> = calls.iter().filter(|call| call.args.iter().any(|arg| arg.contains("keyuser@"))).collect();
     let agent_calls: Vec<_> = calls.iter().filter(|call| call.args.iter().any(|arg| arg.contains("agentuser@"))).collect();
@@ -566,7 +904,7 @@ fn ssh_key_and_agent_use_system_ssh_without_leaking_secrets() {
     }
     for call in &agent_calls {
         assert!(call.args.iter().all(|arg| arg != "-i" && arg != "IdentitiesOnly=yes" && !arg.contains(material) && !arg.contains(password)), "{:?}", call.args);
-        assert_eq!(call.sock, sock.display().to_string());
+        assert_eq!(call.sock, agent.address());
     }
     assert!(key_calls.iter().any(|call| call.args.last().is_some_and(|arg| arg.starts_with("'bash' '-lc'"))));
     assert!(agent_calls.iter().any(|call| call.args.last().is_some_and(|arg| arg.starts_with("'bash' '-lc'"))));
@@ -591,8 +929,8 @@ fn windows_remote_script_translates_errors_and_keeps_the_command() {
     fs::write(home.join(".ssh/id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----\nWINKEYMATERIAL\n-----END OPENSSH PRIVATE KEY-----\n").unwrap();
     let (shim, log) = install_ssh_shim(&root);
     let sock = root.join("agent.sock");
-    let _agent = std::os::unix::net::UnixListener::bind(&sock).unwrap();
-    let _env = ssh_env(&home, &shim, &log, &sock);
+    let agent = fake_agent(&sock);
+    let _env = ssh_env(&home, &shim, &log, &agent);
     let _os = var_guard("AWB_SSH_OS", "Windows_NT");
     let (bench, _) = workbench(&root);
     let local = bench.dispatch("db:get", &[]).unwrap()["db"]["hosts"][0].clone();
@@ -705,8 +1043,11 @@ fn terminal_panes_rename_restore_and_run_state() {
     assert!(replay.contains("── 会话已恢复，下面连接新进程 ──"));
     assert_eq!(pello_core::pty::load_history(&root.join("data"), "term-r"), "上次输出\rline");
 
-    let agent = bench.dispatch("pty:create", &[json!({ "id": "agent-1", "projectId": "p", "kind": "claude", "shell": "bash", "agentSessionId": "session-1" })]).unwrap();
-    assert_eq!(agent["agentKind"], "claude");
+    // A stand-in, never a real agent CLI: its command does not exist, so the
+    // shell returns its own exit code to the prompt.
+    bench.dispatch("db:custom", &[json!([{ "id": "absent", "name": "Absent", "cmd": "awb-no-such-agent-command", "args": "" }])]).unwrap();
+    let agent = bench.dispatch("pty:create", &[json!({ "id": "agent-1", "projectId": "p", "kind": "absent", "shell": "bash", "agentSessionId": "session-1" })]).unwrap();
+    assert_eq!(agent["agentKind"], "absent");
     let finished = wait_terminal(&bench, "agent-1", true, "failed");
     assert_eq!(finished["exitCode"], 127, "a missing agent command keeps its shell exit code");
     let (_, status) = snap_status(&bench, "agent-1");
@@ -799,20 +1140,22 @@ fn mcp_and_skills_keep_native_config_and_do_not_execute() {
     fs::create_dir_all(home.join(".claude/skills")).unwrap();
     let _home = var_guard("AWB_RESOURCE_HOME", home.to_str().unwrap());
     let _xdg = var_guard("XDG_DATA_HOME", xdg.to_str().unwrap());
+    #[cfg(windows)]
+    let recycle_bin_before = recycle_bin_entries(&root);
     let _open = var_guard("AWB_OPEN_SKILL", "0");
     let (bench, _) = workbench(&root);
     let targets = bench.dispatch("resources:targets", &[]).unwrap();
     let target = |id: &str| targets.as_array().unwrap().iter().find(|item| item["id"] == id).unwrap().clone();
-    assert!(target("claude")["mcpPath"].as_str().unwrap().ends_with("/.claude.json"), "{}", target("claude"));
-    assert!(target("claude")["skillPath"].as_str().unwrap().ends_with("/.claude/skills"));
+    assert!(path_ends_with(target("claude")["mcpPath"].as_str().unwrap(), &[".claude.json"]), "{}", target("claude"));
+    assert!(path_ends_with(target("claude")["skillPath"].as_str().unwrap(), &[".claude", "skills"]));
     assert_eq!(target("claude")["skillAdapter"], "claude");
-    assert!(target("codex")["mcpPath"].as_str().unwrap().ends_with("/.codex/config.toml"));
-    assert!(target("codex")["skillPath"].as_str().unwrap().ends_with("/.agents/skills"));
-    assert!(target("opencode")["mcpPath"].as_str().unwrap().ends_with("/opencode.jsonc"));
-    assert!(target("pi")["mcpPath"].as_str().unwrap().ends_with("/.pi/agent/mcp.json"));
-    assert!(target("pi")["skillPath"].as_str().unwrap().ends_with("/.pi/agent/skills"));
-    assert!(target("omp")["mcpPath"].as_str().unwrap().ends_with("/.omp/agent/mcp.json"));
-    assert!(target("omp")["skillConfigPath"].as_str().unwrap().ends_with("/.omp/agent/config.yml"));
+    assert!(path_ends_with(target("codex")["mcpPath"].as_str().unwrap(), &[".codex", "config.toml"]));
+    assert!(path_ends_with(target("codex")["skillPath"].as_str().unwrap(), &[".agents", "skills"]));
+    assert!(path_ends_with(target("opencode")["mcpPath"].as_str().unwrap(), &["opencode.jsonc"]));
+    assert!(path_ends_with(target("pi")["mcpPath"].as_str().unwrap(), &[".pi", "agent", "mcp.json"]));
+    assert!(path_ends_with(target("pi")["skillPath"].as_str().unwrap(), &[".pi", "agent", "skills"]));
+    assert!(path_ends_with(target("omp")["mcpPath"].as_str().unwrap(), &[".omp", "agent", "mcp.json"]));
+    assert!(path_ends_with(target("omp")["skillConfigPath"].as_str().unwrap(), &[".omp", "agent", "config.yml"]));
 
     let original = "{\n  // keep-theme\n  \"theme\": \"dark\",\n  \"mcpServers\": {\n    \"keep\": { \"command\": \"stay\", \"args\": [] },\n    \"leak\": { \"url\": \"https://user:secret-pass@example.com/mcp?token=abc\", \"headers\": { \"Authorization\": \"Bearer secret-token\" } }\n  }\n}\n";
     let claude_file = home.join(".claude.json");
@@ -932,13 +1275,21 @@ fn mcp_and_skills_keep_native_config_and_do_not_execute() {
     assert!(!portable.join("note-skill").exists());
     assert!(portable.join("demo-skill/SKILL.md").is_file());
     assert!(portable.is_dir());
-    let trashed = fs::read_dir(xdg.join("Trash/files")).unwrap().any(|entry| entry.unwrap().file_name().to_string_lossy().contains("note-skill"));
-    assert!(trashed, "the skill moves to trash");
+    // Where the skill went. A POSIX host has a free-desktop trash to read.
+    #[cfg(unix)]
+    {
+        let trashed = fs::read_dir(xdg.join("Trash/files")).unwrap().any(|entry| entry.unwrap().file_name().to_string_lossy().contains("note-skill"));
+        assert!(trashed, "the skill moves to trash");
+    }
+    // Windows: the system Recycle Bin holds one entry more than before, so the
+    // folder was recycled rather than deleted for good.
+    #[cfg(windows)]
+    assert_eq!(recycle_bin_entries(&root) - recycle_bin_before, 1, "the skill moves to the Recycle Bin");
 
     let outside = root.join("outside-skill");
     fs::create_dir_all(&outside).unwrap();
     fs::write(outside.join("SKILL.md"), "---\nname: outside-skill\ndescription: stays outside\n---\nsecret-outside\n").unwrap();
-    symlink(&outside, home.join(".claude/skills/outside-skill")).unwrap();
+    link_dir(&outside, &home.join(".claude/skills/outside-skill"));
     let listed = bench.dispatch("resources:list", &[json!("skills"), json!("claude"), json!(1), json!("")]).unwrap();
     let outside_item = listed["items"].as_array().unwrap().iter().find(|item| item["name"] == "outside-skill").unwrap().clone();
     let opened = bench.dispatch("resources:skill-open", &[json!("claude"), outside_item.clone()]).unwrap();
@@ -973,7 +1324,9 @@ fn mcp_and_skills_keep_native_config_and_do_not_execute() {
     let linked_src = root.join("linked-src");
     fs::create_dir_all(linked_src.join("bad-skill")).unwrap();
     fs::write(linked_src.join("bad-skill/SKILL.md"), "---\nname: bad-skill\ndescription: link\n---\nno\n").unwrap();
-    symlink(root.join("missing-target"), linked_src.join("bad-skill/link")).unwrap();
+    // A link whose target is missing: a POSIX symlink, or a Windows junction,
+    // which may also point at nothing and still reports as a link.
+    link_dir(&root.join("missing-target"), &linked_src.join("bad-skill/link"));
     let error = bench.dispatch("resources:skills", &[json!(linked_src.display().to_string()), json!(["box"])]).unwrap_err();
     assert!(error.contains("符号链接"), "{error}");
     assert!(!portable.join("bad-skill").exists());
@@ -1011,6 +1364,9 @@ fn previews_keep_markdown_and_sandbox_project_assets() {
         fs::write(project.join(format!("f.{ext}")), b"img").unwrap();
     }
     fs::write(outside.join("secret.txt"), b"outside-secret-bytes").unwrap();
+    // A file link needs a privilege this Windows machine does not have; a
+    // directory link is covered by `escape` above. POSIX keeps the file-link check.
+    #[cfg(unix)]
     symlink(outside.join("secret.txt"), project.join("linked.png")).unwrap();
     let big = project.join("big.pdf");
     fs::File::create(&big).unwrap().set_len(12_000_001).unwrap();
@@ -1049,8 +1405,11 @@ fn previews_keep_markdown_and_sandbox_project_assets() {
     }
     let escaped = bench.dispatch("file:preview-url", &[json!("p"), json!("../outside/secret.txt")]).unwrap_err();
     assert!(!escaped.contains("outside-secret"), "{escaped}");
+    #[cfg(unix)]
     let linked = bench.dispatch("file:preview-url", &[json!("p"), json!("linked.png")]).unwrap_err();
+    #[cfg(unix)]
     assert!(linked.contains("符号链接"), "{linked}");
+    #[cfg(unix)]
     assert!(!linked.contains("outside-secret"), "{linked}");
     let oversized = bench.dispatch("file:preview-url", &[json!("p"), json!("big.pdf")]).unwrap_err();
     assert!(oversized.contains("12 MB"), "{oversized}");
@@ -1071,6 +1430,10 @@ fn previews_keep_markdown_and_sandbox_project_assets() {
     assert_eq!(ctrl.page, 2);
     assert!(ctrl.zoom < 1.0);
 
+    // The external diagram renderer is checked through a `/bin/sh` stand-in
+    // and a `/tmp` sentinel, which only a POSIX host provides.
+    #[cfg(unix)]
+    {
     let log = root.join("diagram.log");
     let env_log = root.join("diagram.env");
     let stdin_log = root.join("diagram.stdin");
@@ -1103,6 +1466,7 @@ fn previews_keep_markdown_and_sandbox_project_assets() {
         let cancelled = handle.join().unwrap().unwrap_err();
         assert!(cancelled.contains("取消"), "{cancelled}");
     });
+    }
     assert_eq!(fs::read_to_string(project.join("note.md")).unwrap(), markdown);
     let _ = fs::remove_dir_all(root);
 }
@@ -1126,6 +1490,7 @@ fn http(method: &str, url: &str) -> (u16, String, String) {
     (status, head.to_string(), body.to_string())
 }
 
+#[cfg(unix)]
 fn shell_quote(path: &Path) -> String { format!("'{}'", path.display().to_string().replace('\'', "'\\''")) }
 
 struct ZipEntry<'a> { name: &'a str, data: &'a [u8], size: u32 }
@@ -1257,7 +1622,12 @@ fn native_skill_switches_edit_agent_overrides_and_leave_skill_md() {
     toggle("pi", false);
     let pi = fs::read_to_string(home.join(".pi/agent/settings.json")).unwrap();
     assert!(pi.contains("// keep-pi") && pi.contains("\"theme\": \"light\""), "{pi}");
-    assert!(pi.contains(&format!("-{}", home.join(".pi/agent/skills/notes/SKILL.md").display())), "{pi}");
+    // The override names the skill file by its path, with separators escaped
+    // in the JSON text; read the values back rather than compare the text.
+    let skill_file = home.join(".pi").join("agent").join("skills").join("notes").join("SKILL.md");
+    let settings_text = pi.lines().filter(|line| !line.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+    let disabled: Vec<String> = serde_json::from_str::<serde_json::Value>(&settings_text).unwrap()["skills"].as_array().unwrap().iter().map(|item| item.as_str().unwrap().to_string()).collect();
+    assert_eq!(disabled, vec![format!("-{}", skill_file.display())], "{pi}");
     assert!(!home.join(".pi/agent/skills/notes/SKILL.md.awb-disabled").exists());
     assert_eq!(fs::read_to_string(home.join(".pi/agent/skills/notes/SKILL.md")).unwrap(), body);
     let pi_list = bench.dispatch("resources:list", &[json!("skills"), json!("pi"), json!(1), json!("")]).unwrap();
@@ -1283,34 +1653,129 @@ fn native_skill_switches_edit_agent_overrides_and_leave_skill_md() {
     let _ = fs::remove_dir_all(root);
 }
 
-#[test]
-fn mermaid_renders_svg_in_a_hidden_browser_without_node() {
-    let _lock = env_lock();
-    let root = temp_dir("mermaid");
-    let log = root.join("diagram.log");
-    let secret = root.join("secret-data");
-    fs::create_dir_all(&secret).unwrap();
-    let _log = var_guard("AWB_DIAGRAM_LOG", log.to_str().unwrap());
-    let _data = var_guard("AWB_USER_DATA", secret.to_str().unwrap());
-    let (bench, _) = workbench(&root);
-    let svg = bench.dispatch("diagram:mermaid", &[json!("flowchart TD\nA[Hello]-->B[World]")]).unwrap();
-    let svg = svg.as_str().unwrap();
-    assert!(svg.contains("<svg") && svg.contains("Hello"), "{svg}");
-    assert!(!svg.contains("window.awb") && !svg.contains("require("), "{svg}");
-    let recorded = fs::read_to_string(&log).unwrap();
-    assert!(recorded.contains("attempt=sandbox"), "{recorded}");
-    let first = recorded.split("attempt=fallback").next().unwrap_or(&recorded);
-    assert!(!first.contains("--no-sandbox"), "the sandbox launch is the first path: {first}");
-    if let Some(fallback) = recorded.split("attempt=fallback").nth(1) {
-        assert!(fallback.contains("--no-sandbox"), "fallback is only the second launch: {recorded}");
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Condvar;
+
+/// A stand-in for the shell's hidden renderer. It records what it was asked,
+/// can be told to hang, fail or answer at once, and counts its resets.
+struct StandIn {
+    asked: Mutex<Vec<String>>,
+    mode: Mutex<&'static str>,
+    resets: AtomicU64,
+    /// Set while a render is hanging; the test waits for it before cancelling,
+    /// so the cancel always meets a render that has already begun.
+    hanging: (Mutex<usize>, Condvar),
+    /// Counts resets. A hanging render returns once the count moves past the
+    /// value it started with, so a reset never has to be undone.
+    resets_seen: (Mutex<u64>, Condvar),
+}
+
+impl StandIn {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            asked: Mutex::new(Vec::new()),
+            mode: Mutex::new("ok"),
+            resets: AtomicU64::new(0),
+            hanging: (Mutex::new(0), Condvar::new()),
+            resets_seen: (Mutex::new(0), Condvar::new()),
+        })
     }
-    assert!(recorded.contains("google-chrome") || recorded.contains("chromium") || recorded.contains("attempt=sandbox"), "{recorded}");
-    assert!(!recorded.contains("/node\n") && !recorded.lines().any(|line| line.ends_with("/node")), "{recorded}");
-    assert!(!recorded.contains(secret.to_str().unwrap()), "{recorded}");
-    let strict = bench.dispatch("diagram:mermaid", &[json!("flowchart TD\nA[\"<img src=x onerror=alert(1)>\"]")]).unwrap();
-    let strict = strict.as_str().unwrap();
-    assert!(strict.contains("<svg"), "{strict}");
-    assert!(!strict.contains("onerror") && !strict.contains("alert(1)"), "strict mode strips the event handler: {strict}");
+}
+
+impl pello_core::preview::DiagramRenderer for StandIn {
+    fn render(&self, source: &str, generation: u64) -> Result<String, String> {
+        self.asked.lock().unwrap().push(source.to_string());
+        match *self.mode.lock().unwrap() {
+            "fail" => Err("renderer broke".into()),
+            // Hangs until a reset lets it go, the way a window that stopped
+            // answering does; the generation it started with is now obsolete.
+            "hang" => {
+                let before = *self.resets_seen.0.lock().unwrap();
+                {
+                    let mut hanging = self.hanging.0.lock().unwrap();
+                    *hanging += 1;
+                    self.hanging.1.notify_all();
+                }
+                let moved = self.resets_seen.1
+                    .wait_timeout_while(self.resets_seen.0.lock().unwrap(), Duration::from_secs(10), |seen| *seen == before)
+                    .unwrap()
+                    .0;
+                *self.hanging.0.lock().unwrap() -= 1;
+                if *moved == before { return Err("the stand-in was never reset".into()) }
+                Err(format!("abandoned at generation {generation}"))
+            }
+            _ => Ok(format!("<svg>{source}</svg>")),
+        }
+    }
+
+    fn reset(&self) {
+        self.resets.fetch_add(1, Ordering::SeqCst);
+        *self.resets_seen.0.lock().unwrap() += 1;
+        self.resets_seen.1.notify_all();
+    }
+}
+
+/// The rules around a diagram that do not depend on the window that draws it,
+/// the ones the Electron build keeps in `renderMermaid`: a limit on the size,
+/// a cache per source, a cancel that reaches the renderer, and no result kept
+/// from a renderer that failed. Without a renderer the message is clear; no
+/// browser is looked for on the system.
+#[test]
+fn diagrams_are_limited_cached_cancelled_and_need_the_shell_renderer() {
+    let root = temp_dir("diagrams");
+    let (bench, _) = workbench(&root);
+    let unavailable = bench.dispatch("diagram:mermaid", &[json!("flowchart TD\nA-->B")]).unwrap_err();
+    assert!(unavailable.contains("图表渲染器不可用"), "{unavailable}");
+
+    let stand_in = StandIn::new();
+    bench.set_diagram_renderer(stand_in.clone());
+    let asked = |stand_in: &Arc<StandIn>| stand_in.asked.lock().unwrap().clone();
+
+    // Too large or empty: refused before the renderer is involved. Both
+    // break the same rule, so the message names the limit for either.
+    let oversized = bench.dispatch("diagram:mermaid", &[json!("x".repeat(100_001))]).unwrap_err();
+    assert!(oversized.contains("100000"), "{oversized}");
+    assert!(bench.dispatch("diagram:mermaid", &[json!("   ")]).unwrap_err().contains("100000"));
+    assert!(asked(&stand_in).is_empty(), "{:?}", asked(&stand_in));
+
+    // The same source is drawn once and answered from the cache afterwards.
+    let source = "flowchart TD\nA[Hello]-->B[World]";
+    let first = bench.dispatch("diagram:mermaid", &[json!(source)]).unwrap();
+    assert_eq!(first, json!(format!("<svg>{source}</svg>")));
+    let again = bench.dispatch("diagram:mermaid", &[json!(source)]).unwrap();
+    assert_eq!(again, first);
+    assert_eq!(asked(&stand_in), vec![source.to_string()]);
+
+    // A renderer that fails returns its error and leaves nothing in the cache.
+    *stand_in.mode.lock().unwrap() = "fail";
+    let broken = bench.dispatch("diagram:mermaid", &[json!("pie\n\"a\": 1")]).unwrap_err();
+    assert_eq!(broken, "renderer broke");
+    assert_eq!(stand_in.resets.load(Ordering::SeqCst), 0, "a failure is not a cancel");
+
+    // A cancel reaches the renderer and reports the diagram as cancelled.
+    *stand_in.mode.lock().unwrap() = "hang";
+    let before = asked(&stand_in).len();
+    std::thread::scope(|scope| {
+        let handle = scope.spawn(|| bench.dispatch("diagram:mermaid", &[json!("sequenceDiagram\nA->>B: hi")]));
+        // Only a render that is already hanging is cancelled; a cancel that
+        // runs first would be refused before the renderer is involved.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while *stand_in.hanging.0.lock().unwrap() == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(*stand_in.hanging.0.lock().unwrap(), 1, "the renderer was not asked to draw");
+        bench.dispatch("diagram:cancel", &[]).unwrap();
+        let cancelled = handle.join().unwrap().unwrap_err();
+        assert!(cancelled.contains("取消"), "{cancelled}");
+    });
+    assert_eq!(asked(&stand_in).len(), before + 1);
+    assert_eq!(stand_in.resets.load(Ordering::SeqCst), 1, "the renderer in flight is reset");
+    assert_eq!(*stand_in.hanging.0.lock().unwrap(), 0, "the hanging render returned");
+
+    // What was cancelled is not kept; a later diagram works again.
+    *stand_in.mode.lock().unwrap() = "ok";
+    let after = bench.dispatch("diagram:mermaid", &[json!("graph LR\nC --> D")]).unwrap();
+    assert!(after.as_str().unwrap().contains("<svg>"), "{after}");
     let _ = fs::remove_dir_all(root);
 }
 
@@ -1419,8 +1884,11 @@ fn agent_resume_uses_each_terminals_session_and_exports_full_history() {
     let pi_dir = root.join("data/agent-sessions").join(pello_core::pty::history_name("t-pi-new"));
     let omp_dir = root.join("data/agent-sessions").join(pello_core::pty::history_name("t-omp-new"));
     assert!(pi_dir.is_dir() && omp_dir.is_dir());
-    assert!(fresh_pi["launchCommand"].as_str().unwrap().contains("--session-dir") && fresh_pi["launchCommand"].as_str().unwrap().contains(pi_dir.to_str().unwrap()), "{}", fresh_pi["launchCommand"]);
-    assert!(fresh_omp["launchCommand"].as_str().unwrap().contains(omp_dir.to_str().unwrap()), "{}", fresh_omp["launchCommand"]);
+    // The shell is bash: the directory is spelled the way it reads a path.
+    let pi_spelled = pi_dir.to_string_lossy().replace('\\', "/");
+    let omp_spelled = omp_dir.to_string_lossy().replace('\\', "/");
+    assert!(fresh_pi["launchCommand"].as_str().unwrap().contains("--session-dir") && fresh_pi["launchCommand"].as_str().unwrap().contains(&pi_spelled), "{}", fresh_pi["launchCommand"]);
+    assert!(fresh_omp["launchCommand"].as_str().unwrap().contains(&omp_spelled), "{}", fresh_omp["launchCommand"]);
     assert_eq!(fresh_pi["agentSessionId"], "pello:directory");
     assert!(!fresh_pi["launchCommand"].as_str().unwrap().contains("pi-real"));
     assert!(!home.join(".pi").exists() && !home.join(".omp").exists() && !home.join(".codex").exists() && !home.join(".claude").exists());
@@ -1453,14 +1921,11 @@ fn content_search_regex_matches_javascript_and_stays_off_the_command_line() {
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(project.join("src/note.txt"), "汉字 keeps Pello\n第二行 #token\n").unwrap();
     fs::write(project.join("src/slow.txt"), format!("{}!\n", "a".repeat(28))).unwrap();
-    let argv = root.join("argv.json");
-    let _argv = var_guard("AWB_SEARCH_ARGV", argv.to_str().unwrap());
     let (bench, _) = workbench(&root);
     bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    // A search runs in this process; the query never becomes a command line.
     let query = "UNIQUE_QUERY_TOKEN";
     bench.dispatch("content:search-start", &[json!("p"), json!("plain"), json!(query), json!(true), json!(true), json!(false)]).unwrap();
-    let recorded = fs::read_to_string(&argv).unwrap();
-    assert!(!recorded.contains(query), "{recorded}");
     assert!(!pello_core::search::remote_content_shell().contains(query));
     bench.dispatch("content:search-start", &[json!("p"), json!("han"), json!(r"\p{Script=Han}+"), json!(true), json!(true), json!(false)]).unwrap();
     let (han, _) = drain_content(&bench, "han");
@@ -1468,14 +1933,30 @@ fn content_search_regex_matches_javascript_and_stays_off_the_command_line() {
     bench.dispatch("content:search-start", &[json!("p"), json!("look"), json!(r"(?<=#)\w+"), json!(true), json!(true), json!(false)]).unwrap();
     let (look, _) = drain_content(&bench, "look");
     assert!(look.iter().any(|item| item["matches"].as_array().unwrap().iter().any(|found| found["match"] == "token")), "{look:?}");
-    let invalid = bench.dispatch("content:search-start", &[json!("p"), json!("plus"), json!("a++"), json!(true), json!(true), json!(false)]).unwrap_err();
+    // An unfinished class is invalid in every regex engine; `a++` is not.
+    let invalid = bench.dispatch("content:search-start", &[json!("p"), json!("plus"), json!("["), json!(true), json!(true), json!(false)]).unwrap_err();
     assert!(invalid.contains("正则表达式无效"), "{invalid}");
     bench.dispatch("db:settings", &[json!({ "language": "en" })]).unwrap();
-    assert_eq!(bench.dispatch("content:search-start", &[json!("p"), json!("plus-en"), json!("a++"), json!(true), json!(true), json!(false)]).unwrap_err(), "Invalid regular expression");
+    assert_eq!(bench.dispatch("content:search-start", &[json!("p"), json!("plus-en"), json!("["), json!(true), json!(true), json!(false)]).unwrap_err(), "Invalid regular expression");
     bench.dispatch("db:settings", &[json!({ "language": "zh-CN" })]).unwrap();
-    bench.dispatch("content:search-start", &[json!("p"), json!("slow"), json!("(a+)+$"), json!(true), json!(true), json!(false)]).unwrap();
-    let timed = bench.dispatch("content:search-next", &[json!("slow")]).unwrap_err();
+    // A lookahead keeps the engine on its backtracking path, where this
+    // pattern outruns any budget; plain nested quantifiers are settled by the
+    // engine's linear pre-filter and never reach it.
+    bench.dispatch("content:search-start", &[json!("p"), json!("slow"), json!("(?=a)(a|aa)+$"), json!(true), json!(true), json!(false)]).unwrap();
+    // The slow file may wait for a later batch; a batch never holds the
+    // error back once the file is reached.
+    let mut timed = String::new();
+    for _ in 0..20 {
+        match bench.dispatch("content:search-next", &[json!("slow")]) {
+            Err(error) => { timed = error; break }
+            Ok(batch) => assert_ne!(batch["done"], true, "the search finished without reporting the timeout: {batch}"),
+        }
+    }
     assert!(timed.contains("正则表达式执行超时"), "{timed}");
+    // The Linux remote script answers a syntax error and a timeout as JSON on
+    // its own, before the workbench translates it.
+    #[cfg(unix)]
+    {
     let remote_root = root.join("remote-project");
     fs::create_dir_all(&remote_root).unwrap();
     fs::write(remote_root.join("note.txt"), "Pello remote\n").unwrap();
@@ -1507,6 +1988,7 @@ fn content_search_regex_matches_javascript_and_stays_off_the_command_line() {
     assert!(slow_text.contains("timeout"), "{slow_text}");
     let slow_message = match pello_core::search::ContentSearch::from_remote_output("p", "id", &slow_text, "en") { Err(error) => error, Ok(_) => panic!("remote timeout was accepted") };
     assert_eq!(slow_message, "Regular expression timed out. Simplify the expression.");
+    }
     let _ = fs::remove_dir_all(root);
 }
 
@@ -1521,6 +2003,7 @@ fn wait_upload(events: &Arc<Mutex<Vec<serde_json::Value>>>, id: &str, state: &st
 }
 
 #[test]
+#[cfg(unix)]
 fn upload_replaces_same_names_after_staging_and_keeps_the_source() {
     let _lock = env_lock();
     let root = temp_dir("upload");
@@ -1539,8 +2022,8 @@ fn upload_replaces_same_names_after_staging_and_keeps_the_source() {
     fs::write(home.join(".ssh/id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----\nUPLOADKEY\n-----END OPENSSH PRIVATE KEY-----\n").unwrap();
     let (shim, log) = install_ssh_shim(&root);
     let sock = root.join("agent.sock");
-    let _agent = std::os::unix::net::UnixListener::bind(&sock).unwrap();
-    let _env = ssh_env(&home, &shim, &log, &sock);
+    let agent = fake_agent(&sock);
+    let _env = ssh_env(&home, &shim, &log, &agent);
     let hold = root.join("hold");
     let publish = root.join("publish");
     let _hold = var_guard("AWB_UPLOAD_HOLD", hold.to_str().unwrap());
@@ -1707,6 +2190,7 @@ fn windows_shutdown_kills_descendants_before_serial_roots() {
 }
 
 #[test]
+#[cfg(unix)]
 fn remote_directory_picker_ignores_stale_listings_and_blocks_confirm_on_error() {
     let _lock = env_lock();
     let root = temp_dir("picker");
@@ -1718,8 +2202,8 @@ fn remote_directory_picker_ignores_stale_listings_and_blocks_confirm_on_error() 
     fs::write(home.join(".ssh/id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----\nPICKERKEY\n-----END OPENSSH PRIVATE KEY-----\n").unwrap();
     let (shim, log) = install_ssh_shim(&root);
     let sock = root.join("agent.sock");
-    let _agent = std::os::unix::net::UnixListener::bind(&sock).unwrap();
-    let _env = ssh_env(&home, &shim, &log, &sock);
+    let agent = fake_agent(&sock);
+    let _env = ssh_env(&home, &shim, &log, &agent);
     let (bench, _) = workbench(&root);
     let local = bench.dispatch("db:get", &[]).unwrap()["db"]["hosts"][0].clone();
     bench.dispatch("db:hosts", &[json!([local, { "id": "remote", "name": "Remote", "addr": "127.0.0.1", "port": 22, "user": "pick", "auth": "key", "on": true, "platform": "linux" }])]).unwrap();
@@ -1769,8 +2253,8 @@ fn windows_remote_scripts_translate_only_the_fixed_errors() {
     fs::write(home.join(".ssh/id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----\nWINKEYMATERIAL\n-----END OPENSSH PRIVATE KEY-----\n").unwrap();
     let (shim, log) = install_ssh_shim(&root);
     let sock = root.join("agent.sock");
-    let _agent = std::os::unix::net::UnixListener::bind(&sock).unwrap();
-    let _env = ssh_env(&home, &shim, &log, &sock);
+    let agent = fake_agent(&sock);
+    let _env = ssh_env(&home, &shim, &log, &agent);
     let _os = var_guard("AWB_SSH_OS", "Windows_NT");
     let (bench, _) = workbench(&root);
     let local = bench.dispatch("db:get", &[]).unwrap()["db"]["hosts"][0].clone();
@@ -1832,8 +2316,8 @@ fn wired_channels_do_real_work() {
     fs::write(home.join(".ssh/id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----\nWIREKEY\n-----END OPENSSH PRIVATE KEY-----\n").unwrap();
     let (shim, log) = install_ssh_shim(&root);
     let sock = root.join("agent.sock");
-    let _agent = std::os::unix::net::UnixListener::bind(&sock).unwrap();
-    let _env = ssh_env(&home, &shim, &log, &sock);
+    let agent = fake_agent(&sock);
+    let _env = ssh_env(&home, &shim, &log, &agent);
     let save = root.join("saved-payload.txt");
     let open_log = root.join("open.log");
     let _save = var_guard("AWB_SAVE_PATH", save.to_str().unwrap());
@@ -1850,7 +2334,16 @@ fn wired_channels_do_real_work() {
     bench.dispatch("db:custom", &[json!([{ "id": "mine", "name": "Mine", "command": "echo" }])]).unwrap();
     let picked = assert_implemented(bench.dispatch("transfer:pick", &[json!("p"), json!(""), json!("files")]));
     assert!(picked.as_str().is_some(), "{picked}");
+    // A Linux remote cannot be reached from a Windows host; the download must
+    // report the failure rather than claim a file.
+    #[cfg(windows)]
+    {
+        let failed = bench.dispatch("transfer:download", &[json!("r"), json!("payload.txt"), json!(false)]).unwrap_err();
+        assert!(!failed.is_empty(), "a download that cannot run must not succeed");
+    }
+    #[cfg(unix)]
     let downloaded = assert_implemented(bench.dispatch("transfer:download", &[json!("r"), json!("payload.txt"), json!(false)]));
+    #[cfg(unix)]
     assert_eq!(fs::read_to_string(downloaded.as_str().unwrap()).unwrap(), "remote-bytes");
     let opened = assert_implemented(bench.dispatch("file:open-html", &[json!("p"), json!("docs/page.html")]));
     assert!(opened.as_str().unwrap_or("").contains("page.html"), "{opened}");
@@ -1864,9 +2357,12 @@ fn wired_channels_do_real_work() {
     assert!(quoted.as_str().unwrap_or("").contains("note.txt"), "{quoted}");
     let resource = assert_implemented(bench.dispatch("resources:pick", &[json!("config")]));
     assert_eq!(resource, json!(source.display().to_string()));
-    assert_implemented(bench.dispatch("resources:target", &[json!({ "id": "mine", "mcpPath": "/tmp/mcp.json", "skillPath": "/tmp/skills", "format": "standard" })]));
-    assert!(fs::read_to_string(root.join("data/resource-targets.json")).unwrap().contains("/tmp/mcp.json"));
-    let builtin = bench.dispatch("resources:target", &[json!({ "id": "claude", "mcpPath": "/tmp/mcp.json", "format": "standard" })]).unwrap_err();
+    // A resource path must be absolute in the host's own terms.
+    let (mcp_path, skill_path) = (root.join("mcp.json").display().to_string(), root.join("skills").display().to_string());
+    assert_implemented(bench.dispatch("resources:target", &[json!({ "id": "mine", "mcpPath": mcp_path, "skillPath": skill_path, "format": "standard" })]));
+    // The record is JSON, where a path's separators are escaped; read it back.
+    assert!(fs::read_to_string(root.join("data/resource-targets.json")).unwrap().contains(&mcp_path.replace('\\', "\\\\")));
+    let builtin = bench.dispatch("resources:target", &[json!({ "id": "claude", "mcpPath": mcp_path, "format": "standard" })]).unwrap_err();
     assert!(builtin.contains("仅自定义 Agent"));
     let flushed = assert_implemented(bench.dispatch("terminal:history-flushed", &[]));
     assert!(flushed.is_null());
@@ -1876,6 +2372,7 @@ fn wired_channels_do_real_work() {
 }
 
 #[test]
+#[cfg(unix)]
 fn linux_remote_create_rename_and_move() {
     let _lock = env_lock();
     let root = temp_dir("linux-tree");
@@ -1886,8 +2383,8 @@ fn linux_remote_create_rename_and_move() {
     fs::write(home.join(".ssh/id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----\nTREEKEY\n-----END OPENSSH PRIVATE KEY-----\n").unwrap();
     let (shim, log) = install_ssh_shim(&root);
     let sock = root.join("agent.sock");
-    let _agent = std::os::unix::net::UnixListener::bind(&sock).unwrap();
-    let _env = ssh_env(&home, &shim, &log, &sock);
+    let agent = fake_agent(&sock);
+    let _env = ssh_env(&home, &shim, &log, &agent);
     let (bench, _) = workbench(&root);
     let local = bench.dispatch("db:get", &[]).unwrap()["db"]["hosts"][0].clone();
     bench.dispatch("db:hosts", &[json!([local, { "id": "remote", "name": "Remote", "addr": "127.0.0.1", "port": 22, "user": "tree", "auth": "key", "on": true, "platform": "linux" }])]).unwrap();
@@ -1920,8 +2417,8 @@ fn windows_remote_upload_publishes_with_powershell_and_keeps_the_old_directory()
     fs::write(home.join(".ssh/id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----\nWINUPKEY\n-----END OPENSSH PRIVATE KEY-----\n").unwrap();
     let (shim, log) = install_ssh_shim(&root);
     let sock = root.join("agent.sock");
-    let _agent = std::os::unix::net::UnixListener::bind(&sock).unwrap();
-    let _env = ssh_env(&home, &shim, &log, &sock);
+    let agent = fake_agent(&sock);
+    let _env = ssh_env(&home, &shim, &log, &agent);
     let hold = root.join("hold");
     let _os = var_guard("AWB_SSH_OS", "Windows_NT");
     let _hold = var_guard("AWB_UPLOAD_HOLD", hold.to_str().unwrap());
@@ -1934,7 +2431,10 @@ fn windows_remote_upload_publishes_with_powershell_and_keeps_the_old_directory()
     let ready = hold.with_extension("ready");
     let deadline = std::time::Instant::now() + Duration::from_secs(8);
     while !ready.exists() {
-        if std::time::Instant::now() > deadline { panic!("stage did not finish: {}", fs::read_to_string(&log).unwrap_or_default()); }
+        if std::time::Instant::now() > deadline {
+            let last = events.lock().unwrap().iter().rev().find(|event| event["channel"] == "transfer:update" && event["payload"]["id"] == id).map(|event| event["payload"].to_string()).unwrap_or_default();
+            panic!("stage did not finish: {last}");
+        }
         std::thread::sleep(Duration::from_millis(20));
     }
     assert_eq!(fs::read_to_string(project.join("same folder/old-only.txt")).unwrap(), "keep-me");
@@ -1950,7 +2450,11 @@ fn windows_remote_upload_publishes_with_powershell_and_keeps_the_old_directory()
     let _ = fs::remove_dir_all(root);
 }
 
+/// POSIX: a background job under the shell, found through the parent
+/// chain. Windows has no such chain for a Git Bash job, so it has its own
+/// case below with a tree that can be told apart.
 #[test]
+#[cfg(unix)]
 fn pty_close_kills_the_leaf_before_the_root() {
     let root = temp_dir("close-order");
     let project = root.join("project");
@@ -1970,11 +2474,94 @@ fn pty_close_kills_the_leaf_before_the_root() {
     let end_at = text.find(&format!("end {root_pid}")).unwrap_or_else(|| panic!("missing root end:\n{text}"));
     let wait_at = text.find(&format!("wait {root_pid}")).unwrap_or_else(|| panic!("missing native wait:\n{text}"));
     assert!(kill_at < end_at && end_at < wait_at, "{text}");
-    assert!(!Path::new(&format!("/proc/{sleep_pid}")).exists());
+    assert!(!process_alive(sleep_pid), "the leaf outlived the terminal");
     assert!(bench.dispatch("pty:snapshot", &[json!("term-close")]).unwrap().is_null());
     let _ = fs::remove_dir_all(root);
 }
 
+/// Windows: closing ends the leaves first and the root last, and leaves
+/// nothing behind. The tree is the detached three-level one of the Electron
+/// shutdown regression (`session-tree.cjs`): its pids come from the file the
+/// fixture writes, so a broken lookup in the product cannot hide behind itself.
+#[test]
+#[cfg(windows)]
+fn pty_close_ends_a_detached_tree_leaf_first_and_quickly() {
+    let root = temp_dir("close-tree");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let log = root.join("shutdown.log");
+    let _log = var_guard("AWB_SHUTDOWN_LOG", log.to_str().unwrap());
+    let (bench, _) = workbench(&root);
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    let pid_file = root.join("tree-pids.txt");
+    let fixture = PathBuf::from(env!("CARGO_BIN_EXE_awb-session-tree"));
+    bench.dispatch("db:custom", &[json!([{ "id": "tree", "name": "Tree", "cmd": shell_word(&fixture), "args": shell_word(&pid_file) }])]).unwrap();
+    let info = bench.dispatch("pty:create", &[json!({ "id": "term-close", "projectId": "p", "kind": "tree", "shell": "bash" })]).unwrap();
+    let root_pid = info["rootPid"].as_u64().unwrap() as u32;
+    let leaves = wait_tree(&pid_file, &root);
+    let started = std::time::Instant::now();
+    bench.dispatch("pty:close", &[json!("term-close")]).unwrap();
+    let close_ms = started.elapsed().as_millis();
+    let text = fs::read_to_string(&log).unwrap_or_default();
+    // Whatever the assertions find, the tree must not outlive the test.
+    let left: Vec<u32> = leaves.iter().copied().filter(|pid| process_alive(*pid)).collect();
+    end_tree(&pid_file);
+    let end_at = text.find(&format!("end {root_pid}")).unwrap_or_else(|| panic!("missing root end:\n{text}"));
+    let wait_at = text.find(&format!("wait {root_pid}")).unwrap_or_else(|| panic!("missing native wait:\n{text}"));
+    assert!(end_at < wait_at, "{text}");
+    // Every leaf the snapshot found ends before the root. One it missed is
+    // still gone afterwards, so a missing `kill` line is not a failure alone.
+    for pid in &leaves {
+        if let Some(at) = text.find(&format!("kill {pid}\n")) {
+            assert!(at < end_at, "leaf {pid} ended after the root:\n{text}");
+        }
+    }
+    assert!(left.is_empty(), "leaves outlived the terminal: {left:?}\n{text}");
+    assert!(!process_alive(root_pid), "the root outlived the terminal:\n{text}");
+    // One `taskkill` per leaf cost more than a second each; the Electron build
+    // ends the leaves directly and closes a terminal in about a second.
+    assert!(close_ms < 8000, "closing took {close_ms} ms:\n{text}");
+    assert!(bench.dispatch("pty:snapshot", &[json!("term-close")]).unwrap().is_null());
+    let _ = fs::remove_dir_all(root);
+}
+
+/// The pids the fixture noted, once all three are alive.
+#[cfg(windows)]
+fn wait_tree(pid_file: &Path, root: &Path) -> Vec<u32> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let pids = tree_pids(pid_file);
+        if pids.len() == 3 && pids.iter().all(|pid| process_alive(*pid)) { return pids }
+        if std::time::Instant::now() > deadline {
+            end_tree(pid_file);
+            let _ = fs::remove_dir_all(root);
+            panic!("the process tree did not start: {pids:?}");
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+}
+
+#[cfg(windows)]
+fn tree_pids(pid_file: &Path) -> Vec<u32> {
+    fs::read_to_string(pid_file).unwrap_or_default().split_whitespace().filter_map(|pid| pid.parse().ok()).collect()
+}
+
+/// End whatever of the tree is still there, by pid file and by image, so a
+/// failure cannot leave processes behind on the machine running the tests.
+#[cfg(windows)]
+fn end_tree(pid_file: &Path) {
+    let pids = tree_pids(pid_file);
+    for pid in &pids {
+        if process_alive(*pid) { let _ = std::process::Command::new("taskkill").args(["/F", "/T", "/PID", &pid.to_string()]).output(); }
+    }
+    let _ = std::process::Command::new("taskkill").args(["/F", "/IM", "awb-session-tree.exe"]).output();
+    for _ in 0..100 {
+        if pids.iter().all(|pid| !process_alive(*pid)) { return }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[cfg(unix)]
 fn wait_descendant(root: u32, name: &str) -> u32 {
     let deadline = std::time::Instant::now() + Duration::from_secs(8);
     loop {
@@ -1984,19 +2571,49 @@ fn wait_descendant(root: u32, name: &str) -> u32 {
     }
 }
 
+/// The process table read independently of the workbench, as `pid, parent,
+/// name` rows, so a broken lookup in the product cannot hide behind itself.
+#[cfg(unix)]
+fn process_rows() -> Vec<(u32, u32, String)> {
+    #[cfg(unix)]
+    {
+        let mut rows = Vec::new();
+        let Ok(entries) = fs::read_dir("/proc") else { return rows };
+        for entry in entries.flatten() {
+            let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else { continue };
+            let Ok(stat) = fs::read_to_string(entry.path().join("stat")) else { continue };
+            let Some(end) = stat.rfind(')') else { continue };
+            let start = stat.find('(').unwrap_or(0);
+            let mut fields = stat[end + 1..].split_whitespace();
+            let _state = fields.next();
+            let parent = fields.next().and_then(|value| value.parse().ok()).unwrap_or(0);
+            rows.push((pid, parent, stat[start + 1..end].to_string()));
+        }
+        rows
+    }
+    #[cfg(windows)]
+    {
+        // Parent ids come from the one table that records them; names come
+        // from a separate query so the two cannot agree by sharing a mistake.
+        let query = r#"$p = Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name; $n = Get-Process | Select-Object Id,ProcessName; [pscustomobject]@{ p = $p; n = $n } | ConvertTo-Json -Compress -Depth 4"#;
+        let output = std::process::Command::new("powershell.exe").args(["-NoProfile", "-Command", query]).output().expect("the process table can be read");
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).expect("the process table is JSON");
+        let names: std::collections::HashMap<u64, String> = value["n"].as_array().into_iter().flatten()
+            .filter_map(|row| Some((row["Id"].as_u64()?, row["ProcessName"].as_str()?.to_string()))).collect();
+        value["p"].as_array().into_iter().flatten().filter_map(|row| {
+            let pid = row["ProcessId"].as_u64()?;
+            let parent = row["ParentProcessId"].as_u64()?;
+            Some((pid as u32, parent as u32, names.get(&pid).cloned().unwrap_or_default()))
+        }).collect()
+    }
+}
+
+#[cfg(unix)]
 fn find_descendant(root: u32, name: &str) -> Option<u32> {
     let mut children: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
     let mut names = std::collections::HashMap::new();
-    let Ok(entries) = fs::read_dir("/proc") else { return None };
-    for entry in entries.flatten() {
-        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else { continue };
-        let Ok(stat) = fs::read_to_string(entry.path().join("stat")) else { continue };
-        let Some(end) = stat.rfind(')') else { continue };
-        let start = stat.find('(').unwrap_or(0);
-        names.insert(pid, stat[start + 1..end].to_string());
-        let mut fields = stat[end + 1..].split_whitespace();
-        let _state = fields.next();
-        let parent = fields.next().and_then(|value| value.parse().ok()).unwrap_or(0);
+    for (pid, parent, process) in process_rows() {
+        names.insert(pid, process);
         children.entry(parent).or_default().push(pid);
     }
     let mut stack = children.get(&root).cloned().unwrap_or_default();
@@ -2005,6 +2622,26 @@ fn find_descendant(root: u32, name: &str) -> Option<u32> {
         stack.extend(children.get(&pid).cloned().unwrap_or_default());
     }
     None
+}
+
+/// True while the process still exists, asked of the system rather than of a
+/// path under `/proc`.
+fn process_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        Path::new(&format!("/proc/{pid}")).exists()
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
+        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+        if handle.is_null() { return false }
+        // With a zero wait this only asks whether the process has exited.
+        let alive = unsafe { WaitForSingleObject(handle, 0) } == WAIT_TIMEOUT;
+        unsafe { CloseHandle(handle) };
+        alive
+    }
 }
 
 #[test]
@@ -2061,19 +2698,26 @@ fn pane_split_keeps_the_terminal_and_claude_gets_settings() {
     bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "claude" }])]).unwrap();
     let original = bench.dispatch("pty:create", &[json!({ "id": "term-split", "projectId": "p", "kind": "shell", "shell": "bash" })]).unwrap();
     let born = original["born"].clone();
-    let pid = original["rootPid"].as_u64().unwrap();
-    let mut environ;
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        match fs::read(format!("/proc/{pid}/environ")) {
-            Ok(bytes) => environ = String::from_utf8_lossy(&bytes).into_owned(),
-            Err(error) => environ = format!("read error: {error}"),
-        }
-        if environ.contains("PI_PROGRAM_STATUS=1") { break }
-        if std::time::Instant::now() > deadline { break }
-        std::thread::sleep(Duration::from_millis(20));
+    // A program in the terminal sees the variables the workbench sets for it.
+    // The shell prints them, which holds for every shell the workbench starts.
+    wait_terminal(&bench, "term-split", true, "idle");
+    let shell = original["shell"].as_str().unwrap_or("bash").to_string();
+    let print = if shell == "pwsh" { "Write-Output \"AWB_ENV:$env:PI_PROGRAM_STATUS\"
+" } else { "echo AWB_ENV:$PI_PROGRAM_STATUS
+" };
+    bench.dispatch("pty:write", &[json!("term-split"), json!(print), json!(false)]).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut printed = String::new();
+    while std::time::Instant::now() < deadline {
+        printed = pello_core::pty::load_journal(&root.join("data"), "term-split");
+        // The shell echoes the command, which holds the name and not the
+        // value; the output is the second time the marker is printed.
+        if printed.matches("AWB_ENV:").count() >= 2 { break }
+        std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(environ.contains("PI_PROGRAM_STATUS=1"), "pid {pid} environ was not ready: {environ:?}");
+    // The value is the rest of the line the shell printed it on.
+    let value = printed.rsplit("AWB_ENV:").next().unwrap_or("").lines().next().unwrap_or("").trim().to_string();
+    assert_eq!(value, "1", "the terminal must start Pi's native status reporting: {printed:?}");
     wait_terminal(&bench, "term-split", true, "idle");
     let split = assert_implemented(bench.dispatch("terminal:split", &[json!({ "projectId": "p", "sessionId": "s", "termId": "term-split", "direction": "right" })]));
     assert_ne!(split["id"], "term-split");
@@ -2151,8 +2795,8 @@ fn legacy_history_uses_the_unique_message_and_keeps_failures() {
     fs::write(home.join(".ssh/id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----\nLEGACYKEY\n-----END OPENSSH PRIVATE KEY-----\n").unwrap();
     let (shim, log) = install_ssh_shim(&root);
     let sock = root.join("agent.sock");
-    let _agent = std::os::unix::net::UnixListener::bind(&sock).unwrap();
-    let _env = ssh_env(&home, &shim, &log, &sock);
+    let agent = fake_agent(&sock);
+    let _env = ssh_env(&home, &shim, &log, &agent);
     let local = bench.dispatch("db:get", &[]).unwrap()["db"]["hosts"][0].clone();
     bench.dispatch("db:hosts", &[json!([local, { "id": "remote", "name": "Remote", "addr": "127.0.0.1", "port": 22, "user": "legacy", "auth": "key", "on": true, "platform": "linux" }])]).unwrap();
     bench.dispatch("db:projects", &[json!([{ "id": "remote-project", "name": "R", "host": "remote", "path": project.display().to_string(), "branch": "", "agent": "claude" }])]).unwrap();
@@ -2247,6 +2891,7 @@ fn electron_git_discard_restores_the_whole_file_and_keeps_head() {
 }
 
 #[test]
+#[cfg(unix)]
 fn remote_git_diff_and_discard_match_the_local_commands() {
     let _lock = env_lock();
     let remote = remote_linux("remote-git");
@@ -2273,6 +2918,7 @@ fn remote_git_diff_and_discard_match_the_local_commands() {
 }
 
 #[test]
+#[cfg(unix)]
 fn remote_hunk_restore_writes_the_comparison_base_without_rewriting_head() {
     let _lock = env_lock();
     let remote = remote_linux("remote-hunk");
@@ -2304,6 +2950,7 @@ fn remote_hunk_restore_writes_the_comparison_base_without_rewriting_head() {
 }
 
 #[test]
+#[cfg(unix)]
 fn remote_preview_url_serves_the_sandbox_without_writing_the_draft() {
     let _lock = env_lock();
     let remote = remote_linux("remote-preview");
@@ -2362,6 +3009,9 @@ fn git_commit(project: &Path) {
     git(&["init"]);
     git(&["config", "user.email", "t@example.com"]);
     git(&["config", "user.name", "t"]);
+    // Keep the committed bytes as written: a machine-wide `autocrlf=true`
+    // would otherwise restore the file with CRLF and the content would differ.
+    git(&["config", "core.autocrlf", "false"]);
     git(&["add", "."]);
     git(&["commit", "-m", "base"]);
 }
@@ -2372,14 +3022,16 @@ fn head_sha(project: &Path) -> String {
     String::from_utf8_lossy(&head.stdout).trim().to_string()
 }
 
+#[cfg(unix)]
 struct RemoteLinux {
     root: PathBuf,
     project: PathBuf,
     bench: Workbench,
     _env: Vec<VarGuard>,
-    _agent: std::os::unix::net::UnixListener,
+    _agent: Agent,
 }
 
+#[cfg(unix)]
 fn remote_linux(name: &str) -> RemoteLinux {
     let root = temp_dir(name);
     let project = root.join("project");
@@ -2389,11 +3041,89 @@ fn remote_linux(name: &str) -> RemoteLinux {
     fs::write(home.join(".ssh/id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----\nREMOTEKEY\n-----END OPENSSH PRIVATE KEY-----\n").unwrap();
     let (shim, log) = install_ssh_shim(&root);
     let sock = root.join("agent.sock");
-    let agent = std::os::unix::net::UnixListener::bind(&sock).unwrap();
-    let env = ssh_env(&home, &shim, &log, &sock);
+    let agent = fake_agent(&sock);
+    let env = ssh_env(&home, &shim, &log, &agent);
     let (bench, _) = workbench(&root);
     let local = bench.dispatch("db:get", &[]).unwrap()["db"]["hosts"][0].clone();
     bench.dispatch("db:hosts", &[json!([local, { "id": "remote", "name": "Remote", "addr": "127.0.0.1", "port": 22, "user": "git", "auth": "key", "on": true, "platform": "linux" }])]).unwrap();
     bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "remote", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
     RemoteLinux { root, project, bench, _env: env, _agent: agent }
+}
+
+static REPLY_LOCK: Mutex<()> = Mutex::new(());
+
+/// A native CLI asks the terminal which status protocol it speaks and starts
+/// reporting only once the terminal answers. The stand-in prints a marker when
+/// the answer arrives, so the test sees the reply the way the CLI does.
+#[test]
+fn terminal_answers_the_native_status_capability_query() {
+    let root = temp_dir("status-reply");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let fixture = PathBuf::from(env!("CARGO_BIN_EXE_awb-program-status"));
+    let custom = json!([{ "id": "probe", "name": "Probe", "cmd": shell_word(&fixture), "args": "probe" }]);
+    let projects = json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }]);
+    // The helper path is a process-wide setting, so the whole test holds the lock.
+    let _held = REPLY_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    // The test program is not the installed one, so it names the helper itself.
+    std::env::set_var("AWB_CONSOLE_REPLY_BIN", PathBuf::from(env!("CARGO_BIN_EXE_awb-console-reply")));
+    let (bench, events) = workbench(&root);
+    bench.dispatch("db:projects", &[projects.clone()]).unwrap();
+    bench.dispatch("db:custom", &[custom.clone()]).unwrap();
+
+    // The answer reaches the CLI, which then reports its state.
+    bench.dispatch("pty:create", &[json!({ "id": "answered", "projectId": "p", "kind": "probe", "shell": "bash" })]).unwrap();
+    let shown = |events: &Arc<Mutex<Vec<serde_json::Value>>>, text: &str| events.lock().unwrap().iter().any(|event| event["payload"]["data"].as_str().unwrap_or("").contains(text));
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !shown(&events, "STATUS_PROBE_OK") && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
+    assert!(shown(&events, "STATUS_PROBE_OK"), "the terminal must answer the capability query; a CLI that gets no answer never reports its state");
+    // An Agent that reports itself idle takes input; its dot is still, so the
+    // session keeps the running state that separates it from a Shell.
+    let snapshot = |bench: &Workbench| bench.dispatch("pty:snapshot", &[json!("answered")]).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while snapshot(&bench)["inputReady"] != true && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
+    let idle = snapshot(&bench);
+    assert_eq!((idle["inputReady"].clone(), idle["state"].clone()), (json!(true), json!("running")), "{idle}");
+    // A report from the CLI alone moves the state: working withdraws the input,
+    // idle offers it again.
+    events.lock().unwrap().clear();
+    bench.dispatch("pty:write", &[json!("answered"), json!("work\n"), json!(false)]).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while snapshot(&bench)["inputReady"] != false && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
+    let working = snapshot(&bench);
+    assert_eq!((working["inputReady"].clone(), working["state"].clone()), (json!(false), json!("running")), "{working}");
+    bench.dispatch("pty:write", &[json!("answered"), json!("idle\n"), json!(false)]).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while snapshot(&bench)["inputReady"] != true && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
+    let back = snapshot(&bench);
+    assert_eq!(back["inputReady"], true, "{back}");
+    bench.dispatch("pty:close", &[json!("answered")]).unwrap();
+
+    // Without an answer the same CLI stays silent. That is what a terminal
+    // which drops the reply looks like, so the first part cannot pass on its own.
+    std::env::set_var("AWB_CONSOLE_REPLY_BIN", root.join("absent-console-reply"));
+    let (quiet, quiet_events) = workbench(&root);
+    quiet.dispatch("db:projects", &[projects.clone()]).unwrap();
+    quiet.dispatch("db:custom", &[custom.clone()]).unwrap();
+    quiet.dispatch("pty:create", &[json!({ "id": "unanswered", "projectId": "p", "kind": "probe", "shell": "bash" })]).unwrap();
+    // The CLI did start and did ask. The terminal journal holds its whole
+    // output; the status reports are kept out of what the screen shows.
+    const ASKED: &[u8] = b"7501;?";
+    let asked = || pello_core::pty::load_journal(&root.join("data"), "unanswered").as_bytes().windows(ASKED.len()).any(|window| window == ASKED);
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !asked() && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
+    assert!(asked(), "the CLI must have asked, for the terminal to be able to drop the reply");
+    // Longer than the answer takes to arrive when it is delivered.
+    std::thread::sleep(Duration::from_secs(3));
+    std::env::remove_var("AWB_CONSOLE_REPLY_BIN");
+    let quiet_snapshot = quiet.dispatch("pty:snapshot", &[json!("unanswered")]).unwrap();
+    // Silent: no marker, and no idle report, so the terminal takes no input.
+    assert!(!shown(&quiet_events, "STATUS_PROBE_OK") && quiet_snapshot["inputReady"] == false && quiet_snapshot["state"] == "running", "a CLI whose query is not answered must stay silent: {quiet_snapshot}");
+    quiet.dispatch("pty:close", &[json!("unanswered")]).unwrap();
+    let _ = fs::remove_dir_all(root);
+}
+
+/// One shell word for a path, quoted the way POSIX shells read it.
+fn shell_word(path: &Path) -> String {
+    format!("'{}'", path.display().to_string().replace('\\', "/"))
 }

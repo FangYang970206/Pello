@@ -9,7 +9,6 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use std::time::SystemTime;
 
 const MAX_CONFIG: u64 = 32 * 1024 * 1024;
 const MAX_SKILL_BYTES: u64 = 32 * 1024 * 1024;
@@ -939,17 +938,7 @@ fn trash_path(path: &Path) -> Result<(), String> {
         let detail = if !stderr.is_empty() { stderr } else { stdout };
         return Err(if detail.is_empty() { "无法移入回收站".into() } else { detail });
     }
-    let home = home_dir();
-    let data_home = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".local").join("share"));
-    let files = data_home.join("Trash").join("files");
-    let info = data_home.join("Trash").join("info");
-    fs::create_dir_all(&files).map_err(|error| error.to_string())?;
-    fs::create_dir_all(&info).map_err(|error| error.to_string())?;
-    let name = format!("{}-{}", path.file_name().and_then(|item| item.to_str()).unwrap_or("skill"), random_id());
-    fs::rename(path, files.join(&name)).map_err(|error| error.to_string())?;
-    let body = format!("[Trash Info]\nPath={}\nDeletionDate={:?}\n", path.display(), SystemTime::now());
-    let _ = fs::write(info.join(format!("{name}.trashinfo")), body);
-    Ok(())
+    crate::sys::trash(path).map_err(|_| "无法移入回收站".to_string())
 }
 
 pub fn add_mcp(resources: &Resources, data: &Path, custom: &Value, name: &str, config: &Value, agents: &[Value], enabled: bool, language: &str) -> Result<Value, String> {
@@ -1125,7 +1114,31 @@ fn split_toml_fields(text: &str) -> Vec<String> {
     fields
 }
 
-fn unquote(value: &str) -> String { value.trim().trim_matches('"').to_string() }
+/// The value of a TOML basic string, with the two escapes `escape_toml` writes
+/// restored. A Windows path holds backslashes, so a value read back has to
+/// unescape them to equal the path it was written from.
+fn unquote(value: &str) -> String {
+    let inner = value.trim().trim_matches('"');
+    let mut text = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(char) = chars.next() {
+        if char == '\\' {
+            match chars.next() {
+                Some('\\') => text.push('\\'),
+                Some('"') => text.push('"'),
+                // Anything else is kept as written: it is not one of ours.
+                Some(next) => {
+                    text.push('\\');
+                    text.push(next);
+                }
+                None => text.push('\\'),
+            }
+        } else {
+            text.push(char);
+        }
+    }
+    text
+}
 
 fn set_toml_enabled(text: &str, name: &str, enabled: bool) -> Result<String, ()> {
     let header = format!("[mcp_servers.{name}]");
@@ -1626,7 +1639,7 @@ fn copy_skill_tree(source: &Path, dest: &Path, language: &str) -> Result<(), Str
         if kind.is_dir() { copy_skill_tree(&entry.path(), &target, language)?; }
         else if kind.is_file() {
             let mut input = File::open(entry.path()).map_err(|error| error.to_string())?;
-            let mut output = OpenOptions::new().write(true).create_new(true).mode(0o644).open(&target).map_err(|error| error.to_string())?;
+            let mut output = crate::sys::create_shared_file(&target).map_err(|error| error.to_string())?;
             std::io::copy(&mut input, &mut output).map_err(|error| error.to_string())?;
         }
     }
@@ -1653,7 +1666,7 @@ fn extract_zip(source: &Path, staging: &Path, language: &str) -> Result<(), Stri
         let dest = staging.join(&relative);
         if !dest.starts_with(staging) { return Err(t(language, "导入包包含不安全路径")); }
         if let Some(parent) = dest.parent() { fs::create_dir_all(parent).map_err(|error| error.to_string())?; }
-        let mut output = OpenOptions::new().write(true).create_new(true).mode(0o644).open(&dest).map_err(|error| error.to_string())?;
+        let mut output = crate::sys::create_shared_file(&dest).map_err(|error| error.to_string())?;
         let mut limited = entry.by_ref().take(MAX_SKILL_BYTES + 1);
         let copied = std::io::copy(&mut limited, &mut output).map_err(|error| error.to_string())?;
         if copied > MAX_SKILL_BYTES { return Err(t(language, "ZIP 解压后超过 10000 个文件或 32 MB")); }
@@ -1733,7 +1746,8 @@ fn atomic_text(path: &Path, before: &str, next: &str, language: &str) -> Result<
     if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(|error| error.to_string())?; }
     let temp = path.with_file_name(format!(".{}.tmp", random_id()));
     {
-        let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp).map_err(|error| error.to_string())?;
+        let mut file = OpenOptions::new().write(true).create_new(true).open(&temp).map_err(|error| error.to_string())?;
+        crate::sys::restrict_to_owner(&file);
         file.write_all(next.as_bytes()).map_err(|error| error.to_string())?;
     }
     let current = read_text(path, language)?;
@@ -1974,10 +1988,3 @@ fn remove_field(text: &str, field: &Field) -> Result<String, ()> {
     }
     Ok(format!("{}{}", &text[..start], &text[end..]))
 }
-
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
-#[cfg(not(unix))]
-trait OpenMode { fn mode(&mut self, _mode: u32) -> &mut Self; }
-#[cfg(not(unix))]
-impl OpenMode for OpenOptions { fn mode(&mut self, _mode: u32) -> &mut Self { self } }

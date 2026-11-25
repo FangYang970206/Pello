@@ -4,13 +4,11 @@
 use crate::files;
 use crate::i18n::translate;
 use serde_json::{json, Value};
-use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::fs;
+use std::io::Read;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 const MAX_MATCHES: usize = 2000;
@@ -472,7 +470,7 @@ fn list_directory(root: &Path, relative: &str, language: &str) -> Result<Vec<Dir
 
 fn read_search_file(root: &Path, relative: &str, language: &str) -> Result<Option<Vec<u8>>, String> {
     let (full, _) = files::local_existing(root, relative, language)?;
-    let file = File::options().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(&full).map_err(|error| error.to_string())?;
+    let file = crate::sys::open_read_nofollow(&full).map_err(|error| error.to_string())?;
     let meta = file.metadata().map_err(|error| error.to_string())?;
     if !meta.is_file() { return Ok(None) }
     if meta.len() > MAX_BYTES { return Ok(None) }
@@ -485,133 +483,73 @@ fn read_search_file(root: &Path, relative: &str, language: &str) -> Result<Optio
 }
 
 struct JsMatcher {
-    child: Child,
-    stdin: ChildStdin,
-    lines: Receiver<String>,
     source: String,
     flags: String,
     whole: bool,
 }
 
-impl Drop for JsMatcher {
-    fn drop(&mut self) { self.kill(); }
-}
-
 impl JsMatcher {
     fn start(query: &str, sensitive: bool, regex: bool, whole: bool, language: &str) -> Result<Self, String> {
         let source = if regex { query.to_string() } else { escape_regex(query) };
-        let flags = if sensitive { "gu" } else { "giu" };
-        let script = std::env::temp_dir().join("pello-content-search-worker.js");
-        fs::write(&script, WORKER_JS).map_err(|error| error.to_string())?;
-        let node = std::env::var("AWB_NODE_BIN").unwrap_or_else(|_| "node".into());
-        let mut command = Command::new(node);
-        command.arg(&script);
-        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
-        #[cfg(unix)]
-        { use std::os::unix::process::CommandExt; command.process_group(0); }
-        let mut child = command.spawn().map_err(|_| translate(language, "内容搜索进程无法启动", &[] as &[String]))?;
-        let stdin = child.stdin.take().ok_or_else(|| translate(language, "内容搜索进程无法启动", &[] as &[String]))?;
-        let stdout = child.stdout.take().ok_or_else(|| translate(language, "内容搜索进程无法启动", &[] as &[String]))?;
-        let (tx, lines) = mpsc::channel();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                match line {
-                    Ok(line) => { if tx.send(line).is_err() { break; } }
-                    Err(_) => break,
-                }
-            }
-        });
-        let mut matcher = Self { child, stdin, lines, source, flags: flags.into(), whole };
-        let payload = json!({ "op": "validate", "source": matcher.source.clone(), "flags": matcher.flags.clone(), "whole": matcher.whole });
-        let response = matcher.roundtrip(&payload, Duration::from_secs(3), language)?;
-        if response["error"] == "syntax" {
-            return Err(translate(language, "正则表达式无效", &[] as &[String]));
-        }
-        if response["ok"] != true {
-            return Err(translate(language, "内容搜索进程无法启动", &[] as &[String]));
-        }
+        let flags = if sensitive { "u" } else { "iu" }.to_string();
+        let matcher = Self { source, flags, whole };
+        // Compiling alone does not run the pattern; one empty scan reports syntax errors.
+        matcher.compile().map_err(|_| translate(language, "正则表达式无效", &[] as &[String]))?;
         Ok(matcher)
     }
 
+    fn pattern(&self) -> Result<fancy_regex::Regex, ()> {
+        let whole = |body: String| {
+            if self.whole { format!(r"(?<![\p{{L}}\p{{N}}_])(?:{body})(?![\p{{L}}\p{{N}}_])") } else { body }
+        };
+        // Only the case-insensitive flag has a group form; an empty `(?u)` is not a pattern.
+        let ignoring_case = if self.flags.contains('i') { "(?i)" } else { "" };
+        let pattern = format!("{ignoring_case}{}", whole(self.source.clone()));
+        fancy_regex::Regex::new(&pattern).map_err(|_| ())
+    }
+
+    fn compile(&self) -> Result<fancy_regex::Regex, ()> { self.pattern() }
+
     fn scan(&mut self, text: &str, remaining: usize, language: &str) -> Result<Vec<Value>, String> {
-        let payload = json!({
-            "op": "scan",
-            "source": self.source.clone(),
-            "flags": self.flags.clone(),
-            "whole": self.whole,
-            "text": text,
-            "remaining": remaining,
+        // A runaway pattern must not stall the caller: the scan runs on a
+        // helper thread and gives up after the budget, like the JS worker did.
+        let pattern = self.compile().map_err(|_| translate(language, "正则表达式无效", &[] as &[String]))?;
+        let text = text.to_string();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(scan_lines(&pattern, &text, remaining));
         });
-        let response = self.roundtrip(&payload, REGEX_BUDGET, language)?;
-        if response["error"] == "syntax" {
-            return Err(translate(language, "正则表达式无效", &[] as &[String]));
-        }
-        Ok(response["matches"].as_array().cloned().unwrap_or_default())
-    }
-
-    fn roundtrip(&mut self, payload: &Value, timeout: Duration, language: &str) -> Result<Value, String> {
-        let line = serde_json::to_string(payload).map_err(|error| error.to_string())?;
-        writeln!(self.stdin, "{line}").map_err(|_| translate(language, "内容搜索进程无法启动", &[] as &[String]))?;
-        self.stdin.flush().map_err(|_| translate(language, "内容搜索进程无法启动", &[] as &[String]))?;
-        match self.lines.recv_timeout(timeout) {
-            Ok(line) => serde_json::from_str(&line).map_err(|_| translate(language, "正则表达式无效", &[] as &[String])),
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                self.kill();
-                Err(translate(language, "正则表达式执行超时，请简化表达式", &[] as &[String]))
-            }
-            Err(_) => Err(translate(language, "内容搜索进程无法启动", &[] as &[String])),
+        match rx.recv_timeout(REGEX_BUDGET) {
+            // The engine gives up on a pattern that backtracks without end.
+            // That is a pattern too costly to run, not a file without matches.
+            Ok(Err(())) | Err(_) => Err(translate(language, "正则表达式执行超时，请简化表达式", &[] as &[String])),
+            Ok(Ok(matches)) => Ok(matches),
         }
     }
-
-    fn kill(&mut self) {
-        #[cfg(unix)]
-        unsafe { libc::kill(-(self.child.id() as i32), libc::SIGKILL); }
-        let _ = self.child.kill();
-    }
 }
 
-const WORKER_JS: &str = r#"
-const fs = require('fs');
-if (process.env.AWB_SEARCH_ARGV) fs.writeFileSync(process.env.AWB_SEARCH_ARGV, JSON.stringify(process.argv));
-function compile(source, flags, whole) {
-  try { new RegExp(source, flags); }
-  catch (error) { return { error: 'syntax' }; }
-  const wrapped = whole ? '(?<![\\p{L}\\p{N}_])(?:' + source + ')(?![\\p{L}\\p{N}_])' : source;
-  try { return { pattern: new RegExp(wrapped, flags) }; }
-  catch (error) { return { error: 'syntax' }; }
-}
-function scan(text, pattern, remaining) {
-  const matches = [];
-  let number = 0;
-  for (const originalLine of String(text).split('\n')) {
-    const line = originalLine.replace(/\r$/, '');
-    number++;
-    for (const match of line.matchAll(pattern)) {
-      const index = match.index || 0;
-      const end = index + match[0].length;
-      matches.push({ line: number, column: index + 1, before: line.slice(Math.max(0, index - 80), index), match: match[0], after: line.slice(end, end + 160).replace(/\r$/, '') });
-      if (--remaining <= 0) break;
+/// Non-overlapping matches per line, with the context the results list shows.
+/// Offsets, columns and context are counted in UTF-16 units, the way the
+/// renderer measures string positions. `Err` means the engine stopped at its
+/// backtracking limit, so the answer would have been incomplete.
+fn scan_lines(pattern: &fancy_regex::Regex, text: &str, remaining: usize) -> Result<Vec<Value>, ()> {
+    let mut matches = Vec::new();
+    let mut left = remaining;
+    for (number, original) in text.split('\n').enumerate() {
+        let line = original.strip_suffix('\r').unwrap_or(original);
+        let units: Vec<u16> = line.encode_utf16().collect();
+        let unit_of = |byte: usize| line[..byte].encode_utf16().count();
+        for found in pattern.find_iter(line) {
+            let found = found.map_err(|_| ())?;
+            let index = unit_of(found.start());
+            let end = unit_of(found.end());
+            let matched = String::from_utf16_lossy(&units[index..end]);
+            let before = String::from_utf16_lossy(&units[index.saturating_sub(80)..index]);
+            let after = String::from_utf16_lossy(&units[end..(end + 160).min(units.len())]).replace('\r', "");
+            matches.push(json!({ "line": number + 1, "column": index + 1, "before": before, "match": matched, "after": after }));
+            left -= 1;
+            if left == 0 { return Ok(matches) }
+        }
     }
-    if (remaining <= 0) break;
-  }
-  return matches;
+    Ok(matches)
 }
-let buf = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('data', (chunk) => {
-  buf += chunk;
-  let nl;
-  while ((nl = buf.indexOf('\n')) >= 0) {
-    const line = buf.slice(0, nl);
-    buf = buf.slice(nl + 1);
-    if (!line.trim()) continue;
-    let msg;
-    try { msg = JSON.parse(line); }
-    catch (error) { process.stdout.write(JSON.stringify({ error: 'syntax' }) + '\n'); continue; }
-    const compiled = compile(msg.source, msg.flags, !!msg.whole);
-    if (compiled.error) { process.stdout.write(JSON.stringify({ error: 'syntax' }) + '\n'); continue; }
-    if (msg.op === 'validate') { process.stdout.write(JSON.stringify({ ok: true }) + '\n'); continue; }
-    process.stdout.write(JSON.stringify({ matches: scan(msg.text, compiled.pattern, msg.remaining | 0) }) + '\n');
-  }
-});
-"#;

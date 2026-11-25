@@ -1,13 +1,12 @@
 //! Local project files. Boundary checks follow `src/main/git.ts` for the local host.
 
+use crate::sys::{DirectoryChain, EntryKind};
 use crate::i18n::translate;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Write;
-use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 pub const TREE_DEFAULT_IGNORE: &[&str] = &[".git", "node_modules", "dist", "out", ".next", "__pycache__", ".cache"];
 const MAX_DIFF: usize = 250_000;
@@ -233,52 +232,15 @@ fn rename_nofollow(root: &Path, rel: &str, parent: &str, name: &str, directory: 
     let source_parts: Vec<&str> = rel.split('/').filter(|part| !part.is_empty()).collect();
     let source_name = source_parts.last().copied().unwrap_or("");
     let source_parent_parts = &source_parts[..source_parts.len() - 1];
-    let source_parent = open_chain(&root, source_parent_parts, language)?;
-    let info = lstat_at(source_parent.as_raw_fd(), source_name)?;
-    let is_link = info.st_mode & libc::S_IFMT == libc::S_IFLNK;
-    let is_dir = info.st_mode & libc::S_IFMT == libc::S_IFDIR;
-    let is_file = info.st_mode & libc::S_IFMT == libc::S_IFREG;
-    if is_link || (directory && !is_dir) || (!directory && !is_file) {
-        return Err(translate(language, "文件类型已更改或路径包含符号链接", &[] as &[String]));
+    let source_parent = DirectoryChain::open(&root, source_parent_parts).map_err(|_| translate(language, "文件类型已更改或路径包含符号链接", &[] as &[String]))?;
+    let kind = source_parent.kind(source_name).map_err(|error| error.to_string())?;
+    let changed = || translate(language, "文件类型已更改或路径包含符号链接", &[] as &[String]);
+    if kind == EntryKind::Link || (directory && kind != EntryKind::Directory) || (!directory && kind != EntryKind::File) {
+        return Err(changed());
     }
     let dest_parts: Vec<&str> = parent.split('/').filter(|part| !part.is_empty()).collect();
-    let dest_parent = open_chain(&root, &dest_parts, language)?;
-    let source_c = std::ffi::CString::new(source_name).map_err(|_| translate(language, "名称无效", &[] as &[String]))?;
-    let dest_c = std::ffi::CString::new(name).map_err(|_| translate(language, "名称无效", &[] as &[String]))?;
-    let result = unsafe { libc::renameat2(source_parent.as_raw_fd(), source_c.as_ptr(), dest_parent.as_raw_fd(), dest_c.as_ptr(), libc::RENAME_NOREPLACE) };
-    if result != 0 {
-        return Err(std::io::Error::last_os_error().to_string());
-    }
-    Ok(())
-}
-
-fn open_chain(root: &Path, parts: &[&str], language: &str) -> Result<std::os::fd::OwnedFd, String> {
-    let mut current = open_directory(root)?;
-    for part in parts {
-        current = open_child_directory(&current, part).map_err(|_| translate(language, "文件类型已更改或路径包含符号链接", &[] as &[String]))?;
-    }
-    Ok(current)
-}
-
-fn open_directory(path: &Path) -> Result<std::os::fd::OwnedFd, String> {
-    let text = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).map_err(|error| error.to_string())?;
-    let fd = unsafe { libc::open(text.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC) };
-    if fd < 0 { return Err(std::io::Error::last_os_error().to_string()) }
-    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
-}
-
-fn open_child_directory(parent: &std::os::fd::OwnedFd, name: &str) -> std::io::Result<std::os::fd::OwnedFd> {
-    let text = std::ffi::CString::new(name)?;
-    let fd = unsafe { libc::openat(parent.as_raw_fd(), text.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
-    if fd < 0 { Err(std::io::Error::last_os_error()) } else { Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) }) }
-}
-
-fn lstat_at(dir: std::os::fd::RawFd, name: &str) -> Result<libc::stat, String> {
-    let text = std::ffi::CString::new(name).map_err(|error| error.to_string())?;
-    let mut info = unsafe { std::mem::zeroed::<libc::stat>() };
-    let result = unsafe { libc::fstatat(dir, text.as_ptr(), &mut info, libc::AT_SYMLINK_NOFOLLOW) };
-    if result != 0 { return Err(std::io::Error::last_os_error().to_string()) }
-    Ok(info)
+    let dest_parent = DirectoryChain::open(&root, &dest_parts).map_err(|_| changed())?;
+    source_parent.rename(source_name, &dest_parent, name).map_err(|error| error.to_string())
 }
 
 pub fn trash_entry(root: &Path, rel: &str, directory: bool, language: &str) -> Result<(), String> {
@@ -287,43 +249,21 @@ pub fn trash_entry(root: &Path, rel: &str, directory: bool, language: &str) -> R
     let root = canonical_dir(root)?;
     let lexical = root.join(&relative);
     let meta = fs::symlink_metadata(&lexical).map_err(|error| error.to_string())?;
-    let same = lexical == full;
+    // Windows paths are case-insensitive; a case difference is not an escape.
+    let same = if cfg!(windows) { lexical.to_string_lossy().to_lowercase() == full.to_string_lossy().to_lowercase() } else { lexical == full };
     if !same || meta.file_type().is_symlink() {
         return Err(translate(language, "不能通过符号链接删除项目文件", &[] as &[String]));
     }
     if meta.is_dir() != directory || (!meta.is_dir() && !meta.is_file()) {
         return Err(translate(language, "文件类型已更改，请刷新目录", &[] as &[String]));
     }
-    trash_path(&lexical)
-}
-
-fn trash_path(path: &Path) -> Result<(), String> {
-    if let Ok(status) = std::process::Command::new("gio").arg("trash").arg(path).status() {
-        if status.success() { return Ok(()) }
-    }
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-    let trash = home.join(".local/share/Trash");
-    let files = trash.join("files");
-    let info = trash.join("info");
-    fs::create_dir_all(&files).map_err(|error| error.to_string())?;
-    fs::create_dir_all(&info).map_err(|error| error.to_string())?;
-    let base = path.file_name().and_then(|name| name.to_str()).unwrap_or("item");
-    let mut destination = files.join(base);
-    if destination.exists() {
-        destination = files.join(format!("{base}-{}", crate::random_id()));
-    }
-    fs::rename(path, &destination).map_err(|error| error.to_string())?;
-    let info_name = format!("{}.trashinfo", destination.file_name().and_then(|name| name.to_str()).unwrap_or(base));
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or(Duration::from_secs(0)).as_secs();
-    let body = format!("[Trash Info]\nPath={}\nDeletionDate={stamp}\n", path.display());
-    fs::write(info.join(info_name), body).map_err(|error| error.to_string())?;
-    Ok(())
+    crate::sys::trash(&lexical).map_err(|error| error.to_string())
 }
 
 pub fn check_path(input: &str, language: &str) -> Value {
     let value = input.trim();
     if value.is_empty() { return json!({ "kind": "empty" }) }
-    if !value.starts_with('/') || value.contains('\0') { return json!({ "kind": "invalid" }) }
+    if !is_absolute(value) || value.contains('\0') { return json!({ "kind": "invalid" }) }
     let path = Path::new(value);
     match fs::metadata(path) {
         Ok(meta) if meta.is_dir() => {}
@@ -331,19 +271,25 @@ pub fn check_path(input: &str, language: &str) -> Value {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return json!({ "kind": "missing" }),
         Err(error) => return json!({ "kind": "error", "detail": error.to_string() }),
     }
-    let inside = std::process::Command::new("git").arg("-C").arg(path).arg("rev-parse").arg("--is-inside-work-tree").output();
+    let inside = std::process::Command::new("git").arg("-C").arg(path).args(["--no-optional-locks", "rev-parse", "--is-inside-work-tree"]).output();
     let Ok(inside) = inside else { return json!({ "kind": "plain" }) };
     if String::from_utf8_lossy(&inside.stdout).trim() != "true" { return json!({ "kind": "plain" }) }
-    let branch = std::process::Command::new("git").arg("-C").arg(path).arg("rev-parse").arg("--abbrev-ref").arg("HEAD").output().ok()
+    let branch = std::process::Command::new("git").arg("-C").arg(path).args(["--no-optional-locks", "rev-parse", "--abbrev-ref", "HEAD"]).output().ok()
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string()).unwrap_or_default();
     let _ = language;
     json!({ "kind": "git", "branch": branch })
 }
 
+fn is_absolute(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.first() == Some(&b'/') || bytes.first() == Some(&b'\\')
+        || (bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && matches!(bytes[2], b'/' | b'\\'))
+}
+
 pub fn list_dir(input: &str) -> Value {
     let mut current = input.trim().to_string();
     if current.is_empty() {
-        current = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+        current = crate::sys::home().display().to_string();
     }
     let path = PathBuf::from(&current);
     let mut dirs = Vec::new();
@@ -353,7 +299,7 @@ pub fn list_dir(input: &str) -> Value {
     };
     for entry in read.flatten() {
         let Ok(file_type) = entry.file_type() else { continue };
-        if !file_type.is_dir() || file_type.is_symlink() { continue }
+        if !file_type.is_dir() || file_type.is_symlink() { continue };
         let name = entry.file_name().to_string_lossy().into_owned();
         if TREE_DEFAULT_IGNORE.contains(&name.as_str()) { continue }
         dirs.push(json!({ "name": name, "path": entry.path().display().to_string() }));
@@ -364,7 +310,7 @@ pub fn list_dir(input: &str) -> Value {
 
 fn parent_of(value: &str) -> Value {
     let path = Path::new(value);
-    if path == Path::new("/") { return Value::Null }
+    if path.parent().is_none() || path.parent() == Some(path) { return Value::Null }
     path.parent().map(|parent| json!(parent.display().to_string())).unwrap_or(Value::Null)
 }
 
@@ -378,5 +324,3 @@ pub fn count_lines(bytes: &[u8]) -> i64 {
 pub fn diff_too_big(before: &str, after: &str) -> bool {
     before.len() + after.len() > MAX_DIFF
 }
-
-use std::os::fd::FromRawFd;

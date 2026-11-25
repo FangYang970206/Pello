@@ -19,8 +19,6 @@ use std::fs;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::net::SocketAddr;
-use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -28,8 +26,20 @@ use std::time::Duration;
 /// Base64 of a 12 MB preview is 16 MB. The cap stays above that so a legal asset is not rejected as oversized output.
 const MAX_OUTPUT: usize = 16_000_100;
 
+/// What every Windows remote script starts with: the standard input and
+/// output of the PowerShell that runs it are UTF-8. Error handling is left to
+/// the script.
+const POWERSHELL_UTF8: &str = "[Console]::InputEncoding=[Text.UTF8Encoding]::new($false); [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); ";
+
 pub fn bash_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// A local path handed to a POSIX shell. Windows Bash takes forward slashes,
+/// which also keep a path from mixing separators once quoted.
+pub fn bash_path_quote(path: &std::path::Path) -> String {
+    let text = path.display().to_string();
+    bash_quote(&if cfg!(windows) { text.replace('\\', "/") } else { text })
 }
 
 pub fn ps_quote(value: &str) -> String {
@@ -43,7 +53,13 @@ pub fn remote_command(platform: &str, args: &[String]) -> String {
     if args.first().map(|arg| arg == "powershell.exe").unwrap_or(false) {
         if let Some(index) = args.iter().position(|arg| arg == "-Command") {
             if index + 1 < args.len() {
-                let encoded = encode_utf16_le_base64(&args[index + 1]);
+                // The script travels as UTF-16, but what the workbench writes
+                // to the remote's standard input and reads back is UTF-8. A
+                // Windows PowerShell decodes both by the system code page
+                // unless told otherwise, which breaks a translated message or
+                // a path outside that code page.
+                let script = format!("{POWERSHELL_UTF8}{}", args[index + 1]);
+                let encoded = encode_utf16_le_base64(&script);
                 return format!("{} -EncodedCommand {encoded}", args[..index].join(" "));
             }
         }
@@ -109,7 +125,7 @@ fn load_secrets(data: &Path) -> Secrets {
     }).unwrap_or_else(|| {
         let mut key = [0u8; 32];
         getrandom::getrandom(&mut key).expect("credential key");
-        let _ = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&key_path).and_then(|mut file| file.write_all(&key));
+        let _ = crate::sys::private_file(&key_path).and_then(|mut file| file.write_all(&key));
         key
     });
     Secrets { memory: HashMap::new(), key }
@@ -125,8 +141,11 @@ fn read_json(path: &Path) -> Value {
 fn write_private(path: &Path, value: &Value) -> Result<(), String> {
     if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(|error| error.to_string())?; }
     let temporary = path.with_extension("json.tmp");
-    let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&temporary).map_err(|error| error.to_string())?;
+    let mut file = crate::sys::private_file(&temporary).map_err(|error| error.to_string())?;
     file.write_all(serde_json::to_string(value).unwrap_or_else(|_| "{}".into()).as_bytes()).map_err(|error| error.to_string())?;
+    // Close before the rename: Windows keeps a written file in place while a
+    // handle to it is open, and the write is complete at this point.
+    drop(file);
     fs::rename(&temporary, path).map_err(|error| error.to_string())
 }
 
@@ -531,7 +550,7 @@ fn open_upload_source(source: &Path, total: u64, language: &str) -> Result<(std:
     if meta.file_type().is_symlink() { return Err(translate(language, "不上传符号链接", &[] as &[String])) }
     if !meta.is_file() { return Err(translate(language, "仅支持上传普通文件", &[] as &[String])) }
     if meta.len() != total { return Err(translate(language, "来源文件已更改或传输已取消", &[] as &[String])) }
-    let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(source).map_err(|error| error.to_string())?;
+    let file = crate::sys::open_read_nofollow(source).map_err(|error| error.to_string())?;
     let opened = file.metadata().map_err(|error| error.to_string())?;
     if !opened.is_file() || opened.len() != total { return Err(translate(language, "来源文件已更改或传输已取消", &[] as &[String])) }
     Ok((file, opened.modified().ok()))
@@ -701,16 +720,27 @@ pub struct RemoteShell {
 pub fn open_shell(data: &Path, host: &Value, cwd: &str, language: &str) -> Result<RemoteShell, String> {
     let script = remote_bootstrap(cwd);
     let command = remote_command(host["platform"].as_str().unwrap_or("linux"), &[String::from("bash"), String::from("-lc"), script]);
-    let (output_read, output_write) = UnixStream::pair().map_err(|error| error.to_string())?;
-    let (input_read, input_write) = UnixStream::pair().map_err(|error| error.to_string())?;
-    output_read.set_nonblocking(false).ok();
+    let (output_read, output_write) = std::io::pipe().map_err(|error| error.to_string())?;
+    let (input_read, input_write) = std::io::pipe().map_err(|error| error.to_string())?;
     let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let flag = stop_flag.clone();
+    let (typed, mut keys) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
+    // Keystrokes arrive on a blocking pipe; forward them to the async pump.
+    std::thread::spawn(move || {
+        let mut reader = input_read;
+        let mut buffer = [0u8; 4096];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(size) => { if typed.blocking_send(buffer[..size].to_vec()).is_err() { break } }
+            }
+        }
+    });
     let data = data.to_path_buf();
     let host = host.clone();
     let language = language.to_string();
     std::thread::spawn(move || {
-        let _ = runtime().block_on(pump_shell(&data, &host, &command, output_write, input_read, flag, &language));
+        let _ = runtime().block_on(pump_shell(&data, &host, &command, output_write, &mut keys, flag, &language));
     });
     Ok(RemoteShell {
         output: Box::new(output_read),
@@ -719,7 +749,7 @@ pub fn open_shell(data: &Path, host: &Value, cwd: &str, language: &str) -> Resul
     })
 }
 
-async fn pump_shell(data: &Path, host: &Value, command: &str, mut output: UnixStream, input: UnixStream, stop: Arc<std::sync::atomic::AtomicBool>, language: &str) -> Result<(), String> {
+async fn pump_shell(data: &Path, host: &Value, command: &str, mut output: std::io::PipeWriter, keys: &mut tokio::sync::mpsc::Receiver<Vec<u8>>, stop: Arc<std::sync::atomic::AtomicBool>, language: &str) -> Result<(), String> {
     let password = password_of(data, host).ok_or_else(|| translate(language, "请填写 SSH 登录密码", &[] as &[String]))?;
     let addr = host["addr"].as_str().unwrap_or("");
     let port = host_port(host);
@@ -735,9 +765,6 @@ async fn pump_shell(data: &Path, host: &Value, command: &str, mut output: UnixSt
     let mut channel = session.channel_open_session().await.map_err(|error| error.to_string())?;
     channel.request_pty(false, "xterm-256color", 80, 24, 0, 0, &[] as &[(russh::Pty, u32)]).await.map_err(|error| error.to_string())?;
     channel.exec(false, command.as_bytes().to_vec()).await.map_err(|error| error.to_string())?;
-    input.set_nonblocking(true).map_err(|error| error.to_string())?;
-    let mut input = tokio::net::UnixStream::from_std(input).map_err(|error| error.to_string())?;
-    let mut buffer = [0u8; 4096];
     loop {
         if stop.load(std::sync::atomic::Ordering::Relaxed) { break }
         tokio::select! {
@@ -748,10 +775,10 @@ async fn pump_shell(data: &Path, host: &Value, command: &str, mut output: UnixSt
                     _ => {}
                 }
             }
-            read = tokio::io::AsyncReadExt::read(&mut input, &mut buffer) => {
-                match read {
-                    Ok(0) | Err(_) => break,
-                    Ok(size) => { let _ = channel.data(&buffer[..size]).await; }
+            typed = keys.recv() => {
+                match typed {
+                    None => break,
+                    Some(bytes) => { let _ = channel.data(&bytes[..]).await; }
                 }
             }
         }
