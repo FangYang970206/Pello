@@ -39,6 +39,7 @@ const cases = [
   ['AWB099', 'src/main/asset-snapshots.ts', 'value.identity !== readTargetKey(target)', 'false'],
   ['AWB099', 'src/main/preview.ts', '${projectId}:${readTargetKey(target)}', '${projectId}:${target.cwd}'],
   ['AWB094', 'src/renderer/SkillRecommendations.tsx', 'window.awb.openSkillRecommendation(id)', 'window.awb.importSkills(id)'],
+  ['AWB094', 'src/renderer/SkillRecommendations.tsx', '{item.description}', '{item.repository}'],
   ['AWB096', 'src/main/index.ts', 'https://github.com/${item.repository}', 'https://github.com/${id}'],
   ['AWB095', 'src/renderer/App.tsx', 'gitWrite(fileTarget(tab),', 'gitWrite(tab.projectId,'],
   ['AWB092', 'src/main/remote-git.ts', '--no-optional-locks', '--optional-locks'],
@@ -107,6 +108,7 @@ const cases = [
   ['AWB027', 'src/renderer/ResourceSettings.tsx', '<b className="resource-name">{item.name}</b>', '<b className="resource-name">{item.name}</b><small>{item.path}</small>'],
   ['AWB028', 'src/renderer/ResourceDialog.tsx', 'dialog.showModal()', 'dialog.show()'],
   ['AWB028', 'src/renderer/ResourceDialog.tsx', 'onPointerUp=', 'onPointerMove='],
+  ['AWB028', 'src/renderer/Dialogs.tsx', 'return positionSettingsDialog(dialogRef.current)', 'return undefined'],
   ['AWB033', 'src/main/index.ts', 'resources.skillDirectory(scopeOf(agent), item, true)', 'resources.skillDirectory(scopeOf(agent), item, false)'],
   ['AWB029', 'src/renderer/TerminalPane.tsx', 'document.fonts.load(font)', 'Promise.resolve([])'],
   ['AWB030', 'src/renderer/FilePane.tsx', 'key={preview.url}', 'key={path}'],
@@ -232,7 +234,7 @@ const cases = [
   ['AWB086', 'src/renderer/GitChangeRows.tsx', '<VirtualFileRows', '<UnboundedRows'],
   ['AWB087', 'src/main/index.ts', 'version: app.getVersion()', "version: '0.0.0'"],
   ['AWB087', 'src/renderer/styles/extra.css', '.about-eye, .git-scanning { animation: none; }', '.unrelated { animation: none; }'],
-  ['AWB087', 'src/renderer/SettingsView.tsx', "section !== 'about' ? <h1>", "true ? <h1>"],
+  ['AWB087', 'src/renderer/SettingsView.tsx', "section !== 'about' ? <header className=\"settings-page-heading\">", "true ? <header className=\"settings-page-heading\">"],
   ['AWB087', 'src/shared/app-info.ts', "'zh-CN': '方阳', en: 'FangYang'", "'zh-CN': '旧名称', en: 'OldName'"],
   ['AWB087', 'src/renderer/styles/extra.css', '.settings .snav {', '.settings .snav .about-nav { margin-top: auto; } .settings .snav {']
 ]

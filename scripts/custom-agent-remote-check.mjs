@@ -47,7 +47,8 @@ const server=new ssh2.Server({hostKeys:[key]},client=>{
 })
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve))
 const data=fs.mkdtempSync(path.join(os.tmpdir(),'pello-custom-remote-'))
-const env={...process.env,AWB_USER_DATA:data};delete env.ELECTRON_RUN_AS_NODE
+const home=path.join(data,'home');fs.mkdirSync(home)
+const env={...process.env,AWB_USER_DATA:data,AWB_RESOURCE_HOME:home};delete env.ELECTRON_RUN_AS_NODE
 let app
 try{
   app=await electron.launch({args:[path.resolve('.')],env});const page=await app.firstWindow();page.setDefaultTimeout(20000)
@@ -160,8 +161,17 @@ try{
 
   await page.reload()
   await page.click('[data-a=settings]'); await page.click('[data-a=sec][data-id=mcp]')
+  await page.getByLabel('机器', { exact: true }).selectOption('owner')
+  await page.getByRole('tabpanel').getByText('from-ssh', { exact: true }).waitFor()
+  await page.getByLabel('机器', { exact: true }).selectOption('local')
+  await page.getByRole('tabpanel').getByText('尚未发现 MCP', { exact: true }).waitFor()
+  assert.equal(await page.getByRole('tabpanel').getByText('from-ssh', { exact: true }).count(), 0)
+  await page.locator('[data-a=sec][data-id=skills]').click()
+  await page.getByLabel('机器', { exact: true }).selectOption('owner')
+  await page.getByRole('tabpanel').getByText('team-skill', { exact: true }).waitFor()
+  await page.locator('[data-a=sec][data-id=mcp]').click()
   await page.getByRole('button', { name: '添加 MCP', exact: true }).click()
-  await page.getByRole('button', { name: '从配置文件导入', exact: true }).click()
+  await page.getByRole('button', { name: 'SSH 机器导入', exact: true }).click()
   await page.getByLabel('来源机器', { exact: true }).selectOption('owner')
   const browse = page.getByRole('button', { name: '浏览', exact: true })
   await browse.click()

@@ -126,8 +126,6 @@ kbd {
 }
 .html-preview { width: 100%; height: 100%; flex: 1; border: 0; background: var(--panel); }
 .resource-agents, .resource-actions, .resource-pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.resource-agents { margin-bottom: 16px; }
-.resource-agents .on { background: var(--sel); color: var(--text); border-color: var(--accent); }
 .resource-help, .resource-path, .resource-pagination { font-size: 12px; color: var(--muted); }
 .resource-path { overflow-wrap: anywhere; margin: 8px 0 16px; }
 .resource-form { padding: 16px 0; border-block: 1px solid var(--line); margin: 16px 0; }
@@ -140,7 +138,8 @@ kbd {
 .resource-item { align-items: center; gap: 12px; min-height: 56px; }
 .resource-name { min-width: 0; overflow-wrap: anywhere; }
 .resource-item .ib, .resource-item .switch { flex-shrink: 0; }
-.resource-dialog { position: fixed; inset: auto; margin: 0; translate: -50% -50%; padding: 0; border: 0; color: var(--text); max-height: var(--resource-max-height,calc(100vh - 48px)); }
+.resource-dialog, .settings-positioned-dialog { position: fixed; inset: auto; margin: 0; translate: -50% -50%; max-height: var(--settings-dialog-max-height,calc(100vh - 48px)); }
+.resource-dialog { padding: 0; border: 0; color: var(--text); }
 .resource-dialog.resource-dialog-compact { max-height: var(--resource-detail-height,60vh); }
 .resource-dialog header h2 { min-width: 0; overflow-wrap: anywhere; }
 .resource-dialog .bdy { flex: 1 1 auto; overscroll-behavior: contain; }
@@ -153,9 +152,7 @@ kbd {
 .resource-dialog:not([open]) { display: none; }
 .resource-dialog::backdrop { background: rgba(5,5,10,.5); }
 [data-theme=light] .resource-dialog::backdrop { background: rgba(30,30,50,.22); }
-.resource-details { display: grid; grid-template-columns: 64px minmax(0,1fr); gap: 8px 16px; margin-bottom: 16px; }
-.resource-details dt { color: var(--muted); }
-.resource-details dd { overflow-wrap: anywhere; margin: 0; }
+.resource-details { margin-bottom: 16px; }
 .resource-content { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.7 var(--mono); padding: 12px; background: var(--bg); border-radius: var(--r1); }
 .executor-resources { padding-bottom: 16px; margin-bottom: 16px; border-bottom: 1px solid var(--line); }
 .custom-executor-form { container-type: inline-size; }
@@ -191,6 +188,8 @@ kbd {
 .resource-pagination { margin-top: 16px; }
 .resource-results p { overflow-wrap: anywhere; }
 .host-fields { border: 0; min-width: 0; margin: 0; padding: 0; }
+.host-fields .two > .fld { min-width: 0; }
+.settings-positioned-dialog:has(.host-fields) footer { flex-wrap: wrap; }
 .resource-dialog:has(.directory-browser) { width: 840px; }
 .resource-dialog:has(.directory-browser) .bdy { padding: 0; overflow: hidden; display: flex; min-height: 0; }
 .resource-dialog:has(.directory-browser) footer { gap: 8px; }
@@ -436,16 +435,8 @@ kbd {
 .app-update-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .app-update-actions .btn { display: inline-flex; align-items: center; gap: 8px; }
 .app-update-error { padding: 0 16px 14px; color: var(--red); }
-/* Recommendations follow the available settings width. */
 .resource-header-actions { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .dlg.lg.skill-recommendations-dialog { width: 760px; }
-.resource-open { padding: 4px 0; border: 0; background: none; color: var(--text); font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
-.resource-open:hover { color: var(--accent); }
-.resource-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
-.terminal-file-context { display: flex; align-items: center; flex-shrink: 0; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; }
-.terminal-file-context > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.terminal-file-context small { display: block; overflow: hidden; text-overflow: ellipsis; font-size: inherit; }
-.resources > h2 { flex-wrap: wrap; gap: 12px; }
 .skill-repositories { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,240px),1fr)); gap: 12px; }
 .skill-repository { display: flex; flex-direction: column; align-items: stretch; gap: 12px; min-width: 0; padding: 20px; border: 1px solid var(--line2); border-radius: 12px; background: var(--panel); color: var(--text); font: inherit; text-align: left; cursor: pointer; transition: border-color var(--t),background var(--t); }
 .skill-repository-top { display: flex; align-items: center; gap: 8px; color: var(--muted); }
@@ -455,6 +446,12 @@ kbd {
 .skill-repository > span:not(.skill-repository-top) { color: var(--muted); flex: 1; }
 .skill-repository:hover { background: var(--elev2); border-color: var(--accent); }
 .skill-repository:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.resource-open { padding: 4px 0; border: 0; background: none; color: var(--text); font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
+.resource-open:hover { color: var(--accent); }
+.resource-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+.terminal-file-context { display: flex; align-items: center; flex-shrink: 0; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+.terminal-file-context > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-file-context small { display: block; overflow: hidden; text-overflow: ellipsis; font-size: inherit; }
 .skill-readme { line-height: 1.7; overflow-wrap: anywhere; }
 .skill-readme h3 { font-size: 16px; margin: 24px 0 8px; }
 .skill-readme h4 { font-size: 14px; margin: 20px 0 8px; }
@@ -462,12 +459,11 @@ kbd {
 .skill-readme ul { padding-left: 20px; margin-bottom: 16px; }
 .skill-readme pre { padding: 12px; background: var(--bg); border-radius: 6px; overflow: auto; white-space: pre; margin-bottom: 16px; }
 .skill-readme code { font: 12px/1.7 var(--mono); background: var(--bg); border-radius: 2px; }
-.resource-toolbar, .resource-machine-field, .resource-location, .resource-steps, .resource-result-row {
+.resource-location, .resource-steps, .resource-result-row {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.resource-toolbar { justify-content: space-between; flex-wrap: wrap; margin-block: 12px; }
 .resource-machine-field { min-width: 0; max-width: 100%; }
 .resource-machine-field .sel { min-width: 0; max-width: min(280px, 100%); }
 .resource-location {
@@ -478,13 +474,6 @@ kbd {
 }
 .resource-location > div, .resource-result-row > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .resource-location .ib, .resource-location .btn { flex-shrink: 0; }
-.executor-tabs { width: fit-content; max-width: 100%; }
-.executor-binding-row, .executor-template-row { flex-wrap: wrap; gap: 8px; }
-.executor-binding { min-width: 0; width: min(230px, 100%); }
-.executor-edit { display: flex; align-items: center; min-width: 0; flex: 1; gap: 8px; text-align: left; }
-.executor-edit > span:nth-child(2) { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.executor-edit small, .template-usage { display: block; color: var(--muted); }
-.template-usage { flex: 1 1 120px; overflow-wrap: anywhere; }
 .template-form .two { align-items: start; }
 .template-form .two .resource-machine-field { display: grid; }
 .template-form .two .resource-machine-field .sel { max-width: 100%; width: 100%; }

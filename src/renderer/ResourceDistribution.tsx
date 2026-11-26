@@ -11,6 +11,7 @@ import { ResourceMachineSelect } from './ResourceMachineSelect'
 export type ResourceSettingsState = Pick<Database, 'hosts' | 'custom' | 'templates' | 'templateBindings'>
 export type ResourceKind = 'skills' | 'mcp'
 const same = (a: ResourceScope, b: ResourceScope) => a.hostId === b.hostId && a.executorId === b.executorId
+type SourceMode = 'manual' | 'local' | 'remote'
 
 export function ResourceDistribution({ kind, state, current, currentValid, onRefresh, onClose }: {
   kind: ResourceKind; state: ResourceSettingsState; current: ResourceScope; currentValid: boolean
@@ -24,8 +25,11 @@ export function ResourceDistribution({ kind, state, current, currentValid, onRef
   const [expanded, setExpanded] = useState([current.hostId])
   const [name, setName] = useState('')
   const [config, setConfig] = useState('')
-  const [importMode, setImportMode] = useState(kind === 'skills')
-  const [sourceHost, setSourceHost] = useState('local')
+  const [sourceMode, setSourceMode] = useState<SourceMode>(kind === 'skills' ? 'local' : 'manual')
+  const remoteHosts = state.hosts.filter((host) => host.id !== 'local')
+  const [remoteHost, setRemoteHost] = useState(() => remoteHosts.find((host) => host.id === current.hostId)?.id || remoteHosts[0]?.id || '')
+  const importMode = sourceMode !== 'manual'
+  const sourceHost = sourceMode === 'remote' ? remoteHost : 'local'
   const [source, setSource] = useState('')
   const [browser, setBrowser] = useState(false)
   const [sourceItems, setSourceItems] = useState<ResourceSourceItem[]>([])
@@ -83,12 +87,16 @@ export function ResourceDistribution({ kind, state, current, currentValid, onRef
     } catch (reason) { setError(String(reason)) }
     finally { setBusy(false) }
   }
-  return <ResourceDialog title={kind === 'skills' ? t("添加 Skill") : t("添加 MCP")} onClose={onClose} busy={busy} footer={<>
-    {step === 2 ? <button type="button" className="btn" disabled={busy} onClick={() => { setStep(1); setError('') }}>{t("上一步")}</button> : null}
-    <span className="grow" />
-    {step < 3 ? <button className="btn" onClick={onClose} disabled={busy}>{t("取消")}</button> : null}
+  const sourceModes: [SourceMode, string][] = [['manual', t("手动填写")], ['local', t("本机导入")]]
+  if (remoteHosts.length) sourceModes.push(['remote', t("SSH 机器导入")])
+  return <ResourceDialog className="settings-dialog settings-dialog-wide" title={kind === 'skills' ? t("添加 Skill") : t("添加 MCP")} onClose={onClose} busy={busy} footer={<>
+    {step === 2 ? <>
+      <span className="resource-distribution-summary">{t("已选 {{0}} 台机器 · {{1}} 个执行器", new Set(selected.map((scope) => scope.hostId)).size, selected.length)}</span>
+      <button type="button" className="btn ghost" disabled={busy} onClick={() => { setStep(1); setError('') }}>{t("上一步")}</button>
+    </> : null}
+    {step === 1 ? <button className="btn ghost" onClick={onClose} disabled={busy}>{t("取消")}</button> : null}
     {step === 1 ? <button className="btn pri" form="resource-add" type="submit" disabled={busy || !ready}>{scanning ? t("正在扫描…") : t("下一步")}</button> :
-      step === 2 ? <button className="btn pri" form="resource-add" type="submit" disabled={busy || !selected.length}>{busy ? t("正在添加…") : t("添加到所选 Agent")}</button> :
+      step === 2 ? <button className="btn pri" form="resource-add" type="submit" aria-label={t("添加到所选 Agent")} disabled={busy || !selected.length}>{busy ? t("正在添加…") : t("添加")}</button> :
         <button className="btn pri" disabled={busy} onClick={onClose}>{t("完成")}</button>}
   </>}>
     <ol className="resource-steps">
@@ -96,24 +104,34 @@ export function ResourceDistribution({ kind, state, current, currentValid, onRef
         {index ? <Icon name="chev" className="s" /> : null}{label}</li>)}
     </ol>
     <form id="resource-add" ref={form} tabIndex={-1} onSubmit={(event) => { event.preventDefault(); if (step === 1 && ready) advance(); else if (step === 2 && selected.length) void distribute() }}>
-      {step === 1 ? <fieldset className="host-fields" disabled={busy}>
-        {kind === 'mcp' ? <div className="resource-actions">
-          <button type="button" className={`btn sm ${!importMode ? 'on' : ''}`} aria-pressed={!importMode} onClick={() => { setImportMode(false); setError('') }}>{t("手动配置")}</button>
-          <button type="button" className={`btn sm ${importMode ? 'on' : ''}`} aria-pressed={importMode} onClick={() => { setImportMode(true); setError('') }}>{t("从配置文件导入")}</button>
-        </div> : null}
+      {step === 1 ? <fieldset className="host-fields resource-source" disabled={busy}>
+        {kind === 'mcp' ? <div className="fld"><span>{t("添加方式")}</span><div className="resource-source-modes" role="group" aria-label={t("添加方式")}>
+          {sourceModes.map(([mode, label]) => <button type="button" key={mode} className="btn" aria-pressed={sourceMode === mode}
+            onClick={() => { if (mode !== sourceMode) { setSourceMode(mode); clearSource() } }}>{label}</button>)}
+        </div></div> : null}
         {!importMode ? <>
-          <label className="fld"><span>{t("MCP 名称")}</span><input className="tx" autoFocus required value={name} onChange={(event) => setName(event.target.value)} /></label>
+          <label className="fld"><span>{t("MCP 名称")}</span><input className="tx" autoFocus required placeholder={t("例如 github-search")} value={name} onChange={(event) => setName(event.target.value)} /></label>
           <label className="fld"><span>{t("服务器配置 JSON")}</span><textarea className="tx resource-json" required value={config} spellCheck={false} onChange={(event) => setConfig(event.target.value)} placeholder={t("{\"command\":\"可执行命令\",\"args\":[],\"env\":{}}\n或 {\"url\":\"https://服务器/mcp\",\"headers\":{}}")} /></label>
         </> : <>
           {kind === 'skills' ? <div className="resource-actions"><button type="button" className="btn" onClick={() => void choose('folder')}>{t("选择文件夹")}</button>
             <button type="button" className="btn" onClick={() => void choose('zip')}>{t("选择 ZIP 压缩包")}</button></div> :
-            <div className="resource-toolbar"><ResourceMachineSelect hosts={state.hosts} value={sourceHost} label={t("来源机器")} onChange={(id) => { setSourceHost(id); clearSource() }} />
-              <button type="button" className="btn" onClick={() => void choose('config')}>{t("浏览")}</button></div>}
-          <p className="resource-path">{source || (kind === 'skills' ? t("请选择文件夹或 ZIP，将递归扫描所有 SKILL.md 所在目录。") : t("请选择 JSON、JSONC、TOML 或 YAML 格式的 MCP 配置文件。"))}</p>
+            <>
+              {sourceMode === 'remote' ? <ResourceMachineSelect hosts={remoteHosts} value={remoteHost} label={t("来源机器")} onChange={(id) => { setRemoteHost(id); clearSource() }} /> : null}
+              <div className="template-path-field">
+                <label className="fld"><span>{t("来源路径")}</span><input className="tx mono" readOnly value={source} placeholder={sourceMode === 'remote' ? t("选择远程配置文件") : t("选择本机配置文件")} /></label>
+                <button type="button" className="btn" onClick={() => void choose('config')}><Icon name="folder-open" />{t("浏览")}</button>
+              </div>
+              <p className="resource-help">{t("请选择 JSON、JSONC、TOML 或 YAML 格式的 MCP 配置文件。")}</p>
+            </>}
+          {kind === 'skills' ? <>
+            <p className={`resource-help${source ? ' mono' : ''}`}>{source || t("请选择文件夹或 ZIP，将递归扫描所有 SKILL.md 所在目录。")}</p>
+            <p className="resource-help">{t("保留 scripts、references 等附属文件。同名 Skill 不覆盖。导入上限为 32 MB、10000 个文件。")}</p>
+          </> : null}
           {sourceItems.length ? <ResourceImportPreview key={source} items={sourceItems} selected={selectedItems} onChange={setSelectedItems} disabled={busy} /> : null}
         </>}
       </fieldset> : null}
       {step === 2 ? <div className="resource-destinations">
+        <p className="resource-help">{t("可同时选择多台机器，并分别勾选每台机器的执行器。")}</p>
         {state.hosts.map((host) => {
           const choices = agents.map((agent) => {
             const scope = { hostId: host.id, executorId: agent.id }, template = executorTemplate(state, host.id, agent.id)
@@ -127,10 +145,11 @@ export function ResourceDistribution({ kind, state, current, currentValid, onRef
           return <section className="resource-machine-targets" key={host.id}>
             <div className="resource-machine-heading">
               <button type="button" className="btn ghost" aria-expanded={open} onClick={() => setExpanded(open ? expanded.filter((id) => id !== host.id) : [...expanded, host.id])}>
-                <Icon name="chev" className={open ? 's chev open' : 's chev'} />{hostDisplayName(host)}
+                <Icon name="chev" className={open ? 's chev open' : 's chev'} /><Icon name={host.id === 'local' ? 'laptop' : 'server'} />{hostDisplayName(host)}
               </button>
+              {!host.on ? <span className="resource-help">{t("未连接")}</span> : null}
               <small>{amount ? t("已选 {{0}} 个执行器", amount) : ''}</small>
-              <button type="button" className="btn sm ghost" disabled={busy || !available.length} onClick={() => {
+              <button type="button" className="btn ghost settings-link" disabled={busy || !available.length} onClick={() => {
                 setSelected((old) => [...old.filter((scope) => scope.hostId !== host.id), ...(all ? [] : available)])
                 if (!open) setExpanded([...expanded, host.id])
               }}>{all ? t("取消全选") : t("全选")}</button>
@@ -139,7 +158,7 @@ export function ResourceDistribution({ kind, state, current, currentValid, onRef
               {choices.map(({ scope, agent, template, native, available }) => <label key={agent.id} className="resource-choice resource-destination">
                 <input type="checkbox" checked={selected.some((item) => same(item, scope))} disabled={!available} aria-label={agent.name}
                   onChange={(event) => setSelected((old) => event.target.checked ? [...old, scope] : old.filter((it) => !same(it, scope)))} />
-                <span>{agent.name}</span><small>{template?.name || (native ? t("原生默认") : t("未选择模板"))}</small>
+                <span>{agent.name}<small>{template?.name || (native ? t("原生默认") : t("未选择模板"))}</small></span>
               </label>)}
             </fieldset> : null}
           </section>
@@ -149,9 +168,10 @@ export function ResourceDistribution({ kind, state, current, currentValid, onRef
         {results.map((row) => {
           const host = state.hosts.find((entry) => entry.id === row.hostId)
           return <div className="resource-result-row" key={JSON.stringify([row.hostId, row.agent, row.id || row.name])}>
+          <Icon name={row.ok || row.skipped ? 'check' : 'info'} />
           <div><b>{host ? hostDisplayName(host) : row.hostId} · {agents.find((agent) => agent.id === row.agent)?.name || row.agent}</b>
             <p className={row.ok || row.skipped ? 'resource-help' : 'file-error'}>{row.name || format} · {row.ok ? t("添加成功") : row.error}</p></div>
-          {row.ok ? <Icon name="check" className="s" /> : row.skipped ? null : <button type="button" className="btn sm" disabled={busy} onClick={() => void distribute(row)}>{t("重试")}</button>}
+          {row.ok || row.skipped ? null : <button type="button" className="btn ghost settings-link" disabled={busy} onClick={() => void distribute(row)}>{t("重试")}</button>}
           </div>
         })}
       </div> : null}

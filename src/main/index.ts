@@ -9,7 +9,7 @@ import type { PaneLayoutOptions } from '../shared/api'
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, shell, type MenuItemConstructorOptions } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
-import { PRESETS, type Executor, type ExecutorTemplate, type Host, type Project, type SavedTerm, type Settings, type ShellKind, type ResourceScope, type TestExecRequest, type WorkSession } from '../shared/types'
+import { PRESETS, type Executor, type ExecutorTemplate, type Host, type Project, type SavedTerm, type Settings, type ShellKind, type ResourceScope, type TemplateBinding, type TestExecRequest, type WorkSession } from '../shared/types'
 import { hostColor } from '../shared/host-colors'
 import { bindTemplate, deleteTemplate, machine, pruneTemplateBindings, putTemplate, resourcePath, validateResourcePaths } from './executor-templates'
 import { ScopedResources, scopeOf, type ResourceKind } from './resource-scopes'
@@ -483,10 +483,14 @@ function registerIpc(): void {
     draft.projects = projects
     if (draft.treeIgnores) for (const id of Object.keys(draft.treeIgnores)) if (!projects.some((project) => project.id === id)) delete draft.treeIgnores[id]
   }))
-  ipcMain.handle('db:custom', (_e, custom: Executor[]) => mutate((draft) => {
+  ipcMain.handle('db:custom', (_e, custom: Executor[], bindings: TemplateBinding[] = []) => mutate((draft) => {
     for (const executor of custom) { validateResourcePaths(executor.resources, machine(draft, 'local').platform); validateCustomSession(executor.session) }
     draft.custom = custom
     pruneTemplateBindings(draft)
+    for (const binding of bindings) {
+      if (!custom.some((executor) => executor.id === binding.executorId)) throw new Error(t("执行器不存在"))
+      bindTemplate(draft, binding, binding.templateId)
+    }
   }))
   ipcMain.handle('templates:save', (_e, template: ExecutorTemplate) => mutate((draft) => { putTemplate(draft, template) }))
   ipcMain.handle('templates:bind', (_e, scope: ResourceScope, templateId: string) => mutate((draft) => { bindTemplate(draft, scope, templateId) }))

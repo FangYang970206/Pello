@@ -51,6 +51,18 @@ try {
       await page.evaluate((size) => document.documentElement.style.setProperty('--ui-size', `${size}px`), width === 1024 ? 16 : 12)
       await section('skills')
       const inspect = page.getByRole('button', { name: '查看 long-skill 详情', exact: true })
+      await inspect.waitFor()
+      if (theme === 'dark' || theme === 'light') {
+        const geometry = await page.locator('.scol').evaluate((column) => {
+          const box = (selector) => column.querySelector(selector).getBoundingClientRect()
+          const host = box('.settings-toolbar select'), filter = box('.resource-controls input'), card = box('.card'), row = box('.resource-item')
+          return { aligned: host.left === filter.left && filter.left === card.left, hostWidth: host.width, filterWidth: filter.width,
+            filterGap: card.top - filter.bottom, rowHeight: row.height, fits: column.scrollWidth <= column.clientWidth }
+        })
+        assert.ok(geometry.aligned && geometry.fits && Math.abs(geometry.hostWidth - 218) < 1 && Math.abs(geometry.filterWidth - 235) < 1 &&
+          Math.abs(geometry.filterGap - 9) < 1 && Math.abs(geometry.rowHeight - 62) < 1, JSON.stringify(geometry))
+        await page.screenshot({ path: path.join(shots, `skill-list-${theme}-${width}.png`) })
+      }
       await inspect.click(); await aligned(true)
       await page.screenshot({ path: path.join(shots, `skill-detail-${theme}-${width}.png`) })
       for (let i = 0; i < 5; i++) {
@@ -68,6 +80,8 @@ try {
       await page.screenshot({ path: path.join(shots, `skill-add-${theme}-${width}.png`) })
       await page.keyboard.press('Escape')
       await section('mcp')
+      await page.getByRole('button', { name: '查看 fixture-mcp 详情', exact: true }).waitFor()
+      if (theme === 'dark' || theme === 'light') await page.screenshot({ path: path.join(shots, `mcp-list-${theme}-${width}.png`) })
       await page.getByRole('button', { name: '添加 MCP', exact: true }).click(); await aligned()
       await page.screenshot({ path: path.join(shots, `mcp-add-${theme}-${width}.png`) })
       await page.keyboard.press('Escape')

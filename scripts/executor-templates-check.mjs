@@ -38,7 +38,31 @@ try {
 
   await page.click('[data-a=settings]')
   await page.click('[data-a=sec][data-id=agents]')
+  await page.evaluate(() => window.awb.winResize(1440, 900))
+  await page.waitForFunction(() => innerWidth === 1440)
+  const themeControl = page.getByRole('button', { name: '切换深浅主题', exact: true })
+  await themeControl.press('Enter')
+  await page.waitForFunction(() => document.documentElement.dataset.palette === 'dark')
+  await themeControl.press('Enter')
+  await page.waitForFunction(() => document.documentElement.dataset.palette === 'light')
+  const header = await page.locator('.scol').evaluate((column) => {
+    const box = (selector) => column.querySelector(selector).getBoundingClientRect()
+    const heading = box('h1'), lead = box('.lead'), tabs = box('.executor-tabs')
+    const label = box('.resource-machine-field > span:first-child'), host = box('.settings-toolbar select')
+    return {
+      width: tabs.width, subtitleGap: lead.top - heading.bottom, tabsGap: tabs.top - lead.bottom,
+      labelGap: label.top - tabs.bottom, selectGap: host.top - label.bottom, hostWidth: host.width,
+      underline: getComputedStyle(column.querySelector('.executor-tabs [aria-pressed=true]'), '::after').height
+    }
+  })
+  for (const [key, expected] of Object.entries({ width: 760, subtitleGap: 6, tabsGap: 24, labelGap: 18, selectGap: 5, hostWidth: 218 })) {
+    assert.ok(Math.abs(header[key] - expected) < 1, JSON.stringify(header))
+  }
+  assert.equal(header.underline, '2px')
+  await page.screenshot({ path: path.join(output, 'executors.png'), animations: 'disabled' })
   await page.getByRole('button', { name: '模板管理', exact: true }).click()
+  await page.getByText('使用此模板的执行器', { exact: true }).waitFor()
+  await page.screenshot({ path: path.join(output, 'templates.png'), animations: 'disabled' })
   await page.getByRole('button', { name: '新建模板', exact: true }).click()
   let dialog = page.getByRole('dialog')
   await dialog.getByLabel('模板名称').fill('Team profile')
@@ -68,6 +92,22 @@ try {
   await assert.rejects(rejectBind({ hostId: 'fixture', executorId: 'claude' }, template.id), /所属|属于/)
   await assert.rejects(page.evaluate((template) => window.awb.saveTemplate({ ...template, skillAdapter: 'portable' }), template), /不兼容/)
   await assert.rejects(page.evaluate((template) => window.awb.saveTemplate({ ...template, id: '', name: 'Invalid', session: { startArgs: '--start', resumeArgs: '--resume' } }), template), /sessionId/)
+  await page.locator('[data-a=custom][data-id=legacy]').click()
+  dialog = page.getByRole('dialog')
+  const inlineBinding = dialog.getByLabel('高级属性模板', { exact: true })
+  assert.equal(await inlineBinding.inputValue(), template.id)
+  await inlineBinding.selectOption(migrated.id)
+  await dialog.getByRole('button', { name: '保存', exact: true }).click()
+  await dialog.waitFor({ state: 'detached' })
+  assert.equal((await state()).templateBindings.find((row) => row.executorId === 'legacy').templateId, migrated.id)
+  await page.getByLabel('Legacy executor 的高级属性模板').selectOption(template.id)
+  await page.waitForFunction(async (id) => (await window.awb.getState()).db.templateBindings.some((row) => row.executorId === 'legacy' && row.templateId === id), template.id)
+  await assert.rejects(page.evaluate(async ({ id, hostId }) => {
+    const { db } = await window.awb.getState()
+    const changed = db.custom.map((executor) => ({ ...executor, name: 'Partial save' }))
+    await window.awb.saveCustom(changed, [{ executorId: 'legacy', hostId, templateId: id }])
+  }, { id: template.id, hostId: host.id }), /所属|属于/)
+  assert.equal((await state()).custom[0].name, custom.name)
   const test = await page.evaluate(({ shell }) => window.awb.testExec({
     executorId: 'legacy', hostId: 'local', cmd: shell === 'pwsh' ? 'Write-Output' : 'printf',
     args: shell === 'pwsh' ? '$env:PELLO_TEMPLATE_PROBE' : '"%s\\n" "$PELLO_TEMPLATE_PROBE"', shell, env: []
@@ -89,6 +129,14 @@ try {
     }, { language, theme, width, height, font })
     await page.reload()
     await page.click('[data-a=settings]'); await page.click('[data-a=sec][data-id=agents]')
+    await page.evaluate(() => { document.querySelector('.scol').style.maxWidth = '380px' })
+    const fit = await page.locator('.executor-binding-row').first().evaluate((row) => {
+      const select = row.querySelector('select').getBoundingClientRect(), body = row.getBoundingClientRect(), mark = row.querySelector('.mark').getBoundingClientRect()
+      return { width: select.width, available: body.width - 28, wraps: select.top > mark.bottom, fits: row.scrollWidth <= row.clientWidth + 1 }
+    })
+    assert.ok(fit.wraps && fit.fits && Math.abs(fit.width - fit.available) < 1, JSON.stringify(fit))
+    await page.screenshot({ path: path.join(output, `executors-narrow-${theme}-${width}.png`), animations: 'disabled' })
+    await page.evaluate(() => { document.querySelector('.scol').style.maxWidth = '' })
     await page.getByRole('button', { name: /^(Templates|模板管理)$/ }).click()
     const edit = page.getByRole('button', { name: /^(Edit template|编辑模板) Team profile$/ })
     await edit.click()
@@ -146,7 +194,7 @@ try {
   dialog = page.getByRole('dialog')
   assert.match(await dialog.innerText(), /Claude Code.*原生默认位置/s)
   assert.match(await dialog.innerText(), /Legacy executor.*重新选择模板/s)
-  await dialog.getByRole('button', { name: '删除', exact: true }).click()
+  await dialog.getByRole('button', { name: '删除并解绑', exact: true }).click()
   await dialog.waitFor({ state: 'detached' })
   await page.evaluate((id) => window.awb.deleteTemplate(id), migrated.id)
   await page.evaluate(async (hostId) => {

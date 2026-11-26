@@ -4,6 +4,7 @@ import type {
   Executor,
   ExecutorTemplate,
   ResourceScope,
+  TemplateBinding,
   FileDiff,
   FileContent,
   GitFile,
@@ -43,7 +44,7 @@ export interface WorkbenchApi {
   localShells(): Promise<LocalShell[]>
   saveSettings(settings: Settings): Promise<Database>
   saveProjects(projects: Project[]): Promise<Database>
-  saveCustom(custom: Executor[]): Promise<Database>
+  saveCustom(custom: Executor[], bindings?: TemplateBinding[]): Promise<Database>
   saveHosts(hosts: Host[]): Promise<Database>
   saveTemplate(template: ExecutorTemplate): Promise<Database>
   bindTemplate(scope: ResourceScope, templateId: string): Promise<Database>

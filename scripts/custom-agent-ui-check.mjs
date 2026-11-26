@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { _electron as electron } from 'playwright'
+import { assertSettingsDialogPosition } from './fixtures/settings-dialog-position.mjs'
 
 const data=fs.mkdtempSync(path.join(os.tmpdir(),'pello-custom-ui-'))
 const shots=path.resolve('output/playwright/custom-agent');fs.mkdirSync(shots,{recursive:true})
@@ -16,9 +17,9 @@ try{
  const open=async()=>{await page.click('[data-a=settings]');await page.click('[data-a=sec][data-id=agents]');await page.click('[data-a=custom][data-id=public-test]')}
  await open()
  await page.selectOption('[data-ce=host]','linux')
- assert.equal(await page.locator('[data-a=ces][data-id=pwsh]').count(),0)
- assert.equal(await page.locator('[data-a=ces][data-id=cmd]').count(),0)
- assert.equal(await page.locator('[data-a=ces][data-id=bash]').getAttribute('aria-checked'),'true')
+ assert.equal(await page.locator('[data-ce=shell] option[value=pwsh]').count(),0)
+ assert.equal(await page.locator('[data-ce=shell] option[value=cmd]').count(),0)
+ assert.equal(await page.inputValue('[data-ce=shell]'),'bash')
  await page.fill('[data-ce=cmd]','qwen-linux')
  await page.fill('[data-ce=args]','--bare')
  await page.selectOption('[data-ce=host]','')
@@ -45,7 +46,8 @@ try{
    assert.equal(await page.locator('#modal h2').innerText(),language==='en'?'Edit executor':'编辑执行器')
    assert.equal(await page.evaluate(()=>document.documentElement.dataset.theme),theme)
    assert.equal(await page.locator('#modal .fld>span').first().evaluate(e=>parseFloat(getComputedStyle(e).fontSize)),font)
-   await page.evaluate(narrow=>{document.querySelector('#modal .dlg').style.width=narrow?'360px':''},narrow)
+   await page.evaluate(narrow=>{document.querySelector('.scol').style.maxWidth=narrow?'360px':''},narrow)
+   await assertSettingsDialogPosition(page.getByRole('dialog'))
    await page.locator('[data-ce=cmd]').fill('node')
    await page.locator('[data-ce=cmd]').focus();assert.equal(await page.locator('[data-ce=cmd]').evaluate(e=>e===document.activeElement),true)
    const geometry=await page.evaluate(()=>{
@@ -66,6 +68,16 @@ try{
    })
    assert.ok(swatchesFit)
    await page.screenshot({path:path.join(shots,`palette-${dpi}-${theme}-${language}-${font}.png`)})
+   await page.keyboard.press('Escape')
+   const add = page.locator('[data-a=custom]:not([data-id])')
+   await add.click()
+   const addDialog = page.getByRole('dialog', { name: language === 'en' ? 'Add executor' : '添加执行器', exact: true })
+   await assertSettingsDialogPosition(addDialog)
+   await addDialog.locator('[data-ce=name]').fill('Fixture executor')
+   await page.screenshot({ path: path.join(shots, `add-${dpi}-${theme}-${language}-${font}.png`) })
+   await page.keyboard.press('Escape')
+   await addDialog.waitFor({ state: 'detached' })
+   assert.equal(await add.evaluate((element) => element === document.activeElement), true)
  }
  console.log(`PASS rendered custom dialog, light/dark, Chinese/English, 12/16px, both window sizes, and a 360px container at ${dpi*100}% DPI`)
 }finally{await app.close()}

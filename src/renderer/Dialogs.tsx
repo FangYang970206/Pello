@@ -1,13 +1,14 @@
 import { t } from '../shared/i18n'
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
-import type { AgentInfo, Executor, Host, OsKind, PathCheck, Settings, ShellKind } from '../shared/types'
+import type { AgentInfo, Database, Executor, Host, OsKind, PathCheck, Settings, ShellKind } from '../shared/types'
 import { EXEC_COLORS, PRESETS, SHELL_AGENT, cmdline, hostDisplayName, hostLine, preferredAgent, shellLabel, uid } from '../shared/types'
 import { useAnchoredMenu } from './useAnchoredMenu'
 import { DirectoryBrowser } from './DirectoryBrowser'
 import { HostColorPicker } from './HostColorPicker'
 import { useLocalShells } from './useLocalShells'
 import { hostColor, nextHostColor } from '../shared/host-colors'
-import { executorForHost } from '../shared/executor'
+import { executorForHost, executorTemplate } from '../shared/executor'
+import { positionSettingsDialog } from './settings-dialog-position'
 
 export const dialogOpener: { current: HTMLElement | null } = { current: null }
 
@@ -45,6 +46,8 @@ export function Frame({
   subClass,
   wide,
   small,
+  alignToSettings = false,
+  className = '',
   children,
   footer,
   busy = false,
@@ -55,6 +58,8 @@ export function Frame({
   subClass?: string
   wide?: boolean
   small?: boolean
+  alignToSettings?: boolean
+  className?: string
   children: ReactNode
   footer: ReactNode
   busy?: boolean
@@ -62,11 +67,15 @@ export function Frame({
 }) {
   const headingId = useId()
   const descriptionId = useId()
+  const dialogRef = useRef<HTMLDivElement>(null)
   const busyRef = useRef(busy)
   busyRef.current = busy
   const dismiss = () => { if (!busyRef.current) onClose() }
   useLayoutEffect(() => {
-    const root = document.querySelector('#modal .dlg') as HTMLElement | null
+    if (alignToSettings && dialogRef.current) return positionSettingsDialog(dialogRef.current)
+  }, [alignToSettings])
+  useLayoutEffect(() => {
+    const root = dialogRef.current
     if (!root) return
     const opener = document.activeElement instanceof HTMLElement && !root.contains(document.activeElement) ? document.activeElement : null
     const first = root.querySelector<HTMLElement>('[data-autofocus], input:not([disabled]), .btn.pri')
@@ -108,7 +117,7 @@ export function Frame({
         if (event.target === event.currentTarget) dismiss()
       }}
     >
-      <div className={`dlg ${wide ? 'lg' : ''} ${small ? 'sm' : ''}`} role="dialog" tabIndex={-1} aria-busy={busy || undefined} aria-modal="true" aria-labelledby={headingId} aria-describedby={sub ? descriptionId : undefined}>
+      <div ref={dialogRef} className={`dlg ${wide ? 'lg' : ''} ${small ? 'sm' : ''} ${alignToSettings ? 'settings-positioned-dialog' : ''} ${className}`} role="dialog" tabIndex={-1} aria-busy={busy || undefined} aria-modal="true" aria-labelledby={headingId} aria-describedby={sub ? descriptionId : undefined}>
         <header>
           <h2 id={headingId}>{title}</h2>
           <button className="ib" data-a="mclose" aria-label={t("关闭")} disabled={busy} onClick={dismiss}>
@@ -123,12 +132,13 @@ export function Frame({
   )
 }
 
-export function ConfirmDialog({ title, body, ok, onOk, onClose, onSave }: { title: string; body: ReactNode; ok: string; onOk: () => void | Promise<void>; onClose: () => void; onSave?: () => void }) {
+export function ConfirmDialog({ title, body, ok, onOk, onClose, onSave, className }: { title: string; body: ReactNode; ok: string; onOk: () => void | Promise<void>; onClose: () => void; onSave?: () => void; className?: string }) {
   const [busy, setBusy] = useState(false)
   const submitting = useRef(false)
   return (
     <Frame
       title={title}
+      className={className}
       small
       busy={busy}
       onClose={onClose}
@@ -633,6 +643,8 @@ export function ExecDialog({
   hostId,
   cwd,
   hosts,
+  templates,
+  templateBindings,
   onClose,
   onSave,
   onDelete,
@@ -642,8 +654,10 @@ export function ExecDialog({
   hostId?: string
   cwd: string
   hosts: Host[]
+  templates: Database['templates']
+  templateBindings: Database['templateBindings']
   onClose: () => void
-  onSave: (exec: Executor) => Promise<void>
+  onSave: (exec: Executor, bindings: ReadonlyMap<string, string>) => Promise<void>
   onDelete: (id: string) => Promise<void>
   onToast: (text: string, bad?: boolean) => void
 }) {
@@ -655,12 +669,16 @@ export function ExecDialog({
   const [more, setMore] = useState(false)
   const [output, setOutput] = useState('')
   const [running, setRunning] = useState(false)
+  const [bindings, setBindings] = useState(() => new Map<string, string>())
   const [scope, setScope] = useState(hostId === 'local' ? '' : hostId || '')
   const local = useLocalShells()
   const target = hosts.find((host) => host.id === (scope || 'local')) || hosts[0]
   const launch = executorForHost(draft, scope)
   const options = target?.id === 'local' ? local.shells : shellOptions(target?.platform || 'linux')
   const selectedShell = options.some((item) => item.id === launch.shell) ? launch.shell : options[0]?.id || launch.shell
+  const targetId = target?.id || 'local'
+  const currentTemplate = executorTemplate({ templates, templateBindings }, targetId, draft.id)?.id || ''
+  const selectedTemplate = bindings.get(targetId) ?? currentTemplate
   const patch = (partial: Partial<Executor>) => setDraft((prev) => ({ ...prev, ...partial }))
   const patchLaunch = (partial: Partial<Pick<Executor, 'cmd' | 'args' | 'shell'>>) => {
     if (!scope) { patch(partial); return }
@@ -669,6 +687,8 @@ export function ExecDialog({
   return (
     <Frame
       title={draft.id ? t("编辑执行器") : t("添加执行器")}
+      alignToSettings
+      className="settings-dialog custom-executor-dialog"
       busy={running}
       onClose={onClose}
       footer={
@@ -719,12 +739,12 @@ export function ExecDialog({
               }
               const letter = draft.letter.trim() || draft.name.trim()[0].toUpperCase()
               setRunning(true)
-              try { await onSave({ ...draft, name: draft.name.trim(), cmd: draft.cmd.trim() || launch.cmd.trim(), letter }) }
+              try { await onSave({ ...draft, name: draft.name.trim(), cmd: draft.cmd.trim() || launch.cmd.trim(), letter }, bindings) }
               catch (error) { setOutput(String(error)); onToast(String(error), true) }
               finally { setRunning(false) }
             }}
           >
-            {draft.id ? t("保存") : t("添加")}
+            {t("保存")}
           </button>
         </>
       }
@@ -737,17 +757,6 @@ export function ExecDialog({
         </label>
         <label className="fld"><span>{t("配置机器")}</span><select className="sel" data-ce="host" value={scope} onChange={(event) => { setScope(event.target.value); setOutput('') }}><option value="">{t("默认配置（本机测试）")}</option>{hosts.map((host) => <option key={host.id} value={host.id}>{hostDisplayName(host)}</option>)}</select></label>
       </div>
-      <div className="fld">
-        {scope ? <button className="btn sm ghost" disabled={!draft.hosts?.[scope]} onClick={() => { const next = { ...draft.hosts }; delete next[scope]; patch({ hosts: next }) }}>{t("使用默认配置")}</button> : null}
-          <span>Shell</span>
-          <div className="seg" role="radiogroup" aria-label="Shell">
-            {options.map(({id, label}) => (
-              <button key={id} className={selectedShell === id ? 'on' : ''} role="radio" aria-checked={selectedShell === id} data-a="ces" data-id={id} onClick={() => patchLaunch({ shell: id })}>
-                {label}
-              </button>
-            ))}
-          </div>
-      </div>
       <div className="two">
         <label className="fld">
           <span>{t("命令")}</span>
@@ -758,6 +767,29 @@ export function ExecDialog({
           <input className="tx mono" data-ce="args" value={launch.args} placeholder="--interactive" onChange={(e) => patchLaunch({ args: e.target.value })} />
         </label>
       </div>
+      <label className="fld">
+        <span>Shell</span>
+        <select className="sel" data-ce="shell" aria-label="Shell" value={selectedShell} onChange={(event) => patchLaunch({ shell: event.target.value as ShellKind })}>
+          {options.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
+        </select>
+      </label>
+      <label className="fld">
+        <span>{t("高级属性模板")}</span>
+        <select className="sel" aria-label={t("高级属性模板")} value={selectedTemplate} onChange={(event) => {
+          const value = event.target.value
+          setBindings((old) => {
+            const next = new Map(old)
+            if (value === currentTemplate) next.delete(targetId)
+            else next.set(targetId, value)
+            return next
+          })
+        }}>
+          <option value="">{t("未选择模板")}</option>
+          {templates.filter((item) => item.hostId === targetId).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+        </select>
+      </label>
+      {target ? <p className="resource-help">{t("模板在 {{0}} 生效。新终端和下次重连使用保存后的配置。", hostDisplayName(target))}</p> : null}
+      {scope && draft.hosts?.[scope] ? <button className="btn ghost" onClick={() => { const next = { ...draft.hosts }; delete next[scope]; patch({ hosts: next }) }}>{t("使用默认配置")}</button> : null}
       <button className="disc" data-a="ce-more" aria-expanded={more} onClick={() => setMore((value) => !value)}>
         <Icon name="chev" className={`s chev${more ? ' open' : ''}`} />
         {t("标识与颜色")}
@@ -780,12 +812,10 @@ export function ExecDialog({
           </div>
         </div>
       ) : null}
-      <div className="fld" style={{ margin: 0 }}>
+      {output ? <div className="fld" style={{ margin: 0 }}>
         <span>{t("测试输出")}</span>
-        <div className="out" id="ceout">
-          {output || <span className="c-d">{t("“测试启动”会在当前项目目录中运行一次，并显示原始输出。")}</span>}
-        </div>
-      </div>
+        <div className="out" id="ceout">{output}</div>
+      </div> : null}
       </div>
     </Frame>
   )
@@ -816,6 +846,7 @@ function HostAuthentication({ host, onChange }: {
 export function HostDialog({
   initial,
   hosts = [],
+  alignToSettings,
   onClose,
   onSave,
   onDelete,
@@ -823,6 +854,7 @@ export function HostDialog({
 }: {
   initial: Host | null
   hosts?: Host[]
+  alignToSettings?: boolean
   onClose: () => void
   onSave: (host: Host) => Promise<void>
   onDelete: (id: string) => void
@@ -839,6 +871,7 @@ export function HostDialog({
   return (
     <Frame
       title={initial ? initial.name : t("添加机器")}
+      alignToSettings={alignToSettings}
       busy={busy}
       sub={
         initial ? (

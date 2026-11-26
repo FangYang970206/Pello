@@ -112,6 +112,8 @@ export function checkInvariants(files) {
   const recommendations = files.get('src/renderer/SkillRecommendations.tsx') || ''
   require(recommendations.includes('SKILL_REPOSITORIES.map(') && recommendations.includes('window.awb.openSkillRecommendation(id)') && !recommendations.includes('importSkills') && files.get('package.json')?.includes('scripts/skill-discovery-ui-check.mjs'),
     'AWB094', 'src/renderer/SkillRecommendations.tsx', 'Skill 推荐使用固定仓库入口并由主进程打开浏览器，导入仍使用独立的添加入口')
+  require(recommendations.includes('name="github"') && recommendations.includes('{owner}') && recommendations.includes('{item.description}'),
+    'AWB094', 'src/renderer/SkillRecommendations.tsx', 'Skill 推荐卡片显示 GitHub 图标、维护者和简介')
   require(named(save, 'saveFile')?.getText().includes('gitWrite(fileTarget(tab),') || named(source('src/renderer/App.tsx'), 'saveFile')?.getText().includes('gitWrite(fileTarget(tab),'),
     'AWB095', 'src/renderer/App.tsx', '文件保存必须绑定打开时的终端目标，不能使用后来切换的机器或目录')
   const recommendationHandler = files.get('src/main/index.ts')?.split("ipcMain.handle('resources:open-recommendation'")[1]?.split('ipcMain.handle(')[0] || ''
@@ -145,6 +147,8 @@ export function checkInvariants(files) {
   const resourceDialogFile = 'src/renderer/ResourceDialog.tsx', resourceDialog = source(resourceDialogFile)
   require(called(resourceDialog, 'showModal').length && nodes(resourceDialog, (node) => ts.isJsxOpeningElement(node) && node.tagName.getText() === 'dialog' && attr(node, 'onCancel') && attr(node, 'onPointerUp')).length,
     'AWB028', resourceDialogFile, '资源配置弹窗必须约束焦点、处理 Esc 与详情遮罩关闭')
+  require(called(resourceDialog, 'positionSettingsDialog').length && called(named(source('src/renderer/Dialogs.tsx'), 'Frame'), 'positionSettingsDialog').length,
+    'AWB028', resourceDialogFile, '资源弹窗与设置内执行器、机器表单共用内容区定位')
   const resourceMain = source('src/main/resources.ts')
   require(called(named(resourceMain, 'skillDirectory'), 'listed').length && called(main, 'trashItem').some((call) => called(call, 'skillDirectory').some((check) => check.arguments.at(-1)?.kind === ts.SyntaxKind.TrueKeyword)),
     'AWB033', 'src/main/index.ts', 'Skill 删除必须在主进程校验实际发现目录并移入系统回收站')
@@ -368,7 +372,7 @@ export function checkInvariants(files) {
   require(rightPanel.includes('data-a="git-view"') && rightPanel.includes('data-a="git-refresh"') &&
     !rightPanel.includes('<span>git status</span>') && !rightPanel.includes('repository-discovery') && files.get('src/renderer/GitChangeRows.tsx')?.includes('<VirtualFileRows') && scripts.check?.includes('scripts/git-about-check.mjs'),
     'AWB086', 'src/renderer/RightPanel.tsx', 'Git 变更共用图标切换平铺与树状，最右刷新，不恢复旧说明行，保留虚拟列表与回归')
-  require(files.get('src/renderer/SettingsView.tsx')?.includes("id: 'about'") && files.get('src/renderer/SettingsView.tsx')?.includes("section !== 'about' ? <h1>") && files.get('src/renderer/AboutView.tsx')?.includes('window.awb.meta()') &&
+  require(files.get('src/renderer/SettingsView.tsx')?.includes("id: 'about'") && files.get('src/renderer/SettingsView.tsx')?.includes("section !== 'about' ? <header className=\"settings-page-heading\">") && files.get('src/renderer/AboutView.tsx')?.includes('window.awb.meta()') &&
     files.get('src/shared/app-info.ts')?.includes("'zh-CN': '方阳', en: 'FangYang'") && !files.get('src/renderer/styles/extra.css')?.includes('about-nav') &&
     files.get(mainFile)?.includes('version: app.getVersion()') && files.get(mainFile)?.includes('shell.openExternal(APP_HOMEPAGE)') && files.get('src/renderer/styles/extra.css')?.includes('.about-eye, .git-scanning { animation: none; }'),
     'AWB087', 'src/renderer/AboutView.tsx', '关于页展示真实版本和品牌，固定主页经主进程打开，眨眼尊重减少动态效果')

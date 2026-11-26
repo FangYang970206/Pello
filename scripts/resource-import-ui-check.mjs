@@ -49,7 +49,7 @@ try {
   assert.ok(fs.existsSync(path.join(home, '.pi/agent/skills/zip-inner/SKILL.md')))
   await page.click('[data-a=sec][data-id=mcp]')
   await page.getByRole('button', { name: '添加 MCP', exact: true }).click()
-  await choose(config); await page.getByRole('button', { name: '从配置文件导入', exact: true }).click()
+  await choose(config); await page.getByRole('button', { name: '本机导入', exact: true }).click()
   await page.getByRole('button', { name: '浏览', exact: true }).click()
   await page.getByText('发现 4 项 · 已选择 3 项', { exact: true }).waitFor()
   assert.ok(!(await page.getByRole('dialog').textContent()).includes('never-display-secret'))
@@ -61,7 +61,7 @@ try {
       await page.getByRole('button', { name: '取消', exact: true }).click()
       await page.click('[data-a=sec][data-id=look]'); await page.click('[data-a=theme][data-id=light]')
       await page.click('[data-a=sec][data-id=mcp]'); await page.getByRole('button', { name: '添加 MCP', exact: true }).click()
-      await choose(config); await page.getByRole('button', { name: '从配置文件导入', exact: true }).click()
+      await choose(config); await page.getByRole('button', { name: '本机导入', exact: true }).click()
       await page.getByRole('button', { name: '浏览', exact: true }).click()
       await page.getByText('发现 4 项 · 已选择 3 项', { exact: true }).waitFor()
     }
