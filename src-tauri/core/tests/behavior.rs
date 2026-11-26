@@ -611,10 +611,12 @@ fn the_file_tree_menu_copies_paths_opens_files_with_and_saves_them_elsewhere() {
     let source = project.join("note.txt");
     fs::write(&source, "a note to be saved elsewhere\n").unwrap();
     let real = pello_core::real_path(&project).unwrap();
-    // A remote project on a machine that is configured but not connected: it
-    // is written before the workbench opens, as saving a host tries to reach it.
+    // A remote project on a machine of its own. It is written before the
+    // workbench opens, as saving a host tries to reach it; nothing here asks
+    // the machine anything, as the menu and a copied path are read from the
+    // record alone.
     fs::create_dir_all(root.join("data")).unwrap();
-    fs::write(root.join("data").join("workbench.json"), json!({ "hosts": [{ "id": "local", "name": "本机", "on": true }, { "id": "remote", "name": "Remote", "addr": "127.0.0.1", "user": "wire", "port": 1, "auth": "key", "platform": "linux", "os": "Linux", "on": false }] }).to_string()).unwrap();
+    fs::write(root.join("data").join("workbench.json"), json!({ "hosts": [{ "id": "local", "name": "本机", "on": true }, { "id": "remote", "name": "Remote", "addr": "127.0.0.1", "user": "wire", "port": 1, "auth": "key", "platform": "linux", "os": "Linux", "on": true }] }).to_string()).unwrap();
     let (bench, _events) = workbench(&root);
     let clipboard_file = root.join("clipboard.txt");
     let open_log = root.join("open.log");
@@ -681,8 +683,8 @@ fn the_file_tree_menu_copies_paths_opens_files_with_and_saves_them_elsewhere() {
     fs::remove_file(&open_log).ok();
     bench.dispatch("tree:action", &[json!("p"), json!("src"), json!(true), json!("reveal")]).unwrap();
     assert_eq!(slashes(fs::read_to_string(&open_log).unwrap_or_default().trim()), slashes(&real.join("src").to_string_lossy()), "the folder is opened");
-    // What is not an item of the menu is refused, and copying works on a
-    // remote project where nothing else does.
+    // What is not an item of the menu is refused, and a remote project has
+    // its own menu: uploading where a local one imports, and a download.
     assert_eq!(bench.dispatch("tree:action", &[json!("p"), json!("note.txt"), json!(false), json!("print")]).unwrap_err(), "不支持此操作");
     bench.dispatch("db:projects", &[json!([
         { "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" },
@@ -924,8 +926,9 @@ fn local_search_skips_dot_directories_limits_matches_and_names_files() {
     assert_eq!(names[0]["dir"], false);
 
     bench.dispatch("db:projects", &[json!([{ "id": "remote", "name": "R", "host": "ssh-1", "path": "/tmp", "branch": "", "agent": "shell" }])]).unwrap();
+    // The project is on a machine whose record is not there any more.
     let remote = bench.dispatch("content:search-start", &[json!("remote"), json!("remote-search"), json!("Pello"), json!(true), json!(false), json!(false)]).unwrap_err();
-    assert!(remote.contains("主机不存在"), "{remote}");
+    assert_eq!(remote, "机器已移除");
     let _ = fs::remove_dir_all(root);
 }
 
@@ -4981,5 +4984,58 @@ fn file_dialogs_ask_for_what_the_electron_build_asked_for() {
     assert_eq!(open("files")["title"], "Choose import source");
     assert_eq!(open("zip")["filters"][0]["name"], "ZIP archive");
     assert_eq!(open("config")["filters"][0]["name"], "Agent configuration");
+    let _ = fs::remove_dir_all(root);
+}
+/// Where a project is decides what is said when it cannot be reached: a
+/// project that is not there, a machine whose record was removed, and a
+/// machine that is there but not connected are three different things, said
+/// so in the user's language and the same by every channel that needs one.
+#[test]
+fn a_project_whose_machine_is_removed_or_not_connected_is_said_so_by_every_channel() {
+    let _lock = env_lock();
+    let root = temp_dir("target-errors");
+    let data = root.join("data");
+    fs::create_dir_all(&data).unwrap();
+    // A machine that is configured but switched off: its record is there, its
+    // connection is not. `gone` has no record at all.
+    fs::write(data.join("workbench.json"), r#"{
+        "settings": { "language": "zh-CN", "theme": "light", "restore": false, "autoCheckUpdates": false },
+        "hosts": [
+            { "id": "local", "name": "本机", "on": true },
+            { "id": "off", "name": "未连接", "host": "127.0.0.1", "port": 1, "user": "u", "on": false }
+        ],
+        "projects": [
+            { "id": "off-project", "name": "未连接的项目", "host": "off", "path": "/srv/site", "branch": "", "agent": "shell" },
+            { "id": "gone-project", "name": "机器已移除的项目", "host": "gone", "path": "/srv/old", "branch": "", "agent": "shell" }
+        ]
+    }"#).unwrap();
+    let (bench, _) = workbench(&root);
+
+    // Every channel that goes to a project's machine says the same of it,
+    // and says it at once: nothing is asked of a machine it cannot reach.
+    for project in ["off-project", "gone-project", "no-such-project"] {
+        let expected = match project {
+            "off-project" => "这台机器未连接",
+            "gone-project" => "机器已移除",
+            _ => "项目不存在",
+        };
+        let on = |channel: &str, args: &[serde_json::Value]| bench.dispatch(channel, args).map(|_| String::new()).unwrap_or_else(|error| error);
+        assert_eq!(on("git:tree", &[json!(project), json!("")]), expected, "{project}: git:tree");
+        assert_eq!(on("git:status", &[json!(project)]), expected, "{project}: git:status");
+        assert_eq!(on("tree:menu", &[json!(project), json!(""), json!(true)]), expected, "{project}: tree:menu");
+        assert_eq!(on("tree:action", &[json!(project), json!(""), json!(true), json!("reveal")]), expected, "{project}: tree:action");
+    }
+
+    // Said in English when that is the language, as the Electron build says it.
+    bench.dispatch("db:settings", &[json!({ "language": "en" })]).unwrap();
+    assert_eq!(bench.dispatch("git:tree", &[json!("off-project"), json!("")]).unwrap_err(), "This machine is disconnected");
+    assert_eq!(bench.dispatch("git:tree", &[json!("gone-project"), json!("")]).unwrap_err(), "Machine has been removed");
+    assert_eq!(bench.dispatch("git:tree", &[json!("no-such-project"), json!("")]).unwrap_err(), "Project does not exist");
+
+    // Copying a path goes through the same door: the Electron build asks
+    // where the project is before it looks at what was chosen, so a machine
+    // that is not connected is said so of a copy too.
+    assert_eq!(bench.dispatch("tree:action", &[json!("off-project"), json!("docs"), json!(true), json!("copy-full")]).unwrap_err(), "This machine is disconnected");
+    assert_eq!(bench.dispatch("tree:action", &[json!("gone-project"), json!("docs"), json!(true), json!("copy-full")]).unwrap_err(), "Machine has been removed");
     let _ = fs::remove_dir_all(root);
 }

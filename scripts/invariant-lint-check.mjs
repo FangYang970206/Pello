@@ -169,14 +169,21 @@ const cases = [
   ['AWB080', 'src-tauri/core/src/shell.rs', '.args(["/select,", &target])', '.args([&target])'],
   ['AWB080', 'src-tauri/core/src/shell.rs', 'SetClipboardData(CF_UNICODETEXT as u32, memory)', 'std::fs::write("clipboard.txt", text)'],
   ['AWB080', 'src-tauri/core/src/shell.rs', 'match crate::sys::rename_noreplace(&temporary, destination) {', 'std::fs::rename(&temporary, destination);'],
+  ['AWB081', 'src-tauri/core/src/workbench.rs', 'if host.as_ref().is_some_and(|host| host["on"] == false) {', ''],
+  ['AWB081', 'src-tauri/core/src/workbench.rs', '.ok_or_else(|| translate(language, "机器已移除", &[] as &[String]))', '.ok_or_else(|| "主机不存在".to_string())'],
+  ['AWB081', 'src-tauri/core/src/workbench.rs', 'if host.as_ref().is_some_and(|host| host["on"] == false) {', 'if host.as_ref().is_none_or(|host| host["on"] == false) {'],
+  ['AWB081', 'src-tauri/core/src/workbench.rs', 'let (project, host) = self.project_target(project_id, language)?;\n        let path = project["path"].as_str().unwrap_or("").to_string();\n        Ok(host.map(|host| (host, path)))', 'let (project, host) = (self.project(project_id, language)?, self.optional_host(self.project(project_id, language)?["host"].as_str().unwrap_or("local"), language)?);\n        let path = project["path"].as_str().unwrap_or("").to_string();\n        Ok(host.map(|host| (host, path)))'],
+  ['AWB081', 'src-tauri/core/src/workbench.rs', 'let host = if project_id.is_empty() { None } else { self.project_target(&project_id, language)?.1 };', 'let host = if project_id.is_empty() { None } else { self.optional_host(self.project(&project_id, language)?["host"].as_str().unwrap_or("local"), language)? };'],
+  ['AWB081', 'src-tauri/core/src/workbench.rs', 'let (project, host) = self.project_target(project_id, language)?;\n        let root = project["path"].as_str().unwrap_or("").to_string();', 'let (project, host) = (self.project(&project_id, language)?, self.optional_host(self.project(&project_id, language)?["host"].as_str().unwrap_or("local"), language)?);\n        let root = project["path"].as_str().unwrap_or("").to_string();'],
+  ['AWB081', 'src-tauri/core/src/i18n.rs', '("机器已移除", "Machine has been removed"),', ''],
 ]
-for (const [id, file, before, after] of cases) {
+cases.forEach(([id, file, before, after], index) => {
   const mutated = new Map(files)
-  assert.ok(files.get(file)?.includes(before), `${id}: mutation is stale`)
+  assert.ok(files.get(file)?.includes(before), `${id} (case ${index + 1}, ${file}): mutation is stale: ${JSON.stringify(before.slice(0, 80))}`)
   let text = files.get(file).replaceAll(before, after)
   if (id === 'AWB012') text = text.replaceAll('versionOf(fs.readFileSync(abs)) !== version', 'false')
   mutated.set(file, text)
   const errors = checkInvariants(mutated)
-  assert.ok(errors.some((error) => error.id === id), `${id}: lint did not catch its regression`)
-}
+  assert.ok(errors.some((error) => error.id === id), `${id} (case ${index + 1}, ${file}): lint did not catch its regression: ${JSON.stringify(before.slice(0, 80))}`)
+})
 console.log(`Invariant lint negative cases passed (${cases.length})`)

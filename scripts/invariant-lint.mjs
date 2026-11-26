@@ -298,6 +298,18 @@ export function checkInvariants(files) {
   const kernelShell = files.get('src-tauri/core/src/shell.rs') || ''
   require(kernel.includes('if action == "copy-full" || action == "copy-relative" {') && kernel.includes('shell::set_clipboard_text(if action == "copy-full" { &place.root } else { &relative });') && kernel.includes('if place.local && files::is_directory(Path::new(&place.root)) != Some(directory) {') && kernel.includes('if files::is_directory(&full) != Some(directory) {') && kernel.includes('shell::copy_to_new_file(') && kernel.includes('translate(language, "源文件已更改"') && kernelShell.includes('ShellExecuteW(') && kernelShell.includes('.args(["/select,", &target])') && kernelShell.includes('SetClipboardData(CF_UNICODETEXT as u32, memory)') && kernelShell.includes('match crate::sys::rename_noreplace(&temporary, destination) {'),
     'AWB080', 'src-tauri/core/src/shell.rs', '文件树菜单经内核桌面层复制、打开、另存为：复制写剪贴板且不返回页面，动作前复核类型，另存为只发布到空闲文件名，Windows 走系统调用')
+  // Where a project is asked through one door, as the Electron build's
+  // `projectTarget` asks: a project that is not there, a machine whose record
+  // was removed and a machine that is not connected are said so, in that
+  // order, in the user's language; and a channel that goes to a project's
+  // machine goes through it rather than to the machine on its own.
+  const door = /fn project_target\([\s\S]*?\n {4}\}/.exec(kernel)?.[0] || ''
+  const saysRemoved = /fn optional_host[\s\S]*?\.ok_or_else\(\|\| translate\(language, "机器已移除", &\[\] as &\[String\]\)\)/.test(kernel)
+  // The body of a method, and no further: what follows its closing brace
+  // belongs to the next one, and must not vouch for this.
+  const body = (name) => new RegExp('\\n    fn ' + name + '\\([\\s\\S]*?\\n    \\}').exec(kernel)?.[0] || ''
+  require(/let project = self\.project\(project_id, language\)\?;\r?\n\s*let host = self\.optional_host\([^;]+, language\)\?;\r?\n\s*if host\.as_ref\(\)\.is_some_and\(\|host\| host\["on"\] == false\) \{\r?\n\s*return Err\(translate\(language, "这台机器未连接", &\[\] as &\[String\]\)\);/.test(door) && saysRemoved && !kernel.includes('主机不存在') && ['remote_place', 'transfer_drop', 'transfer_retry', 'tree_place'].every((name) => body(name).includes('self.project_target(')) && i18nTable.includes('("机器已移除", "Machine has been removed"),'),
+    'AWB081', 'src-tauri/core/src/workbench.rs', '项目所在机器经统一入口查找：项目不存在、机器已移除、这台机器未连接按序翻译报错，文件树与传输经该入口而非各自查主机')
   return errors
 }
 

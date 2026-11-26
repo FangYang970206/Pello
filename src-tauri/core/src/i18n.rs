@@ -5,6 +5,7 @@ const EN: &[(&str, &str)] = &[
     ("数据目录包含链接，无法自动迁移：{{0}}", "The data folder contains a link and cannot be migrated automatically: {{0}}"),
     ("数据目录无效：{{0}}", "Invalid data folder: {{0}}"),
     ("项目不存在", "Project does not exist"),
+    ("机器已移除", "Machine has been removed"),
     ("非法文件路径", "Invalid file path"),
     ("路径超出项目目录", "Path is outside the project directory"),
     ("名称无效", "Invalid name"),

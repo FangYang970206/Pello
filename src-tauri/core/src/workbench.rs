@@ -665,7 +665,7 @@ impl Workbench {
     }
 
     fn path_check(&self, host_id: &str, input: &str, language: &str) -> Result<Value, String> {
-        let Some(host) = self.optional_host(host_id)? else { return Ok(files::check_path(input, language)) };
+        let Some(host) = self.optional_host(host_id, language)? else { return Ok(files::check_path(input, language)) };
         let value = input.trim();
         if value.is_empty() { return Ok(json!({ "kind": "empty" })) }
         if !value.starts_with('/') || value.contains('\0') { return Ok(json!({ "kind": "invalid" })) }
@@ -682,7 +682,7 @@ impl Workbench {
         if std::env::var("AWB_PATH_FIXTURE").ok().as_deref() == Some("1") {
             return fixture_directory(input);
         }
-        let Some(host) = self.optional_host(host_id)? else { return Ok(files::list_dir(input)) };
+        let Some(host) = self.optional_host(host_id, language)? else { return Ok(files::list_dir(input)) };
         if host["platform"] == "windows" {
             let current = input.trim();
             let script = if current.is_empty() { ssh::windows_home_dir_script(language) } else { ssh::windows_dir_script(current, language) };
@@ -736,7 +736,7 @@ impl Workbench {
 
     fn pty_create_inner(&self, request: Value, id: &str, language: &str) -> Result<Value, String> {
         let project = self.project(request["projectId"].as_str().unwrap_or(""), language)?;
-        if let Some(host) = self.optional_host(project["host"].as_str().unwrap_or("local"))? {
+        if let Some(host) = self.optional_host(project["host"].as_str().unwrap_or("local"), language)? {
         if host["on"] == false {
             return Err(translate(language, "这台机器未连接", &[] as &[String]));
         }
@@ -827,7 +827,7 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
         // connected, cannot be tested on: said the same of both, as the
         // Electron build says it.
         let disconnected = || translate(language, "这台机器未连接", &[] as &[String]);
-        let host = match self.optional_host(host_id) {
+        let host = match self.optional_host(host_id, language) {
             Ok(host) => host,
             Err(_) => return Err(disconnected()),
         };
@@ -1017,17 +1017,34 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
         Ok((std::path::PathBuf::from(&path), format!("{host}|{path}")))
     }
 
-    fn optional_host(&self, host_id: &str) -> Result<Option<Value>, String> {
+    /// The record of a machine, or none for this one. A record that is not
+    /// there is said so; whether the machine is connected is not asked here,
+    /// as a path may be checked on a machine that is not connected yet.
+    fn optional_host(&self, host_id: &str, language: &str) -> Result<Option<Value>, String> {
         if host_id.is_empty() || host_id == "local" { return Ok(None) }
         self.db.lock().expect("db")["hosts"].as_array().and_then(|list| list.iter().find(|host| host["id"] == host_id).cloned()).map(Some)
-            .ok_or_else(|| "主机不存在".to_string())
+            .ok_or_else(|| translate(language, "机器已移除", &[] as &[String]))
+    }
+
+    /// Where a project is, as the Electron build's `projectTarget` finds it:
+    /// the project and the machine it is on, which is none for this one. A
+    /// project that is not there, a machine whose record was removed and a
+    /// machine that is not connected are three different things, said in that
+    /// order, and every channel that goes to a project's machine says the same
+    /// of them.
+    fn project_target(&self, project_id: &str, language: &str) -> Result<(Value, Option<Value>), String> {
+        let project = self.project(project_id, language)?;
+        let host = self.optional_host(project["host"].as_str().unwrap_or("local"), language)?;
+        if host.as_ref().is_some_and(|host| host["on"] == false) {
+            return Err(translate(language, "这台机器未连接", &[] as &[String]));
+        }
+        Ok((project, host))
     }
 
     fn remote_place(&self, project_id: &str, language: &str) -> Result<Option<(Value, String)>, String> {
-        let project = self.project(project_id, language)?;
-        let host_id = project["host"].as_str().unwrap_or("local");
+        let (project, host) = self.project_target(project_id, language)?;
         let path = project["path"].as_str().unwrap_or("").to_string();
-        Ok(self.optional_host(host_id)?.map(|host| (host, path)))
+        Ok(host.map(|host| (host, path)))
     }
 
     fn confirm_identity(&self, project_id: &str, identity: &str, language: &str) -> Result<(), String> {
@@ -1152,7 +1169,7 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
     fn validate_transfer_target(&self, id: &str, language: &str) -> Result<(), String> {
         let (project_id, root) = self.imports.context(id, language)?;
         let project = self.project(&project_id, language)?;
-        if self.optional_host(project["host"].as_str().unwrap_or("local"))?.is_some() {
+        if self.optional_host(project["host"].as_str().unwrap_or("local"), language)?.is_some() {
             return Err(translate(language, "项目环境已更改", &[] as &[String]));
         }
         let real = crate::real_path(project["path"].as_str().unwrap_or("")).map_err(|error| error.to_string())?;
@@ -1165,9 +1182,8 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
         let project_id = str_arg(args, 0).to_string();
         let parent = str_arg(args, 1).to_string();
         let sources = args.get(2).and_then(|value| value.as_array()).map(|list| list.iter().filter_map(|item| item.as_str().map(|item| item.to_string())).collect::<Vec<_>>()).unwrap_or_default();
-        let project = self.project(&project_id, language)?;
+        let (project, host) = self.project_target(&project_id, language)?;
         let root = project["path"].as_str().unwrap_or("").to_string();
-        let host = self.optional_host(project["host"].as_str().unwrap_or("local"))?;
         if host.is_none() {
             let others = self.local_projects(&project_id);
             return self.imports.start(project_id, PathBuf::from(root), parent, sources, others, self.dirty.clone(), language.to_string(), self.emit.clone());
@@ -1181,7 +1197,7 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
     /// host and at the path it was when the download began.
     fn download_retry(&self, id: &str, language: &str) -> Result<Value, String> {
         let project = self.project(&self.downloads.project_id(id), language)?;
-        let host = self.optional_host(project["host"].as_str().unwrap_or("local"))?.ok_or_else(|| translate(language, "项目环境已更改", &[] as &[String]))?;
+        let host = self.optional_host(project["host"].as_str().unwrap_or("local"), language)?.ok_or_else(|| translate(language, "项目环境已更改", &[] as &[String]))?;
         let root = project["path"].as_str().unwrap_or("").to_string();
         let identity = format!("{}|{}", project["host"].as_str().unwrap_or("local"), root);
         let id = self.downloads.retry(id, host, &identity, language, self.emit.clone())?;
@@ -1190,7 +1206,7 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
 
     fn transfer_retry(&self, id: &str, language: &str) -> Result<Value, String> {
         let project_id = self.uploads.project_id(id).unwrap_or_default();
-        let host = if project_id.is_empty() { None } else { self.optional_host(self.project(&project_id, language)?["host"].as_str().unwrap_or("local"))? };
+        let host = if project_id.is_empty() { None } else { self.project_target(&project_id, language)?.1 };
         self.uploads.retry(self.paths.data.clone(), host, language.to_string(), self.emit.clone(), id)
     }
 
@@ -1205,13 +1221,12 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
     }
 
     fn tree_place(&self, project_id: &str, rel: &str, language: &str) -> Result<TreePlace, String> {
-        let project = self.project(project_id, language)?;
-        let host_id = project["host"].as_str().unwrap_or("local").to_string();
+        let (project, host) = self.project_target(project_id, language)?;
         let root = project["path"].as_str().unwrap_or("").to_string();
         let relative = files::clean_relative(rel, language)?;
-        let remote = !host_id.is_empty() && host_id != "local";
+        let remote = host.is_some();
         let platform = if remote {
-            self.optional_host(&host_id)?.map_or("linux".to_string(), |host| host["platform"].as_str().unwrap_or("linux").to_string())
+            host.as_ref().map_or("linux".to_string(), |host| host["platform"].as_str().unwrap_or("linux").to_string())
         } else if cfg!(windows) {
             "win32".to_string()
         } else {
