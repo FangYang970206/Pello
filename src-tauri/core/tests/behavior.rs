@@ -5039,3 +5039,82 @@ fn a_project_whose_machine_is_removed_or_not_connected_is_said_so_by_every_chann
     assert_eq!(bench.dispatch("tree:action", &[json!("gone-project"), json!("docs"), json!(true), json!("copy-full")]).unwrap_err(), "Machine has been removed");
     let _ = fs::remove_dir_all(root);
 }
+/// A path is checked and listed on a machine by its id alone, as the
+/// Electron build does it, and it does not go through the door a project
+/// goes through: a machine whose record is gone falls back to the first one
+/// instead of being refused, a machine that is not connected is asked all
+/// the same, and what the machine says of a failure is what the page is
+/// told, not that the path is not there.
+#[test]
+fn a_path_is_checked_on_a_machine_by_its_id_with_the_electron_builds_fallbacks_and_errors() {
+    let _lock = env_lock();
+    let root = temp_dir("path-check");
+    let data = root.join("data");
+    fs::create_dir_all(&data).unwrap();
+    fs::write(data.join("workbench.json"), json!({ "hosts": [
+        { "id": "local", "name": "本机", "on": true },
+        { "id": "linux", "name": "Linux", "addr": "127.0.0.1", "user": "probe", "port": 1, "auth": "key", "platform": "linux", "os": "Linux", "on": true },
+        { "id": "win", "name": "Windows", "addr": "127.0.0.1", "user": "probe", "port": 1, "auth": "key", "platform": "windows", "os": "Windows", "on": true },
+        { "id": "off", "name": "未连接", "addr": "127.0.0.1", "user": "probe", "port": 1, "auth": "key", "platform": "linux", "os": "Linux", "on": false }
+    ] }).to_string()).unwrap();
+    // The stand-in for ssh: it writes where it was sent, and answers what the
+    // case tells it to, or fails saying why. The arguments after the machine
+    // are rewritten by cmd on the way; the machine itself is one word, and
+    // is what the case reads.
+    let log = root.join("ssh.log");
+    let script = root.join("probe-ssh.js");
+    fs::write(&script, r#"const fs = require('fs');
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.AWB_PROBE_LOG, JSON.stringify(args) + '\n');
+const answer = process.env.AWB_PROBE_ANSWER || '';
+if (answer === 'fail') { process.stderr.write('ssh: connect to host 127.0.0.1 port 1: Connection refused\r\n'); process.exit(255); }
+process.stdout.write(answer);
+"#).unwrap();
+    let shim = root.join("probe-ssh.cmd");
+    fs::write(&shim, format!("@echo off\r\nnode \"{}\" %*\r\n", script.display())).unwrap();
+    let _bin = var_guard("AWB_SSH_BIN", shim.to_str().unwrap());
+    let _log = var_guard("AWB_PROBE_LOG", log.to_str().unwrap());
+    let _answer = var_guard("AWB_PROBE_ANSWER", "");
+    let (bench, _events) = workbench(&root);
+    // The machines asked so far, in order.
+    let asked = || -> Vec<String> {
+        fs::read_to_string(&log).unwrap_or_default().lines().filter_map(|line| serde_json::from_str::<Vec<String>>(line).ok())
+            .map(|args| args.iter().find(|arg| arg.starts_with("probe@")).cloned().unwrap_or_default()).collect()
+    };
+
+    // An id that is no machine's falls back to the first machine, which is
+    // this one: the path is read here, and no machine is asked.
+    let here = root.display().to_string();
+    assert_eq!(bench.dispatch("path:check", &[json!("local"), json!(here)]).unwrap(), json!({ "kind": "plain" }), "this machine's own path");
+    let fallen_back = bench.dispatch("path:check", &[json!("no-such-machine"), json!(here)]).unwrap();
+    assert_eq!(fallen_back, json!({ "kind": "plain" }), "an id that is no machine's is the first machine's");
+    assert!(asked().is_empty(), "nothing is asked of a machine for this one's path: {:?}", asked());
+
+    // What is absolute is decided for the machine the path is on: a Windows
+    // path is not refused for not starting with a slash on a Windows machine,
+    // and is on a Linux one. Nothing is asked of either before that is known.
+    let _ = fs::remove_file(&log);
+    let linux = bench.dispatch("path:check", &[json!("linux"), json!(r"C:\项目")]).unwrap();
+    assert_eq!(linux, json!({ "kind": "invalid" }), "{linux}");
+    assert!(asked().is_empty(), "an invalid path is refused without asking: {:?}", asked());
+    // A Windows machine's "is it a directory" is answered with yes, and the
+    // questions that follow with what a plain folder makes of them: not a
+    // work tree.
+    std::env::set_var("AWB_PROBE_ANSWER", "yes\r\n");
+    let windows = bench.dispatch("path:check", &[json!("win"), json!(r"C:\项目")]).unwrap();
+    assert_eq!(windows["kind"], "plain", "{windows}");
+    assert_eq!(asked(), vec!["probe@127.0.0.1".to_string(); 2], "asked of the Windows machine twice: a directory, then a work tree");
+
+    // A machine that is not connected is asked all the same, and what it
+    // says of the failure is what the page is told.
+    let _ = fs::remove_file(&log);
+    std::env::set_var("AWB_PROBE_ANSWER", "fail");
+    let refused = bench.dispatch("path:check", &[json!("off"), json!("/srv/site")]).unwrap();
+    assert_eq!(refused["kind"], "error", "{refused}");
+    assert!(refused["detail"].as_str().unwrap_or("").contains("Connection refused"), "{refused}");
+    let listing = bench.dispatch("path:list", &[json!("off"), json!("/srv/site")]).unwrap();
+    assert_eq!(listing["dirs"], json!([]), "{listing}");
+    assert!(listing["error"].as_str().unwrap_or("").contains("Connection refused"), "{listing}");
+    assert_eq!(asked(), vec!["probe@127.0.0.1".to_string(); 2], "asked of the machine that is not connected: {:?}", asked());
+    let _ = fs::remove_dir_all(root);
+}

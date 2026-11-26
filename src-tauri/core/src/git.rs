@@ -218,7 +218,9 @@ pub fn discard(root: &Path, rel: &str, untracked: bool, language: &str) -> Resul
     Ok(())
 }
 
-fn git_remote(data: &Path, host: &Value, root: &str, args: &[&str], language: &str) -> Result<String, String> {
+/// Run git in a folder on a machine, in the shell that machine has, quoting
+/// for it. The folder is given absolute, as the caller resolved it.
+pub(crate) fn git_remote(data: &Path, host: &Value, root: &str, args: &[&str], language: &str) -> Result<String, String> {
     let mut command = if host["platform"] == "windows" {
         format!("[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); git -C {} -c core.quotepath=false", crate::ssh::ps_quote(root))
     } else {

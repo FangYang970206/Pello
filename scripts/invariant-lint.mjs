@@ -310,6 +310,18 @@ export function checkInvariants(files) {
   const body = (name) => new RegExp('\\n    fn ' + name + '\\([\\s\\S]*?\\n    \\}').exec(kernel)?.[0] || ''
   require(/let project = self\.project\(project_id, language\)\?;\r?\n\s*let host = self\.optional_host\([^;]+, language\)\?;\r?\n\s*if host\.as_ref\(\)\.is_some_and\(\|host\| host\["on"\] == false\) \{\r?\n\s*return Err\(translate\(language, "这台机器未连接", &\[\] as &\[String\]\)\);/.test(door) && saysRemoved && !kernel.includes('主机不存在') && ['remote_place', 'transfer_drop', 'transfer_retry', 'tree_place'].every((name) => body(name).includes('self.project_target(')) && i18nTable.includes('("机器已移除", "Machine has been removed"),'),
     'AWB081', 'src-tauri/core/src/workbench.rs', '项目所在机器经统一入口查找：项目不存在、机器已移除、这台机器未连接按序翻译报错，文件树与传输经该入口而非各自查主机')
+  // A path is checked and listed on a machine by its id alone, as the
+  // Electron build does it, and not through the door a project goes through:
+  // an id that is no machine's is the first machine's, whether the machine is
+  // connected is not asked, a path is absolute as its machine spells it, and
+  // what a machine that refuses says is what the page is told.
+  const pathCheck = body('path_check')
+  const pathHost = body('path_host')
+  // The branch's name is left empty when it cannot be read, as the Electron
+  // build leaves it; it is the directory question whose refusal is passed on.
+  const asksDirectory = /let exists = match exists \{\r?\n(?:\s*\/\/[^\n]*\r?\n)*\s*Ok\(text\) => text\.trim\(\) == "yes",\r?\n(?:\s*\/\/[^\n]*\r?\n)*\s*Err\(detail\) => return Ok\(json!\(\{ "kind": "error", "detail": detail \}\)\),\r?\n(?:\s*\/\/[^\n]*\r?\n)*\s*\};/.test(pathCheck)
+  require(pathHost.includes('.find(|host| host["id"] == host_id).or_else(|| hosts.first())?') && pathCheck.includes('self.path_host(host_id)') && body('path_list').includes('self.path_host(host_id)') && !pathCheck.includes('optional_host(') && !pathCheck.includes('project_target(') && /fn absolute_on[\s\S]*?if platform == "windows" \{ return bytes\.len\(\) >= 3 && bytes\[0\]\.is_ascii_alphabetic\(\) && bytes\[1\] == b':' && bytes\[2\] == b'\\\\' \}/.test(kernel) && asksDirectory && !/let exists = [^;]*unwrap_or_default\(\)/.test(pathCheck),
+    'AWB082', 'src-tauri/core/src/workbench.rs', '路径检查与列举按机器 id 查找并回退到第一台机器，不经项目统一入口；绝对路径按目标平台判断，机器拒绝时如实返回错误而非路径不存在')
   return errors
 }
 

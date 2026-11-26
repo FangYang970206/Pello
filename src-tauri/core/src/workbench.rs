@@ -664,25 +664,58 @@ impl Workbench {
         files::list_tree(&self.local_root(project_id, language)?, rel, &ignored, language)
     }
 
+    /// The machine a path is checked or listed on, by its id: as the
+    /// Electron build finds it, an id that is no machine's is the first
+    /// machine's, which is this one. Whether the machine is connected is not
+    /// asked here: a path is checked on a machine that is not connected yet,
+    /// and what the machine says of it is what the page is told.
+    fn path_host(&self, host_id: &str) -> Option<Value> {
+        let db = self.db.lock().expect("db");
+        let hosts = db["hosts"].as_array()?;
+        let found = hosts.iter().find(|host| host["id"] == host_id).or_else(|| hosts.first())?;
+        (found["id"] != "local").then(|| found.clone())
+    }
+
+    /// Whether a path is written from the root of a machine, as that machine
+    /// spells it: a drive and a backslash on Windows, a slash elsewhere.
+    fn absolute_on(value: &str, platform: &str) -> bool {
+        let bytes = value.as_bytes();
+        if platform == "windows" { return bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\' }
+        bytes.first() == Some(&b'/')
+    }
+
     fn path_check(&self, host_id: &str, input: &str, language: &str) -> Result<Value, String> {
-        let Some(host) = self.optional_host(host_id, language)? else { return Ok(files::check_path(input, language)) };
+        let Some(host) = self.path_host(host_id) else { return Ok(files::check_path(input, language)) };
         let value = input.trim();
         if value.is_empty() { return Ok(json!({ "kind": "empty" })) }
-        if !value.starts_with('/') || value.contains('\0') { return Ok(json!({ "kind": "invalid" })) }
-        let quoted = ssh::bash_quote(value);
-        let exists = ssh::run(&self.paths.data, &host, &format!("if [ -d {quoted} ]; then echo yes; fi"), None, language).unwrap_or_default();
-        if exists.trim() != "yes" { return Ok(json!({ "kind": "missing" })) }
-        let inside = ssh::run(&self.paths.data, &host, &format!("git -C {quoted} rev-parse --is-inside-work-tree"), None, language).unwrap_or_default();
-        if inside.trim() != "true" { return Ok(json!({ "kind": "plain" })) }
-        let branch = ssh::run(&self.paths.data, &host, &format!("git -C {quoted} rev-parse --abbrev-ref HEAD"), None, language).unwrap_or_default();
-        Ok(json!({ "kind": "git", "branch": branch.trim() }))
+        let windows = host["platform"] == "windows";
+        // Asked before anything is, as the Electron build asks: an invalid path
+        // is refused without a machine being reached.
+        if !Self::absolute_on(value, if windows { "windows" } else { "linux" }) || value.contains('\0') { return Ok(json!({ "kind": "invalid" })) }
+        let data = &self.paths.data;
+        let said = |command: String| ssh::run(data, &host, &command, None, language);
+        let exists = if windows {
+            said(format!("if (Test-Path -LiteralPath {} -PathType Container) {{ 'yes' }}", ssh::ps_quote(value)))
+        } else {
+            said(format!("if [ -d {} ]; then echo yes; fi", ssh::bash_quote(value)))
+        };
+        let exists = match exists {
+            Ok(text) => text.trim() == "yes",
+            // What the machine said of it, and not that the path is not there.
+            Err(detail) => return Ok(json!({ "kind": "error", "detail": detail })),
+        };
+        if !exists { return Ok(json!({ "kind": "missing" })) }
+        let inside = git::git_remote(data, &host, value, &["rev-parse", "--is-inside-work-tree"], language);
+        if inside.as_deref().map(str::trim) != Ok("true") { return Ok(json!({ "kind": "plain" })) }
+        let branch = git::git_remote(data, &host, value, &["rev-parse", "--abbrev-ref", "HEAD"], language).map(|text| text.trim().to_string()).unwrap_or_default();
+        Ok(json!({ "kind": "git", "branch": branch }))
     }
 
     fn path_list(&self, host_id: &str, input: &str, language: &str) -> Result<Value, String> {
         if std::env::var("AWB_PATH_FIXTURE").ok().as_deref() == Some("1") {
             return fixture_directory(input);
         }
-        let Some(host) = self.optional_host(host_id, language)? else { return Ok(files::list_dir(input)) };
+        let Some(host) = self.path_host(host_id) else { return Ok(files::list_dir(input)) };
         if host["platform"] == "windows" {
             let current = input.trim();
             let script = if current.is_empty() { ssh::windows_home_dir_script(language) } else { ssh::windows_dir_script(current, language) };

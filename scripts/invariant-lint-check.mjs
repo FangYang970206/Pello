@@ -176,6 +176,11 @@ const cases = [
   ['AWB081', 'src-tauri/core/src/workbench.rs', 'let host = if project_id.is_empty() { None } else { self.project_target(&project_id, language)?.1 };', 'let host = if project_id.is_empty() { None } else { self.optional_host(self.project(&project_id, language)?["host"].as_str().unwrap_or("local"), language)? };'],
   ['AWB081', 'src-tauri/core/src/workbench.rs', 'let (project, host) = self.project_target(project_id, language)?;\n        let root = project["path"].as_str().unwrap_or("").to_string();', 'let (project, host) = (self.project(&project_id, language)?, self.optional_host(self.project(&project_id, language)?["host"].as_str().unwrap_or("local"), language)?);\n        let root = project["path"].as_str().unwrap_or("").to_string();'],
   ['AWB081', 'src-tauri/core/src/i18n.rs', '("机器已移除", "Machine has been removed"),', ''],
+  ['AWB082', 'src-tauri/core/src/workbench.rs', '.find(|host| host["id"] == host_id).or_else(|| hosts.first())?;', '.find(|host| host["id"] == host_id)?;'],
+  ['AWB082', 'src-tauri/core/src/workbench.rs', 'if platform == "windows" { return bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b\':\' && bytes[2] == b\'\\\\\' }', ''],
+  ['AWB082', 'src-tauri/core/src/workbench.rs', 'Err(detail) => return Ok(json!({ "kind": "error", "detail": detail })),', 'Err(_) => false,'],
+  ['AWB082', 'src-tauri/core/src/workbench.rs', 'let Some(host) = self.path_host(host_id) else { return Ok(files::check_path(input, language)) };', 'let Some(host) = self.project_target(host_id, language)?.1 else { return Ok(files::check_path(input, language)) };'],
+  ['AWB082', 'src-tauri/core/src/workbench.rs', 'let Some(host) = self.path_host(host_id) else { return Ok(files::list_dir(input)) };', 'let Some(host) = self.optional_host(host_id, language)? else { return Ok(files::list_dir(input)) };'],
 ]
 cases.forEach(([id, file, before, after], index) => {
   const mutated = new Map(files)
