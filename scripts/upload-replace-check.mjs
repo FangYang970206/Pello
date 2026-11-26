@@ -59,11 +59,16 @@ const server = new ssh2.Server({ hostKeys: [ed25519HostKey()] }, (client) => {
     children.add(child); child.stdin.on('error', () => {})
     child.stdout.on('data', (chunk) => { if (!stream.destroyed) stream.write(chunk) })
     child.stderr.on('data', (chunk) => { if (!stream.destroyed) stream.stderr.write(chunk) })
-    const scriptChunks = [], scriptInput = !linux && decoded.includes('ScriptBlock')
-    // A Windows host receives the script on the channel's input, with the
-    // staged files written into it, so the upload is in flight while that
-    // input is still arriving: pausing it after the first megabyte stops a
-    // real binary upload part way.
+    // A Windows host receives the script on the channel's input. The script
+    // of a file that is written as it arrives is followed on the same input
+    // by the file's bytes, which are not text: they are passed on as they
+    // come, so that the upload is in flight while the input is still
+    // arriving, and pausing it after the first megabyte stops a real binary
+    // upload part way.
+    // The reader of a file's bytes says so on its command line, and it reads
+    // the script the same way the other loader does; it is told apart first.
+    const fileInput = !linux && decoded.includes('OpenStandardInput') && decoded.includes('ReadByte')
+    const scriptChunks = [], scriptInput = !linux && !fileInput && decoded.includes('ScriptBlock')
     let arrived = 0
     stream.on('data', (chunk) => {
       if (scriptInput) {
@@ -72,12 +77,18 @@ const server = new ssh2.Server({ hostKeys: [ed25519HostKey()] }, (client) => {
         return
       }
       child.stdin.write(chunk)
+      arrived += chunk.length
+      if (pauseNext && fileInput && arrived > 1024 * 1024) { pauseNext = false; paused = true; stream.pause(); release = () => { paused = false; stream.resume() } }
       if (pauseNext && decoded.includes('传输未确认') && decoded.includes('big.bin')) { pauseNext = false; paused = true; stream.pause(); release = () => { paused = false; stream.resume() } }
     })
     stream.on('end', () => {
       if (!scriptInput) { child.stdin.end(); return }
       let body = Buffer.concat(scriptChunks).toString('utf8')
-      if (failCleanupNext && body.includes('Remove-AwbStage $backup;')) { failCleanupNext = false; body = body.replace('Remove-AwbStage $backup;', "throw 'fixture cleanup failure';") }
+      // The operation is named in the script, and the functions it is made of
+      // are in every script: the failure is injected into the publish only.
+      const publishing = /AWB_UPLOAD_OP publish\b/.test(body)
+      const injected = publishing && failCleanupNext && body.includes('Remove-AwbStage $backup;')
+      if (injected) { failCleanupNext = false; body = body.replace('Remove-AwbStage $backup;', "throw 'fixture cleanup failure';") }
       child.stdin.end(body)
     }); stream.on('close', () => child.stdin.end())
     client.once('close', () => child.stdin.end())

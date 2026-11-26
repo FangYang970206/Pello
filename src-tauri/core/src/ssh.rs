@@ -98,6 +98,21 @@ pub fn run_loaded(data: &Path, host: &Value, script: &str, language: &str) -> Re
     exec_command(data, host, &command, Some(&input), language)
 }
 
+/// How a script and the bytes of a file reach a Windows host on one input:
+/// the length of the script, a line break, the script, and then the file's
+/// bytes, which the script reads itself. Both are read from the raw standard
+/// input: a reader that decodes text would read ahead into the file's bytes.
+/// The command line stays as short as for any other loaded script.
+const LOADED_STREAM_LOADER: &str = "$ErrorActionPreference='Stop'; try { $raw=[Console]::OpenStandardInput(); $length=0; while($true) { $next=$raw.ReadByte(); if($next -lt 0 -or $next -gt 127) { exit 1 }; if($next -eq 10) { break }; $length=$length*10+($next-48) }; $script=New-Object byte[] $length; $read=0; while($read -lt $length) { $got=$raw.Read($script,$read,$length-$read); if($got -le 0) { exit 1 }; $read+=$got }; & ([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString($script))) } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }";
+
+/// The command line that reads a script and then a file from the input, and
+/// the first part of that input: the length line and the script. The file's
+/// bytes follow it, and a single confirmation byte after them.
+pub fn loaded_stream_command(script: &str) -> (String, Vec<u8>) {
+    let loader = format!("{POWERSHELL_UTF8}{LOADED_STREAM_LOADER}");
+    (format!("powershell.exe -NoProfile -EncodedCommand {}", encode_utf16_le_base64(&loader)), format!("{}\n{script}", script.len()).into_bytes())
+}
+
 pub fn decode_powershell_command(command: &str) -> Option<String> {
     let encoded = command.split_whitespace().skip_while(|part| *part != "-EncodedCommand").nth(1)?;
     let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).ok()?;
@@ -597,11 +612,17 @@ pub fn ssh_batch_args(host: &Value) -> Vec<String> {
 /// Stream one local file to a remote command. File bytes are written in chunks,
 /// then a single confirmation byte. A cancel closes the session before that byte.
 pub fn stream_file(data: &Path, host: &Value, command: &str, source: &Path, total: u64, progress: &(dyn Fn(u64) + Send + Sync), cancel: &AtomicBool, language: &str) -> Result<String, String> {
+    stream_file_with(data, host, command, &[], source, total, progress, cancel, language)
+}
+
+/// The counterpart of `stream_file` for a command that reads its script from
+/// the input before the file's bytes: `lead` is written first.
+pub fn stream_file_with(data: &Path, host: &Value, command: &str, lead: &[u8], source: &Path, total: u64, progress: &(dyn Fn(u64) + Send + Sync), cancel: &AtomicBool, language: &str) -> Result<String, String> {
     if host["auth"] == "password" {
         let password = password_of(data, host).ok_or_else(|| translate(language, "请填写 SSH 登录密码", &[] as &[String]))?;
-        return runtime().block_on(password_stream(data, host, &password, command, source, total, progress, cancel, language));
+        return runtime().block_on(password_stream(data, host, &password, command, lead, source, total, progress, cancel, language));
     }
-    key_stream(host, command, source, total, progress, cancel, language)
+    key_stream(host, command, lead, source, total, progress, cancel, language)
 }
 
 /// Stream what a remote command writes to a local file, as a download reads
@@ -727,7 +748,7 @@ fn source_unchanged(file: &std::fs::File, total: u64, started: Option<std::time:
     Ok(())
 }
 
-fn key_stream(host: &Value, command: &str, source: &Path, total: u64, progress: &(dyn Fn(u64) + Send + Sync), cancel: &AtomicBool, language: &str) -> Result<String, String> {
+fn key_stream(host: &Value, command: &str, lead: &[u8], source: &Path, total: u64, progress: &(dyn Fn(u64) + Send + Sync), cancel: &AtomicBool, language: &str) -> Result<String, String> {
     let (mut file, started) = open_upload_source(source, total, language)?;
     let mut ssh = std::process::Command::new(ssh_program());
     for arg in ssh_batch_args(host) { ssh.arg(arg); }
@@ -735,6 +756,7 @@ fn key_stream(host: &Value, command: &str, source: &Path, total: u64, progress: 
     ssh.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     let mut child = ssh.spawn().map_err(|error| error.to_string())?;
     let mut stdin = child.stdin.take().ok_or_else(|| translate(language, "上传失败", &[] as &[String]))?;
+    if !lead.is_empty() && stdin.write_all(lead).is_err() { let _ = child.kill(); return Err(translate(language, "传输中断", &[] as &[String])) }
     let mut buffer = vec![0u8; 32 * 1024];
     let mut sent = 0u64;
     while sent < total {
@@ -763,11 +785,16 @@ async fn until_cancel(cancel: &AtomicBool) {
     }
 }
 
-async fn password_stream(data: &Path, host: &Value, password: &str, command: &str, source: &Path, total: u64, progress: &(dyn Fn(u64) + Send + Sync), cancel: &AtomicBool, language: &str) -> Result<String, String> {
+async fn password_stream(data: &Path, host: &Value, password: &str, command: &str, lead: &[u8], source: &Path, total: u64, progress: &(dyn Fn(u64) + Send + Sync), cancel: &AtomicBool, language: &str) -> Result<String, String> {
     let (mut file, started) = open_upload_source(source, total, language)?;
     let session = open_password(data, host, password, language).await?;
     let mut channel = within(session.channel_open_session()).await.ok_or_else(|| timed_out(language))?.map_err(|error| error.to_string())?;
     within(channel.exec(true, command.as_bytes().to_vec())).await.ok_or_else(|| timed_out(language))?.map_err(|error| error.to_string())?;
+    if !lead.is_empty() {
+        // The lead is what the command reads its script from: it is sent as
+        // one piece, ahead of the file's bytes.
+        channel.data(lead).await.map_err(|error| error.to_string())?;
+    }
     let mut buffer = vec![0u8; 32 * 1024];
     let mut sent = 0u64;
     while sent < total {

@@ -881,6 +881,10 @@ if [[ "$last" == *"-EncodedCommand "* ]]; then
   script=$(printf '%s' "$encoded" | base64 -d | iconv -f UTF-16LE -t UTF-8 || true)
   # The reader on the command line runs the script that follows on the input,
   # which carries the upload operation and the request written into it.
+  if [[ "$script" == *"ReadByte"* ]]; then
+    # A file follows the script on the same input, and its bytes are not text.
+    exec python3 "$(dirname "$0")/upload-op.py" file
+  fi
   if [[ "$script" == *"ScriptBlock"* ]]; then
     exec python3 "$(dirname "$0")/upload-op.py" script
   fi
@@ -2840,6 +2844,74 @@ fn windows_remote_upload_publishes_with_powershell_and_keeps_the_old_directory()
     let _ = fs::remove_dir_all(root);
 }
 
+/// Windows: a file reaches a Windows host as its bytes, not as text that
+/// holds them, and what was sent of it is reported while it is on the way.
+/// The upload is held after the first part of the file, so the report of a
+/// transfer that is not finished can be read.
+#[test]
+fn windows_remote_upload_streams_file_bytes_and_reports_them() {
+    let _lock = env_lock();
+    let root = temp_dir("win-stream");
+    let project = root.join("project");
+    let sources = root.join("sources");
+    fs::create_dir_all(&project).unwrap();
+    fs::create_dir_all(&sources).unwrap();
+    // Larger than what is sent at once, so the hold below finds it half sent.
+    let payload: Vec<u8> = (0..3_000_000u32).map(|index| (index % 251) as u8).collect();
+    fs::write(sources.join("big.bin"), &payload).unwrap();
+    let home = root.join("home");
+    fs::create_dir_all(home.join(".ssh")).unwrap();
+    fs::write(home.join(".ssh/id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----\n${blob.toString('base64').match(/.{1,70}/g).join('\n')}\n-----END OPENSSH PRIVATE KEY-----\n").unwrap();
+    let (shim, log) = install_ssh_shim(&root);
+    let sock = root.join("agent.sock");
+    let agent = fake_agent(&sock);
+    let _env = ssh_env(&home, &shim, &log, &agent);
+    let _os = var_guard("AWB_SSH_OS", "Windows_NT");
+    let half = root.join("half");
+    let _half = var_guard("AWB_UPLOAD_STREAM_HOLD", half.to_str().unwrap());
+    let (bench, events) = workbench(&root);
+    let local = bench.dispatch("db:get", &[]).unwrap()["db"]["hosts"][0].clone();
+    bench.dispatch("db:hosts", &[json!([local, { "id": "remote", "name": "Remote", "addr": "127.0.0.1", "port": 22, "user": "up", "auth": "key", "on": true, "platform": "windows" }])]).unwrap();
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "remote", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    let started = assert_implemented(bench.dispatch("transfer:drop", &[json!("p"), json!(""), json!([sources.join("big.bin").display().to_string()])]));
+    let id = started.as_str().unwrap().to_string();
+    let reached = half.with_extension("ready");
+    let deadline = std::time::Instant::now() + Duration::from_secs(40);
+    while !reached.exists() {
+        if std::time::Instant::now() > deadline {
+            let last = events.lock().unwrap().iter().rev().find(|event| event["channel"] == "transfer:update" && event["payload"]["id"] == id).map(|event| event["payload"].to_string()).unwrap_or_default();
+            panic!("the first part of the file was not sent: {last}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Halfway: some of the file is on its way, and not all of it. The bytes
+    // are reported by a thread of their own, a little after the part that is
+    // held was read, so the report is waited for and not read at once.
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let midway = loop {
+        let last = events.lock().unwrap().iter().rev().find(|event| event["channel"] == "transfer:update" && event["payload"]["id"] == id).map(|event| event["payload"].clone()).unwrap_or_default();
+        if last["overallBytes"].as_u64().unwrap_or(0) > 0 || std::time::Instant::now() > deadline { break last }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(midway["overallTotal"].as_u64(), Some(payload.len() as u64), "{midway}");
+    let sent = midway["overallBytes"].as_u64().unwrap_or(0);
+    assert!(sent > 0 && sent < payload.len() as u64, "the bytes sent so far are not reported while the file is on its way: {midway}");
+    assert_eq!(midway["phase"], "transferring", "{midway}");
+    assert!(!project.join("big.bin").exists(), "the file is published only once it is complete");
+    fs::write(half.with_extension("go"), "1").unwrap();
+    let done = wait_upload(&events, &id, "completed");
+    assert_eq!(done["payload"]["phase"], "done", "{done}");
+    assert_eq!(done["payload"]["overallBytes"].as_u64(), Some(payload.len() as u64), "{done}");
+    assert_eq!(done["payload"]["overallTotal"].as_u64(), Some(payload.len() as u64), "{done}");
+    assert_eq!(fs::read(project.join("big.bin")).unwrap(), payload);
+    assert!(fs::read_dir(&project).unwrap().flatten().all(|entry| !entry.file_name().to_string_lossy().starts_with(".awb-upload-")));
+    // The bytes are not carried as text inside a request: what follows the
+    // script on the input is the file itself.
+    let calls = parse_ssh_calls(&fs::read_to_string(&log).unwrap());
+    assert!(calls.iter().all(|call| call.args.last().map(|line| line.len() < 2000).unwrap_or(true)), "a command line must stay short");
+    let _ = fs::remove_dir_all(root);
+}
+
 /// POSIX: a background job under the shell, found through the parent
 /// chain. Windows has no such chain for a Git Bash job, so it has its own
 /// case below with a tree that can be told apart.
@@ -4120,10 +4192,10 @@ fn file_dialogs_ask_for_what_the_electron_build_asked_for() {
 
     bench.dispatch("db:settings", &[json!({ "language": "en" })]).unwrap();
     assert_eq!(save("download", "report.pdf")["title"], "Download file");
-    assert_eq!(save("save-as", "a.txt")["title"], "Save as (choose a new name)");
+    assert_eq!(save("save-as", "a.txt")["title"], "Save as (choose a new file name)");
     assert_eq!(save("history", "")["filters"][0]["name"], "ANSI terminal history");
-    assert_eq!(open("download")["title"], "Choose where to download");
-    assert_eq!(open("files")["title"], "Choose what to import");
+    assert_eq!(open("download")["title"], "Choose download location");
+    assert_eq!(open("files")["title"], "Choose import source");
     assert_eq!(open("zip")["filters"][0]["name"], "ZIP archive");
     assert_eq!(open("config")["filters"][0]["name"], "Agent configuration");
     let _ = fs::remove_dir_all(root);

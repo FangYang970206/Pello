@@ -30,6 +30,33 @@ fn main() {
     }
 
     if let Some(script) = pello_core::ssh::decode_powershell_command(&last) {
+        // A script followed by the bytes of a file: the reader on the command
+        // line takes the script from the input and leaves the rest of it to
+        // the script. The input is passed on as it is, byte for byte: what
+        // follows the script is not text.
+        #[cfg(windows)]
+        if script.contains("OpenStandardInput") && script.contains("ReadByte") {
+            use std::io::Read;
+            let mut lead = Vec::new();
+            let _ = std::io::stdin().read_to_end(&mut lead);
+            // The length line says how much of the input is the script; that
+            // part is kept in the call log, and the file's bytes are not.
+            let line_end = lead.iter().position(|byte| *byte == b'\n').unwrap_or(0);
+            let length: usize = String::from_utf8_lossy(&lead[..line_end]).trim().parse().unwrap_or(0);
+            let library = String::from_utf8_lossy(&lead[line_end + 1..(line_end + 1 + length).min(lead.len())]).replace('\n', "\u{1f}");
+            let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&log).expect("open the call log");
+            file.write_all(format!("INPUT\u{1e}{library}\n").as_bytes()).expect("record the script");
+            let words: Vec<&str> = last.split_whitespace().collect();
+            let mut remote = command(words[0]);
+            remote.args(&words[1..]);
+            remote.stdin(std::process::Stdio::piped());
+            let mut child = remote.spawn().expect("start PowerShell");
+            if let Some(mut stdin) = child.stdin.take() { let _ = stdin.write_all(&lead); }
+            let output = child.wait_with_output().expect("PowerShell ends");
+            let _ = std::io::stdout().write_all(&output.stdout);
+            let _ = std::io::stderr().write_all(&output.stderr);
+            exit(output.status.code().unwrap_or(255));
+        }
         if script.contains("ScriptBlock") {
             // The reader on the command line runs the script that follows on
             // the input, as a Windows host does. Running it here is what

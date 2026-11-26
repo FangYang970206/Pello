@@ -1,11 +1,11 @@
-//! Remote upload. Linux streams each file into a temporary tree and publishes it
+//! Remote upload. Each file is streamed to a temporary tree, which is published
 //! only after the captured version still matches. Cancel and failure remove only
-//! that temporary tree. Windows keeps the JSON helper used by the upload shim.
+//! that temporary tree. A Linux host runs Python scripts; a Windows host runs
+//! PowerShell ones, each read from the channel's input by a short loader.
 
 use crate::i18n::translate;
 use crate::random_id;
 use crate::ssh;
-use base64::Engine;
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -187,7 +187,7 @@ fn run_job(job: Arc<Job>, data: PathBuf, host: Option<Value>, project_id: String
         let mut nodes = Vec::new();
         let mut replacing = false;
         for source in &sources {
-            let node = read_source(Path::new(source), &language, case_insensitive)?;
+            let node = read_source(Path::new(source), &language)?;
             let name = node["name"].as_str().unwrap_or("");
             let relative = if parent.is_empty() { name.to_string() } else { format!("{parent}/{name}") };
             if relative.is_empty() || relative == "." { return Err(translate(&language, "不能替换项目根目录", &[] as &[String])); }
@@ -407,7 +407,7 @@ fn destination_of(root: &str, parent: &str, source: &Path) -> String {
     format!("{}/{}", root.trim_end_matches(['/', '\\']), relative)
 }
 
-fn read_source(path: &Path, language: &str, embed: bool) -> Result<Value, String> {
+fn read_source(path: &Path, language: &str) -> Result<Value, String> {
     let meta = fs::symlink_metadata(path).map_err(|_| translate(language, "无法检查来源", &[] as &[String]))?;
     if meta.file_type().is_symlink() { return Err(translate(language, "不上传符号链接", &[] as &[String])); }
     let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("").to_string();
@@ -416,17 +416,13 @@ fn read_source(path: &Path, language: &str, embed: bool) -> Result<Value, String
         let mut children = Vec::new();
         for entry in fs::read_dir(path).map_err(|error| error.to_string())? {
             let entry = entry.map_err(|error| error.to_string())?;
-            children.push(read_source(&entry.path(), language, embed)?);
+            children.push(read_source(&entry.path(), language)?);
         }
         children.sort_by(|left, right| left["name"].as_str().unwrap_or("").cmp(right["name"].as_str().unwrap_or("")));
         return Ok(json!({ "name": name, "dir": true, "children": children }));
     }
     if !meta.is_file() { return Err(translate(language, "不支持此文件类型", &[] as &[String])); }
-    let mut node = json!({ "name": name, "dir": false, "path": path.display().to_string(), "size": meta.len() });
-    if embed {
-        let bytes = fs::read(path).map_err(|error| error.to_string())?;
-        node["data"] = json!(base64::engine::general_purpose::STANDARD.encode(bytes));
-    }
+    let node = json!({ "name": name, "dir": false, "path": path.display().to_string(), "size": meta.len() });
     Ok(node)
 }
 
@@ -448,6 +444,9 @@ fn exists_remote(data: &Path, host: Option<&Value>, root: &str, relative: &str, 
 }
 
 fn stage(data: &Path, host: Option<&Value>, root: &str, parent: &str, items: &[Value], job: &Arc<Job>, emit: &Emit, language: &str) -> Result<Value, String> {
+    if let Some(windows) = host.filter(|item| item["platform"].as_str() == Some("windows")) {
+        return stage_windows(data, windows, root, parent, items, job, emit, language);
+    }
     if let Some(remote) = host.filter(|item| item["platform"].as_str() != Some("windows")) {
         return stage_linux(data, remote, root, parent, items, job, emit, language);
     }
@@ -475,6 +474,7 @@ fn publish(data: &Path, host: Option<&Value>, root: &str, parent: &str, staged: 
         "items": staged,
         "errors": {
             "changed": translate(language, "目标已更改，原对象已保留", &[] as &[String]),
+            "failed": translate(language, "替换失败，原对象保留于 ", &[] as &[String]),
             "link": translate(language, "路径包含链接", &[] as &[String]),
             "missing": translate(language, "临时上传不存在", &[] as &[String]),
             "warning": translate(language, "AWB_WARNING:替换已完成，旧对象清理失败，保留于 ", &[] as &[String])
@@ -762,6 +762,94 @@ fn stage_linux(data: &Path, host: &Value, root: &str, parent: &str, items: &[Val
     result
 }
 
+/// Windows: each top-level item is staged under a name of its own, as on
+/// POSIX. A folder is made and its content sent file by file; a file's bytes
+/// are written as they arrive. What has been sent is reported while it is on
+/// the way, and nothing is left behind when the staging fails or is
+/// cancelled.
+fn stage_windows(data: &Path, host: &Value, root: &str, parent: &str, items: &[Value], job: &Arc<Job>, emit: &Emit, language: &str) -> Result<Value, String> {
+    let _watch = watch_progress(job.clone(), emit.clone());
+    let mut created = Vec::new();
+    let result = (|| -> Result<Value, String> {
+        for item in items {
+            if job.cancel.load(Ordering::SeqCst) { return Err(translate(language, "传输已取消", &[] as &[String])) }
+            let name = item["name"].as_str().unwrap_or("").to_string();
+            if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\\') {
+                return Err(translate(language, "名称无效", &[] as &[String]));
+            }
+            // The version is read before anything is staged: the publish step
+            // reads it again and replaces only what has not changed since.
+            let version = run_helper(data, Some(host), "version", "", &json!({ "root": root, "relative": join_rel(parent, &name) }).to_string(), language)?;
+            let version = version.trim().to_string();
+            if version != "absent" && !(version.starts_with("d:") || version.starts_with("f:")) {
+                return Err(translate(language, "远程版本响应无效", &[] as &[String]));
+            }
+            let stage_name = format!(".awb-upload-tree-{}", random_id());
+            created.push(json!({ "name": name, "stage": stage_name, "version": version }));
+            if item["dir"].as_bool().unwrap_or(false) {
+                run_helper(data, Some(host), "mkdir", "", &json!({ "root": root, "parent": parent, "name": stage_name }).to_string(), language)?;
+                stream_windows_tree(data, host, root, &join_rel(parent, &stage_name), item, job, language)?;
+            } else {
+                windows_stream_file(data, host, root, parent, &stage_name, Path::new(item["path"].as_str().unwrap_or("")), item["size"].as_u64().unwrap_or(0), job, language)?;
+            }
+        }
+        Ok(Value::Array(created.clone()))
+    })();
+    if result.is_err() { discard_stages(data, Some(host), root, parent, &Value::Array(created), language); }
+    result
+}
+
+fn stream_windows_tree(data: &Path, host: &Value, root: &str, remote_parent: &str, node: &Value, job: &Job, language: &str) -> Result<(), String> {
+    for child in node["children"].as_array().cloned().unwrap_or_default() {
+        if job.cancel.load(Ordering::SeqCst) { return Err(translate(language, "传输已取消", &[] as &[String])) }
+        let name = child["name"].as_str().unwrap_or("").to_string();
+        if child["dir"].as_bool().unwrap_or(false) {
+            run_helper(data, Some(host), "mkdir", "", &json!({ "root": root, "parent": remote_parent, "name": name }).to_string(), language)?;
+            stream_windows_tree(data, host, root, &join_rel(remote_parent, &name), &child, job, language)?;
+        } else {
+            windows_stream_file(data, host, root, remote_parent, &name, Path::new(child["path"].as_str().unwrap_or("")), child["size"].as_u64().unwrap_or(0), job, language)?;
+        }
+    }
+    Ok(())
+}
+
+/// Windows: send one file to the stage name it will be published under. The
+/// script reads the file's bytes from the input, so they are written as they
+/// arrive, and the command line holds only the reader of the script.
+fn windows_stream_file(data: &Path, host: &Value, root: &str, parent: &str, name: &str, path: &Path, size: u64, job: &Job, language: &str) -> Result<(), String> {
+    let temporary = format!(".awb-upload-{}.tmp", random_id());
+    let (command, lead) = ssh::loaded_stream_command(&windows_write_script(root, parent, &temporary, name, size, language));
+    let hold = std::env::var("AWB_UPLOAD_STREAM_HOLD").ok().map(|hold| (hold, Mutex::new(false)));
+    let start = job.snapshot.lock().expect("snapshot")["overallBytes"].as_u64().unwrap_or(0);
+    let progress = |sent: u64| {
+        note_bytes(job, start + sent);
+        // A test hook, the counterpart of `AWB_UPLOAD_HOLD` for a file that is
+        // on its way: once the first part of the file has been sent, the
+        // upload waits here until `<hold>.go` exists. It is cancelled through
+        // the job, or by `<hold>.cancel`. The wait is taken by one report
+        // only: the reports that come while it waits are on no other thread.
+        let waiting = hold.as_ref().filter(|_| sent > 0 && sent < size).and_then(|(hold, taken)| {
+            let mut taken = taken.lock().expect("stream hold");
+            let first = !*taken;
+            *taken = true;
+            first.then(|| hold.clone())
+        });
+        if let Some(hold) = waiting {
+            let _ = fs::write(format!("{hold}.ready"), "1");
+            while !Path::new(&format!("{hold}.go")).exists() {
+                if Path::new(&format!("{hold}.cancel")).exists() {
+                    // Cancelling the hold cancels the upload, as the user's
+                    // cancel would: the reports stop and the session is ended.
+                    job.cancel.store(true, Ordering::SeqCst);
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+    };
+    ssh::stream_file_with(data, host, &command, &lead, path, size, &progress, &job.cancel, language).map(|_| ())
+}
+
 fn discard_stages(data: &Path, host: Option<&Value>, root: &str, parent: &str, staged: &Value, language: &str) {
     for _ in 0..40 {
         if remove_stages(data, host, root, parent, staged, language).is_ok() { return }
@@ -787,53 +875,59 @@ fn publish_linux(data: &Path, host: &Value, root: &str, parent: &str, staged: &V
 
 fn run_helper(data: &Path, host: Option<&Value>, op: &str, script: &str, payload: &str, language: &str) -> Result<String, String> {
     if let Some(host) = host.filter(|host| host["platform"].as_str() == Some("windows")) {
-        return ssh::run_loaded(data, host, &windows_upload_script(op, payload), language);
+        return ssh::run_loaded(data, host, &windows_upload_script(op, payload, language), language);
     }
     run_python(data, host, script, payload, language)
 }
 
-fn windows_upload_library(op: &str) -> String {
+fn windows_upload_library(op: &str, language: &str) -> String {
+    let say = |source: &str| ssh::ps_quote(&translate(language, source, &[] as &[String]));
     format!(r#"$ErrorActionPreference='Stop'
 function Get-AwbEntryVersion([string]$name) {{
+  # The version of an entry, as the Electron build makes it: what it is and
+  # when it was made and changed are part of it, and it is read again after
+  # the content to tell an entry that is changing while it is read.
   if(-not (Test-Path -LiteralPath $name)) {{ return 'absent' }}
   $item=Get-Item -LiteralPath $name -Force -ErrorAction Stop
-  if($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {{ throw 'path contains a link' }}
+  if($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {{ throw {link} }}
+  $before=([string]$item.CreationTimeUtc.Ticks)+':'+$item.LastWriteTimeUtc.Ticks+':'+[int]$item.Attributes
   $hash=[Security.Cryptography.SHA256]::Create()
   try {{
     if($item.PSIsContainer) {{
       $parts=New-Object System.Collections.Generic.List[string]
-      foreach($child in (Get-ChildItem -LiteralPath $name -Force | Sort-Object Name)) {{
+      $parts.Add($before)
+      foreach($child in (Get-ChildItem -LiteralPath $name -Force -ErrorAction Stop | Sort-Object Name)) {{
         $version=Get-AwbEntryVersion $child.FullName
-        $parts.Add($child.Name); $parts.Add($version)
+        if($version -eq 'absent') {{ throw {changing_dir} }}
+        $parts.Add(([string]$child.Name.Length)+':'+$child.Name+':'+$version)
       }}
-      $digest=$hash.ComputeHash([Text.Encoding]::UTF8.GetBytes(($parts -join ([char]0))))
-      return 'd:'+[BitConverter]::ToString($digest).Replace('-','').ToLowerInvariant()
+      $bytes=[Text.Encoding]::UTF8.GetBytes(($parts -join ([char]0)))
+      $digest=$hash.ComputeHash($bytes); $kind='d'
+    }} else {{
+      $stream=[IO.File]::Open($name,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+      try {{ $digest=$hash.ComputeHash($stream); $before+=':'+([string]$stream.Length) }} finally {{ $stream.Dispose() }}
+      $kind='f'
     }}
-    $stream=[IO.File]::Open($name,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
-    try {{ $digest=$hash.ComputeHash($stream) }} finally {{ $stream.Dispose() }}
-    return 'f:'+[BitConverter]::ToString($digest).Replace('-','').ToLowerInvariant()
+    $item.Refresh()
+    $after=([string]$item.CreationTimeUtc.Ticks)+':'+$item.LastWriteTimeUtc.Ticks+':'+[int]$item.Attributes
+    if(-not $item.PSIsContainer) {{ $after+=':'+([string]$item.Length) }}
+    if($before -ne $after) {{ throw {changing} }}
+    $metadata=[Text.Encoding]::UTF8.GetBytes($before+':'+[BitConverter]::ToString($digest))
+    return $kind+':'+[BitConverter]::ToString($hash.ComputeHash($metadata)).Replace('-','').ToLowerInvariant()
   }} finally {{ $hash.Dispose() }}
 }}
 function Move-AwbEntry([string]$from,[string]$to) {{
-  if((Get-Item -LiteralPath $from -Force).PSIsContainer) {{ [IO.Directory]::Move($from,$to) }} else {{ [IO.File]::Move($from,$to) }}
+  if((Get-Item -LiteralPath $from -Force -ErrorAction Stop).PSIsContainer) {{ [IO.Directory]::Move($from,$to) }} else {{ [IO.File]::Move($from,$to) }}
 }}
 function Remove-AwbStage([string]$name) {{
   if(-not (Test-Path -LiteralPath $name)) {{ return }}
   $null=Get-AwbEntryVersion $name
   Remove-Item -LiteralPath $name -Force -Recurse -ErrorAction Stop
 }}
-function Write-AwbNode($dest, $node) {{
-  if($node.dir) {{
-    New-Item -ItemType Directory -Path $dest -ErrorAction Stop | Out-Null
-    foreach($child in @($node.children)) {{ Write-AwbNode (Join-Path $dest $child.name) $child }}
-  }} else {{
-    [IO.File]::WriteAllBytes($dest, [Convert]::FromBase64String([string]$node.data))
-  }}
-}}
 # AWB_UPLOAD_OP {op}
 $root = [IO.Path]::GetFullPath([string]$req.root)
 $parent = if([string]::IsNullOrEmpty([string]$req.parent)) {{ $root }} else {{ Join-Path $root (([string]$req.parent) -replace '/','\') }}
-if($parent -ne $root -and -not $parent.StartsWith($root + '\',[StringComparison]::OrdinalIgnoreCase)) {{ throw 'cannot replace the project root' }}
+if($parent -ne $root -and -not $parent.StartsWith($root + '\',[StringComparison]::OrdinalIgnoreCase)) {{ throw {root} }}
 if('{op}' -eq 'exist') {{
   $rel = ([string]$req.relative).Trim('/')
   $path = if([string]::IsNullOrEmpty($rel)) {{ $root }} else {{ Join-Path $root ($rel -replace '/','\') }}
@@ -849,40 +943,60 @@ if('{op}' -eq 'remove') {{
   'removed'
   exit 0
 }}
-if('{op}' -eq 'stage') {{
-  $results=New-Object System.Collections.Generic.List[object]
-  foreach($item in @($req.items)) {{
-    $name=[string]$item.name
-    if($name -eq '' -or $name -eq '.' -or $name -eq '..' -or $name.Contains('/') -or $name.Contains('\')) {{ throw 'invalid name' }}
-    $dest=Join-Path $parent $name
-    $expected=Get-AwbEntryVersion $dest
-    $stage='.awb-upload-tree-' + [guid]::NewGuid().ToString()
-    Write-AwbNode (Join-Path $parent $stage) $item
-    $results.Add([pscustomobject]@{{ name=$name; stage=$stage; version=$expected }})
-  }}
-  $results | ConvertTo-Json -Compress
+if('{op}' -eq 'version') {{
+  # The version of the entry an upload would replace, read before anything is
+  # staged and again before it is published.
+  $rel = ([string]$req.relative).Trim('/')
+  $path = if([string]::IsNullOrEmpty($rel)) {{ $root }} else {{ Join-Path $root ($rel -replace '/','\') }}
+  Get-AwbEntryVersion $path
+  exit 0
+}}
+if('{op}' -eq 'mkdir') {{
+  # A folder of the staging tree, which does not exist yet: made here and
+  # never merged into what is there.
+  $dest = Join-Path $parent ([string]$req.name)
+  New-Item -ItemType Directory -Path $dest -ErrorAction Stop | Out-Null
   exit 0
 }}
 if('{op}' -eq 'publish') {{
+  # As the Electron build publishes: the old entry is moved to a backup and
+  # the stage to its name; the backup is removed once that is done. What was
+  # moved away is put back if the stage could not be published, and a backup
+  # that could not be removed is left where it is and said so.
+  $changed=[string]$req.errors.changed
+  $failed=[string]$req.errors.failed
+  $missing=[string]$req.errors.missing
+  $warning=[string]$req.errors.warning
   foreach($item in @($req.items)) {{
     $dest=Join-Path $parent ([string]$item.name)
     $stage=Join-Path $parent ([string]$item.stage)
-    if(-not (Test-Path -LiteralPath $stage)) {{ throw 'staged upload is missing' }}
-    if((Get-AwbEntryVersion $dest) -ne [string]$item.version) {{
-      Remove-AwbStage $stage
-      throw 'target changed and the original was kept'
-    }}
     $backup=Join-Path $parent ([string]$item.stage).Replace('tree-','backup-')
     $moved=$false
-    if([string]$item.version -ne 'absent') {{ Move-AwbEntry $dest $backup; $moved=$true }}
-    Move-AwbEntry $stage $dest
-    if($moved) {{
-      try {{ Remove-AwbStage $backup }} catch {{ Write-Output ('AWB_WARNING:' + $backup) }}
+    $published=$false
+    try {{
+      if(-not (Test-Path -LiteralPath $stage)) {{ throw $missing }}
+      $null=Get-AwbEntryVersion $stage
+      if((Get-AwbEntryVersion $dest) -ne [string]$item.version) {{ throw $changed }}
+      if([string]$item.version -ne 'absent') {{
+        Move-AwbEntry $dest $backup; $moved=$true
+        if((Get-AwbEntryVersion $backup) -ne [string]$item.version) {{ throw $changed }}
+      }}
+      Move-AwbEntry $stage $dest; $published=$true
+      if($moved) {{ try {{ Remove-AwbStage $backup; $moved=$false }} catch {{ Write-Output ($warning + $backup) }} }}
+    }} catch {{
+      $reason=$_
+      if($moved -and -not $published) {{
+        if(Test-Path -LiteralPath $dest) {{ throw ($failed + $backup) }}
+        Move-AwbEntry $backup $dest; $moved=$false
+      }}
+      throw $reason
+    }} finally {{
+      if(-not $published) {{ Remove-AwbStage $stage }}
     }}
   }}
   exit 0
 }}
-"#)
+"#, link = say("路径包含链接"), changing = say("目标正在更改"), changing_dir = say("目标目录正在更改"), root = say("不能替换项目根目录"))
 }
 
 /// The Windows upload script for one operation, with the request it acts on
@@ -890,9 +1004,49 @@ if('{op}' -eq 'publish') {{
 /// have to itself: the command line is too short to carry it. The request is
 /// set where the script first reads it: every operation ends the script, so
 /// nothing after them is reached.
-fn windows_upload_script(op: &str, payload: &str) -> String {
+fn windows_upload_script(op: &str, payload: &str, language: &str) -> String {
     let quoted = payload.replace('\'', "''");
-    windows_upload_library(op).replacen(&format!("# AWB_UPLOAD_OP {op}"), &format!("# AWB_UPLOAD_OP {op}\n$req = '{quoted}' | ConvertFrom-Json"), 1)
+    windows_upload_library(op, language).replacen(&format!("# AWB_UPLOAD_OP {op}"), &format!("# AWB_UPLOAD_OP {op}\n$req = '{quoted}' | ConvertFrom-Json"), 1)
+}
+
+/// The script that writes one file of a staging tree on a Windows host. The
+/// file's bytes follow the script on the input: exactly `size` of them, and
+/// then a single byte that says the sender is done. They are written as they
+/// arrive, into a temporary file, which is moved to its stage name only once
+/// all of it has arrived and the sender has confirmed; whatever goes wrong
+/// removes the temporary file and leaves nothing else.
+fn windows_write_script(root: &str, parent: &str, temporary: &str, name: &str, size: u64, language: &str) -> String {
+    let quoted = |source: &str| ssh::ps_quote(&translate(language, source, &[] as &[String]));
+    let mut walk = String::new();
+    for part in parent.split('/').filter(|part| !part.is_empty()) {
+        walk.push_str(&format!("$parent=Join-Path $parent {}; $item=Get-Item -LiteralPath $parent -Force -ErrorAction Stop; if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or -not $item.PSIsContainer) {{ throw {} }}; ", ssh::ps_quote(part), quoted("目标不是安全目录")));
+    }
+    format!(r#"$ErrorActionPreference='Stop'
+$parent=(Resolve-Path -LiteralPath {root} -ErrorAction Stop).Path
+{walk}$tmp=Join-Path $parent {temporary}
+$created=$false
+try {{
+  $out=[IO.File]::Open($tmp,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+  $created=$true
+  try {{
+    $inputStream=[Console]::OpenStandardInput()
+    $remaining=[long]{size}
+    $buffer=New-Object byte[] 262144
+    while($remaining -gt 0) {{
+      $read=$inputStream.Read($buffer,0,[int][Math]::Min($buffer.Length,$remaining))
+      if($read -le 0) {{ throw {incomplete} }}
+      $out.Write($buffer,0,$read)
+      $remaining-=$read
+    }}
+    if($inputStream.ReadByte() -ne 1) {{ throw {unconfirmed} }}
+    $out.Flush($true)
+  }} finally {{ $out.Dispose() }}
+  [IO.File]::Move($tmp,(Join-Path $parent {name}))
+  $created=$false
+}} finally {{
+  if($created) {{ Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }}
+}}
+"#, root = ssh::ps_quote(root), temporary = ssh::ps_quote(temporary), size = size, incomplete = quoted("传输不完整"), unconfirmed = quoted("传输未确认"), name = ssh::ps_quote(name))
 }
 
 fn run_python(data: &Path, host: Option<&Value>, script: &str, payload: &str, language: &str) -> Result<String, String> {
