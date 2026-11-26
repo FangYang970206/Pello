@@ -3,19 +3,22 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
 import postcss from 'postcss'
+import { getCheckSuites } from './check-cases.mjs'
 
+const checkManifest = 'scripts/check-cases.json'
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 export function projectFiles() {
   const files = new Map()
+  const readText = (rel) => fs.readFileSync(path.join(root, rel), 'utf8').replaceAll('\r\n', '\n')
   const read = (dir) => {
     for (const entry of fs.readdirSync(path.join(root, dir), { withFileTypes: true })) {
       const rel = `${dir}/${entry.name}`
       if (entry.isDirectory()) read(rel)
-      else if (/\.(tsx?|css)$/.test(entry.name)) files.set(rel, fs.readFileSync(path.join(root, rel), 'utf8'))
+      else if (/\.(tsx?|css)$/.test(entry.name)) files.set(rel, readText(rel))
     }
   }
   read('src')
-  for (const rel of ['package.json', 'AGENTS.md', 'PERFORMANCE.md', 'scripts/performance-budgets.json', 'scripts/large-project-regression-check.mjs', 'scripts/fixtures/performance-metrics.mjs', 'electron-builder.yml', 'electron.vite.config.ts', 'assets/installer.nsh', 'assets/installer-process.nsh', 'assets/installer-process-fallback.nsh', 'scripts/prepare-nsis-script.cjs', 'src/renderer/index.html']) files.set(rel, fs.readFileSync(path.join(root, rel), 'utf8'))
+  for (const rel of ['package.json', checkManifest, 'AGENTS.md', 'PERFORMANCE.md', 'scripts/performance-budgets.json', 'scripts/large-project-regression-check.mjs', 'scripts/fixtures/performance-metrics.mjs', 'electron-builder.yml', 'electron.vite.config.ts', 'assets/installer.nsh', 'assets/installer-process.nsh', 'assets/installer-process-fallback.nsh', 'scripts/prepare-nsis-script.cjs', 'src/renderer/index.html']) files.set(rel, readText(rel))
   return files
 }
 
@@ -212,6 +215,13 @@ export function checkInvariants(files) {
   require(declarations('.dot.terminal-status.busy').get('background') === 'var(--amber)' && declarations('.dot.terminal-status.ready').get('background') === 'var(--green)',
     'AWB017', cssFiles[0], '运行黄点、可输入绿点，不与连接状态混用')
   const scripts = JSON.parse(files.get('package.json') || '{}').scripts || {}
+  const checkSuites = getCheckSuites(JSON.parse(files.get(checkManifest)))
+  // Resolve suite entries from the inspected files so negative cases can
+  // remove a command or its manifest entry and still trigger the rule.
+  for (const [name, command] of Object.entries(scripts)) {
+    const suite = /^node scripts\/check-suite\.mjs(?: (\w+))?$/.exec(command)
+    if (suite) scripts[name] = (checkSuites[suite[1] ?? 'all'] ?? []).map((entry) => `node scripts/${entry}.mjs`).join(' && ')
+  }
   require(nodes(named(main, 'startRemoteUpload'), (node) => ts.isPropertyAssignment(node) && node.name.getText() === 'automatic' && node.initializer.getText() === '!keepBoth').length && called(source('src/main/remote-file.ts'), 'publishRemoteStage').length,
     'AWB037', mainFile, '远程上传默认自动覆盖，同名目录经临时上传完成后整体替换')
   const uploadFile = 'src/renderer/UploadStatus.tsx', upload = source(uploadFile)
@@ -224,7 +234,7 @@ export function checkInvariants(files) {
     'AWB102', uploadFile, '拖放提示不改变列表布局或命中，传输失败聚合并按需展开详情，上传下载成功均自动关闭，保留实际回归')
   require(uploadTags.some((node) => node.tagName.getText() === 'FileOperationDialog') && hasString(upload, '传输详情') && hasString(upload, 'transfer-error-details') && !hasString(upload, 'transfer-details') && hasString(upload, 'dialog'),
     'AWB104', uploadFile, '传输错误详情使用居中模态弹窗与关闭、焦点恢复，不在右下角提示内展开')
-  require(['review', 'windows-icon', 'shell-profile', 'terminal', 'terminal-shutdown', 'session-restore', 'ssh-password', 'remote-terminal', 'render', 'workspace', 'multi-repo', 'program-status', 'sidebar', 'editor', 'design', 'appearance', 'resources', 'resource-import', 'resource-import-ui', 'opencode-mcp', 'host-management', 'directory-browser', 'autosave', 'resources-ui', 'resource-dialog', 'html-preview'].every((name) => scripts.check?.includes(`scripts/${name}-check.mjs`)) && scripts.check?.includes('npm run check:shells') && scripts['check:shells']?.includes('scripts/local-shells-check.mjs'),
+  require(['review', 'windows-icon', 'shell-profile', 'terminal', 'terminal-shutdown', 'session-restore', 'ssh-password', 'remote-terminal', 'render', 'workspace', 'multi-repo', 'program-status', 'sidebar', 'editor', 'design', 'appearance', 'resources', 'resource-import', 'resource-import-ui', 'opencode-mcp', 'host-management', 'directory-browser', 'autosave', 'resources-ui', 'resource-dialog', 'html-preview', 'local-shells'].every((name) => scripts.check?.includes(`scripts/${name}-check.mjs`)) && scripts['check:shells']?.includes('scripts/local-shells-check.mjs'),
     'AWB018', 'package.json', '保留已有行为回归入口，不能删检查来绕过失败')
   require(files.get('AGENTS.md')?.includes('npm run lint') && files.get('AGENTS.md')?.includes('npm run check'), 'AWB019', 'AGENTS.md', '项目规则必须注明静态与行为验证入口')
   require(scripts['check:files']?.includes('scripts/upload-replace-check.mjs') && scripts['check:files']?.includes('scripts/upload-status-check.mjs'), 'AWB018', 'package.json', '保留上传整体替换、草稿和简洁状态的实际行为回归')
@@ -313,12 +323,12 @@ export function checkInvariants(files) {
   require(files.get('src/main/temporary-sessions.ts')?.includes('remoteTemporarySessionsDirectories') && files.get('src/main/temporary-sessions.ts')?.includes('host: hostId') && files.get('src/main/temporary-session-remote.ts')?.includes('stream.stdin.end(JSON.stringify(') && files.get('src/renderer/TemporarySessionDialog.tsx')?.includes('<DirectoryBrowser hostId={hostId}') && scripts.check?.includes('scripts/temporary-sessions-check.mjs'),
     'AWB078', 'src/main/temporary-sessions.ts', '临时会话按机器保存目录，在对应机器创建，远程路径与内容走 stdin 并保留 SSH 行为回归')
   const rows = files.get('src/renderer/VirtualFileRows.tsx') || ''
-  require(rows.includes('items.length > 300') && rows.includes('data-virtual-count') && rows.includes("event.key === 'End'") && rows.includes("event.key === 'Tab'") && files.get('src/renderer/RightPanel.tsx')?.includes('<VirtualFileRows') && scripts.check?.includes('npm run check:performance') && scripts['check:performance']?.includes('scripts/large-project-regression-check.mjs'),
+  require(rows.includes('items.length > 300') && rows.includes('data-virtual-count') && rows.includes("event.key === 'End'") && rows.includes("event.key === 'Tab'") && files.get('src/renderer/RightPanel.tsx')?.includes('<VirtualFileRows') && scripts.check?.includes('scripts/large-project-regression-check.mjs') && scripts['check:performance']?.includes('scripts/large-project-regression-check.mjs'),
     'AWB079', 'src/renderer/VirtualFileRows.tsx', '大量变更和文件结果按视口渲染，完整结果可滚动和键盘访问，并保留大项目回归')
   const performance = JSON.parse(files.get('scripts/performance-budgets.json') || '{}')
   require(files.get('src/renderer/App.tsx')?.includes("if (!project || route !== 'work' || !right) return") && files.get('src/renderer/App.tsx')?.includes('route, right, rmode, gitTick') && files.get('src/main/resource-scopes.ts')?.includes('manager.listAsync([target]') && ['scripts/hotspot-performance-check.mjs', 'scripts/hotspot-ui-check.mjs', 'scripts/background-work-check.mjs'].every((entry) => scripts['check:performance']?.includes(entry)) && performance.hotspots?.limits.skillsGapMs <= 100 && performance.hotspotUi?.limits.savePaintMs === performance.regression?.limits.savePaintMs,
     'AWB101', 'src/renderer/App.tsx', '收起文件面板停止轮询，展开立即刷新；大资源列表让出事件循环，保留完整性与性能门限回归')
-  require(scripts.check?.includes('npm run check:performance') && scripts['check:performance']?.includes('scripts/performance-budget-check.mjs') && scripts['bench:large-project']?.includes('--enforce-budget') &&
+  require(checkSuites.performance.every((name) => scripts.check?.includes(`scripts/${name}.mjs`)) && scripts['check:performance']?.includes('scripts/performance-budget-check.mjs') && scripts['bench:large-project']?.includes('--enforce-budget') &&
     ['regression', 'github'].every((suite) => ['filenameMs', 'contentMs', 'mainThreadGapMs', 'savePaintMs', 'renderedGitRows'].every((metric) => Number.isFinite(performance[suite]?.limits?.[metric]) && performance[suite].limits[metric] > 0)) &&
     files.get('scripts/large-project-regression-check.mjs')?.includes('finishPerformance(metrics,') && files.get('scripts/fixtures/performance-metrics.mjs')?.includes('budget.requiredChecks') && files.get('AGENTS.md')?.includes('性能度量') && files.get('PERFORMANCE.md')?.includes('npm run check:performance'),
     'AWB080', 'scripts/performance-budgets.json', '性能预算、完成性检查、反例和度量入口必须接入项目检查，调整门限须附证据')

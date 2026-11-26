@@ -1,0 +1,122 @@
+{
+  "groups": {
+    "files": [
+      "transfer-check",
+      "external-editors-check",
+      "upload-status-check",
+      "transfer-feedback-check",
+      "download-replace-check",
+      "file-dialog-check",
+      "upload-replace-check"
+    ],
+    "shells": [
+      "local-shells-check"
+    ],
+    "skillDiscovery": [
+      "skill-discovery-ui-check"
+    ],
+    "customAgent": [
+      "custom-agent-check",
+      "custom-agent-ui-check"
+    ],
+    "executorTemplates": [
+      "executor-templates-check"
+    ],
+    "performance": [
+      "performance-budget-check",
+      "content-search-worker-check",
+      "hotspot-performance-check",
+      "hotspot-ui-check",
+      "background-work-check",
+      "large-project-regression-check"
+    ],
+    "installation": [
+      "nsis-update-check",
+      "installation-check"
+    ],
+    "hotspots": [
+      "hotspot-performance-check",
+      "hotspot-ui-check",
+      "background-work-check"
+    ],
+    "releaseWorkflow": [
+      "release-workflow-check"
+    ]
+  },
+  "all": [
+    "@releaseWorkflow",
+    "@files",
+    "@shells",
+    "review-check",
+    "windows-icon-check",
+    "shell-profile-check",
+    "terminal-check",
+    "terminal-close-shortcut-check",
+    "terminal-input-check",
+    "terminal-search-check",
+    "terminal-shutdown-check",
+    "terminal-disposal-check",
+    "session-restore-check",
+    "agent-resume-check",
+    "diff-editor-check",
+    "terminal-context-check",
+    "ssh-command-check",
+    "ssh-password-check",
+    "remote-terminal-check",
+    "render-check",
+    "workspace-check",
+    "drag-move-check",
+    "multi-repo-check",
+    "git-about-check",
+    "program-status-check",
+    "remote-read-check",
+    "sidebar-check",
+    "editor-check",
+    "source-gutter-check",
+    "design-check",
+    "appearance-check",
+    "resources-check",
+    "resource-import-check",
+    "@skillDiscovery",
+    "resource-import-ui-check",
+    "opencode-mcp-check",
+    "host-management-check",
+    "directory-browser-check",
+    "autosave-check",
+    "resources-ui-check",
+    "resource-dialog-check",
+    "html-preview-check",
+    "file-tab-refresh-check",
+    "reading-workspace-check",
+    "terminal-layout-check",
+    "temporary-sessions-check",
+    "workspace-split-check",
+    "editor-groups-check",
+    "i18n-check",
+    "document-performance-check",
+    "app-update-check",
+    "ui-affordance-check",
+    "menu-position-check",
+    "tab-navigation-check",
+    "input-regression-check",
+    "terminal-paste-size-check",
+    "media-preview-check",
+    "preview-wheel-check",
+    "document-search-check",
+    "search-navigation-check",
+    "content-search-check",
+    "@customAgent",
+    "@executorTemplates",
+    "@performance"
+  ],
+  "wsl": [
+    "remote-terminal-check",
+    "temporary-sessions-check",
+    "content-search-check"
+  ],
+  "performanceIsolated": [
+    "source-gutter-check",
+    "document-performance-check",
+    "@performance"
+  ]
+}
