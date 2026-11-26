@@ -2,6 +2,7 @@
 //! Channel names match the Electron IPC names in `src/preload/index.ts`.
 
 use crate::files::{self, default_ignore};
+use crate::gate::Gate;
 use crate::git;
 use crate::i18n::{self, translate};
 use crate::import;
@@ -33,10 +34,17 @@ type Emit = Arc<dyn Fn(Value) + Send + Sync>;
 
 pub struct Workbench {
     pub paths: Paths,
+    /// Passes the calls that write the database one at a time, in the order
+    /// they were sent in.
+    saves: Arc<Gate>,
     db: Mutex<Value>,
     pty: Manager,
     dirty: Mutex<bool>,
     content_searches: Mutex<HashMap<String, ContentSearch>>,
+    /// The stop flag of each content search, kept apart from the search so
+    /// that a search can be stopped while its next batch is being waited
+    /// for, which holds the lock on the searches.
+    content_stops: Mutex<HashMap<String, crate::ssh::CancelFlag>>,
     tree_searches: Mutex<HashMap<String, TreeSearch>>,
     layouts: Mutex<HashMap<String, Vec<Tile>>>,
     restore_failures: Mutex<HashMap<String, String>>,
@@ -83,7 +91,7 @@ impl Workbench {
             db["settings"]["language"] = json!("zh-CN");
         }
         let updates = updates::Service::new(db["settings"]["autoCheckUpdates"] != false);
-        Ok(Self { paths, db: Mutex::new(db), pty: Manager::new(), dirty: Mutex::new(false), content_searches: Mutex::new(HashMap::new()), tree_searches: Mutex::new(HashMap::new()), layouts: Mutex::new(HashMap::new()), restore_failures: Mutex::new(HashMap::new()), preview: preview::Service::new(), resources: resources::Resources::new(), updates: Mutex::new(updates), uploads: upload::Service::new(), imports: import::Imports::new(), pickers: Mutex::new(HashMap::new()), history_flushed: Mutex::new(false), closing: AtomicBool::new(false), emit })
+        Ok(Self { paths, saves: Arc::new(Gate::new()), db: Mutex::new(db), pty: Manager::new(), dirty: Mutex::new(false), content_searches: Mutex::new(HashMap::new()), content_stops: Mutex::new(HashMap::new()), tree_searches: Mutex::new(HashMap::new()), layouts: Mutex::new(HashMap::new()), restore_failures: Mutex::new(HashMap::new()), preview: preview::Service::new(), resources: resources::Resources::new(), updates: Mutex::new(updates), uploads: upload::Service::new(), imports: import::Imports::new(), pickers: Mutex::new(HashMap::new()), history_flushed: Mutex::new(false), closing: AtomicBool::new(false), emit })
     }
 
     /// The shell renders a diagram in a hidden window of its own, as the
@@ -93,6 +101,16 @@ impl Workbench {
     pub fn set_diagram_renderer(&self, renderer: preview::Renderer) {
         self.preview.set_renderer(renderer);
     }
+
+    /// A call that saves a whole section of the database takes a place in line
+    /// here, before it goes to its thread, and waits for the calls before it.
+    pub fn save_order(&self) -> std::sync::Arc<crate::gate::Gate> {
+        std::sync::Arc::clone(&self.saves)
+    }
+
+    /// The calls that pass the gate: each sends a whole section as the page
+    /// drew it, so one written over a later one would carry changes back.
+    pub const SAVED_CHANNELS: [&'static str; 3] = ["db:settings", "db:projects", "db:custom"];
 
     /// The window close handler calls this once. Later terminal creates fail
     /// while the existing sessions are still being closed.
@@ -294,10 +312,13 @@ impl Workbench {
         self.with_local(id, language, |root| git::discard(root, relative, untracked, language).map(|_| json!(true)))
     }
 
+    /// Writes the database as it is at this moment. The file is written
+    /// while the database is held, so that no change slips in between the
+    /// two and is written over by a file that was made before it.
     fn persist(&self) -> Result<Value, String> {
-        let db = self.db.lock().expect("db").clone();
+        let db = self.db.lock().expect("db");
         store::save_database(&self.database_path(), &db)?;
-        Ok(db)
+        Ok(db.clone())
     }
 
     fn save_settings(&self, settings: Value) -> Result<Value, String> {
@@ -742,21 +763,42 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
         let project_id = str_arg(args, 0);
         let (root, identity) = self.search_root(project_id, language)?;
         let ignored = self.ignores(project_id);
+        // One live content search per project: a search asked for on a project
+        // that already has one ends that one, and one asked for again under
+        // the same id ends it too, so stale requests do not pile up workers.
+        let stale: Vec<String> = self.content_searches.lock().expect("content").iter()
+            .filter(|(key, job)| job.project_id() == project_id || key.as_str() == id)
+            .map(|(key, _)| key.clone()).collect();
+        for key in &stale { self.content_cancel(&key); }
         let job = if let Some((host, path)) = self.remote_place(project_id, language)? {
             let payload = json!({ "root": path, "query": str_arg(args, 2), "sensitive": sensitive, "regex": regex, "whole": whole, "ignored": ignored });
-            let script = if host["platform"] == "windows" { search::windows_content_script().to_string() } else { search::remote_content_shell() };
-            let output = ssh::run(&self.paths.data, &host, &script, Some(payload.to_string().as_bytes()), language)?;
-            ContentSearch::from_remote_output(project_id, &identity, &output, language)?
+            // The script reaches the host the way a command does: encoded for
+            // PowerShell, quoted for the shell. The query is in neither, as it
+            // travels on the input.
+            let platform = host["platform"].as_str().unwrap_or("linux");
+            let words: Vec<String> = if platform == "windows" {
+                vec![String::from("powershell.exe"), String::from("-NoProfile"), String::from("-Command"), search::windows_content_script().to_string()]
+            } else {
+                vec![String::from("bash"), String::from("-lc"), search::remote_content_shell()]
+            };
+            let command = ssh::remote_command(platform, &words);
+            let stream = ssh::open_command_stream(&self.paths.data, &host, &command, payload.to_string().as_bytes(), language)?;
+            ContentSearch::from_stream(project_id, &identity, stream, language)
         } else {
             ContentSearch::start(&root, project_id, &identity, str_arg(args, 2), sensitive, regex, whole, &ignored, language)?
         };
+        self.content_stops.lock().expect("content").insert(id.to_string(), job.cancel_flag());
         self.content_searches.lock().expect("content").insert(id.to_string(), job);
         Ok(Value::Null)
     }
 
     fn content_cancel(&self, id: &str) {
-        if let Some(job) = self.content_searches.lock().expect("content").get_mut(id) { job.cancel(); }
-        self.content_searches.lock().expect("content").remove(id);
+        // The flag goes first: the batch being waited for ends as soon as it
+        // is set, and only then is the lock on the searches free.
+        if let Some(stop) = self.content_stops.lock().expect("content").remove(id) { stop.stop(); }
+        let mut searches = self.content_searches.lock().expect("content");
+        if let Some(job) = searches.get_mut(id) { job.cancel(); }
+        searches.remove(id);
     }
 
     fn content_next(&self, id: &str, language: &str) -> Result<Value, String> {
@@ -774,11 +816,12 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
         };
         match job.next(language) {
             Ok(batch) => {
-                if batch["done"] == true { searches.remove(id); }
+                if batch["done"] == true { searches.remove(id); self.content_stops.lock().expect("content").remove(id); }
                 Ok(batch)
             }
             Err(error) => {
                 searches.remove(id);
+                self.content_stops.lock().expect("content").remove(id);
                 Err(error)
             }
         }
@@ -1257,24 +1300,39 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
         Ok(json!(quoted))
     }
 
+    /// The system's folder dialog, as the Electron build's `dialog` module
+    /// opens it: a folder when one is chosen, and null when it is dismissed.
+    ///
+    /// On Linux the desktop's own programs are asked first, where they are;
+    /// without one, and when a test asks for no system dialog at all, the
+    /// workbench's own picker is opened in the page instead, as before.
     fn pick_directory(&self, language: &str) -> Result<Value, String> {
         if let Ok(value) = std::env::var("AWB_DIRECTORY") {
             return Ok(if value.is_empty() { Value::Null } else { json!(value) });
         }
-        if std::env::var("AWB_SKIP_ZENITY").ok().as_deref() != Some("1") {
-            for program in ["zenity", "kdialog"] {
-                let mut command = std::process::Command::new(program);
-                if program == "zenity" { command.args(["--file-selection", "--directory"]); }
-                else { command.args(["--getexistingdirectory", &std::env::var("HOME").unwrap_or_else(|_| "/".into())]); }
-                if let Ok(output) = command.output() {
-                    if output.status.success() {
-                        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                        if !path.is_empty() { return Ok(json!(path)) }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = language;
+            let picked = rfd::FileDialog::new().set_title("Pello").pick_folder();
+            return Ok(picked.map(|path| json!(path.display().to_string())).unwrap_or(Value::Null));
+        }
+        #[cfg(target_os = "linux")]
+        {
+            if std::env::var("AWB_SKIP_ZENITY").ok().as_deref() != Some("1") {
+                for program in ["zenity", "kdialog"] {
+                    let mut command = std::process::Command::new(program);
+                    if program == "zenity" { command.args(["--file-selection", "--directory"]); }
+                    else { command.args(["--getexistingdirectory", &std::env::var("HOME").unwrap_or_else(|_| "/".into())]); }
+                    if let Ok(output) = command.output() {
+                        if output.status.success() {
+                            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                            if !path.is_empty() { return Ok(json!(path)) }
+                        }
                     }
                 }
             }
+            self.picker(json!({ "op": "open", "hostId": "local", "initial": std::env::var("HOME").unwrap_or_else(|_| "/".into()) }), language)
         }
-        self.picker(json!({ "op": "open", "hostId": "local", "initial": std::env::var("HOME").unwrap_or_else(|_| "/".into()) }), language)
     }
 }
 

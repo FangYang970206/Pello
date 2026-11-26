@@ -20,6 +20,7 @@ const quote = (value) => `'${value.replaceAll("'", process.platform === 'win32' 
 const command = `${process.platform === 'win32' ? '& ' : ''}${quote(process.execPath)}`
 const shots = path.resolve('.cache/goal-upgrade/appearance')
 fs.mkdirSync(shots, { recursive: true })
+const notRun = []
 for (const scale of [1, 1.25, 1.5, 2]) {
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'awb-appearance-'))
 fs.writeFileSync(path.join(data, 'note.txt'), 'saved line\n')
@@ -31,6 +32,17 @@ fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: {
 const env = { ...process.env, AWB_USER_DATA: data }
 delete env.ELECTRON_RUN_AS_NODE
 const app = await launchWorkbench({ args: ['.', `--force-device-scale-factor=${scale}`], env, scale })
+// The page sizes this check goes through start at the smallest the window
+// takes. A desktop whose scale is above the page's own cannot show it, and
+// then nothing of this scale runs here.
+const shown = await app.resize(1024, 680).then(() => true, (error) => {
+  if (!/needs a desktop at/.test(String(error))) throw error
+  notRun.push(`${scale * 100}% DPI: ${error.message}`)
+  return false
+})
+if (!shown) { await app.close(); continue }
+// Back to the size the window was made with, which the first checks expect.
+await app.resize(1440, 900)
 try {
   const page = await app.firstWindow()
   await page.waitForFunction(() => window.__awbBuffer?.('tui')?.includes('TERM_HEADER'))
@@ -58,8 +70,7 @@ try {
     await page.waitForFunction((id) => document.documentElement.dataset.palette === id, theme.id)
     await page.click('[data-a=back]')
     for (const [width, height] of [[1024, 680], [1440, 900]]) {
-      await page.evaluate(([width, height]) => window.awb.winResize(width, height), [width, height])
-      await page.waitForFunction((width) => innerWidth === width, width)
+      await app.resize(width, height)
       await page.screenshot({ path: path.join(shots, `${theme.id}-${width}-${scale * 100}.png`) })
       assert.equal(await page.evaluate(() => window.__appearanceNode === document.querySelector('.termhost .xterm')), true)
       assert.ok(await page.evaluate(() => window.__awbBuffer('tui').includes('TERM_HEADER')))
@@ -95,3 +106,5 @@ try {
   console.log(`PASS ${scale * 100}% DPI: default terminal focus, manual panel expansion, six accessible themes, bundled fonts, focus/review layouts, panel position, density, persistent terminal and unsaved draft`)
 } finally { await app.close() }
 }
+for (const line of notRun) console.log(`NOT RUN ${line}`)
+if (notRun.length) process.exitCode = 2

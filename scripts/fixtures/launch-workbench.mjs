@@ -86,13 +86,43 @@ async function waitForInspector(port, child) {
  * through the WebView2 debugging port, elsewhere on a virtual display through
  * the WebKit inspector socket.
  */
+// Give the app a `resize(width, height)` in the pixels of the page. The
+// window is in logical pixels, which follow the desktop's scale and not the
+// page's, and it is not made smaller than 1024 by 680 of them, so the page
+// cannot be asked for fewer pixels than that at a scale factor below the
+// desktop's own: that is refused with the reason, so a check says it did not
+// run rather than that it passed.
+// `scale` is the factor the page was started with, or null when it was left
+// to the desktop: then the page says what it is.
+async function addResize(app, page, scale) {
+  if (scale == null) scale = await page.evaluate(() => devicePixelRatio)
+  // Read now: the window is still the size it was made, 1440 by 900 logical
+  // pixels. The desktop's own scale turns those into physical ones and the
+  // page's scale into the ones it reports, so the two can be told apart from
+  // what the page says about that size. A window that has since been resized
+  // says nothing about it.
+  const { inner, ratio } = await page.evaluate(() => ({ inner: innerWidth, ratio: devicePixelRatio }))
+  const desktop = inner * ratio / 1440
+  app.desktopScale = async () => desktop
+  app.resize = async (width, height) => {
+    const factor = scale / desktop
+    if (width * factor < 1024 || height * factor < 680) {
+      throw new Error(`a ${width} by ${height} page at ${scale * 100}% needs a desktop at ${scale * 100}%; this one is at ${desktop * 100}%`)
+    }
+    await page.evaluate(({ width, height }) => window.awb.winResize(width, height), { width: Math.round(width * factor), height: Math.round(height * factor) })
+    await page.waitForFunction(({ width, height }) => innerWidth === width && innerHeight === height, { width, height }, { timeout: 10000 })
+  }
+}
+
+// `scale` is the device scale factor the page is started with, 1 unless one
+// is given; `null` leaves it to the desktop.
 export async function launchWorkbench({ args = ['.'], env = process.env, cwd, scale = 1 } = {}) {
   if (process.env.AWB_SHELL !== 'tauri') {
     const app = await electron.launch({ args, env, cwd })
     app.shell = 'electron'
-    return app
-  }
-  if (process.platform === 'win32') return launchWebView2({ env, cwd })
+    await addResize(app, await app.firstWindow(), scale)
+    return app  }
+  if (process.platform === 'win32') return launchWebView2({ env, cwd, scale })
   await ensureDisplay()
   await ensureDevServer()
   const binary = process.env.AWB_TAURI_BIN || path.join(root, 'src-tauri/target/debug/pello')
@@ -123,7 +153,7 @@ export async function launchWorkbench({ args = ['.'], env = process.env, cwd, sc
       LIBGL_ALWAYS_SOFTWARE: '1',
       GDK_BACKEND: 'x11',
       GDK_SCALE: '1',
-      GDK_DPI_SCALE: String(scale),
+      GDK_DPI_SCALE: String(scale ?? 1),
       AWB_MENU_FILE: menuFile,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -174,15 +204,21 @@ export async function launchWorkbench({ args = ['.'], env = process.env, cwd, sc
 // has not finished exiting attaches to the old one, and reads its data.
 const nextDebugPort = () => 9333 + Math.floor(Math.random() * 267)
 
-async function launchWebView2({ env, cwd }) {
+// Native Chromium scale factors exercise real DPI layout, separately from
+// viewport width. WebView2 takes the same switch in its additional browser
+// arguments that Electron takes on its command line.
+async function launchWebView2({ env, cwd, scale }) {
   const binary = process.env.AWB_TAURI_BIN || path.join(root, 'src-tauri/target/debug/pello.exe')
   if (!fs.existsSync(binary)) throw new Error(`Tauri binary is missing: ${binary}. Build it with: npx tauri build --debug --no-bundle`)
   const port = nextDebugPort()
   const menuFile = path.join(os.tmpdir(), `pello-menu-${process.pid}-${port}.txt`)
   fs.writeFileSync(menuFile, '')
+  // With a factor named, the page has it whatever the desktop's is, so a check
+  // knows which scale it exercised; `null` leaves it to the desktop.
+  const browserArguments = [`--remote-debugging-port=${port}`, ...(scale == null ? [] : [`--force-device-scale-factor=${scale}`])]
   const child = spawn(binary, [], {
     cwd: cwd || root,
-    env: { ...env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}`, AWB_MENU_FILE: menuFile },
+    env: { ...env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: browserArguments.join(' '), AWB_MENU_FILE: menuFile },
     stdio: 'ignore',
   })
   let page
@@ -201,7 +237,9 @@ async function launchWebView2({ env, cwd }) {
       page = browser.contexts().flatMap((context) => context.pages()).find((candidate) => candidate.url().startsWith('http://tauri.localhost') && !candidate.url().includes('diagram-renderer'))
     }
     if (!page) throw new Error('The workbench window did not open')
-    await page.waitForFunction(() => typeof window.awb?.renderMermaid === 'function' && document.documentElement.getAttribute('data-theme') !== null, null, { timeout: 20000 })
+    // The page is written with `data-theme="light"` and names the saved theme
+    // in its palette, so it is the palette that tells the settings have arrived.
+    await page.waitForFunction(() => typeof window.awb?.renderMermaid === 'function' && document.documentElement.getAttribute('data-palette') !== null, null, { timeout: 20000 })
     page.setDefaultTimeout(15000)
   } catch (error) {
     if (browser) await browser.close().catch(() => {})
@@ -212,11 +250,16 @@ async function launchWebView2({ env, cwd }) {
   // Whether the app is gone is asked of the system, not of Node: after the
   // debugging connection is closed, Node can hold the exit notice back.
   const alive = () => { try { process.kill(child.pid, 0); return true } catch { return false } }
-  return {
+  const app = {
     shell: 'tauri',
     menuFile,
+    // The factor the page runs at, named or the desktop's own.
+    scale: scale ?? await page.evaluate(() => devicePixelRatio),
     async firstWindow() { return page },
-    windows() { return browser.contexts().flatMap((context) => context.pages()).filter((candidate) => !candidate.url().includes('diagram-renderer')) },
+    // Every page the app shows, the drawing window among them, as the
+    // debugging port lists them.
+    allPages() { return browser.contexts().flatMap((context) => context.pages()) },
+    windows() { return this.allPages().filter((candidate) => !candidate.url().includes('diagram-renderer')) },
     process() { return child },
     async evaluate() { throw new Error('Tauri webview has no Electron main process') },
     waitForEvent(name) {
@@ -236,8 +279,43 @@ async function launchWebView2({ env, cwd }) {
       await browser.close().catch(() => {})
       fs.rmSync(menuFile, { force: true })
       if (alive()) throw new Error(`The app (pid ${child.pid}) did not exit after it was closed`)
+      await releaseData(env.AWB_USER_DATA)
     },
   }
+  await addResize(app, page, scale)
+  return app
+}
+
+// The web view is a browser of its own. It outlives the app by a moment and
+// holds the files it stores under the data directory until it is gone, so a
+// check that removes that directory right after the close would fail on files
+// that are still open. Nothing is removed here: it is only waited until the
+// directory is no longer held, for the check that owns it.
+async function releaseData(data) {
+  if (!data || !fs.existsSync(data)) return
+  const deadline = Date.now() + 15000
+  while (Date.now() < deadline && held(data)) await new Promise((resolve) => setTimeout(resolve, 100))
+}
+
+// Whether a file in the directory is still open elsewhere: a held file cannot
+// be renamed over, and can be once it is released.
+function held(data) {
+  let heldByOther = false
+  const walk = (directory) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const full = path.join(directory, entry.name)
+      if (entry.isDirectory()) { if (!entry.isSymbolicLink()) walk(full); continue }
+      try {
+        fs.renameSync(full, full)
+      } catch {
+        heldByOther = true
+        return
+      }
+      if (heldByOther) return
+    }
+  }
+  try { walk(data) } catch { /* A directory that vanished is not held. */ }
+  return heldByOther
 }
 
 export function stopDisplay() {

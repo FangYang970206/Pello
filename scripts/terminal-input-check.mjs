@@ -10,6 +10,7 @@ fs.mkdirSync(shots, { recursive: true })
 const isWin = process.platform === 'win32'
 const shell = isWin ? 'pwsh' : 'bash'
 const quote = (value) => `'${value.replaceAll("'", isWin ? "''" : "'\\''")}'`
+const notRun = []
 for (const scale of process.argv.includes('--quick') ? [1] : [1, 1.25, 1.5, 2]) {
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'pello-terminal-input-'))
   const log = path.join(data, 'input.txt')
@@ -23,6 +24,15 @@ for (const scale of process.argv.includes('--quick') ? [1] : [1, 1.25, 1.5, 2]) 
   const env = { ...process.env, AWB_USER_DATA: data }
   delete env.ELECTRON_RUN_AS_NODE
   const app = await launchWorkbench({ args: [root, `--force-device-scale-factor=${scale}`], cwd: root, env, scale })
+  // This check goes through a 1024 by 680 page, the smallest the window
+  // takes. A desktop whose scale is above the page's own cannot show it, and
+  // then nothing of this scale runs here.
+  const shown = await app.resize(1024, 680).then(() => true, (error) => {
+    if (!/needs a desktop at/.test(String(error))) throw error
+    notRun.push(`${scale * 100}% DPI: ${error.message}`)
+    return false
+  })
+  if (!shown) { await app.close(); continue }
   try {
     const page = await app.firstWindow()
     const cdp = await page.context().newCDPSession(page).catch(() => null)
@@ -72,8 +82,7 @@ for (const scale of process.argv.includes('--quick') ? [1] : [1, 1.25, 1.5, 2]) 
       await page.click('[data-a=sec][data-id=look]')
       await page.click(`[data-a=theme][data-id=${theme}]`)
       await page.click('[data-a=back]')
-      await page.evaluate(([width, height]) => window.awb.winResize(width, height), [width, height])
-      await page.waitForFunction((width) => innerWidth === width, width)
+      await app.resize(width, height)
       await page.waitForTimeout(150)
       const geometry = () => page.locator('[data-term=input]').evaluate((host) => {
         const screen = host.querySelector('.xterm-screen').getBoundingClientRect()
@@ -125,3 +134,5 @@ for (const scale of process.argv.includes('--quick') ? [1] : [1, 1.25, 1.5, 2]) 
     }
   } finally { await app.close() }
 }
+for (const line of notRun) console.log(`NOT RUN ${line}`)
+if (notRun.length) process.exitCode = 2

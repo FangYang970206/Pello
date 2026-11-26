@@ -84,6 +84,63 @@ try {
   assert.deepEqual([onDisk.fontSize, onDisk.editorFontSize, onDisk.density], [18, 17, 'compact'], 'three changes made one right after the other must all reach the file')
   assert.deepEqual(await appearance(), { fontSize: 18, editorFontSize: 17, density: 'compact' })
   console.log('PASS three settings changed one right after the other all keep, in the app and in the file')
+
+  // A save that was sent first can be answered after one sent later. Its
+  // answer has neither the later change nor any made since, and must not be
+  // laid over them. Five controls are changed one after the other, over and
+  // over, and each change must keep, in the app and in the file.
+  const target = { 'Terminal font': 'JetBrains Mono', 'Font size': '18', 'Interface font': 'Segoe UI', 'Interface font size': '15', 'Source font size': '17' }
+  const chosen = async () => {
+    const settings = (await page.evaluate(() => window.awb.getState())).db.settings
+    return [settings.fontFamily, settings.fontSize, settings.uiFontFamily, settings.uiFontSize, settings.editorFontSize]
+  }
+  const wanted = ['JetBrains Mono', 18, 'Segoe UI', 15, 17]
+  // The saves are answered quickly, so which answer comes after which save
+  // was sent is left to chance. From `holdFirstSave()` on, the answer of the
+  // next save is kept back until `releaseFirstSave()`. Each round lets it
+  // arrive between the second save and the third: the answer then lays an
+  // older state over the second change, which the saves after it send back.
+  await page.evaluate(() => {
+    const save = window.awb.saveSettings.bind(window.awb)
+    let held = false
+    let release = () => {}
+    let gate = Promise.resolve()
+    window.holdFirstSave = () => { held = true; gate = new Promise((resolve) => { release = resolve }) }
+    window.releaseFirstSave = () => { release() }
+    window.awb.saveSettings = (settings) => {
+      const call = save(settings)
+      if (!held) return call
+      held = false
+      return call.then(async (saved) => { await gate; return saved })
+    }
+  })
+  for (let round = 0; round < 6; round++) {
+    // Each control is set to another option first, so that each is changed
+    // again in the round that follows; those saves are waited for.
+    for (const [label, value] of Object.entries(target)) {
+      const select = page.getByLabel(label, { exact: true })
+      const others = (await select.locator('option').evaluateAll((nodes) => nodes.map((node) => node.value))).filter((other) => other !== value)
+      await select.selectOption(others[0])
+    }
+    await page.waitForTimeout(600)
+    await page.evaluate(() => window.holdFirstSave())
+    const changes = Object.entries(target)
+    await page.getByLabel(changes[0][0], { exact: true }).selectOption(changes[0][1])
+    await page.getByLabel(changes[1][0], { exact: true }).selectOption(changes[1][1])
+    await page.evaluate(() => window.releaseFirstSave())
+    // The held answer is let through and lands before the saves that follow.
+    await page.waitForTimeout(150)
+    for (const [label, value] of changes.slice(2)) await page.getByLabel(label, { exact: true }).selectOption(value)
+    await page.waitForTimeout(600)
+    const inApp = await chosen()
+    const onFile = (() => {
+      const settings = JSON.parse(fs.readFileSync(path.join(data, 'workbench.json'), 'utf8')).settings
+      return [settings.fontFamily, settings.fontSize, settings.uiFontFamily, settings.uiFontSize, settings.editorFontSize]
+    })()
+    assert.deepEqual(inApp, wanted, `round ${round + 1}: five changes in a row must all reach the app`)
+    assert.deepEqual(onFile, wanted, `round ${round + 1}: five changes in a row must all reach the file`)
+  }
+  console.log('PASS five settings changed one after the other keep, in the app and in the file, over six rounds')
 } finally {
   await app.close()
 }

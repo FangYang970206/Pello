@@ -18,6 +18,10 @@ try {
   const editor = page.getByRole('textbox', { name: '文件内容', exact: true })
   await editor.waitFor()
   const epoch = new Date('2026-11-03T00:00:00Z')
+  // The real timer, taken before the clock takes the page's over. The save
+  // that is held back below must wait in real time while the page's clock
+  // stands still.
+  await page.evaluate(() => { window.__realTimeout = window.setTimeout.bind(window) })
   await page.clock.install({ time: epoch })
   await page.clock.pauseAt(new Date(epoch.getTime() + 1000))
   await editor.fill('first edit')
@@ -38,7 +42,7 @@ try {
   console.log('PASS exact 120000ms per-file debounce and exact 2000ms autosave toast using browser clock')
 
   await page.evaluate(() => {
-    const native = window.__awbNativeTimeout
+    const native = window.__realTimeout
     const original = window.awb.gitWrite.bind(window.awb)
     window.__awbGitWrite = original
     window.awb.gitWrite = (...args) => new Promise((resolve, reject) => native(() => original(...args).then(resolve, reject), 400))

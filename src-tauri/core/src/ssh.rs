@@ -432,25 +432,47 @@ impl client::Handler for KeyHandler {
     }
 }
 
-async fn password_exec(data: &Path, host: &Value, password: &str, command: &str, input: &[u8], language: &str) -> Result<String, String> {
+/// How long one step of reaching a server may take, as long as the Electron
+/// build waits for a server to be ready. A server that accepts the connection
+/// and then says nothing must be given up, or the question asked of it is
+/// never answered.
+const REACH_LIMIT: Duration = Duration::from_secs(12);
+
+/// Runs one step of reaching a server. `None` when the step did not end in
+/// time; what to say about that is for the one that asked.
+async fn within<T>(step: impl std::future::Future<Output = T>) -> Option<T> {
+    tokio::time::timeout(REACH_LIMIT, step).await.ok()
+}
+
+fn timed_out(language: &str) -> String {
+    translate(language, "SSH 连接超时", &[] as &[String])
+}
+
+/// Connect to a server with a password and have the host key checked, as
+/// every command and stream to a password host starts. The key the server
+/// offers is compared with the one remembered for it; a different one ends
+/// the connection before anything is sent.
+async fn open_password(data: &Path, host: &Value, password: &str, language: &str) -> Result<client::Handle<KeyHandler>, String> {
     let addr = host["addr"].as_str().unwrap_or("");
     let user = host["user"].as_str().unwrap_or("");
     let port = host_port(host);
     let state = Arc::new(Mutex::new(KeyState { mismatch: false, fingerprint: String::new() }));
     let handler = KeyHandler { state: state.clone(), file: fingerprint_file(data), identity: key_identity(addr, port) };
     let config = Arc::new(client::Config { keepalive_interval: Some(Duration::from_secs(15)), ..client::Config::default() });
-    let mut session = match client::connect(config, (addr, port), handler).await {
-        Ok(session) => session,
-        Err(error) => {
+    let mut session = match within(client::connect(config, (addr, port), handler)).await {
+        Some(Ok(session)) => session,
+        Some(Err(error)) => {
             if state.lock().expect("key").mismatch { return Err(translate(language, "SSH 主机密钥已改变", &[] as &[String])) }
             return Err(error.to_string());
         }
+        None => return Err(timed_out(language)),
     };
-    let authed = session.authenticate_password(user, password).await.map_err(|error| error.to_string())?;
+    let authed = within(session.authenticate_password(user, password)).await.ok_or_else(|| timed_out(language))?.map_err(|error| error.to_string())?;
     if !matches!(authed, AuthResult::Success) {
-        match session.authenticate_keyboard_interactive_start(user, None).await.map_err(|error| error.to_string())? {
+        let started = within(session.authenticate_keyboard_interactive_start(user, None)).await.ok_or_else(|| timed_out(language))?.map_err(|error| error.to_string())?;
+        match started {
             KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } if prompts.len() == 1 && !prompts[0].echo && prompts[0].prompt.to_ascii_lowercase().contains("password") => {
-                let reply = session.authenticate_keyboard_interactive_respond(vec![password.to_string()]).await.map_err(|error| error.to_string())?;
+                let reply = within(session.authenticate_keyboard_interactive_respond(vec![password.to_string()])).await.ok_or_else(|| timed_out(language))?.map_err(|error| error.to_string())?;
                 if !matches!(reply, KeyboardInteractiveAuthResponse::Success) { return Err(translate(language, "SSH 连接在认证完成前关闭", &[] as &[String])) }
             }
             KeyboardInteractiveAuthResponse::Success => {}
@@ -464,10 +486,24 @@ async fn password_exec(data: &Path, host: &Value, password: &str, command: &str,
     if !stored.is_empty() && stored != fingerprint { return Err(translate(language, "SSH 主机密钥已改变", &[] as &[String])) }
     known[&key_identity(addr, port)] = json!(fingerprint);
     write_private(&fingerprint_file(data), &known)?;
-    let mut channel = session.channel_open_session().await.map_err(|error| error.to_string())?;
-    channel.exec(true, command.as_bytes().to_vec()).await.map_err(|error| error.to_string())?;
-    if !input.is_empty() { channel.data(&input[..]).await.map_err(|error| error.to_string())?; }
-    channel.eof().await.map_err(|error| error.to_string())?;
+    Ok(session)
+}
+
+/// Open a channel on an authenticated session, start a command on it and
+/// hand it its input. The channel is returned with the input sent.
+async fn start_command(session: &client::Handle<KeyHandler>, command: &str, input: &[u8], language: &str) -> Result<russh::Channel<client::Msg>, String> {
+    let channel = within(session.channel_open_session()).await.ok_or_else(|| timed_out(language))?.map_err(|error| error.to_string())?;
+    within(channel.exec(true, command.as_bytes().to_vec())).await.ok_or_else(|| timed_out(language))?.map_err(|error| error.to_string())?;
+    if !input.is_empty() {
+        within(channel.data(&input[..])).await.ok_or_else(|| timed_out(language))?.map_err(|error| error.to_string())?;
+    }
+    within(channel.eof()).await.ok_or_else(|| timed_out(language))?.map_err(|error| error.to_string())?;
+    Ok(channel)
+}
+
+async fn password_exec(data: &Path, host: &Value, password: &str, command: &str, input: &[u8], language: &str) -> Result<String, String> {
+    let session = open_password(data, host, password, language).await?;
+    let mut channel = start_command(&session, command, input, language).await?;
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let mut code = None;
@@ -602,39 +638,9 @@ async fn until_cancel(cancel: &AtomicBool) {
 
 async fn password_stream(data: &Path, host: &Value, password: &str, command: &str, source: &Path, total: u64, progress: &(dyn Fn(u64) + Send + Sync), cancel: &AtomicBool, language: &str) -> Result<String, String> {
     let (mut file, started) = open_upload_source(source, total, language)?;
-    let addr = host["addr"].as_str().unwrap_or("");
-    let user = host["user"].as_str().unwrap_or("");
-    let port = host_port(host);
-    let state = Arc::new(Mutex::new(KeyState { mismatch: false, fingerprint: String::new() }));
-    let handler = KeyHandler { state: state.clone(), file: fingerprint_file(data), identity: key_identity(addr, port) };
-    let config = Arc::new(client::Config { keepalive_interval: Some(Duration::from_secs(15)), ..client::Config::default() });
-    let mut session = match client::connect(config, (addr, port), handler).await {
-        Ok(session) => session,
-        Err(error) => {
-            if state.lock().expect("key").mismatch { return Err(translate(language, "SSH 主机密钥已改变", &[] as &[String])) }
-            return Err(error.to_string());
-        }
-    };
-    let authed = session.authenticate_password(user, password).await.map_err(|error| error.to_string())?;
-    if !matches!(authed, AuthResult::Success) {
-        match session.authenticate_keyboard_interactive_start(user, None).await.map_err(|error| error.to_string())? {
-            KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } if prompts.len() == 1 && !prompts[0].echo && prompts[0].prompt.to_ascii_lowercase().contains("password") => {
-                let reply = session.authenticate_keyboard_interactive_respond(vec![password.to_string()]).await.map_err(|error| error.to_string())?;
-                if !matches!(reply, KeyboardInteractiveAuthResponse::Success) { return Err(translate(language, "SSH 连接在认证完成前关闭", &[] as &[String])) }
-            }
-            KeyboardInteractiveAuthResponse::Success => {}
-            _ => return Err(translate(language, "SSH 连接在认证完成前关闭", &[] as &[String])),
-        }
-    }
-    let fingerprint = state.lock().expect("key").fingerprint.clone();
-    let mut known = read_json(&fingerprint_file(data));
-    if !known.is_object() { known = json!({}); }
-    let stored = known[&key_identity(addr, port)].as_str().unwrap_or("");
-    if !stored.is_empty() && stored != fingerprint { return Err(translate(language, "SSH 主机密钥已改变", &[] as &[String])) }
-    known[&key_identity(addr, port)] = json!(fingerprint);
-    write_private(&fingerprint_file(data), &known)?;
-    let mut channel = session.channel_open_session().await.map_err(|error| error.to_string())?;
-    channel.exec(true, command.as_bytes().to_vec()).await.map_err(|error| error.to_string())?;
+    let session = open_password(data, host, password, language).await?;
+    let mut channel = within(session.channel_open_session()).await.ok_or_else(|| timed_out(language))?.map_err(|error| error.to_string())?;
+    within(channel.exec(true, command.as_bytes().to_vec())).await.ok_or_else(|| timed_out(language))?.map_err(|error| error.to_string())?;
     let mut buffer = vec![0u8; 32 * 1024];
     let mut sent = 0u64;
     while sent < total {
@@ -694,6 +700,229 @@ async fn password_stream(data: &Path, host: &Value, password: &str, command: &st
         None => Err(translate(language, "SSH 连接中断", &[] as &[String])),
         Some(code) => Err(translate(language, "远程命令退出码 {{0}}", &[code.to_string()])),
     }
+}
+
+/// A remote command whose output is read as it comes, one line at a time, as
+/// a search on a remote host reports what it finds. Dropping it ends the
+/// command on the host, so the worker of a search that is cancelled is not
+/// left running there.
+pub struct CommandStream {
+    lines: std::sync::mpsc::Receiver<String>,
+    errors: Arc<Mutex<Vec<u8>>>,
+    code: Arc<Mutex<Option<i32>>>,
+    cancel: Arc<AtomicBool>,
+    language: String,
+}
+
+impl CommandStream {
+    /// The next line of the command's output, without its line break. Waits
+    /// for one as long as the command is still running; `None` once the
+    /// output has ended or the stream was cancelled. `finish` then says how
+    /// the command went.
+    pub fn next_line(&self) -> Option<String> {
+        loop {
+            match self.lines.recv_timeout(Duration::from_millis(200)) {
+                Ok(line) => return Some(line),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if self.cancelled() { return None }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
+            }
+        }
+    }
+
+    /// Whether the stream was cancelled, by being dropped or by its flag.
+    pub fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::SeqCst)
+    }
+
+    /// The flag that cancels this stream from elsewhere.
+    pub fn cancel_flag(&self) -> CancelFlag {
+        CancelFlag(Arc::clone(&self.cancel))
+    }
+
+    /// Wait for the command to end and say whether it succeeded. An error
+    /// carries what the command printed, or its exit code.
+    pub fn finish(&self) -> Result<(), String> {
+        while self.next_line().is_some() {}
+        if self.cancel.load(Ordering::SeqCst) { return Err(translate(&self.language, "搜索已取消", &[] as &[String])) }
+        let detail = String::from_utf8_lossy(&self.errors.lock().expect("command errors")).trim().to_string();
+        let code = *self.code.lock().expect("command code");
+        match code {
+            Some(0) => Ok(()),
+            _ if !detail.is_empty() => Err(detail.chars().rev().take(240).collect::<String>().chars().rev().collect()),
+            Some(code) => Err(translate(&self.language, "远程命令退出码 {{0}}", &[code.to_string()])),
+            None => Err(translate(&self.language, "SSH 连接中断", &[] as &[String])),
+        }
+    }
+}
+
+impl Drop for CommandStream {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
+}
+
+/// The flag by which a `CommandStream` is cancelled. A search holds on to it
+/// so that it can be stopped while its next batch is still being waited for.
+#[derive(Clone)]
+pub struct CancelFlag(Arc<AtomicBool>);
+
+impl CancelFlag {
+    pub fn new() -> Self {
+        CancelFlag(Arc::new(AtomicBool::new(false)))
+    }
+    pub(crate) fn into_shared(self) -> Arc<AtomicBool> {
+        self.0
+    }
+    pub(crate) fn from_shared(flag: Arc<AtomicBool>) -> Self {
+        CancelFlag(flag)
+    }
+    pub fn stop(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+    pub fn is_stopped(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+/// The reader of a stream: it turns the command's bytes into lines and hands
+/// them to the caller, and it ends the session when the stream is dropped.
+struct StreamPump {
+    sender: std::sync::mpsc::Sender<String>,
+    errors: Arc<Mutex<Vec<u8>>>,
+    code: Arc<Mutex<Option<i32>>>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl StreamPump {
+    fn send(&self, bytes: &[u8], pending: &mut Vec<u8>) {
+        pending.extend_from_slice(bytes);
+        while let Some(position) = pending.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = pending.drain(..=position).collect();
+            let line = String::from_utf8_lossy(&line[..line.len() - 1]);
+            let line = line.strip_suffix('\r').unwrap_or(&line).to_string();
+            if self.sender.send(line).is_err() { return }
+        }
+        // A line without a break that grows past what a result line can be is
+        // not held back for a break that is not coming.
+        if pending.len() > MAX_LINE {
+            let line = String::from_utf8_lossy(pending).into_owned();
+            pending.clear();
+            let _ = self.sender.send(line);
+        }
+    }
+}
+
+/// Above this a line is handed over without its break: the largest event a
+/// search script emits holds a file's matches, never more.
+const MAX_LINE: usize = 4_000_000;
+
+/// Start a command on a remote host and read its output as it comes. The
+/// input is written to the command and the input is closed first, so the
+/// command has its query before it says anything.
+pub fn open_command_stream(data: &Path, host: &Value, command: &str, input: &[u8], language: &str) -> Result<CommandStream, String> {
+    let (sender, lines) = std::sync::mpsc::channel();
+    let errors = Arc::new(Mutex::new(Vec::new()));
+    let code = Arc::new(Mutex::new(None));
+    let cancel = Arc::new(AtomicBool::new(false));
+    if host["auth"] == "password" {
+        let password = password_of(data, host).ok_or_else(|| translate(language, "请填写 SSH 登录密码", &[] as &[String]))?;
+        // The connection is made here, where a failure can be reported before
+        // anything is read; only the reading is left to the pump. The session
+        // goes with it: a session nobody keeps is a connection nobody ends.
+        let (session, channel) = runtime().block_on(async {
+            let session = open_password(data, host, &password, language).await?;
+            let channel = start_command(&session, command, input, language).await?;
+            Ok::<_, String>((session, channel))
+        })?;
+        let pump = StreamPump { sender, errors: Arc::clone(&errors), code: Arc::clone(&code), cancel: Arc::clone(&cancel) };
+        // The command runs for as long as it has something to say, as on the
+        // Electron build: a search through a large project is not cut short,
+        // and stopping it is the user's doing.
+        runtime().spawn(async move {
+            let mut pending = Vec::new();
+            let mut channel = channel;
+            loop {
+                if pump.cancel.load(Ordering::SeqCst) { break }
+                let message = tokio::time::timeout(Duration::from_millis(200), channel.wait()).await;
+                match message {
+                    Err(_elapsed) => continue,
+                    Ok(None) => break,
+                    Ok(Some(ChannelMsg::Data { data })) => pump.send(&data, &mut pending),
+                    Ok(Some(ChannelMsg::ExtendedData { data, ext: 1 })) => {
+                        let mut held = pump.errors.lock().expect("command errors");
+                        held.extend_from_slice(&data);
+                        if held.len() > 16000 { let cut = held.len() - 16000; held.drain(..cut); }
+                    }
+                    Ok(Some(ChannelMsg::ExitStatus { exit_status })) => *pump.code.lock().expect("command code") = Some(exit_status as i32),
+                    Ok(Some(_)) => {}
+                }
+            }
+            // A last line that ends without a break is still a line.
+            if !pending.is_empty() { let _ = pump.sender.send(String::from_utf8_lossy(&pending).into_owned()); }
+            // Closing the channel is what ends the command on the host, when
+            // the stream was dropped before the command had finished; the
+            // session is ended after it, as the Electron build ends its client.
+            let _ = channel.close().await;
+            let _ = session.disconnect(Disconnect::ByApplication, "", "").await;
+        });
+    } else {
+        let mut ssh = std::process::Command::new(ssh_program());
+        for arg in ssh_batch_args(host) { ssh.arg(arg); }
+        ssh.arg(command);
+        ssh.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+        let mut child = ssh.spawn().map_err(|error| error.to_string())?;
+        if let Some(mut stdin) = child.stdin.take() { let _ = stdin.write_all(input); }
+        let mut stdout = child.stdout.take().ok_or_else(|| translate(language, "远程输出过大", &[] as &[String]))?;
+        let mut stderr = child.stderr.take().ok_or_else(|| translate(language, "远程输出过大", &[] as &[String]))?;
+        // The error output has a thread of its own: read on the same thread
+        // as the output, a pipe that has nothing to say yet would hold back
+        // the lines that are ready.
+        let tail: Arc<Mutex<Vec<u8>>> = Arc::clone(&errors);
+        std::thread::spawn(move || {
+            let mut buffer = [0u8; 16 * 1024];
+            loop {
+                match stderr.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(size) => {
+                        let mut tail = tail.lock().expect("command errors");
+                        tail.extend_from_slice(&buffer[..size]);
+                        if tail.len() > 16000 { let cut = tail.len() - 16000; tail.drain(..cut); }
+                    }
+                }
+            }
+        });
+        // The child is kept alive here and ended on cancel: ending it is what
+        // makes the blocked read return.
+        let child = Arc::new(Mutex::new(Some(child)));
+        let to_end = Arc::clone(&child);
+        let watching = Arc::clone(&cancel);
+        std::thread::spawn(move || {
+            while !watching.load(Ordering::SeqCst) {
+                let ended = { let mut held = to_end.lock().expect("child"); held.as_mut().map(|child| child.try_wait().ok().flatten().is_some()).unwrap_or(true) };
+                if ended { break }
+                std::thread::sleep(Duration::from_millis(40));
+            }
+            let mut held = to_end.lock().expect("child");
+            if watching.load(Ordering::SeqCst) { if let Some(child) = held.as_mut() { let _ = child.kill(); } }
+        });
+        let pump = StreamPump { sender, errors: Arc::clone(&errors), code: Arc::clone(&code), cancel: Arc::clone(&cancel) };
+        std::thread::spawn(move || {
+            let mut buffer = [0u8; 16 * 1024];
+            let mut pending = Vec::new();
+            loop {
+                match stdout.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(size) => pump.send(&buffer[..size], &mut pending),
+                }
+            }
+            if !pending.is_empty() { let _ = pump.sender.send(String::from_utf8_lossy(&pending).into_owned()); }
+            let status = { let mut held = child.lock().expect("child"); held.take().map(|mut child| child.wait()) };
+            *pump.code.lock().expect("command code") = status.and_then(|result| result.ok()).and_then(|status| status.code());
+        });
+    }
+    Ok(CommandStream { lines, errors, code, cancel, language: language.to_string() })
 }
 
 fn key_exec(host: &Value, command: &str, input: &[u8], language: &str) -> Result<String, String> {
@@ -789,7 +1018,15 @@ async fn pump_shell(data: &Path, host: &Value, command: &str, mut output: std::i
 
 pub struct Fixture {
     pub port: u16,
+    closed: Arc<std::sync::atomic::AtomicUsize>,
     shutdown: Option<server::RunningServerHandle>,
+}
+
+impl Fixture {
+    /// How many channels the client has closed so far.
+    pub fn closed_channels(&self) -> usize {
+        self.closed.load(Ordering::SeqCst)
+    }
 }
 
 impl Drop for Fixture {
@@ -800,10 +1037,12 @@ impl Drop for Fixture {
 
 struct FixtureServer {
     password: String,
+    closed: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 struct FixtureClient {
     password: String,
+    closed: Arc<std::sync::atomic::AtomicUsize>,
     commands: HashMap<ChannelId, String>,
     stdin: HashMap<ChannelId, Vec<u8>>,
     pty: HashMap<ChannelId, bool>,
@@ -813,7 +1052,7 @@ struct FixtureClient {
 impl server::Server for FixtureServer {
     type Handler = FixtureClient;
     fn new_client(&mut self, _: Option<SocketAddr>) -> Self::Handler {
-        FixtureClient { password: self.password.clone(), commands: HashMap::new(), stdin: HashMap::new(), pty: HashMap::new(), writers: HashMap::new() }
+        FixtureClient { password: self.password.clone(), closed: Arc::clone(&self.closed), commands: HashMap::new(), stdin: HashMap::new(), pty: HashMap::new(), writers: HashMap::new() }
     }
 }
 
@@ -866,10 +1105,38 @@ impl server::Handler for FixtureClient {
         Ok(())
     }
 
+    async fn channel_close(&mut self, _channel: ChannelId, _session: &mut server::Session) -> Result<(), Self::Error> {
+        self.closed.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
     async fn channel_eof(&mut self, channel: ChannelId, session: &mut server::Session) -> Result<(), Self::Error> {
         if self.pty.get(&channel) == Some(&true) { return Ok(()) }
         let command = self.commands.remove(&channel).unwrap_or_default();
         let input = self.stdin.remove(&channel).unwrap_or_default();
+        // A command asked for by name `awb-hold:` is a command that does not
+        // end by itself: it answers with its lines, each behind a line break,
+        // and then keeps the channel open without an exit status until the
+        // client closes it. The closing is counted for the caller. A content
+        // search for `hold` is answered the same way, with more files than
+        // one batch holds, so that a search can be followed as it comes and
+        // stopped while it waits for what is left.
+        // The content search on a POSIX host is started as `bash -lc
+        // 'python3 -u -c …'`. It is recognised by that program name, so that
+        // the test does not depend on how the shell quotes the script.
+        let search_holds = command.contains("python3 -u -c ") && serde_json::from_slice::<serde_json::Value>(&input).ok().and_then(|query| query["query"].as_str().map(|query| query == "hold")).unwrap_or(false);
+        let held = match command.strip_prefix("awb-hold:") {
+            Some(lines) => Some(lines.to_string()),
+            None if search_holds => Some((0..40).map(|index| json!({ "file": { "path": format!("src/file{index}.txt"), "matches": [{ "line": index + 1, "column": 1, "text": "hold", "before": "", "after": "" }] } }).to_string()).collect::<Vec<String>>().join("|")),
+            None => None,
+        };
+        if let Some(lines) = held {
+            for line in lines.split('|') {
+                let _ = session.data(channel, CryptoVec::from(format!("{line}\n").as_bytes()));
+            }
+            let _ = session.flush();
+            return Ok(());
+        }
         let output = tokio::process::Command::new("bash").arg("-lc").arg(command).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn();
         let Ok(mut child) = output else {
             let _ = session.exit_status_request(channel, 127);
@@ -927,11 +1194,35 @@ async fn run_pty(handle: server::Handle, channel: ChannelId, command: String, mu
 }
 
 pub fn start_fixture(password: &str) -> Result<Fixture, String> {
+    start_fixture_with(password, HostKey::Ed25519)
+}
+
+/// The kind of host key a fixture server offers. Most servers in use offer
+/// RSA, so a client that cannot take it cannot reach most servers.
+#[derive(Clone, Copy, Debug)]
+pub enum HostKey {
+    Ed25519,
+    Rsa,
+}
+
+pub fn start_fixture_with(password: &str, host_key: HostKey) -> Result<Fixture, String> {
     let password = password.to_string();
     let (port_tx, port_rx) = std::sync::mpsc::channel();
     let (handle_tx, handle_rx) = std::sync::mpsc::channel();
     runtime().spawn(async move {
-        let key = PrivateKey::random(&mut rand::rngs::OsRng, Algorithm::Ed25519).expect("host key");
+        let algorithm = match host_key {
+            HostKey::Ed25519 => Algorithm::Ed25519,
+            #[cfg(feature = "ssh-rsa")]
+            HostKey::Rsa => Algorithm::Rsa { hash: None },
+            // Without RSA support there is no RSA key to offer; the case that
+            // asks for one is refused below, before any connection is made.
+            #[cfg(not(feature = "ssh-rsa"))]
+            HostKey::Rsa => {
+                let _ = port_tx.send(Err("this build has no RSA host key support".to_string()));
+                return;
+            }
+        };
+        let key = PrivateKey::random(&mut rand::rngs::OsRng, algorithm).expect("host key");
         let config = Arc::new(server::Config {
             keys: vec![key],
             auth_rejection_time: Duration::from_millis(1),
@@ -948,12 +1239,13 @@ pub fn start_fixture(password: &str) -> Result<Fixture, String> {
             Err(error) => { let _ = port_tx.send(Err(error.to_string())); return }
         };
         let _ = port_tx.send(Ok(port));
-        let mut server = FixtureServer { password };
+        let closed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut server = FixtureServer { password, closed: Arc::clone(&closed) };
         let running = server.run_on_socket(config, &socket);
-        let _ = handle_tx.send(running.handle());
+        let _ = handle_tx.send((running.handle(), Arc::clone(&closed)));
         let _ = running.await;
     });
     let port = port_rx.recv().map_err(|error| error.to_string())??;
-    let shutdown = handle_rx.recv_timeout(Duration::from_secs(5)).ok();
-    Ok(Fixture { port, shutdown })
+    let (shutdown, closed) = handle_rx.recv_timeout(Duration::from_secs(5)).map(|(handle, closed)| (Some(handle), closed)).unwrap_or_else(|_| (None, Arc::new(std::sync::atomic::AtomicUsize::new(0))));
+    Ok(Fixture { port, closed, shutdown })
 }

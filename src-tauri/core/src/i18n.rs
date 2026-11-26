@@ -56,6 +56,7 @@ const EN: &[(&str, &str)] = &[
     ("远程命令退出码 {{0}}", "Remote command exited with code {{0}}"),
     ("SSH 退出码 {{0}}", "SSH exited with code {{0}}"),
     ("远程命令执行超时", "Remote command timed out"),
+    ("SSH 连接超时", "SSH connection timed out"),
     ("远程输出过大", "Remote output is too large"),
     ("SSH 连接失败，未保存机器", "SSH connection failed, so the machine was not saved"),
     ("无法保存项目目录外的文件或符号链接", "Cannot save a file outside the project or through a symbolic link"),

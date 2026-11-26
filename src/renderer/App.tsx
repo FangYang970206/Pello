@@ -1422,7 +1422,17 @@ export function App() {
                 const latest = settingsLatest.current ?? db.settings
                 const next = settingsWithChange(db.settings, settings, latest)
                 settingsLatest.current = next
-                return window.awb.saveSettings(next).then((saved) => { settingsLatest.current = saved.settings; setLanguage(saved.settings.language); setDb(saved); return true }).catch((error) => { settingsLatest.current = latest; if (!options?.inlineError) toast(String(error), true); return false })
+                // An earlier save can be answered after a later one was sent: its
+                // answer has neither the later change nor any made since, so it
+                // must not be laid over what was sent after it.
+                const superseded = () => settingsLatest.current !== next
+                return window.awb.saveSettings(next).then((saved) => {
+                  if (superseded()) return true
+                  settingsLatest.current = saved.settings; setLanguage(saved.settings.language); setDb(saved); return true
+                }).catch((error) => {
+                  if (!superseded()) settingsLatest.current = latest
+                  if (!options?.inlineError) toast(String(error), true); return false
+                })
               }}
               onEditExec={(id) => setModal({ type: 'exec', id })}
               onNewExec={() => setModal({ type: 'exec' })}

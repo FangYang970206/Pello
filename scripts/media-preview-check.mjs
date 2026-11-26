@@ -30,8 +30,20 @@ fs.writeFileSync(path.join(data, 'draft.txt'), 'original')
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: { layout: 'balanced', restore: false, confirmKill: false }, projects: [{ id: 'p', name: 'GQE media', host: 'local', path: data, agent: 'shell' }] }))
 const original = fs.readFileSync(pdf)
 const env = { ...process.env, AWB_USER_DATA: data }; delete env.ELECTRON_RUN_AS_NODE
-const dpi = Number(process.env.AWB_TEST_DPI || 1)
+// One scale per run, 100% unless a factor is named: `--scale=1.5`.
+const dpi = Number(process.argv.find((arg) => arg.startsWith('--scale='))?.slice(8) || 1)
 const app = await launchWorkbench({ args: ['.', `--force-device-scale-factor=${dpi}`], env, scale: dpi })
+// This check goes through a 1024 by 680 page, the smallest the window
+// takes. A desktop whose scale is above the page's own cannot show it, and
+// then nothing runs here: that is said, with exit code 2, rather than
+// taken for a pass or a failure.
+const shown = await app.resize(1024, 680).then(() => true, (error) => {
+  if (!/needs a desktop at/.test(String(error))) throw error
+  console.log(`NOT RUN ${dpi * 100}% DPI: ${error.message}`)
+  return false
+})
+if (!shown) { await app.close(); process.exit(2) }
+await app.resize(1440, 900)
 try {
   const page = await app.firstWindow()
   const errors = []
@@ -104,8 +116,7 @@ try {
   await page.locator('.pdf-page[data-rendered="true"]').waitFor()
   const shots = path.resolve('.cache/media-preview-shots'); fs.mkdirSync(shots, { recursive: true })
   for (const theme of ['light', 'dark']) for (const [width, height] of [[1024, 680], [1440, 900]]) {
-    await page.evaluate(([width, height]) => window.awb.winResize(width, height), [width, height])
-    await page.waitForFunction(([width, height]) => innerWidth === width && innerHeight === height, [width, height])
+    await app.resize(width, height)
     await page.evaluate(({ theme, variables }) => { document.documentElement.dataset.theme = theme; for (const [key, value] of Object.entries(variables)) document.documentElement.style.setProperty(key, value) }, { theme, variables: themeVariables(theme) })
     await page.getByRole('button', { name: '适应窗口', exact: true }).click()
     await page.locator('.pdf-page[data-rendered="true"]').waitFor()
@@ -142,8 +153,7 @@ try {
   await page.click('[data-a=settings]'); await page.click('[data-a=sec][data-id=general]')
   await page.getByLabel('应用语言', { exact: true }).selectOption('en')
   await page.click('[data-a=back]')
-  await page.evaluate(() => window.awb.winResize(1024, 680))
-  await page.waitForFunction(() => innerWidth === 1024 && innerHeight === 680)
+  await app.resize(1024, 680)
   await page.evaluate(() => document.documentElement.style.setProperty('--ui-size', '16px'))
   const divider = page.locator('.right-resize')
   for (let step = 0; step < 20; step++) await divider.press('ArrowLeft')

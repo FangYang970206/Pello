@@ -590,6 +590,91 @@ fn local_search_skips_dot_directories_limits_matches_and_names_files() {
     let _ = fs::remove_dir_all(root);
 }
 
+/// A server that accepts the connection and then says nothing never answers
+/// the question asked of it. Nothing in the protocol itself gives up on such a
+/// server, so the workbench must: within the time the Electron build waits for
+/// a server to be ready, and with a message that names the cause.
+#[test]
+fn a_server_that_never_answers_is_given_up_within_the_ready_limit() {
+    // The listener accepts and keeps every connection, and sends nothing.
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let kept = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let holding = Arc::clone(&kept);
+    std::thread::spawn(move || {
+        for connection in listener.incoming() {
+            if let Ok(connection) = connection { holding.lock().unwrap().push(connection) }
+        }
+    });
+    let root = temp_dir("ssh-silent");
+    let (bench, _) = workbench(&root);
+    let local = bench.dispatch("db:get", &[]).unwrap()["db"]["hosts"][0].clone();
+    let silent_host = json!({
+        "id": "silent-box", "name": "Silent box", "addr": "127.0.0.1", "port": port, "user": "me",
+        "auth": "password", "password": "s3cret-pass", "color": "blue", "on": false, "os": "", "platform": "linux"
+    });
+    let (done, finished) = std::sync::mpsc::channel();
+    let hosts = json!([local, silent_host]);
+    std::thread::spawn(move || {
+        let _ = done.send(bench.dispatch("db:hosts", &[hosts]));
+    });
+    let started = std::time::Instant::now();
+    // The limit is 12 s. Twice that leaves room for a slow machine and still
+    // tells a limit from a question that is never answered.
+    let outcome = match finished.recv_timeout(Duration::from_secs(30)) {
+        Ok(outcome) => outcome,
+        Err(_) => panic!("a server that says nothing was not given up within 30 s"),
+    };
+    let error = outcome.expect_err("a server that never says anything is not connected to");
+    assert_eq!(error, "SSH 连接超时", "the message names the cause: {error}");
+    assert_eq!(pello_core::i18n::translate("en", &error, &[] as &[String]), "SSH connection timed out", "the message is translated");
+    let elapsed = started.elapsed();
+    assert!(elapsed >= Duration::from_secs(10) && elapsed < Duration::from_secs(28), "the limit is 12 s; the answer came after {elapsed:?}");
+    let _ = fs::remove_dir_all(root);
+    drop(kept);
+}
+
+/// Most SSH servers in use offer an RSA host key. A client built without RSA
+/// support cannot finish the key exchange with them, and nothing in the
+/// exchange has a limit of its own, so the question of whether the host can
+/// be saved would never be answered. Saving such a host must succeed within
+/// a limit, and the fingerprint that was accepted must be the one offered.
+#[test]
+fn ssh_password_connects_to_a_server_with_an_rsa_host_key() {
+    let password = "s3cret-pass";
+    let fixture = pello_core::ssh::start_fixture_with(password, pello_core::ssh::HostKey::Rsa).expect("ssh fixture with an RSA host key");
+    let root = temp_dir("ssh-rsa");
+    let (bench, _) = workbench(&root);
+    let local = bench.dispatch("db:get", &[]).unwrap()["db"]["hosts"][0].clone();
+    let remote_host = json!({
+        "id": "rsa-box", "name": "RSA box", "addr": "127.0.0.1", "port": fixture.port, "user": "me",
+        "auth": "password", "password": password, "color": "blue", "on": false, "os": "", "platform": "linux"
+    });
+    // The save runs on its own thread, so a key exchange that never ends is a
+    // failure here and not a test run that never ends.
+    let (done, finished) = std::sync::mpsc::channel();
+    let hosts = json!([local, remote_host]);
+    std::thread::spawn(move || {
+        let outcome = bench.dispatch("db:hosts", &[hosts]).map(|saved| saved["hosts"][1].clone());
+        let _ = done.send(outcome);
+    });
+    let saved = match finished.recv_timeout(Duration::from_secs(20)) {
+        Ok(saved) => saved,
+        Err(_) => panic!("saving an RSA host key server did not answer within 20 s: the key exchange did not end"),
+    };
+    let stored = saved.expect("a password host behind an RSA host key should connect");
+    assert_eq!(stored["hasPassword"], true);
+    assert!(stored.get("password").is_none());
+    let pinned: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join("data/ssh-host-keys.json")).unwrap()).unwrap();
+    let fingerprints = pinned.as_object().expect("the pinned host keys are an object");
+    assert_eq!(fingerprints.len(), 1, "one host was connected to: {pinned}");
+    let (identity, fingerprint) = fingerprints.iter().next().unwrap();
+    assert!(identity.contains("127.0.0.1") && identity.contains(&fixture.port.to_string()), "the identity is not this server: {identity}");
+    assert_eq!(fingerprint.as_str().map(|value| value.len()), Some(64), "a SHA-256 fingerprint in hex has 64 characters: {fingerprint}");
+    assert!(fingerprint.as_str().unwrap().chars().all(|char| char.is_ascii_hexdigit()), "not a fingerprint: {fingerprint}");
+    let _ = fs::remove_dir_all(root);
+}
+
 #[test]
 fn ssh_password_pins_host_key_and_serves_remote_files() {
     let password = "s3cret-pass";
@@ -1001,6 +1086,206 @@ fn ssh_key_and_agent_use_system_ssh_without_leaking_secrets() {
         let text = fs::read_to_string(credentials).unwrap();
         assert!(!text.contains(password) && !text.contains(material));
     }
+    let _ = fs::remove_dir_all(root);
+}
+
+/// Windows: the script a remote Windows host runs for a content search is the
+/// one the Electron build sends, character for character. It is run here the
+/// way the kernel runs it, with the query on stdin, over a project holding a
+/// text file, a binary one, one that is not UTF-8, one past the size limit
+/// and a junction to a directory outside the project, each with the marker in
+/// it. Only the text file may be found; the rest are skipped, and the link is
+/// not followed.
+#[test]
+#[cfg(windows)]
+fn windows_remote_content_search_skips_binary_invalid_oversized_and_linked_files() {
+    let root = temp_dir("remote-content");
+    let project = root.join("project");
+    let outside = root.join("outside");
+    fs::create_dir_all(project.join(".hidden")).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    let marker = "RemoteNeedle内容";
+    fs::write(project.join("note.txt"), format!("first {marker}\r\n")).unwrap();
+    fs::write(project.join("binary.bin"), format!("abc\0{marker}")).unwrap();
+    let mut invalid = vec![0xffu8, 0xfe, 0x41, 0x20];
+    invalid.extend_from_slice(marker.as_bytes());
+    fs::write(project.join("invalid.txt"), invalid).unwrap();
+    fs::write(project.join("large.txt"), format!("{marker}{}", "x".repeat(2_000_001))).unwrap();
+    fs::write(outside.join("linked.txt"), format!("{marker} linked\n")).unwrap();
+    let status = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(project.join("external-link")).arg(&outside).output().unwrap();
+    assert!(status.status.success(), "the junction was not made: {}", String::from_utf8_lossy(&status.stderr));
+    fs::write(project.join(".hidden/secret.txt"), format!("{marker} hidden\n")).unwrap();
+    let script = pello_core::search::windows_content_script().to_string();
+    let payload = json!({ "root": project, "query": marker, "sensitive": false, "regex": false, "whole": false, "ignored": Vec::<String>::new() }).to_string();
+    let run = |payload: &str| {
+        use base64::Engine;
+        let units: Vec<u16> = script.encode_utf16().collect();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(units.iter().flat_map(|unit| unit.to_le_bytes()).collect::<Vec<u8>>());
+        let mut child = std::process::Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(format!("{payload}\n").as_bytes()).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.stdout.len() > 0, "the script printed nothing:\n{}", String::from_utf8_lossy(&output.stderr));
+        output
+    };
+    let output = run(&payload);
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let mut search = pello_core::search::ContentSearch::from_remote_output("p", "identity", &text, "en").unwrap();
+    let batch = search.next("en").unwrap();
+    let files = batch["items"].as_array().unwrap();
+    let paths: Vec<&str> = files.iter().map(|file| file["path"].as_str().unwrap()).collect();
+    assert_eq!(paths, ["note.txt"], "only the text file holds a searchable marker:\n{text}\n{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(files[0]["matches"][0]["line"], 1);
+    assert_eq!(files[0]["matches"][0]["column"], 7, "columns are counted in UTF-16 units, one based");
+    // Binary, not UTF-8 and past the size limit: three files skipped. The
+    // junction is left alone rather than counted, and `.hidden` is not entered.
+    assert_eq!(batch["skipped"], 3, "three files are skipped:\n{text}");
+    assert_eq!(batch["errors"], 0, "no file failed to be read:\n{text}");
+    assert_eq!(batch["done"], true);
+    let _ = std::process::Command::new("cmd").args(["/C", "rmdir"]).arg(project.join("external-link")).output();
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A search by text and a search by pattern give the same answer for the same
+/// files, each across more files than one batch holds. They run differently: a
+/// pattern on a thread of its own, text where it is asked for, as on the
+/// Electron build. The threads themselves are not counted here: a thread made
+/// for one file and ended with it leaves nothing to see once the search is
+/// over, so a count of threads would pass for either way of running.
+#[test]
+fn a_search_by_text_and_one_by_pattern_find_the_same_files() {
+    let root = temp_dir("search-threads");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    for index in 0..400 { fs::write(project.join(format!("file{index:04}.txt")), format!("line one\nneedle {index} here\nline three\n")).unwrap(); }
+    fs::write(project.join("special.txt"), "a needle (1) [2] .3\n").unwrap();
+    let (bench, _) = workbench(&root);
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project, "branch": "", "agent": "shell" }])]).unwrap();
+    let search = |id: &str, regex: bool| {
+        bench.dispatch("content:search-start", &[json!("p"), json!(id), json!("needle (1) [2] .3"), json!(true), json!(regex), json!(false)]).unwrap();
+        bench.dispatch("content:search-cancel", &[json!(id)]).unwrap();
+        bench.dispatch("content:search-start", &[json!("p"), json!(id), json!("needle"), json!(true), json!(regex), json!(false)]).unwrap();
+        let mut files = Vec::new();
+        let mut matches = 0;
+        let mut done = false;
+        let mut batches = 0;
+        while !done {
+            let batch = bench.dispatch("content:search-next", &[json!(id)]).unwrap();
+            for file in batch["items"].as_array().unwrap() {
+                assert_eq!(file["matches"].as_array().unwrap().len(), 1, "one match in each file: {file}");
+                // The needle is the whole of line 2 in the numbered files,
+                // and three characters into the only line of the other.
+                let special = file["path"] == "special.txt";
+                assert_eq!(file["matches"][0]["line"], if special { 1 } else { 2 }, "{file}");
+                assert_eq!(file["matches"][0]["column"], if special { 3 } else { 1 }, "{file}");
+                matches += 1;
+                files.push(file["path"].as_str().unwrap().to_string());
+            }
+            done = batch["done"] == true;
+            batches += 1;
+            assert!(batches < 200, "the search does not end");
+        }
+        (files, matches, batches)
+    };
+    let (text_files, text_matches, text_batches) = search("by-text", false);
+    let (pattern_files, pattern_matches, pattern_batches) = search("by-pattern", true);
+    let mut expected: Vec<String> = (0..400).map(|index| format!("file{index:04}.txt")).collect();
+    expected.push("special.txt".to_string());
+    expected.sort();
+    assert_eq!(text_files, expected, "a search by text finds the text in every file");
+    assert_eq!(pattern_files, expected, "a search by pattern finds the pattern in every file, the brackets and the dot included");
+    assert_eq!((text_matches, pattern_matches), (401, 401));
+    // More files than one batch of 32 holds, so the search is followed in
+    // several batches, and both ways of running end the same way.
+    assert!(text_batches > 1 && pattern_batches > 1, "{text_batches} and {pattern_batches} batches");
+    bench.dispatch("content:search-cancel", &[json!("by-text")]).unwrap();
+    bench.dispatch("content:search-cancel", &[json!("by-pattern")]).unwrap();
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A remote content search is followed as its results come, and stopping it
+/// ends the command on the host: the channel is closed, and not left to run
+/// until it has looked through every file. The stop takes effect while a
+/// batch is still waiting for the host, as aborting does on the Electron
+/// build, and the search then answers as finished instead of failing.
+#[test]
+fn remote_content_search_streams_and_cancel_closes_the_remote_channel() {
+    let password = "s3cret-pass";
+    let fixture = pello_core::ssh::start_fixture(password).expect("ssh fixture");
+    let root = temp_dir("ssh-stream");
+    let (bench, _) = workbench(&root);
+    // The stop is sent from here while another thread waits for a batch, so
+    // both hold the workbench.
+    let bench = Arc::new(bench);
+    let local = bench.dispatch("db:get", &[]).unwrap()["db"]["hosts"][0].clone();
+    let remote_host = json!({
+        "id": "stream-box", "name": "Stream box", "addr": "127.0.0.1", "port": fixture.port, "user": "me",
+        "auth": "password", "password": password, "color": "blue", "on": false, "os": "", "platform": "linux"
+    });
+    // The save runs on its own thread, so a key exchange that never ends is a
+    // failure here and not a test run that never ends.
+    let (done, finished) = std::sync::mpsc::channel();
+    let hosts = json!([local, remote_host]);
+    let saving = Arc::clone(&bench);
+    std::thread::spawn(move || {
+        let _ = done.send(saving.dispatch("db:hosts", &[hosts]));
+    });
+    let saved = finished.recv_timeout(Duration::from_secs(20)).expect("saving the host did not answer within 20 s").expect("the fixture host should connect");
+    assert_eq!(saved["hosts"][1]["hasPassword"], true);
+    assert!(saved["hosts"][1].get("password").is_none(), "the password stays in the main process");
+    bench.dispatch("db:projects", &[json!([{ "id": "remote", "name": "Remote", "host": "stream-box", "path": "/srv/app", "branch": "", "agent": "shell" }])]).unwrap();
+    // The fixture holds a search for `hold`: it answers with one file and
+    // then stays open until the channel is closed.
+    // Saving the host opened and closed a channel of its own for its probe.
+    let before = fixture.closed_channels();
+    bench.dispatch("content:search-start", &[json!("remote"), json!("stream-1"), json!("hold"), json!(false)]).expect("the search starts on the host");
+    // One batch holds at most 32 events, and the host has 40 and no end: the
+    // batch comes back before the command has ended.
+    let started = std::time::Instant::now();
+    let batch = bench.dispatch("content:search-next", &[json!("stream-1")]).expect("the first batch is read from the stream");
+    assert!(started.elapsed() < Duration::from_secs(5), "a batch comes back once it is full, without waiting for the command to end");
+    let paths: Vec<String> = batch["items"].as_array().unwrap().iter().map(|file| file["path"].as_str().unwrap().to_string()).collect();
+    assert_eq!(paths, (0..32).map(|index| format!("src/file{index}.txt")).collect::<Vec<String>>(), "the results come as they are sent, in order");
+    assert_eq!(batch["done"], false, "the command has not ended, so the search has not either");
+    assert_eq!(fixture.closed_channels(), before, "nothing is closed while the search is still followed");
+    // The next batch waits for the host, which has nothing more to say. The
+    // stop must reach it there, and quickly.
+    let (done, finished) = std::sync::mpsc::channel();
+    let waiting = Arc::clone(&bench);
+    std::thread::spawn(move || {
+        let _ = done.send(waiting.dispatch("content:search-next", &[json!("stream-1")]));
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(finished.try_recv().is_err(), "the batch is still waiting for the host");
+    let started = std::time::Instant::now();
+    bench.dispatch("content:search-cancel", &[json!("stream-1")]).unwrap();
+    let settled = finished.recv_timeout(Duration::from_secs(5)).expect("the batch that was waiting for the host did not end within 5 s of the stop");
+    assert!(started.elapsed() < Duration::from_secs(3), "the stop took {:?} to end the waiting batch", started.elapsed());
+    let settled = settled.expect("a stopped search answers instead of failing");
+    assert_eq!(settled["done"], true, "a stopped search answers as finished: {settled}");
+    assert_eq!(settled["items"].as_array().unwrap().len(), 0, "a stopped search hands out nothing more");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while fixture.closed_channels() <= before && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
+    assert_eq!(fixture.closed_channels(), before + 1, "stopping the search must close the channel it was reading, so the command on the host ends");
+    // A search that was stopped is gone: it answers as finished with nothing.
+    let after = bench.dispatch("content:search-next", &[json!("stream-1")]).unwrap();
+    assert_eq!(after["done"], true);
+    assert_eq!(after["items"].as_array().unwrap().len(), 0);
+    // A project has one live content search. Asking for another on the same
+    // project ends the one that is running there, as on the Electron build,
+    // so that typing a query does not leave a worker behind for every change.
+    let closed = fixture.closed_channels();
+    bench.dispatch("content:search-start", &[json!("remote"), json!("stream-2"), json!("hold"), json!(false)]).unwrap();
+    bench.dispatch("content:search-next", &[json!("stream-2")]).unwrap();
+    bench.dispatch("content:search-start", &[json!("remote"), json!("stream-3"), json!("hold"), json!(false)]).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while fixture.closed_channels() <= closed && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
+    assert_eq!(fixture.closed_channels(), closed + 1, "a new search on the same project closes the channel of the one it replaces");
+    let replaced = bench.dispatch("content:search-next", &[json!("stream-2")]).unwrap();
+    assert_eq!(replaced["done"], true, "the replaced search answers as finished");
+    assert_eq!(replaced["items"].as_array().unwrap().len(), 0);
+    // The same id asked for again ends the search that had it.
+    bench.dispatch("content:search-cancel", &[json!("stream-3")]).unwrap();
     let _ = fs::remove_dir_all(root);
 }
 
@@ -2513,7 +2798,12 @@ fn windows_remote_upload_publishes_with_powershell_and_keeps_the_old_directory()
     let started = assert_implemented(bench.dispatch("transfer:drop", &[json!("p"), json!(""), json!([sources.join("same folder").display().to_string()])]));
     let id = started.as_str().unwrap().to_string();
     let ready = hold.with_extension("ready");
-    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    // Before the upload waits here, a Windows remote has started PowerShell
+    // twice over ssh, to ask whether the target exists and then to stage.
+    // Each start costs a second or two, more when the machine is busy, so
+    // the same eight seconds as the POSIX case would at times run out while
+    // the staging was still going.
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
     while !ready.exists() {
         if std::time::Instant::now() > deadline {
             let last = events.lock().unwrap().iter().rev().find(|event| event["channel"] == "transfer:update" && event["payload"]["id"] == id).map(|event| event["payload"].to_string()).unwrap_or_default();
@@ -2808,26 +3098,40 @@ fn context_menus_return_real_items_and_startup_installs_the_bar() {
 }
 
 #[test]
-fn local_directory_dialog_continues_into_the_picker() {
+fn the_folder_dialog_is_the_system_one_for_a_local_project_and_the_page_picker_for_a_remote_one() {
     let _lock = env_lock();
     let root = temp_dir("picker-local");
     let project = root.join("project");
     fs::create_dir_all(project.join("alpha")).unwrap();
-    let _skip = var_guard("AWB_SKIP_ZENITY", "1");
     let (bench, _) = workbench(&root);
-    let opened = assert_implemented(bench.dispatch("dialog:directory", &[]));
-    assert!(opened["id"].as_str().unwrap_or("").starts_with("pick"), "{opened}");
-    assert!(opened["dirs"].is_array(), "{opened}");
-    assert!(opened.get("path").is_some());
-    let browser = include_str!("../../../src/renderer/DirectoryBrowser.tsx");
-    assert!(browser.contains("picker("));
-    assert!(!browser.contains("listDir("));
+    // A test names what the system dialog would have answered: a folder, or
+    // nothing when it was dismissed. Either way that is the whole answer, and
+    // no second picker is opened in its place.
+    let chosen = project.display().to_string();
+    let _answered = var_guard("AWB_DIRECTORY", &chosen);
+    let picked = assert_implemented(bench.dispatch("dialog:directory", &[]));
+    assert_eq!(picked.as_str().unwrap_or(""), chosen, "{picked}");
+    drop(_answered);
+    let _dismissed = var_guard("AWB_DIRECTORY", "");
+    let picked = assert_implemented(bench.dispatch("dialog:directory", &[]));
+    assert!(picked.is_null(), "{picked}");
+    drop(_dismissed);
+    // A local project's "browse" asks the system, as the Electron build's
+    // dialog does; a remote machine's directory cannot be chosen that way, so
+    // that one opens the page's own picker, which lists through `path:list`.
     let dialogs = include_str!("../../../src/renderer/Dialogs.tsx");
-    assert!(dialogs.contains("setBrowsing(true)"));
-    assert!(!dialogs.contains("pickDirectory()"));
-    let temporary = include_str!("../../../src/renderer/TemporarySessionDialog.tsx");
-    assert!(temporary.contains("DirectoryBrowser"));
-    assert!(temporary.contains("hostId=\"local\""));
+    assert!(dialogs.contains("window.awb.pickDirectory()"));
+    let browse = dialogs.split("data-a=\"browse\"").nth(1).unwrap();
+    let local_first = browse.find("host.id === 'local'").unwrap() < browse.find("setBrowsing(true)").unwrap();
+    assert!(local_first, "the local case must come before the picker is opened");
+    let browser = include_str!("../../../src/renderer/DirectoryBrowser.tsx");
+    assert!(browser.contains("window.awb.listDir("));
+    assert!(!browser.contains("window.awb.picker("));
+    // The kernel's own picker is kept for Linux without a desktop dialog; on
+    // the other systems the system dialog is asked instead.
+    let workbench = include_str!("../src/workbench.rs");
+    assert!(workbench.contains("rfd::FileDialog::new()"));
+    assert!(workbench.contains("#[cfg(target_os = \"linux\")]"));
     let _ = fs::remove_dir_all(root);
 }
 
@@ -3268,4 +3572,80 @@ fn terminal_answers_the_native_status_capability_query() {
 /// One shell word for a path, quoted the way POSIX shells read it.
 fn shell_word(path: &Path) -> String {
     format!("'{}'", path.display().to_string().replace('\\', "/"))
+}
+
+#[test]
+fn saves_pass_the_gate_in_the_order_they_were_sent_and_the_file_matches() {
+    let _lock = env_lock();
+    let root = temp_dir("save-order");
+    let bench = std::sync::Arc::new(workbench(&root).0);
+    let start = bench.dispatch("db:get", &[]).unwrap()["db"]["settings"].clone();
+    // Each save sends the settings as its change saw them, laid on what the
+    // saves before it left; the second has the first change in it as well.
+    let mut first = start.clone();
+    first["fontSize"] = json!(18);
+    let mut second = first.clone();
+    second["uiFontSize"] = json!(15);
+    let order = bench.save_order();
+    // The places are taken as the saves are sent, as the shell takes them
+    // when each call arrives. The threads are started with the second save
+    // first, which is how a thread pool may run two saves sent one after
+    // the other.
+    let [first_ticket, second_ticket] = [order.ticket(), order.ticket()];
+    let (sent, seen) = std::sync::mpsc::channel();
+    let mut handles = Vec::new();
+    for (number, settings, ticket) in [(1, second, second_ticket), (0, first, first_ticket)] {
+        let bench = std::sync::Arc::clone(&bench);
+        let sent = sent.clone();
+        handles.push(std::thread::spawn(move || {
+            let passed = ticket.wait();
+            let saved = bench.dispatch("db:settings", &[settings]).unwrap();
+            sent.send((number, saved["settings"]["fontSize"].clone(), saved["settings"]["uiFontSize"].clone())).unwrap();
+            drop(passed);
+        }));
+    }
+    drop(sent);
+    let mut results: Vec<_> = seen.into_iter().take(2).collect();
+    results.sort_by_key(|(number, _, _)| *number);
+    assert_eq!(results, vec![(0, json!(18), json!(13)), (1, json!(18), json!(15))]);
+    for handle in handles { handle.join().unwrap(); }
+    let on_disk = fs::read_to_string(bench.paths.data.join("workbench.json")).unwrap();
+    let on_disk: serde_json::Value = serde_json::from_str(&on_disk).unwrap();
+    assert_eq!(on_disk["settings"]["fontSize"], json!(18));
+    assert_eq!(on_disk["settings"]["uiFontSize"], json!(15));
+    let in_app = bench.dispatch("db:get", &[]).unwrap()["db"]["settings"].clone();
+    assert_eq!(in_app["fontSize"], json!(18));
+    assert_eq!(in_app["uiFontSize"], json!(15));
+}
+
+#[test]
+fn saves_made_from_many_threads_at_once_all_succeed_and_leave_a_whole_file() {
+    let _lock = env_lock();
+    let root = temp_dir("save-many");
+    let bench = Arc::new(workbench(&root).0);
+    fs::create_dir_all(root.join("project")).unwrap();
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": root.join("project").display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    let project = "p".to_string();
+    let mut handles = Vec::new();
+    for index in 0..24u32 {
+        let bench = Arc::clone(&bench);
+        let project = project.clone();
+        handles.push(std::thread::spawn(move || {
+            for step in 0..12 {
+                if (index + step) % 2 == 0 {
+                    bench.dispatch("db:settings", &[json!({ "fontSize": 10 + (index % 15) })]).unwrap();
+                } else {
+                    bench.dispatch("db:branch", &[json!(project), json!(format!("branch-{index}-{step}"))]).unwrap();
+                }
+                let text = fs::read_to_string(bench.paths.data.join("workbench.json")).unwrap();
+                serde_json::from_str::<serde_json::Value>(&text).unwrap_or_else(|error| panic!("file not whole after save {index}/{step}: {error}"));
+            }
+        }));
+    }
+    for handle in handles { handle.join().unwrap(); }
+    let text = fs::read_to_string(bench.paths.data.join("workbench.json")).unwrap();
+    let on_disk: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let in_app = bench.dispatch("db:get", &[]).unwrap()["db"].clone();
+    assert_eq!(on_disk["projects"][0]["branch"], in_app["projects"][0]["branch"]);
+    assert_eq!(on_disk["settings"]["fontSize"], in_app["settings"]["fontSize"]);
 }

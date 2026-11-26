@@ -89,11 +89,30 @@ async fn awb(window: Window, state: State<'_, Arc<Workbench>>, channel: String, 
                 "file:menu" => "menu:file",
                 _ => "menu:tree",
             };
-            let template = state.dispatch(template_channel, &args)?;
+            let template = off_runtime(Arc::clone(state.inner()), template_channel, args).await?;
             popup_menu(&window, &template)
         }
-        _ => state.dispatch(&channel, &args),
+        _ => off_runtime(Arc::clone(state.inner()), &channel, args).await,
     }
+}
+
+/// Runs a kernel call on a thread of its own and waits for it. The kernel is
+/// synchronous and can block for as long as a file read, a Git command or an
+/// SSH connection takes; its SSH client also waits on a runtime of its own,
+/// from inside the call. Both are wrong on a thread of this command's own
+/// runtime, which cannot make progress while it is held: a password SSH call
+/// made from there never returned.
+async fn off_runtime(workbench: Arc<Workbench>, channel: &str, args: Vec<Value>) -> Result<Value, String> {
+    let channel = channel.to_string();
+    // The place in line is taken here, where the call has arrived and before
+    // it goes to its thread: the threads do not keep that order.
+    let ticket = Workbench::SAVED_CHANNELS.contains(&channel.as_str()).then(|| workbench.save_order().ticket());
+    tauri::async_runtime::spawn_blocking(move || {
+        let _passed = ticket.as_ref().map(|ticket| ticket.wait());
+        workbench.dispatch(&channel, &args)
+    })
+    .await
+    .map_err(|error| format!("{error:?}"))?
 }
 
 fn menu_choice_enabled(template: &Value, choice: &str) -> bool {

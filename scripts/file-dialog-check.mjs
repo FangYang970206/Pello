@@ -18,19 +18,22 @@ fs.writeFileSync(path.join(project, 'conflict-task.txt'), 'old task content')
 const captures = path.resolve('output/playwright/file-dialogs')
 fs.mkdirSync(captures, { recursive: true })
 const baseline = process.argv.includes('--baseline')
-for (const scale of baseline ? [1] : [1, 1.25, 1.5, 2]) for (const theme of baseline ? ['dark'] : ['dark', 'light']) {
+// `--baseline` runs one scale only, 100% unless `--scale=<factor>` names the
+// desktop's own, which is the only one that gives a 1024 by 680 page here.
+const baselineScale = Number(process.argv.find((arg) => arg.startsWith('--scale='))?.slice(8) || 1)
+const notRun = []
+for (const scale of baseline ? [baselineScale] : [1, 1.25, 1.5, 2]) for (const theme of baseline ? ['dark'] : ['dark', 'light']) {
   fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: { layout: 'balanced', theme, restore: false }, projects: [{ id: 'p', name: '文件弹窗验证', host: 'local', path: project, agent: 'shell' }] }))
   const env = { ...process.env, AWB_USER_DATA: data }
   delete env.ELECTRON_RUN_AS_NODE
-  const app = await launchWorkbench({ args: [`--force-device-scale-factor=${scale}`, '.'], env, scale })
+  const app = await launchWorkbench({ args: ['.'], env, scale })
   try {
     const page = await app.firstWindow()
     page.setDefaultTimeout(10000)
     await installDocumentHarness(app, page, false)
     await page.click('[data-a=rmode][data-id=files]')
     for (const [width, height] of baseline ? [[1024, 680]] : [[1024, 680], [1440, 900]]) {
-      await page.evaluate(({ width, height }) => window.awb.winResize(width, height), { width, height })
-      await page.waitForFunction(({ width, height }) => innerWidth === width && innerHeight === height, { width, height })
+      await app.resize(width, height)
       const open = async (action, row, name) => {
         if (app.menuFile) fs.writeFileSync(app.menuFile, action)
         else await app.evaluate((_electron, command) => { globalThis.__documentMenuCommand = command }, action)
@@ -50,7 +53,21 @@ for (const scale of baseline ? [1] : [1, 1.25, 1.5, 2]) for (const theme of base
         assert.equal(layout.color, layout.expectedColor, JSON.stringify(layout))
         assert.equal(layout.overflow, false, JSON.stringify(layout))
         assert.ok(layout.controls.every((box) => box.left >= layout.left && box.right <= layout.right + 1 && box.top >= layout.top && box.bottom <= layout.bottom + 1), JSON.stringify(layout))
-        for (let i = 0; i < 8; i++) { await page.keyboard.press('Tab'); assert.equal(await dialog.evaluate((element) => element.contains(document.activeElement)), true) }
+        // The keyboard stays in the dialog: past its last control Tab comes
+        // back to the first, and before its first Shift+Tab to the last.
+        // The page must keep the focus on the way, not hand it to the window
+        // around it and take it back on the next key.
+        const focus = () => page.evaluate(() => ({ inDialog: !!document.activeElement?.closest('dialog[open]'), onPage: document.hasFocus(), at: document.activeElement?.getAttribute('aria-label') || document.activeElement?.tagName }))
+        const walk = async (key, times) => {
+          for (let i = 0; i < times; i++) {
+            await page.keyboard.press(key)
+            const seen = await focus()
+            assert.ok(seen.inDialog && seen.onPage, `${key} ${i + 1} of ${times} left the dialog: ${JSON.stringify(seen)}`)
+          }
+        }
+        const controls = await dialog.evaluate((element) => element.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])').length)
+        await walk('Tab', controls + 2)
+        await walk('Shift+Tab', controls + 2)
         await page.keyboard.press('Escape')
         await dialog.waitFor({ state: 'detached' })
         assert.equal(await row.evaluate((element) => document.activeElement === element), true)
@@ -58,6 +75,39 @@ for (const scale of baseline ? [1] : [1, 1.25, 1.5, 2]) for (const theme of base
       await open('create-file', page.getByRole('group', { name: '文件树', exact: true }), '新建文件')
       await open('move', page.locator('[data-a=preview]').filter({ hasText: filename }), '移动到')
       await open('reference', page.locator('[data-a=preview]').filter({ hasText: filename }), '引用到当前终端')
+      if (app.shell === 'tauri') {
+        // The page is the only control in the window on Tauri, so it turns Tab
+        // round itself at its ends. A control that takes Tab for its own use
+        // comes first: the source editor puts two spaces in for Tab, and does
+        // so still when the editor is the page's last control, where the key
+        // would otherwise be one that leaves the page.
+        await page.getByText('conflict-task.txt', { exact: true }).first().click()
+        const editor = page.getByLabel('文件内容', { exact: true })
+        await editor.waitFor()
+        await editor.focus()
+        const placed = await page.evaluate(() => {
+          const field = document.querySelector('[aria-label="文件内容"]')
+          const order = () => [...document.querySelectorAll('button, input:not([disabled]), select, textarea, a[href], [tabindex]')].filter((node) => node.tabIndex >= 0 && !node.closest('[inert]'))
+          const moved = order().slice(order().indexOf(field) + 1)
+          for (const node of moved) node.tabIndex = -1
+          return { moved: moved.length, last: order()[order().length - 1] === field }
+        })
+        assert.equal(placed.last, true, JSON.stringify(placed))
+        // Where opening a file leaves the caret is not what this case is about,
+        // and it is not the same for a file opened for the first time in this
+        // data directory and for one opened again, so it is set here. The
+        // editor puts the caret after the two spaces in the next frame, and a
+        // key typed before that lands where the browser left it, so it is
+        // waited for: the next key is typed the way a person would, after it.
+        await editor.evaluate((element) => element.setSelectionRange(0, 0))
+        await page.keyboard.press('Tab')
+        await page.waitForFunction(() => document.querySelector('[aria-label="文件内容"]')?.selectionStart === 2)
+        await page.keyboard.type('x')
+        const typed = await editor.evaluate((element) => ({ value: element.value, focused: document.activeElement === element, onPage: document.hasFocus() }))
+        assert.deepEqual(typed, { value: '  xold task content', focused: true, onPage: true }, JSON.stringify(typed))
+        await page.keyboard.press('Control+z')
+        await page.screenshot({ path: path.join(captures, `${theme}-${width}-${scale}-editor-tab.png`), animations: 'disabled' })
+      }
       await page.evaluate((source) => window.awb.transferDrop('p', '', [source]), conflictSource)
       const task = page.locator('.transfer-task').last()
       const batch = task.getByLabel('应用到本批次同类冲突')
@@ -127,5 +177,12 @@ for (const scale of baseline ? [1] : [1, 1.25, 1.5, 2]) for (const theme of base
       await page.keyboard.press('Escape')
       console.log(`PASS file dialogs ${theme} ${width}×${height} ${scale * 100}% DPI: modal focus, bounds, paths, theme and keyboard return`)
     }
+  } catch (error) {
+    // A scale below the desktop's cannot give a 1024 by 680 page: the window
+    // will not go smaller than that in logical pixels. Said, not passed.
+    if (!/needs a desktop at/.test(String(error?.message ?? error))) throw error
+    notRun.push(`${scale * 100}% DPI ${theme}: ${error.message}`)
   } finally { await app.close() }
 }
+for (const line of notRun) console.log(`NOT RUN ${line}`)
+if (notRun.length) process.exitCode = 2

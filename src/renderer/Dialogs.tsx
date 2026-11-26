@@ -381,7 +381,16 @@ export function NewProjectDialog({
           <button
             className="btn"
             data-a="browse"
-            onClick={() => setBrowsing(true)}
+            onClick={async () => {
+              if (host.id === 'local') {
+                const picked = await window.awb.pickDirectory()
+                if (!picked) return
+                setDir(picked)
+                if (!name.trim()) setName(baseName(picked))
+                return
+              }
+              setBrowsing(true)
+            }}
           >
             <Icon name="open" className="s" />
             {t("浏览")}</button>

@@ -39,6 +39,8 @@ fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: {
 ] }))
 const env = { ...process.env, AWB_USER_DATA: data }; delete env.ELECTRON_RUN_AS_NODE
 const shots = path.resolve('output/playwright/content-search'); fs.mkdirSync(shots, { recursive: true })
+// What this desktop cannot show is named here, and ends the run with its own code.
+const notRun = []
 const app = await launchWorkbench({ args: ['.'], env })
 let server
 const clients = new Set(), workers = new Set(), pageErrors = []
@@ -74,7 +76,21 @@ try {
   assert.equal((await run('p', '^word sword word_$', false, true)).items[0].matches.length, 1, 'Regex anchors must handle Windows CRLF')
   await assert.rejects(() => run('p', '[', false, true), /正则表达式无效/)
   await assert.rejects(() => run('p', '[', false, true, true), /正则表达式无效/)
-  await assert.rejects(() => run('limit', '(a+)+$', false, true), /执行超时/)
+  if (app.shell === 'tauri') {
+    // The kernel matches with an engine that gives up on runaway backtracking
+    // by itself. A pattern that is runaway in JavaScript's engine, `(a+)+$`,
+    // is answered at once here, with no match, which is the right answer: the
+    // line ends with `!`. A pattern that does run away on it, the same one
+    // wrapped in the whole-word look-around, must be given up within the
+    // budget, not run without end.
+    const quick = await run('limit', '(a+)+$', false, true)
+    assert.equal(quick.items.length, 0, 'A pattern that is not runaway on this engine must answer with its matches')
+    const started = Date.now()
+    await assert.rejects(() => run('limit', '(a+)+$', false, true, true), /执行超时/)
+    assert.ok(Date.now() - started < 5000, `A runaway pattern must be given up within its budget, not after ${Date.now() - started} ms`)
+  } else {
+    await assert.rejects(() => run('limit', '(a+)+$', false, true), /执行超时/)
+  }
   await assert.rejects(() => run('p', '\n'), /搜索参数无效/)
   await page.evaluate(async () => { await window.awb.contentSearchStart('p', 'cancel-fixture', 'ordinary', false); await window.awb.contentSearchCancel('cancel-fixture') })
   assert.equal((await page.evaluate(() => window.awb.contentSearchNext('cancel-fixture'))).done, true)
@@ -314,12 +330,16 @@ try {
 }
 
 // Native Chromium scale factors exercise real DPI layout, separately from viewport width.
+// A factor the window cannot be given on this desktop is reported as not run,
+// and leaves no screenshot behind that could be mistaken for one.
 for (const scale of [1, 1.25, 1.5, 2]) {
   const dpiApp = await launchWorkbench({ args: ['.'], env, scale })
+  const shot = path.join(shots, `dpi-${scale}.png`)
+  fs.rmSync(shot, { force: true })
   try {
     const page = await dpiApp.firstWindow(); page.setDefaultTimeout(10000)
-    await page.evaluate(() => window.awb.winResize(1024, 680))
-    await page.waitForFunction(() => innerWidth === 1024)
+    assert.ok(Math.abs(await page.evaluate(() => devicePixelRatio) - scale) < .01)
+    await dpiApp.resize(1024, 680)
     await page.click('[data-a=file-search]')
     await page.getByRole('textbox', { name: /^(搜索内容|Search content)$/ }).fill(marker)
     await page.waitForFunction(() => document.querySelector('.content-search-results')?.getAttribute('aria-busy') === 'false')
@@ -332,7 +352,12 @@ for (const scale of [1, 1.25, 1.5, 2]) {
     await query.fill(marker.toLowerCase()); await query.fill(marker)
     await page.locator('[data-a=content-hit][data-id="long.txt"][data-line="111"]').click()
     await page.waitForFunction((marker) => { const field = document.querySelector('.source-editor textarea'); return field?.value.slice(field.selectionStart, field.selectionEnd) === marker && field.scrollTop > 500 }, marker)
-    await page.screenshot({ path: path.join(shots, `dpi-${scale}.png`) })
+    await page.screenshot({ path: shot })
     console.log(`PASS ${scale * 100}% DPI: narrow panel input, click and actual match navigation`)
+  } catch (error) {
+    if (!/needs a desktop at/.test(String(error?.message ?? error))) throw error
+    notRun.push(`${scale * 100}% DPI: ${error.message}`)
   } finally { await dpiApp.close() }
 }
+for (const line of notRun) console.log(`NOT RUN ${line}`)
+if (notRun.length) process.exitCode = 2

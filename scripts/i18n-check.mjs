@@ -182,7 +182,12 @@ try {
   const base = path.join(data, 'new-temporary-root')
   await page.evaluate((base) => window.awb.configureTemporaryDirectory(base), base)
   await page.locator('[data-a=temporary-session]').locator('..').hover()
-  await page.click('[data-a=temporary-session]'); await page.keyboard.press('Escape')
+  await page.click('[data-a=temporary-session]')
+  // The dialog is waited for before it is dismissed: a key sent while it is
+  // still being drawn reaches nothing, and it stays open over what follows.
+  await page.getByRole('dialog').waitFor()
+  await page.keyboard.press('Escape')
+  await page.getByRole('dialog').waitFor({ state: 'detached' })
   assert.equal(fs.readdirSync(base).length, 0)
   for (let index = 0; index < 2; index++) {
     await page.locator('[data-a=temporary-session]').locator('..').hover()

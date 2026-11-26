@@ -25,8 +25,7 @@ const originals = files.map(hash)
 const sourceFiles = actual ? [markdown, html].map((rel) => path.join('D:/AI_Project/GQE', rel)) : []
 const sourceHashes = sourceFiles.map(hash)
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: { layout: 'balanced', restore: false, confirmKill: false }, projects: [{ id: 'p', name: 'Document performance', host: 'local', path: project, agent: 'shell' }] }))
-const diagramLog = path.join(data, 'diagram.log')
-const env = { ...process.env, AWB_USER_DATA: data, AWB_DIAGRAM_LOG: diagramLog }
+const env = { ...process.env, AWB_USER_DATA: data }
 delete env.ELECTRON_RUN_AS_NODE
 const app = await launchWorkbench({ args: ['.'], env })
 const failures = [], results = { actual }
@@ -163,26 +162,42 @@ try {
     results.virtualizedHeights = [height, placeholderHeight]
     assert.ok(Math.abs(height - placeholderHeight) < 2, `Code block changed height after leaving the viewport: ${height} -> ${placeholderHeight}`)
   })
-  const diagramLaunches = () => fs.existsSync(diagramLog) ? fs.readFileSync(diagramLog, 'utf8').split('\n').filter((line) => line.startsWith('attempt=')).length : 0
+  // The diagram is drawn in a window of its own. Whether the layout engine
+  // ran is read where it runs: the drawing page's own function, counted from
+  // outside the page. That the window is hidden, cannot leave its page and has
+  // no workbench command is asserted by `tauri-diagram-check.mjs`.
+  const drawingPage = () => app.allPages().find((candidate) => candidate.url().includes('diagram-renderer'))
+  const countDrawing = async () => {
+    let drawing = drawingPage()
+    for (let tries = 0; tries < 40 && !drawing; tries++) {
+      await new Promise((resolve) => setTimeout(resolve, 250))
+      drawing = drawingPage()
+    }
+    assert.ok(drawing, 'the drawing window did not open for a diagram')
+    await drawing.evaluate(() => {
+      if (window.__layoutRuns) return
+      const original = window.renderMermaid
+      let runs = 0
+      window.renderMermaid = (...args) => { runs += 1; return original(...args) }
+      window.__layoutRuns = () => runs
+    })
+    return () => drawing.evaluate(() => window.__layoutRuns())
+  }
   await check('Mermaid layout is cached and isolated from the workbench renderer', async () => {
-    await page.evaluate(() => window.awb.renderMermaid('graph LR\n A-->B'))
     if (app.shell === 'tauri') {
+      await page.evaluate(() => window.awb.renderMermaid('graph LR\n A-->B'))
+      const drawn = await countDrawing()
       const source = 'graph LR\n  A[MEASURED_CACHE_SENTINEL] --> B[Isolated]'
-      const before = diagramLaunches()
+      const before = await drawn()
       const first = await page.evaluate((source) => window.awb.renderMermaid(source), source)
-      const rendered = diagramLaunches()
+      const rendered = await drawn()
       assert.ok(rendered > before, 'The first diagram must run the layout engine')
       const start = Date.now()
       const second = await page.evaluate((source) => window.awb.renderMermaid(source), source)
       results.cachedDiagramMs = Date.now() - start
       assert.equal(second, first)
-      assert.equal(diagramLaunches(), rendered, 'A cached diagram must not execute the layout engine again')
-      const log = fs.readFileSync(diagramLog, 'utf8')
-      assert.match(log, /attempt=sandbox/, 'The diagram renderer must try the browser sandbox')
-      assert.match(log, /--headless=new/, 'The diagram renderer must stay hidden')
-      const browser = log.match(/argv0=(.*)/)?.[1] || ''
-      assert.ok(browser && !browser.endsWith('/pello'), `Diagram layout must run outside the workbench process: ${browser}`)
-      assert.equal(log.includes('window.awb'), false)
+      assert.equal(await drawn(), rendered, 'A cached diagram must not execute the layout engine again')
+      assert.ok(!first.includes('window.awb') && !first.includes('__TAURI'), 'the workbench bridge must not be in the result')
       await assert.rejects(page.evaluate(() => window.awb.renderMermaid('x'.repeat(100001))))
       return
     }
@@ -217,10 +232,16 @@ try {
   await check('closing Markdown stops its diagram process and keeps completed cached results', async () => {
     await page.waitForTimeout(100)
     if (app.shell === 'tauri') {
-      const before = diagramLaunches()
+      // Markdown is closed by now, and closing it ended its drawing window,
+      // as the Electron build ends its renderer process. The diagram is still
+      // answered from the cache: answered without the window, and without
+      // opening one again for it.
+      assert.equal(drawingPage(), undefined, 'closing Markdown must end its drawing window')
+      const start = Date.now()
       const cached = await page.evaluate(() => window.awb.renderMermaid('graph LR\n  A[MEASURED_CACHE_SENTINEL] --> B[Isolated]'))
+      results.cachedClosedMs = Date.now() - start
       assert.ok(cached.includes('<svg'))
-      assert.equal(diagramLaunches(), before, 'A cached diagram must not start another renderer after Markdown closes')
+      assert.equal(drawingPage(), undefined, 'a diagram answered from the cache must not open the drawing window again')
       return
     }
     assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((window) => window.getTitle() === 'Pello diagram renderer')), false)

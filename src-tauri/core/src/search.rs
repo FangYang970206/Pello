@@ -8,7 +8,8 @@ use std::fs;
 use std::io::Read;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 const MAX_MATCHES: usize = 2000;
@@ -35,11 +36,16 @@ pub struct ContentSearch {
     errors: u64,
     limited: bool,
     done: bool,
-    cancelled: bool,
+    /// Set to stop the search. It is shared, so a search can be stopped while
+    /// its next batch is still being waited for.
+    cancelled: Arc<AtomicBool>,
     stack: Vec<String>,
     current_dir: String,
     current: Vec<DirEntry>,
     buffered: Option<VecDeque<Value>>,
+    /// The command whose output is read as it comes, for a search on a
+    /// remote host. It is read until the command ends, then dropped.
+    stream: Option<crate::ssh::CommandStream>,
 }
 
 pub struct TreeSearch {
@@ -68,12 +74,40 @@ impl ContentSearch {
             errors: 0,
             limited: false,
             done: false,
-            cancelled: false,
+            cancelled: crate::ssh::CancelFlag::new().into_shared(),
             stack: vec![String::new()],
             current_dir: String::new(),
             current: Vec::new(),
             buffered: None,
+            stream: None,
         })
+    }
+
+    /// A search that reads the output of a command already running on a
+    /// remote host: each line is what the host reports for one file.
+    pub fn from_stream(project_id: &str, identity: &str, stream: crate::ssh::CommandStream, language: &str) -> Self {
+        let _ = language;
+        // The search and its stream share one flag: stopping the search ends
+        // the wait for the next line and the command on the host together.
+        let cancelled = stream.cancel_flag().into_shared();
+        Self {
+            root: PathBuf::new(),
+            project_id: project_id.to_string(),
+            identity: identity.to_string(),
+            ignored: Vec::new(),
+            matcher: None,
+            remaining: MAX_MATCHES,
+            skipped: 0,
+            errors: 0,
+            limited: false,
+            done: false,
+            cancelled,
+            stack: Vec::new(),
+            current_dir: String::new(),
+            current: Vec::new(),
+            buffered: None,
+            stream: Some(stream),
+        }
     }
 
     pub fn from_remote_output(project_id: &str, identity: &str, output: &str, language: &str) -> Result<Self, String> {
@@ -105,21 +139,83 @@ impl ContentSearch {
             errors,
             limited,
             done: false,
-            cancelled: false,
+            cancelled: crate::ssh::CancelFlag::new().into_shared(),
             stack: Vec::new(),
             current_dir: String::new(),
             current: Vec::new(),
             buffered: Some(files),
+            stream: None,
         })
     }
 
     pub fn identity(&self) -> &str { &self.identity }
     pub fn project_id(&self) -> &str { &self.project_id }
-    pub fn cancel(&mut self) { self.cancelled = true; }
+    /// Whether the search was stopped.
+    fn is_cancelled(&self) -> bool { self.cancelled.load(Ordering::SeqCst) }
+
+    /// Stop the search. It takes no more than a shared reference, so a search
+    /// can be stopped while another thread waits for its next batch; that
+    /// batch then ends at once. A search on a remote host ends its command
+    /// there.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    /// The flag that stops this search, for a caller that cannot reach the
+    /// search itself while a batch is being waited for.
+    pub fn cancel_flag(&self) -> crate::ssh::CancelFlag {
+        crate::ssh::CancelFlag::from_shared(Arc::clone(&self.cancelled))
+    }
+
+    /// Let a search that was stopped finish its batch and drop its stream.
+    fn settle(&mut self) {
+        self.stream = None;
+    }
 
     pub fn next(&mut self, language: &str) -> Result<Value, String> {
-        if self.cancelled {
+        if self.is_cancelled() {
+            self.settle();
             return Ok(self.batch(true, Vec::new()));
+        }
+        if let Some(stream) = self.stream.as_ref() {
+            // As much as one batch holds, read from the host as it comes: up
+            // to a count of events or a slice of time, whichever ends first.
+            let started = Instant::now();
+            let mut items = Vec::new();
+            for _ in 0..CONTENT_EVENTS {
+                let Some(line) = stream.next_line() else {
+                    if self.is_cancelled() || stream.cancelled() {
+                        // A search stopped by the user answers as finished, as on the Electron build.
+                        self.settle();
+                        return Ok(self.batch(true, Vec::new()));
+                    }
+                    stream.finish()?;
+                    self.settle();
+                    self.done = true;
+                    break;
+                };
+                let event: Value = match serde_json::from_str(&line) {
+                    Ok(event) => event,
+                    Err(_) if self.is_cancelled() || stream.cancelled() => {
+                        self.settle();
+                        return Ok(self.batch(true, Vec::new()));
+                    }
+                    Err(_) => return Err(translate(language, "正则表达式无效", &[] as &[String])),
+                };
+                if let Some(error) = event["error"].as_str() {
+                    self.settle();
+                    let message = if error == "timeout" { "正则表达式执行超时，请简化表达式" } else { "正则表达式无效" };
+                    return Err(translate(language, message, &[] as &[String]));
+                }
+                self.skipped += event["skipped"].as_u64().unwrap_or(0);
+                self.errors += event["errors"].as_u64().unwrap_or(0);
+                self.limited |= event["limited"].as_bool().unwrap_or(false);
+                if event.get("file").is_some_and(|file| file.is_object()) {
+                    items.push(event["file"].clone());
+                }
+                if started.elapsed() >= CONTENT_BUDGET { break }
+            }
+            return Ok(self.batch(self.done, items));
         }
         if self.buffered.is_some() {
             let started = Instant::now();
@@ -136,10 +232,10 @@ impl ContentSearch {
         let started = Instant::now();
         let mut items = Vec::new();
         for _ in 0..CONTENT_EVENTS {
-            if self.done || self.cancelled || started.elapsed() >= CONTENT_BUDGET { break }
+            if self.done || self.is_cancelled() || started.elapsed() >= CONTENT_BUDGET { break }
             if let Some(file) = self.step(language)? { items.push(file); }
         }
-        if self.cancelled {
+        if self.is_cancelled() {
             return Ok(self.batch(true, Vec::new()));
         }
         Ok(self.batch(self.done, items))
@@ -314,6 +410,7 @@ def scan(directory, relative):
                     scan(entry.path, rel)
                 continue
             if not entry.is_file(follow_symlinks=False): continue
+            # Resolve every ancestor again before opening; do not follow links outside the project.
             real = os.path.realpath(entry.path)
             if os.path.commonpath([root, real]) != root or real != entry.path: continue
             fd = os.open(entry.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -390,11 +487,13 @@ $source=if ($c.regex) { $c.query } else { [regex]::Escape($c.query) }
 if ($c.whole) { $source='(?<![\p{L}\p{N}_])(?:'+$source+')(?![\p{L}\p{N}_])' }
 try { $pattern=[regex]::new($source,$options,[TimeSpan]::FromMilliseconds(500)) }
 catch { [Console]::WriteLine('{"error":"invalid"}'); exit 0 }
+$decoder=[Text.UTF8Encoding]::new($false,$true)
 $script:remaining=2000
 function Emit($value) { [Console]::WriteLine(($value | ConvertTo-Json -Depth 8 -Compress)) }
 function Scan($directory,$relative) {
     try { $entries=@(Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop | Sort-Object Name) }
     catch { if (-not $relative) { throw }; Emit @{errors=1}; return }
+    Emit @{}
     foreach ($entry in $entries) {
         if ($script:remaining -le 0) { return }
         if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
@@ -405,30 +504,47 @@ function Scan($directory,$relative) {
         }
         try {
             $walk=$root
-            foreach ($part in $rel.Split('/')) { $walk=Join-Path $walk $part }
-            if ((Get-Item -LiteralPath $walk -Force).Length -gt 2000000) { Emit @{skipped=1}; continue }
-            $raw=[IO.File]::ReadAllBytes($walk)
-            $text=[Text.Encoding]::UTF8.GetString($raw)
-            $matches=@()
+            $safe=$true
+            foreach ($part in $rel.Split('/')) {
+                $walk=Join-Path $walk $part
+                if ((Get-Item -LiteralPath $walk -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { $safe=$false; break }
+            }
+            if (-not $safe) { continue }
+            if ($entry.Length -gt 2000000) { Emit @{skipped=1}; continue }
+            $stream=[IO.File]::OpenRead($entry.FullName)
+            try {
+                $raw=[byte[]]::new(2000001)
+                $length=0
+                while ($length -lt $raw.Length) {
+                    $read=$stream.Read($raw,$length,$raw.Length-$length)
+                    if (-not $read) { break }; $length+=$read
+                }
+            } finally { $stream.Dispose() }
+            if ($length -gt 2000000 -or [Array]::IndexOf($raw,[byte]0,0,$length) -ge 0) { Emit @{skipped=1}; continue }
+            try { $text=$decoder.GetString($raw,0,$length) } catch { Emit @{skipped=1}; continue }
+            $matches=[Collections.Generic.List[object]]::new()
             $number=0
-            foreach ($line in $text.Split("`n")) {
+            foreach ($line in $text.Split([char]10)) {
+                $line=$line.TrimEnd([char]13)
                 $number++
-                $item=$line.TrimEnd("`r")
-                foreach ($m in $pattern.Matches($item)) {
-                    $matches += @{ line=$number; column=$m.Index+1; before=$item.Substring([Math]::Max(0,$m.Index-80), [Math]::Min($m.Index,80)); match=$m.Value; after=$item.Substring($m.Index+$m.Length, [Math]::Min(160, $item.Length-($m.Index+$m.Length))) }
+                foreach ($m in $pattern.Matches($line)) {
+                    $start=[Math]::Max(0,$m.Index-80)
+                    $end=$m.Index+$m.Length
+                    $matches.Add(@{line=$number;column=$m.Index+1;before=$line.Substring($start,$m.Index-$start);match=$m.Value;after=$line.Substring($end,[Math]::Min(160,$line.Length-$end)).TrimEnd([char]13)})
                     $script:remaining--
                     if ($script:remaining -le 0) { break }
                 }
                 if ($script:remaining -le 0) { break }
             }
-            if ($matches.Count) { Emit @{ file=@{ path=$rel; matches=$matches } } }
-        } catch [System.Text.RegularExpressions.RegexMatchTimeoutException] { Emit @{error='timeout'}; return }
-        catch { Emit @{errors=1} }
+            if ($matches.Count) { Emit @{file=@{path=$rel;matches=@($matches.ToArray())}} } else { Emit @{} }
+        } catch {
+            if ($_.Exception.GetBaseException() -is [Text.RegularExpressions.RegexMatchTimeoutException]) { Emit @{error='timeout'}; return }
+            Emit @{errors=1}
+        }
     }
 }
 Scan $root ''
-if ($script:remaining -le 0) { Emit @{limited=$true} }
-"#
+if ($script:remaining -le 0) { Emit @{limited=$true} }"#
 }
 
 pub fn valid_search_id(id: &str) -> bool {
@@ -482,48 +598,75 @@ fn read_search_file(root: &Path, relative: &str, language: &str) -> Result<Optio
     Ok(Some(bytes))
 }
 
+/// A content pattern of the JavaScript kind: the source with the `i` and `u`
+/// flags and the whole-word frame the search adds around it, compiled once
+/// for a search.
 struct JsMatcher {
-    source: String,
-    flags: String,
-    whole: bool,
+    pattern: Arc<fancy_regex::Regex>,
+    /// Whether the source is text to find as written rather than a pattern.
+    literal: bool,
+    /// The thread that runs a pattern a user wrote, one for a whole search,
+    /// as the Electron build keeps one worker for it. Text that is not a
+    /// pattern is matched on the calling thread, as it is there.
+    scanner: Option<Scanner>,
+}
+
+/// One scanning thread, and the way its search says it is over.
+struct Scanner {
+    requests: mpsc::Sender<(String, usize)>,
+    replies: mpsc::Receiver<Result<Vec<Value>, ()>>,
+}
+
+impl Scanner {
+    fn start(pattern: Arc<fancy_regex::Regex>) -> Self {
+        let (requests, asked) = mpsc::channel::<(String, usize)>();
+        let (replies, answered) = mpsc::channel::<Result<Vec<Value>, ()>>();
+        std::thread::spawn(move || {
+            // The thread ends when the search is dropped, which closes the
+            // channel it is asked on, or when nobody is left to answer to.
+            while let Ok((text, remaining)) = asked.recv() {
+                if replies.send(scan_lines(&pattern, &text, remaining)).is_err() { break }
+            }
+        });
+        Self { requests, replies: answered }
+    }
+
+    /// Ask for a scan of one file and wait for its matches, for at most the
+    /// budget. `None` when the scan did not answer in time.
+    fn scan(&self, text: &str, remaining: usize) -> Option<Result<Vec<Value>, ()>> {
+        self.requests.send((text.to_string(), remaining)).ok()?;
+        self.replies.recv_timeout(REGEX_BUDGET).ok()
+    }
 }
 
 impl JsMatcher {
     fn start(query: &str, sensitive: bool, regex: bool, whole: bool, language: &str) -> Result<Self, String> {
+        // Text that is not a pattern is the text with every special character
+        // escaped, so there is nothing in it that can backtrack.
         let source = if regex { query.to_string() } else { escape_regex(query) };
-        let flags = if sensitive { "u" } else { "iu" }.to_string();
-        let matcher = Self { source, flags, whole };
-        // Compiling alone does not run the pattern; one empty scan reports syntax errors.
-        matcher.compile().map_err(|_| translate(language, "正则表达式无效", &[] as &[String]))?;
-        Ok(matcher)
-    }
-
-    fn pattern(&self) -> Result<fancy_regex::Regex, ()> {
-        let whole = |body: String| {
-            if self.whole { format!(r"(?<![\p{{L}}\p{{N}}_])(?:{body})(?![\p{{L}}\p{{N}}_])") } else { body }
-        };
+        let framed = if whole { format!(r"(?<![\p{{L}}\p{{N}}_])(?:{source})(?![\p{{L}}\p{{N}}_])") } else { source };
         // Only the case-insensitive flag has a group form; an empty `(?u)` is not a pattern.
-        let ignoring_case = if self.flags.contains('i') { "(?i)" } else { "" };
-        let pattern = format!("{ignoring_case}{}", whole(self.source.clone()));
-        fancy_regex::Regex::new(&pattern).map_err(|_| ())
+        let ignoring_case = if sensitive { "" } else { "(?i)" };
+        // Compiling is where a pattern with a syntax error is refused.
+        let pattern = fancy_regex::Regex::new(&format!("{ignoring_case}{framed}")).map_err(|_| translate(language, "正则表达式无效", &[] as &[String]))?;
+        Ok(Self { pattern: Arc::new(pattern), literal: !regex, scanner: None })
     }
-
-    fn compile(&self) -> Result<fancy_regex::Regex, ()> { self.pattern() }
 
     fn scan(&mut self, text: &str, remaining: usize, language: &str) -> Result<Vec<Value>, String> {
-        // A runaway pattern must not stall the caller: the scan runs on a
-        // helper thread and gives up after the budget, like the JS worker did.
-        let pattern = self.compile().map_err(|_| translate(language, "正则表达式无效", &[] as &[String]))?;
-        let text = text.to_string();
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(scan_lines(&pattern, &text, remaining));
-        });
-        match rx.recv_timeout(REGEX_BUDGET) {
-            // The engine gives up on a pattern that backtracks without end.
-            // That is a pattern too costly to run, not a file without matches.
-            Ok(Err(())) | Err(_) => Err(translate(language, "正则表达式执行超时，请简化表达式", &[] as &[String])),
-            Ok(Ok(matches)) => Ok(matches),
+        // The engine gives up on a pattern that backtracks past its limit.
+        // That is a pattern too costly to run, not a file without matches.
+        let too_costly = || translate(language, "正则表达式执行超时，请简化表达式", &[] as &[String]);
+        if self.literal { return scan_lines(&self.pattern, text, remaining).map_err(|_| too_costly()) }
+        let scanner = self.scanner.get_or_insert_with(|| Scanner::start(Arc::clone(&self.pattern)));
+        match scanner.scan(text, remaining) {
+            Some(Ok(matches)) => Ok(matches),
+            // A scan that ran past its budget is given up on, and its thread
+            // with it: the thread is not left running what nobody waits for.
+            // The next file starts a thread of its own.
+            Some(Err(())) | None => {
+                self.scanner = None;
+                Err(too_costly())
+            }
         }
     }
 }

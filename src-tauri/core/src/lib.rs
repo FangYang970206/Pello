@@ -1,4 +1,5 @@
 pub mod files;
+pub mod gate;
 pub mod git;
 pub mod i18n;
 pub mod import;

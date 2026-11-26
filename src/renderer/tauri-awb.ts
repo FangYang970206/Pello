@@ -127,6 +127,42 @@ const api: WorkbenchApi = {
   meta: () => call('app:meta')
 }
 
+/**
+ * Keep the keyboard in the page when Tab would leave it at an end.
+ *
+ * The page is the only control in the window, but WebView2 is made for a window that has others: past the last control, or before the first with Shift+Tab, it hands the keyboard focus to the window around it and takes it back on the next key. Electron's window hands it straight back. Here one Tab at an end reached nothing, and a second was needed to get to the other end. So at an end the page turns the focus round itself, in the scope the focus is in: an open modal dialog, or the page when none is.
+ *
+ * Two listeners, one for each scope, because each has to be at the other end of the key's way. A native file dialog keeps the key to itself and stops it on its way up, so a listener that waits for the key to bubble to the page never hears it: the dialog's scope is heard on the way down. On the page a control may take Tab for its own use, as the source editor does for two spaces, and it is heard before anything above it only on the way up: there the listener is the last, and a key that was taken is left alone.
+ */
+function turnTabRoundAtEnds(): void {
+  const modal = 'dialog[open], [role=dialog][aria-modal=true]'
+  const controls = (scope: ParentNode): HTMLElement[] => [...scope.querySelectorAll<HTMLElement>('button, input, select, textarea, a[href], [tabindex]')]
+    .filter((node) => !((node as HTMLButtonElement).disabled) && node.tabIndex >= 0 && !node.closest('[inert]'))
+  const topDialog = (): Element | undefined => [...document.querySelectorAll(modal)].pop()
+  const turn = (event: KeyboardEvent, scope: ParentNode) => {
+    const order = controls(scope)
+    const index = order.findIndex((node) => node === document.activeElement)
+    const atEnd = event.shiftKey ? index <= 0 : index === -1 || index === order.length - 1
+    if (!atEnd || order.length === 0) return
+    event.preventDefault()
+    ;(event.shiftKey ? order[order.length - 1] : order[0]).focus()
+  }
+  const taken = (event: KeyboardEvent) => event.defaultPrevented || event.isComposing || event.ctrlKey || event.altKey || event.metaKey
+  // On the way down: only inside the dialog that is on top.
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Tab' || taken(event)) return
+    const dialog = topDialog()
+    if (!dialog || !dialog.contains(document.activeElement)) return
+    turn(event, dialog)
+  }, true)
+  // On the way up, after the control the key was typed in: only on the page,
+  // with no dialog on top of it.
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Tab' || taken(event) || topDialog()) return
+    turn(event, document)
+  })
+}
+
 /** Install `window.awb` when the page is hosted by Tauri. Electron keeps using the preload bridge. */
 export function installTauriWorkbench(): boolean {
   if (!('__TAURI_INTERNALS__' in window)) return false
@@ -135,5 +171,6 @@ export function installTauriWorkbench(): boolean {
     void listen<{ channel: string; payload: unknown }>('awb', (event) => publish(event.payload.channel, event.payload.payload))
   }
   window.awb = api
+  turnTabRoundAtEnds()
   return true
 }

@@ -36,14 +36,23 @@ git('init', '-q'); git('add', '.'); git('-c', 'commit.gpgsign=false', '-c', 'use
 fs.writeFileSync(path.join(project, 'diff.txt'), 'needle work\nneedle common\n')
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: { layout: 'balanced', restore: false, confirmKill: false }, projects: [{ id: 'p', name: 'Document search', path: project, host: 'local', agent: 'shell' }] }))
 const env = { ...process.env, AWB_USER_DATA: data }; delete env.ELECTRON_RUN_AS_NODE
-const dpi = Number(process.env.AWB_TEST_DPI || 1)
+// One scale per run, 100% unless a factor is named: `--scale=1.5`.
+const dpi = Number(process.argv.find((arg) => arg.startsWith('--scale='))?.slice(8) || 1)
 const app = await launchWorkbench({ args: ['.', `--force-device-scale-factor=${dpi}`], env, scale: dpi })
+// This check goes through a 1024 by 680 page, the smallest the window
+// takes. A desktop whose scale is above the page's own cannot show it, and
+// then nothing runs here: that is said, with exit code 2, rather than
+// taken for a pass or a failure.
+const shown = await app.resize(1024, 680).then(() => true, (error) => {
+  if (!/needs a desktop at/.test(String(error))) throw error
+  console.log(`NOT RUN ${dpi * 100}% DPI: ${error.message}`)
+  return false
+})
+if (!shown) { await app.close(); process.exit(2) }
+await app.resize(1440, 900)
 try {
   const page = await app.firstWindow(); page.setDefaultTimeout(8000)
-  const resize = async (width, height) => {
-    await page.evaluate(([width, height]) => window.awb.winResize(width, height), [width, height])
-    await page.waitForFunction(([width, height]) => innerWidth === width && innerHeight === height, [width, height])
-  }
+  const resize = (width, height) => app.resize(width, height)
   await installDocumentHarness(app, page, false)
   const errors = []; page.on('pageerror', (error) => errors.push(error.message))
   await page.evaluate(() => {

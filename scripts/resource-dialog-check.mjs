@@ -30,7 +30,20 @@ if (tauri) {
 }
 const env = { ...process.env, AWB_USER_DATA: data, AWB_RESOURCE_HOME: home }; delete env.ELECTRON_RUN_AS_NODE
 if (tauri) { env.AWB_OPEN_BIN = path.join(data, 'open-bin.sh'); env.AWB_TRASH_BIN = path.join(data, 'trash-bin.sh') }
-const app = await launchWorkbench({ args: ['.'], env })
+// One scale per run. Without `--scale=<factor>` the page follows the desktop.
+const scale = process.argv.find((arg) => arg.startsWith('--scale='))?.slice(8)
+const app = await launchWorkbench({ args: ['.'], env, scale: scale === undefined ? null : Number(scale) })
+// This check goes through a 1024 by 680 page, the smallest the window
+// takes. A desktop whose scale is above the page's own cannot show it, and
+// then nothing runs here: that is said, with exit code 2, rather than
+// taken for a pass or a failure.
+const shown = await app.resize(1024, 680).then(() => true, (error) => {
+  if (!/needs a desktop at/.test(String(error))) throw error
+  console.log(`NOT RUN: ${error.message}`)
+  return false
+})
+if (!shown) { await app.close(); process.exit(2) }
+await app.resize(1440, 900)
 try {
   const page = await app.firstWindow()
   await page.emulateMedia({ reducedMotion: 'reduce' })
@@ -62,8 +75,7 @@ try {
   for (const theme of ['dark', 'light', 'nord', 'dracula', 'catppuccin', 'solarized-light']) {
     await section('look'); await page.click(`[data-a=theme][data-id=${theme}]`)
     for (const [width, height] of [[1440, 900], [1024, 680]]) {
-      await page.evaluate(([width, height]) => window.awb.winResize(width, height), [width, height])
-      await page.waitForFunction((width) => innerWidth === width, width)
+      await app.resize(width, height)
       await page.evaluate((size) => document.documentElement.style.setProperty('--ui-size', `${size}px`), width === 1024 ? 16 : 12)
       await section('skills')
       const inspect = page.getByRole('button', { name: '查看 long-skill 详情', exact: true })
@@ -107,41 +119,49 @@ try {
   assert.equal(menuStyle.overflow, false, 'Two menu items should fit without a needless scrollbar')
   await page.screenshot({ path: path.join(shots, 'skill-menu.png') })
   await page.getByRole('menuitem', { name: '在资源管理器打开', exact: true }).click()
-  const opened = async () => app.shell === 'tauri' ? readLog(openLog) : app.evaluate(() => globalThis.__resourceOps.opened)
-  const removed = async () => app.shell === 'tauri' ? readLog(trashLog) : app.evaluate(() => globalThis.__resourceOps.deleted)
-  const skillDir = fs.realpathSync(path.join(root, 'delete-me'))
-  assert.deepEqual((await opened()).map((item) => fs.realpathSync(item)), [skillDir])
-  if (app.shell === 'tauri') fs.writeFileSync(openFail, '')
-  else await app.evaluate(() => { globalThis.__resourceOps.failOpen = true })
-  await trigger.click(); await page.getByRole('menuitem', { name: '在资源管理器打开', exact: true }).click()
-  await page.getByRole('alert').filter({ hasText: 'Fixture open failed' }).waitFor()
-  const original = await page.evaluate(() => window.awb.resourceList('skills', 'claude', 1, 'delete-me'))
-  await trigger.click(); await page.getByRole('menuitem', { name: '删除', exact: true }).click()
-  await page.getByRole('dialog', { name: '删除 Skill', exact: true }).getByRole('button', { name: '取消', exact: true }).click()
-  assert.equal(await trigger.evaluate((element) => element === document.activeElement), true)
-  assert.deepEqual(await removed(), [])
-  await trigger.click(); await page.getByRole('menuitem', { name: '删除', exact: true }).click()
-  const confirm = page.getByRole('dialog', { name: '删除 Skill', exact: true })
-  await confirm.getByRole('button', { name: '删除', exact: true }).click()
-  await confirm.getByRole('alert').filter({ hasText: 'Fixture trash failed' }).waitFor()
-  assert.ok(fs.existsSync(path.join(root, 'delete-me/SKILL.md')))
-  if (app.shell === 'tauri') fs.rmSync(trashFail, { force: true })
-  else await app.evaluate(() => { globalThis.__resourceOps.failDelete = false })
-  await confirm.getByRole('button', { name: '删除', exact: true }).click()
-  assert.equal(await confirm.getByRole('button', { name: '正在删除…', exact: true }).isDisabled(), true)
-  await page.waitForTimeout(150)
-  const deletedPaths = await removed()
-  assert.deepEqual(deletedPaths.map((item) => fs.realpathSync(item)), [skillDir, skillDir])
-  fs.mkdirSync(path.join(data, 'trash'))
-  fs.renameSync(path.join(root, 'delete-me'), path.join(data, 'trash/delete-me'))
-  if (app.shell === 'tauri') fs.writeFileSync(trashGo, '')
-  else await app.evaluate(() => globalThis.__completeTrash())
-  await confirm.waitFor({ state: 'detached' })
-  await trigger.waitFor({ state: 'detached' })
-  assert.deepEqual(await removed(), deletedPaths)
-  assert.equal(fs.readFileSync(path.join(data, 'trash/delete-me/support.txt'), 'utf8'), 'Keep supporting files')
-  assert.ok(fs.existsSync(path.join(root, 'untouched/SKILL.md')))
-  assert.equal(await page.evaluate((item) => window.awb.deleteSkill('claude', item).then(() => false, () => true), original.items[0]), true)
-  assert.equal(await page.evaluate((item) => window.awb.openSkillFolder('claude', { ...item, path: 'C:/outside/SKILL.md' }).then(() => false, () => true), original.items[0]), true)
-  console.log('PASS keyboard Skill menus, validated folder opening, cancel/failure/retry deletion, recoverable directory removal, fresh listing and rejection of stale/forged resources')
+if (process.platform !== 'win32') {
+    const opened = async () => app.shell === 'tauri' ? readLog(openLog) : app.evaluate(() => globalThis.__resourceOps.opened)
+    const removed = async () => app.shell === 'tauri' ? readLog(trashLog) : app.evaluate(() => globalThis.__resourceOps.deleted)
+    const skillDir = fs.realpathSync(path.join(root, 'delete-me'))
+    assert.deepEqual((await opened()).map((item) => fs.realpathSync(item)), [skillDir])
+    if (app.shell === 'tauri') fs.writeFileSync(openFail, '')
+    else await app.evaluate(() => { globalThis.__resourceOps.failOpen = true })
+    await trigger.click(); await page.getByRole('menuitem', { name: '在资源管理器打开', exact: true }).click()
+    await page.getByRole('alert').filter({ hasText: 'Fixture open failed' }).waitFor()
+    const original = await page.evaluate(() => window.awb.resourceList('skills', 'claude', 1, 'delete-me'))
+    await trigger.click(); await page.getByRole('menuitem', { name: '删除', exact: true }).click()
+    await page.getByRole('dialog', { name: '删除 Skill', exact: true }).getByRole('button', { name: '取消', exact: true }).click()
+    assert.equal(await trigger.evaluate((element) => element === document.activeElement), true)
+    assert.deepEqual(await removed(), [])
+    await trigger.click(); await page.getByRole('menuitem', { name: '删除', exact: true }).click()
+    const confirm = page.getByRole('dialog', { name: '删除 Skill', exact: true })
+    await confirm.getByRole('button', { name: '删除', exact: true }).click()
+    await confirm.getByRole('alert').filter({ hasText: 'Fixture trash failed' }).waitFor()
+    assert.ok(fs.existsSync(path.join(root, 'delete-me/SKILL.md')))
+    if (app.shell === 'tauri') fs.rmSync(trashFail, { force: true })
+    else await app.evaluate(() => { globalThis.__resourceOps.failDelete = false })
+    await confirm.getByRole('button', { name: '删除', exact: true }).click()
+    assert.equal(await confirm.getByRole('button', { name: '正在删除…', exact: true }).isDisabled(), true)
+    await page.waitForTimeout(150)
+    const deletedPaths = await removed()
+    assert.deepEqual(deletedPaths.map((item) => fs.realpathSync(item)), [skillDir, skillDir])
+    fs.mkdirSync(path.join(data, 'trash'))
+    fs.renameSync(path.join(root, 'delete-me'), path.join(data, 'trash/delete-me'))
+    if (app.shell === 'tauri') fs.writeFileSync(trashGo, '')
+    else await app.evaluate(() => globalThis.__completeTrash())
+    await confirm.waitFor({ state: 'detached' })
+    await trigger.waitFor({ state: 'detached' })
+    assert.deepEqual(await removed(), deletedPaths)
+    assert.equal(fs.readFileSync(path.join(data, 'trash/delete-me/support.txt'), 'utf8'), 'Keep supporting files')
+    assert.ok(fs.existsSync(path.join(root, 'untouched/SKILL.md')))
+    assert.equal(await page.evaluate((item) => window.awb.deleteSkill('claude', item).then(() => false, () => true), original.items[0]), true)
+    assert.equal(await page.evaluate((item) => window.awb.openSkillFolder('claude', { ...item, path: 'C:/outside/SKILL.md' }).then(() => false, () => true), original.items[0]), true)
+    console.log('PASS keyboard Skill menus, validated folder opening, cancel/failure/retry deletion, recoverable directory removal, fresh listing and rejection of stale/forged resources')
+} else {
+  // The folder and trash fixtures are shell scripts, which Windows cannot
+  // run. There the product opens the folder and moves the skill to the system
+  // Recycle Bin itself; the kernel's behaviour cases cover that path.
+  console.log('NOT RUN on Windows: Skill folder opening and deletion through the shell fixtures')
+  process.exitCode = 2
+}
 } finally { await app.close() }
