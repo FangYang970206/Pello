@@ -1,7 +1,16 @@
-import base64, hashlib, json, os, shutil, sys, uuid
+import base64, hashlib, json, os, re, shutil, sys, uuid
 
+# A Linux host is given the operation as an argument and the request on the
+# input. A Windows host is given one script on the input, which names the
+# operation and carries the request written into it.
 op = sys.argv[1]
-req = json.load(sys.stdin)
+body = sys.stdin.read()
+if op == "script":
+    op = re.search(r"AWB_UPLOAD_OP ([a-z]+)", body).group(1)
+    quoted = re.search(r"^\$req = '(.*)' \| ConvertFrom-Json$", body, re.M).group(1)
+    req = json.loads(quoted.replace("''", "'"))
+else:
+    req = json.loads(body)
 root = os.path.realpath(req["root"])
 parent_rel = str(req.get("parent") or "").strip("/")
 parent = root if not parent_rel else os.path.realpath(os.path.join(root, parent_rel))

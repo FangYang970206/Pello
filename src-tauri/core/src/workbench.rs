@@ -1,6 +1,7 @@
 //! Command dispatch shared by the Tauri shell and the behavior tests.
 //! Channel names match the Electron IPC names in `src/preload/index.ts`.
 
+use crate::download;
 use crate::files::{self, default_ignore};
 use crate::gate::Gate;
 use crate::git;
@@ -39,7 +40,7 @@ pub struct Workbench {
     saves: Arc<Gate>,
     db: Mutex<Value>,
     pty: Manager,
-    dirty: Mutex<bool>,
+    dirty: Arc<Mutex<bool>>,
     content_searches: Mutex<HashMap<String, ContentSearch>>,
     /// The stop flag of each content search, kept apart from the search so
     /// that a search can be stopped while its next batch is being waited
@@ -52,6 +53,7 @@ pub struct Workbench {
     resources: resources::Resources,
     updates: Mutex<updates::Service>,
     uploads: upload::Service,
+    downloads: download::Service,
     imports: import::Imports,
     pickers: Mutex<HashMap<String, Picker>>,
     history_flushed: Mutex<bool>,
@@ -91,7 +93,8 @@ impl Workbench {
             db["settings"]["language"] = json!("zh-CN");
         }
         let updates = updates::Service::new(db["settings"]["autoCheckUpdates"] != false);
-        Ok(Self { paths, saves: Arc::new(Gate::new()), db: Mutex::new(db), pty: Manager::new(), dirty: Mutex::new(false), content_searches: Mutex::new(HashMap::new()), content_stops: Mutex::new(HashMap::new()), tree_searches: Mutex::new(HashMap::new()), layouts: Mutex::new(HashMap::new()), restore_failures: Mutex::new(HashMap::new()), preview: preview::Service::new(), resources: resources::Resources::new(), updates: Mutex::new(updates), uploads: upload::Service::new(), imports: import::Imports::new(), pickers: Mutex::new(HashMap::new()), history_flushed: Mutex::new(false), closing: AtomicBool::new(false), emit })
+        Ok(Self { paths, saves: Arc::new(Gate::new()), db: Mutex::new(db), pty: Manager::new(), dirty: Arc::new(Mutex::new(false)), content_searches: Mutex::new(HashMap::new()), content_stops: Mutex::new(HashMap::new()), tree_searches: Mutex::new(HashMap::new()), layouts: Mutex::new(HashMap::new()), restore_failures: Mutex::new(HashMap::new()), preview: preview::Service::new(), resources: resources::Resources::new(), updates: Mutex::new(updates), uploads: upload::Service::new(),
+            downloads: download::Service::new(), imports: import::Imports::new(), pickers: Mutex::new(HashMap::new()), history_flushed: Mutex::new(false), closing: AtomicBool::new(false), emit })
     }
 
     /// The shell renders a diagram in a hidden window of its own, as the
@@ -129,7 +132,18 @@ impl Workbench {
             if *self.history_flushed.lock().expect("flush") { break }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        self.pty.close_all();
+        // Electron closes the sessions and the transfers side by side and
+        // waits for both. A transfer that does not stop does not keep the
+        // window from closing: the wait has an end, and the process exits
+        // either way.
+        std::thread::scope(|scope| {
+            let transfers = scope.spawn(|| {
+                self.downloads.shutdown(std::time::Duration::from_secs(10));
+                self.uploads.shutdown(std::time::Duration::from_secs(10)) | self.imports.shutdown(std::time::Duration::from_secs(10))
+            });
+            self.pty.close_all();
+            let _ = transfers.join();
+        });
     }
 
     pub fn database_path(&self) -> std::path::PathBuf { self.paths.data.join("workbench.json") }
@@ -205,17 +219,30 @@ impl Workbench {
             "transfer:drop" => self.transfer_drop(args, &language),
             "transfer:cancel" => {
                 let id = str_arg(args, 0);
-                if self.imports.cancel(id) { Ok(Value::Null) } else { self.uploads.cancel(id, &language) }
+                if self.downloads.cancel(id) || self.imports.cancel(id) { Ok(Value::Null) } else { self.uploads.cancel(id, &language) }
             }
-            "transfer:retry" => self.transfer_retry(str_arg(args, 0), &language),
+            "transfer:retry" => {
+                let id = str_arg(args, 0);
+                if self.downloads.has(id) { self.download_retry(id, &language) }
+                else if self.imports.project_id(id).is_some() {
+                    self.validate_transfer_target(id, &language)?;
+                    self.imports.retry(id, language.to_string())
+                } else { self.transfer_retry(id, &language) }
+            }
             "transfer:dismiss" => {
                 let id = str_arg(args, 0);
-                if self.imports.dismiss(id) { Ok(Value::Null) } else { self.uploads.dismiss(id) }
+                if self.downloads.dismiss(id) || self.imports.dismiss(id) { Ok(Value::Null) } else { self.uploads.dismiss(id) }
             }
-            "transfer:keep-both" => Err(translate(&language, "上传不再询问同名处理", &[] as &[String])),
+            "transfer:keep-both" => {
+                let id = str_arg(args, 0);
+                if self.imports.project_id(id).is_some() {
+                    self.validate_transfer_target(id, &language)?;
+                    self.imports.keep_both(id, language.to_string())
+                } else { Err(translate(&language, "上传不再询问同名处理", &[] as &[String])) }
+            }
             "transfer:decide" => {
                 let id = str_arg(args, 0);
-                if self.imports.waiting(id) { self.imports.decide(id, str_arg(args, 1), &language) }
+                if self.imports.waiting(id) { self.imports.decide(id, str_arg(args, 1), args.get(2).and_then(|value| value.as_bool()).unwrap_or(false), &language) }
                 else { Err(translate(&language, "上传不再询问同名处理", &[] as &[String])) }
             }
             "transfer:inject" => {
@@ -224,7 +251,11 @@ impl Workbench {
                 (self.emit)(json!({ "channel": "transfer:update", "payload": payload }));
                 Ok(Value::Null)
             }
-            "file:replacement-ready" => { self.uploads.confirm(str_arg(args, 0), args.get(1).and_then(|value| value.as_bool()).unwrap_or(false)); Ok(Value::Null) }
+            "file:replacement-ready" => {
+                let (id, allow) = (str_arg(args, 0), args.get(1).and_then(|value| value.as_bool()).unwrap_or(false));
+                if !self.imports.allow(id, allow) { self.uploads.confirm(id, allow); }
+                Ok(Value::Null)
+            }
             "exec:test" => self.test_exec(args.first().cloned().unwrap_or(json!({})), &language),
             "host:test" => Ok(ssh::test_connection(&self.paths.data, args.first().unwrap_or(&Value::Null), &language)),
             "app:update-state" => Ok(self.updates.lock().expect("updates").state()),
@@ -240,7 +271,8 @@ impl Workbench {
             "menu:file" => Ok(menu::file_menu(&language, args.first().unwrap_or(&Value::Null))),
             "menu:terminal" => Ok(menu::terminal_menu(&language, args.first().unwrap_or(&Value::Null))),
             "menu:tree" => self.tree_template(str_arg(args, 0), str_arg(args, 1), bool_arg(args, 2).unwrap_or(false), &language),
-            "menu:save" => Ok(menu::save_dialog(&language, str_arg(args, 0))),
+            "menu:save" => Ok(menu::save_dialog(&language, str_arg(args, 0), args.get(1).and_then(Value::as_str).unwrap_or(""))),
+            "menu:open" => Ok(menu::open_dialog(&language, str_arg(args, 0))),
             "tree:menu" => self.tree_template(str_arg(args, 0), str_arg(args, 1), bool_arg(args, 2).unwrap_or(false), &language),
             "file:menu" => Ok(menu::file_menu(&language, args.first().unwrap_or(&Value::Null))),
             "terminal:menu" => Ok(menu::terminal_menu(&language, args.first().unwrap_or(&Value::Null))),
@@ -248,7 +280,7 @@ impl Workbench {
             "resources:targets" => Ok(Value::Array(resources::targets(&self.paths.data, &self.custom()))),
             "resources:scope" => { resources::set_scope(&self.resources, args.first().unwrap_or(&Value::Null)); Ok(Value::Null) },
             "resources:target" => resources::save_target(&self.paths.data, &self.custom(), args.first().unwrap_or(&Value::Null), &language).map(|_| Value::Null),
-            "resources:pick" => Ok(menu::choose_open_path(str_arg(args, 0))),
+            "resources:pick" => Ok(menu::choose_open_path(str_arg(args, 0), &language)),
             "resources:list" => resources::list(&self.resources, &self.paths.data, &self.custom(), str_arg(args, 0), str_arg(args, 1), json_usize(args.get(2)), str_arg(args, 3), &language),
             "resources:toggle" => resources::toggle(&self.resources, &self.paths.data, &self.custom(), str_arg(args, 0), str_arg(args, 1), args.get(2).unwrap_or(&Value::Null), args.get(3).and_then(|value| value.as_bool()), &language).map(|_| Value::Null),
             "resources:detail" => resources::detail(&self.resources, &self.paths.data, &self.custom(), str_arg(args, 0), str_arg(args, 1), args.get(2).unwrap_or(&Value::Null), &language),
@@ -380,7 +412,7 @@ impl Workbench {
         let source = self.paths.data.join("terminal-history").join(format!("{}.ansi", pty::history_name(id)));
         if !source.is_file() { return Err(translate(language, "此终端尚无完整记录", &[] as &[String])); }
         let destination = if destination.is_empty() {
-            match menu::choose_save_path(language, "history")? {
+            match menu::choose_save_path(language, "history", "")? {
                 Some(path) => path,
                 None => return Ok(Value::Null),
             }
@@ -581,6 +613,11 @@ impl Workbench {
 
     fn git_write(&self, project_id: &str, rel: &str, text: &str, version: Option<&str>, language: &str) -> Result<Value, String> {
         if self.uploads.write_blocked(project_id, rel) {
+            return Err(translate(language, "文件正在进行其他写入操作", &[] as &[String]));
+        }
+        // A local transfer replaces a file through the same guard as Electron's
+        // `guardReplacement`: while it waits for the page, the file is locked.
+        if self.imports.write_blocked(project_id, rel) {
             return Err(translate(language, "文件正在进行其他写入操作", &[] as &[String]));
         }
         if let Some((host, path)) = self.remote_place(project_id, language)? {
@@ -977,6 +1014,11 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
             let next = if parent.is_empty() { name } else { format!("{parent}/{name}") };
             return Ok(json!(next));
         }
+        // Electron's tree:move refuses an entry that is being replaced, lies in
+        // what is being replaced, or is a folder holding it.
+        if self.uploads.move_blocked(project_id, rel, directory) || self.imports.move_blocked(project_id, rel, directory) {
+            return Err(translate(language, "文件正在保存或进行其他操作", &[] as &[String]));
+        }
         self.with_local(project_id, language, |root| files::move_entry(root, rel, destination, directory, language).map(|path| json!(path)))
     }
 
@@ -997,6 +1039,30 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
         }).collect()
     }
 
+    /// The other projects on this machine, which may lie on the files a
+    /// local transfer replaces.
+    fn local_projects(&self, project_id: &str) -> Vec<Value> {
+        let db = self.db.lock().expect("db");
+        db["projects"].as_array().map(|projects| projects.iter().filter(|project| {
+            let host = project["host"].as_str().unwrap_or("local");
+            project["id"].as_str() != Some(project_id) && (host.is_empty() || host == "local")
+        }).map(|project| json!({ "id": project["id"], "path": project["path"] })).collect()).unwrap_or_default()
+    }
+
+    /// A transfer asked about again, by retry or by keeping both, must
+    /// still lead to a directory of the project it was started for.
+    fn validate_transfer_target(&self, id: &str, language: &str) -> Result<(), String> {
+        let (project_id, root) = self.imports.context(id, language)?;
+        let project = self.project(&project_id, language)?;
+        if self.optional_host(project["host"].as_str().unwrap_or("local"))?.is_some() {
+            return Err(translate(language, "项目环境已更改", &[] as &[String]));
+        }
+        let real = crate::real_path(project["path"].as_str().unwrap_or("")).map_err(|error| error.to_string())?;
+        let relative = root.strip_prefix(&real).map_err(|_| translate(language, "目标不是目录", &[] as &[String]))?;
+        if !real.join(relative).is_dir() { return Err(translate(language, "目标不是目录", &[] as &[String])); }
+        Ok(())
+    }
+
     fn transfer_drop(&self, args: &[Value], language: &str) -> Result<Value, String> {
         let project_id = str_arg(args, 0).to_string();
         let parent = str_arg(args, 1).to_string();
@@ -1005,11 +1071,23 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
         let root = project["path"].as_str().unwrap_or("").to_string();
         let host = self.optional_host(project["host"].as_str().unwrap_or("local"))?;
         if host.is_none() {
-            return self.imports.start(project_id, PathBuf::from(root), parent, sources, language.to_string(), self.emit.clone());
+            let others = self.local_projects(&project_id);
+            return self.imports.start(project_id, PathBuf::from(root), parent, sources, others, self.dirty.clone(), language.to_string(), self.emit.clone());
         }
         let dirty = *self.dirty.lock().expect("dirty");
         let aliases = host.as_ref().map(|item| self.upload_aliases(&project_id, item)).unwrap_or_default();
         self.uploads.start(self.paths.data.clone(), host, project_id, root, parent, sources, aliases, dirty, language.to_string(), self.emit.clone())
+    }
+
+    /// Try what failed in a download again. The project has to be on the
+    /// host and at the path it was when the download began.
+    fn download_retry(&self, id: &str, language: &str) -> Result<Value, String> {
+        let project = self.project(&self.downloads.project_id(id), language)?;
+        let host = self.optional_host(project["host"].as_str().unwrap_or("local"))?.ok_or_else(|| translate(language, "项目环境已更改", &[] as &[String]))?;
+        let root = project["path"].as_str().unwrap_or("").to_string();
+        let identity = format!("{}|{}", project["host"].as_str().unwrap_or("local"), root);
+        let id = self.downloads.retry(id, host, &identity, language, self.emit.clone())?;
+        Ok(json!(id))
     }
 
     fn transfer_retry(&self, id: &str, language: &str) -> Result<Value, String> {
@@ -1223,7 +1301,7 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
     fn transfer_pick(&self, args: &[Value], language: &str) -> Result<Value, String> {
         let kind = str_arg(args, 2);
         if kind != "files" && kind != "directory" { return Err(translate(language, "导入参数无效", &[] as &[String])) }
-        let paths = menu::choose_open_paths(kind);
+        let paths = menu::choose_open_paths(kind, language);
         if paths.is_empty() { return Ok(Value::Null) }
         let project = str_arg(args, 0);
         let parent = str_arg(args, 1);
@@ -1232,25 +1310,22 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
     }
 
     fn transfer_download(&self, args: &[Value], language: &str) -> Result<Value, String> {
-        let Some((host, root)) = self.remote_place(str_arg(args, 0), language)? else { return Err(translate(language, "请选择远程对象", &[] as &[String])) };
-        let relative = files::clean_relative(str_arg(args, 1), language)?;
+        let project_id = str_arg(args, 0);
+        let Some(relative) = args.get(1).and_then(Value::as_str) else { return Err(translate(language, "下载参数无效", &[] as &[String])) };
+        let Some(directory) = args.get(2).map(Value::as_bool).unwrap_or(Some(false)) else { return Err(translate(language, "下载参数无效", &[] as &[String])) };
+        let Some((host, root)) = self.remote_place(project_id, language)? else { return Err(translate(language, "请选择远程对象", &[] as &[String])) };
+        let relative = files::clean_relative(relative, language)?;
         if relative.is_empty() { return Err(translate(language, "请选择远程对象", &[] as &[String])) }
-        let directory = bool_arg(args, 2).map_err(|_| translate(language, "下载参数无效", &[] as &[String]))?;
-        let name = relative.rsplit('/').next().unwrap_or(&relative);
-        let Some(chosen) = menu::choose_save_path(language, "download")? else { return Ok(Value::Null) };
+        let identity = format!("{}|{}", self.project(project_id, language)?["host"].as_str().unwrap_or("local"), root);
+        // A directory is put into a directory that is chosen; a file is
+        // saved under a name, and one that is there already is replaced only
+        // once the save dialog has confirmed it.
+        let chosen = if directory { menu::choose_open_path("download", language) } else { menu::choose_save_path(language, "download", relative.rsplit('/').next().unwrap_or(""))?.map(|path| json!(path)).unwrap_or(Value::Null) };
+        let Some(chosen) = chosen.as_str() else { return Ok(Value::Null) };
         let destination = PathBuf::from(chosen);
         if destination.as_os_str().is_empty() { return Ok(Value::Null) }
-        if destination.exists() { return Err(translate(language, "目标已存在，请选择新的文件名或目录", &[] as &[String])) }
-        let remote = format!("{root}/{}", relative);
-        let script = if directory {
-            format!("tar -C {} -cf - {}", ssh::bash_quote(&remote.rsplit_once('/').map(|(parent, _)| parent).unwrap_or(&root)), ssh::bash_quote(name))
-        } else {
-            format!("cat -- {}", ssh::bash_quote(&remote))
-        };
-        let bytes = ssh::run(&self.paths.data, &host, &script, None, language).map_err(|_| translate(language, "下载失败", &[] as &[String]))?;
-        if let Some(parent) = destination.parent() { std::fs::create_dir_all(parent).map_err(|error| error.to_string())?; }
-        std::fs::write(&destination, bytes.as_bytes()).map_err(|_| translate(language, "下载失败", &[] as &[String]))?;
-        Ok(json!(destination.display().to_string()))
+        let id = self.downloads.start(project_id, &identity, host, self.paths.data.clone(), &root, &relative, &destination, directory, language, self.emit.clone())?;
+        Ok(json!(id))
     }
 
     fn open_html(&self, project_id: &str, relative: &str, language: &str) -> Result<Value, String> {

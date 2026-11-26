@@ -60,8 +60,17 @@ const server = new ssh2.Server({ hostKeys: [ed25519HostKey()] }, (client) => {
     child.stdout.on('data', (chunk) => { if (!stream.destroyed) stream.write(chunk) })
     child.stderr.on('data', (chunk) => { if (!stream.destroyed) stream.stderr.write(chunk) })
     const scriptChunks = [], scriptInput = !linux && decoded.includes('ScriptBlock')
+    // A Windows host receives the script on the channel's input, with the
+    // staged files written into it, so the upload is in flight while that
+    // input is still arriving: pausing it after the first megabyte stops a
+    // real binary upload part way.
+    let arrived = 0
     stream.on('data', (chunk) => {
-      if (scriptInput) { scriptChunks.push(chunk); return }
+      if (scriptInput) {
+        scriptChunks.push(chunk); arrived += chunk.length
+        if (pauseNext && arrived > 1024 * 1024) { pauseNext = false; paused = true; stream.pause(); release = () => { paused = false; stream.resume() } }
+        return
+      }
       child.stdin.write(chunk)
       if (pauseNext && decoded.includes('传输未确认') && decoded.includes('big.bin')) { pauseNext = false; paused = true; stream.pause(); release = () => { paused = false; stream.resume() } }
     })
@@ -76,7 +85,9 @@ const server = new ssh2.Server({ hostKeys: [ed25519HostKey()] }, (client) => {
   })))
 })
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
-const env = { ...process.env, AWB_USER_DATA: data }; delete env.ELECTRON_RUN_AS_NODE
+const saveLog = path.join(data, 'save-dialog.json')
+const confirmed = path.join(data, 'confirmed-download.txt')
+const env = { ...process.env, AWB_USER_DATA: data, AWB_SAVE_PATH: confirmed, AWB_SAVE_LOG: saveLog }; delete env.ELECTRON_RUN_AS_NODE
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: { layout: 'balanced', restore: false, confirmKill: false }, projects: [] }))
 const app = await launchWorkbench({ args: ['.'], env })
 try {
@@ -99,6 +110,19 @@ try {
   const file = path.join(sources, 'same.txt'); fs.writeFileSync(file, 'new file')
   await done(await start([file])); assert.equal(remoteText('same.txt'), 'new file')
   assert.equal(fs.readFileSync(file, 'utf8'), 'new file')
+  // The save dialog confirms the replacement; the file is then read through the
+  // real SSH pipeline and written over what was there. `AWB_SAVE_LOG` receives
+  // what the dialog was asked for, and `AWB_SAVE_PATH` is its confirmed answer.
+  const downloaded = path.join(data, 'confirmed-download.txt')
+  const downloadLog = path.join(data, 'save-dialog.json')
+  fs.writeFileSync(downloaded, 'old local content')
+  const id0 = await page.evaluate(() => window.awb.transferDownload('p', 'same.txt', false))
+  await done(id0)
+  const asked = JSON.parse(fs.readFileSync(downloadLog, 'utf8'))
+  assert.equal(asked.showOverwriteConfirmation, true, 'Download must request native overwrite confirmation')
+  assert.equal(asked.title, '下载文件'); assert.equal(asked.defaultPath, 'same.txt')
+  assert.equal(fs.readFileSync(downloaded, 'utf8'), 'new file')
+  console.log('PASS native save-dialog confirmed download replaces existing local bytes through the real SSH pipeline')
   await done(await start([source]))
   assert.equal(remoteExists('same folder/old-only.txt'), false)
   assert.equal(remoteText('same folder/note.txt'), 'new note 中文')

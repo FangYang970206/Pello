@@ -17,7 +17,7 @@ import { codeFont, uiFont } from '../shared/fonts'
 import { themeVariables, workbenchTheme } from '../shared/themes'
 import { AUTO_SAVE_DELAY, documentKey, editableText, fileText, isDirty, recordChange, undoDocument, type DocumentDraft } from './documents'
 import type { TransferSnapshot } from '../shared/types'
-import { UPLOAD_SUCCESS_DURATION, uploadSucceeded } from './UploadStatus'
+import { TRANSFER_SUCCESS_DURATION, transferSucceeded } from './UploadStatus'
 
 type Modal =
   | { type: 'project' }
@@ -136,10 +136,10 @@ export function App() {
     const timers = uploadDismissTimers.current
     const unsubscribe = window.awb.onTransfer((snapshot) => {
       if (snapshot.state === 'completed' || snapshot.state === 'cancelled') setGitTick((tick) => tick + 1)
-      if (snapshot.direction === 'upload' && snapshot.state === 'cancelled' && !snapshot.warnings?.length && !snapshot.items.some((item) => hasMessageFragment(item.error, '保留于'))) { dismissTransfer(snapshot.id); return }
+      if (snapshot.state === 'cancelled' && !snapshot.warnings?.length && !snapshot.items.some((item) => hasMessageFragment(item.error, '保留于'))) { dismissTransfer(snapshot.id); return }
       setTransferStates((current) => ({ ...current, [snapshot.id]: snapshot }))
-      if (uploadSucceeded(snapshot)) {
-        if (!timers.has(snapshot.id)) timers.set(snapshot.id, setTimeout(() => dismissTransfer(snapshot.id), UPLOAD_SUCCESS_DURATION))
+      if (transferSucceeded(snapshot)) {
+        if (!timers.has(snapshot.id)) timers.set(snapshot.id, setTimeout(() => dismissTransfer(snapshot.id), TRANSFER_SUCCESS_DURATION))
       } else {
         clearTimeout(timers.get(snapshot.id)); timers.delete(snapshot.id)
       }

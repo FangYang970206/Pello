@@ -42,13 +42,9 @@ try {
   const source = path.join(imported, 'page.html')
   fs.writeFileSync(source, fs.readFileSync(file))
   await page.evaluate((source) => window.awb.transferDrop('p', '', [source]), source)
-  if (app.shell === 'tauri') {
-    await page.locator('.upload-status').getByText('上传成功', { exact: true }).waitFor()
-  } else {
-    const task = page.locator('.transfer-task').last()
-    await task.getByRole('button', { name: '覆盖冲突文件', exact: true }).click()
-    await task.getByText('导入结束', { exact: true }).waitFor()
-  }
+  const task = page.locator('.upload-status').last()
+  await task.getByRole('button', { name: '覆盖冲突文件', exact: true }).click()
+  await task.getByText('导入成功', { exact: true }).waitFor()
   await page.waitForFunction((old) => { const frame = document.querySelector('iframe'); return frame && frame.getAttribute('src') !== old }, oldPreview)
   await page.frameLocator('iframe').getByRole('heading', { name: 'Draft 19', exact: true }).waitFor()
   assert.equal(fs.readFileSync(file, 'utf8'), '<h1>Draft 19</h1>')

@@ -26,6 +26,10 @@ struct Job {
     parent: Mutex<String>,
     aliases: Vec<Value>,
     block: Mutex<Option<ReplacementBlock>>,
+    /// Set once the thread that runs the upload has nothing more to do,
+    /// which is what closing the workbench waits for.
+    done: Mutex<bool>,
+    done_cv: Condvar,
 }
 
 struct ReplacementBlock {
@@ -73,10 +77,16 @@ impl Service {
             parent: Mutex::new(parent.clone()),
             aliases: aliases.clone(),
             block: Mutex::new(None),
+            done: Mutex::new(false),
+            done_cv: Condvar::new(),
         });
         self.jobs.lock().expect("uploads").insert(id.clone(), job.clone());
         let jobs = self.jobs.lock().expect("uploads").get(&id).cloned().unwrap();
-        thread::spawn(move || run_job(jobs, data, host, project_id, root, parent, sources, aliases, dirty, language, emit));
+        thread::spawn(move || {
+            run_job(jobs.clone(), data, host, project_id, root, parent, sources, aliases, dirty, language, emit);
+            *jobs.done.lock().expect("done") = true;
+            jobs.done_cv.notify_all();
+        });
         Ok(json!(id))
     }
 
@@ -111,6 +121,45 @@ impl Service {
 
     pub fn write_blocked(&self, project_id: &str, rel: &str) -> bool {
         self.jobs.lock().expect("uploads").values().any(|job| replacement_blocks(job, project_id, rel))
+    }
+
+    /// The window is closing: the uploads that are not publishing are asked
+    /// to stop, and each is waited for, for at most as long as `limit`.
+    /// Whether any was still running when the time was up.
+    pub fn shutdown(&self, limit: Duration) -> bool {
+        let jobs: Vec<Arc<Job>> = self.jobs.lock().expect("uploads").values().filter(|job| {
+            !matches!(job.snapshot.lock().expect("snapshot")["state"].as_str(), Some("completed" | "cancelled"))
+        }).cloned().collect();
+        for job in &jobs {
+            // A publish that has begun replaces the old files; it is let to finish.
+            if !job.publishing.load(Ordering::SeqCst) {
+                job.cancel.store(true, Ordering::SeqCst);
+                *job.decision.lock().expect("decision") = Some(false);
+                job.decision_cv.notify_all();
+            }
+        }
+        let deadline = std::time::Instant::now() + limit;
+        let mut waiting = false;
+        for job in &jobs {
+            let mut done = job.done.lock().expect("done");
+            while !*done {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() { waiting = true; break }
+                let (next, _) = job.done_cv.wait_timeout(done, left).expect("done");
+                done = next;
+            }
+        }
+        waiting
+    }
+
+    /// A tree entry is about to be moved: it is refused while what the job
+    /// is replacing is it, lies in it, or lies in the entry when that is a
+    /// folder.
+    pub fn move_blocked(&self, project_id: &str, rel: &str, directory: bool) -> bool {
+        self.jobs.lock().expect("uploads").values().any(|job| {
+            let guard = job.block.lock().expect("block");
+            guard.as_ref().is_some_and(|block| in_the_way(block, project_id, rel, directory))
+        })
     }
 
     pub fn project_id(&self, id: &str) -> Option<String> {
@@ -271,6 +320,20 @@ fn replacement_blocks(job: &Job, project_id: &str, rel: &str) -> bool {
         let path = target["path"].as_str().unwrap_or("");
         let (path, rel) = if block.case_insensitive { (path.to_lowercase(), rel.to_lowercase()) } else { (path.to_string(), rel.to_string()) };
         rel == path || (block.directory && (path.is_empty() || rel.starts_with(&format!("{path}/"))))
+    })
+}
+
+
+/// Whether a tree entry is in the way of what the job is replacing, as the
+/// replacement guard of Electron's tree:move decides it: the entry is what is
+/// being replaced, lies in a replaced folder, or is a folder that holds what
+/// is being replaced.
+fn in_the_way(block: &ReplacementBlock, project_id: &str, rel: &str, directory: bool) -> bool {
+    block.targets.iter().any(|target| {
+        if target["projectId"].as_str() != Some(project_id) { return false }
+        let path = target["path"].as_str().unwrap_or("");
+        let (path, rel) = if block.case_insensitive { (path.to_lowercase(), rel.to_lowercase()) } else { (path.to_string(), rel.to_string()) };
+        rel == path || (block.directory && (path.is_empty() || rel.starts_with(&format!("{path}/")))) || (directory && !rel.is_empty() && path.starts_with(&format!("{rel}/")))
     })
 }
 
@@ -723,14 +786,13 @@ fn publish_linux(data: &Path, host: &Value, root: &str, parent: &str, staged: &V
 }
 
 fn run_helper(data: &Path, host: Option<&Value>, op: &str, script: &str, payload: &str, language: &str) -> Result<String, String> {
-    if host.and_then(|host| host["platform"].as_str()) == Some("windows") {
-        let command = windows_upload_script(op);
-        return ssh::run(data, host.expect("windows host"), &command, Some(payload.as_bytes()), language);
+    if let Some(host) = host.filter(|host| host["platform"].as_str() == Some("windows")) {
+        return ssh::run_loaded(data, host, &windows_upload_script(op, payload), language);
     }
     run_python(data, host, script, payload, language)
 }
 
-fn windows_upload_script(op: &str) -> String {
+fn windows_upload_library(op: &str) -> String {
     format!(r#"$ErrorActionPreference='Stop'
 function Get-AwbEntryVersion([string]$name) {{
   if(-not (Test-Path -LiteralPath $name)) {{ return 'absent' }}
@@ -769,7 +831,6 @@ function Write-AwbNode($dest, $node) {{
   }}
 }}
 # AWB_UPLOAD_OP {op}
-$req = [Console]::In.ReadToEnd() | ConvertFrom-Json
 $root = [IO.Path]::GetFullPath([string]$req.root)
 $parent = if([string]::IsNullOrEmpty([string]$req.parent)) {{ $root }} else {{ Join-Path $root (([string]$req.parent) -replace '/','\') }}
 if($parent -ne $root -and -not $parent.StartsWith($root + '\',[StringComparison]::OrdinalIgnoreCase)) {{ throw 'cannot replace the project root' }}
@@ -811,7 +872,7 @@ if('{op}' -eq 'publish') {{
       Remove-AwbStage $stage
       throw 'target changed and the original was kept'
     }}
-    $backup=Join-Path $parent (([string]$item.stage) -replace 'tree-','backup-',1)
+    $backup=Join-Path $parent ([string]$item.stage).Replace('tree-','backup-')
     $moved=$false
     if([string]$item.version -ne 'absent') {{ Move-AwbEntry $dest $backup; $moved=$true }}
     Move-AwbEntry $stage $dest
@@ -822,6 +883,16 @@ if('{op}' -eq 'publish') {{
   exit 0
 }}
 "#)
+}
+
+/// The Windows upload script for one operation, with the request it acts on
+/// written into it. The script reaches the host on its input, which it must
+/// have to itself: the command line is too short to carry it. The request is
+/// set where the script first reads it: every operation ends the script, so
+/// nothing after them is reached.
+fn windows_upload_script(op: &str, payload: &str) -> String {
+    let quoted = payload.replace('\'', "''");
+    windows_upload_library(op).replacen(&format!("# AWB_UPLOAD_OP {op}"), &format!("# AWB_UPLOAD_OP {op}\n$req = '{quoted}' | ConvertFrom-Json"), 1)
 }
 
 fn run_python(data: &Path, host: Option<&Value>, script: &str, payload: &str, language: &str) -> Result<String, String> {

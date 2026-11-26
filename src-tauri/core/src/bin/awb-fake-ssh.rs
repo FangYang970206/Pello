@@ -30,30 +30,38 @@ fn main() {
     }
 
     if let Some(script) = pello_core::ssh::decode_powershell_command(&last) {
-        // A Windows remote hands the words to the named program as they are.
-        // Re-quoting the decoded script on a command line would lose its quotes.
-        #[cfg(windows)]
-        {
-            let words: Vec<&str> = last.split_whitespace().collect();
-            if script.contains("AWB_UPLOAD_OP ") {
+        if script.contains("ScriptBlock") {
+            // The reader on the command line runs the script that follows on
+            // the input, as a Windows host does. Running it here is what
+            // shows the script works where it is meant to.
+            #[cfg(windows)]
+            {
+                // The script is read here to be written on to PowerShell, and
+                // its functions are kept in the call log without the request
+                // that follows them, which carries the file's bytes.
+                let mut body = String::new();
+                use std::io::Read;
+                let _ = std::io::stdin().read_to_string(&mut body);
+                let library = body.split("\n$req = ").next().unwrap_or("").to_string();
+                let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&log).expect("open the call log");
+                file.write_all(format!("INPUT\u{1e}{}\n", library.replace('\n', "\u{1f}")).as_bytes()).expect("record the script");
+                let words: Vec<&str> = last.split_whitespace().collect();
                 let mut remote = command(words[0]);
                 remote.args(&words[1..]);
-                exit(run(&mut remote));
+                remote.stdin(std::process::Stdio::piped());
+                let mut child = remote.spawn().expect("start PowerShell");
+                if let Some(mut stdin) = child.stdin.take() { let _ = stdin.write_all(body.as_bytes()); }
+                let output = child.wait_with_output().expect("PowerShell ends");
+                use std::io::Write;
+                let _ = std::io::stdout().write_all(&output.stdout);
+                let _ = std::io::stderr().write_all(&output.stderr);
+                exit(output.status.code().unwrap_or(255));
             }
-            // The other scripts name paths of an imaginary remote and are
-            // judged by their text.
-            exit(0);
         }
-        #[cfg(unix)]
-        {
-            // Upload scripts name a helper that does the file work.
-            let op = script.split("AWB_UPLOAD_OP ").nth(1).and_then(|rest| rest.split_whitespace().next());
-            if let Some(op) = op {
-                let helper = std::env::var_os("AWB_UPLOAD_HELPER").expect("AWB_UPLOAD_HELPER");
-                exit(run(&mut command("python3").arg(helper).arg(op)));
-            }
-            exit(0);
-        }
+        // The other scripts name paths of an imaginary remote and are
+        // judged by their text.
+        #[allow(unreachable_code)]
+        exit(0);
     }
 
     if last.contains("uname -s") {

@@ -96,19 +96,55 @@ pub fn file_menu(language: &str, options: &Value) -> Value {
     ])
 }
 
-pub fn save_dialog(language: &str, kind: &str) -> Value {
-    let (title, default_path, filter) = match kind {
-        "download" => (translate(language, "下载文件（请选择新文件名）", &[] as &[String]), "download".to_string(), translate(language, "所有文件", &[] as &[String])),
-        "save-as" => (translate(language, "另存为（请选择新文件名）", &[] as &[String]), "file".to_string(), translate(language, "所有文件", &[] as &[String])),
-        _ => (translate(language, "导出完整终端记录", &[] as &[String]), "terminal-history.ansi".to_string(), translate(language, "ANSI 终端记录", &[] as &[String])),
+/// What a save dialog asks for, as the Electron build's `showSaveDialog` was
+/// called: a title, the name the file is offered under, its filter, and
+/// whether the dialog confirms before replacing a file that is there already.
+/// A download does: that confirmation is what lets it replace the file.
+///
+/// The system's own save dialog always asks before replacing, so the answer
+/// is the same for the kinds that do not ask; the copy that refuses a name
+/// that is taken still refuses it after the dialog.
+pub fn save_dialog(language: &str, kind: &str, name: &str) -> Value {
+    let (title, default_path, filter, extensions, replace) = match kind {
+        "download" => (translate(language, "下载文件", &[] as &[String]), name.to_string(), translate(language, "所有文件", &[] as &[String]), vec!["*"], true),
+        "save-as" => (translate(language, "另存为（请选择新文件名）", &[] as &[String]), name.to_string(), translate(language, "所有文件", &[] as &[String]), vec!["*"], false),
+        _ => (String::new(), if name.is_empty() { "terminal-history.ansi".to_string() } else { name.to_string() }, translate(language, "ANSI 终端记录", &[] as &[String]), vec!["ansi"], false),
     };
-    json!({ "title": title, "defaultPath": default_path, "filters": [{ "name": filter, "extensions": ["ansi"] }] })
+    json!({ "title": title, "defaultPath": default_path, "filters": [{ "name": filter, "extensions": extensions }], "showOverwriteConfirmation": replace, "createDirectory": kind != "history" })
 }
 
-/// Ask for a save path. `AWB_SAVE_PATH` supplies the choice in tests.
-/// An empty value cancels. Zenity is used when it is installed.
-pub fn choose_save_path(language: &str, kind: &str) -> Result<Option<String>, String> {
-    let spec = save_dialog(language, kind);
+/// What an open dialog asks for, by what is chosen: resource kinds `folder`,
+/// `zip` and `config`, the import sources `files` and `directory`, and the
+/// `download` place, which alone offers to create the directory. Files are
+/// chosen one at a time unless said otherwise.
+pub fn open_dialog(language: &str, kind: &str) -> Value {
+    let (select, filters, title) = match kind {
+        "folder" => ("directory", Vec::new(), String::new()),
+        "zip" => ("file", vec![json!({ "name": translate(language, "ZIP 压缩包", &[] as &[String]), "extensions": ["zip"] })], String::new()),
+        "files" => ("many", Vec::new(), translate(language, "选择导入来源", &[] as &[String])),
+        "directory" => ("directory", Vec::new(), translate(language, "选择导入来源", &[] as &[String])),
+        "download" => ("directory", Vec::new(), translate(language, "选择下载位置", &[] as &[String])),
+        _ => ("file", vec![json!({ "name": translate(language, "Agent 配置", &[] as &[String]), "extensions": ["json", "jsonc", "toml", "yaml", "yml"] })], String::new()),
+    };
+    json!({ "title": title, "select": select, "filters": filters, "createDirectory": kind == "download" })
+}
+
+fn filter_list(spec: &Value) -> Vec<(String, Vec<String>)> {
+    spec["filters"].as_array().map(|filters| filters.iter().map(|filter| (filter["name"].as_str().unwrap_or("").to_string(), filter["extensions"].as_array().map(|extensions| extensions.iter().filter_map(|extension| extension.as_str().map(str::to_string)).collect()).unwrap_or_default())).collect()).unwrap_or_default()
+}
+
+fn rfd_dialog(spec: &Value) -> rfd::FileDialog {
+    let mut dialog = rfd::FileDialog::new().set_title(spec["title"].as_str().unwrap_or("")).set_can_create_directories(spec["createDirectory"].as_bool().unwrap_or(false));
+    for (name, extensions) in filter_list(spec) {
+        if extensions != ["*"] { dialog = dialog.add_filter(name, &extensions); }
+    }
+    dialog
+}
+
+/// Ask for a save path. `AWB_SAVE_PATH` supplies the choice in tests; an
+/// empty value cancels. `AWB_SAVE_LOG` receives what was asked for.
+pub fn choose_save_path(language: &str, kind: &str, name: &str) -> Result<Option<String>, String> {
+    let spec = save_dialog(language, kind, name);
     if let Ok(log) = std::env::var("AWB_SAVE_LOG") {
         let _ = fs::write(log, spec.to_string());
     }
@@ -116,18 +152,14 @@ pub fn choose_save_path(language: &str, kind: &str) -> Result<Option<String>, St
         if path.is_empty() { return Ok(None); }
         return Ok(Some(path));
     }
-    let default_path = spec["defaultPath"].as_str().unwrap_or("terminal-history.ansi");
-    let output = Command::new("zenity").args(["--file-selection", "--save", "--confirm-overwrite", &format!("--filename={default_path}"), &format!("--title={}", spec["title"].as_str().unwrap_or(""))]).output();
-    match output {
-        Ok(output) if output.status.success() => {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if path.is_empty() { Ok(None) } else { Ok(Some(path)) }
-        }
-        _ => Err(translate(language, "保存对话框不可用", &[] as &[String])),
-    }
+    // The system's save dialog asks itself before replacing a file.
+    Ok(rfd_dialog(&spec).set_file_name(spec["defaultPath"].as_str().unwrap_or("")).save_file().map(|path| path.display().to_string()))
 }
 
-pub fn choose_open_paths(kind: &str) -> Vec<String> {
+/// Ask for what to open: files, many files or a directory. `AWB_PICK_PATHS`
+/// supplies the choice in tests, one path a line.
+pub fn choose_open_paths(kind: &str, language: &str) -> Vec<String> {
+    let spec = open_dialog(language, kind);
     if let Ok(raw) = std::env::var("AWB_PICK_PATHS") {
         return raw.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect();
     }
@@ -135,20 +167,17 @@ pub fn choose_open_paths(kind: &str) -> Vec<String> {
         let raw = fs::read_to_string(file).unwrap_or_default();
         return raw.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect();
     }
-    let mut command = Command::new("zenity");
-    command.arg("--file-selection");
-    if kind == "directory" || kind == "folder" { command.arg("--directory"); }
-    match command.output() {
-        Ok(output) if output.status.success() => {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if path.is_empty() { Vec::new() } else { vec![path] }
-        }
-        _ => Vec::new(),
-    }
+    let dialog = rfd_dialog(&spec);
+    let picked = match spec["select"].as_str().unwrap_or("file") {
+        "directory" => dialog.pick_folder().into_iter().collect(),
+        "many" => dialog.pick_files().unwrap_or_default(),
+        _ => dialog.pick_file().into_iter().collect(),
+    };
+    picked.into_iter().map(|path| path.display().to_string()).collect()
 }
 
-pub fn choose_open_path(kind: &str) -> Value {
-    choose_open_paths(kind).into_iter().next().map(|path| json!(path)).unwrap_or(Value::Null)
+pub fn choose_open_path(kind: &str, language: &str) -> Value {
+    choose_open_paths(kind, language).into_iter().next().map(|path| json!(path)).unwrap_or(Value::Null)
 }
 
 pub fn open_external(target: &str) {

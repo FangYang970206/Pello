@@ -75,6 +75,29 @@ fn encode_utf16_le_base64(text: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
+/// How a long script reaches a Windows host: the command line carries only
+/// this reader, and the script itself travels on the channel's input. A
+/// command line has a length limit, which the upload and download scripts
+/// are past once they are encoded; the input has none.
+pub const POWERSHELL_LOADER: &str = "$ErrorActionPreference='Stop'; [Console]::InputEncoding=[Text.UTF8Encoding]::new($false); [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); try { & ([ScriptBlock]::Create([Console]::In.ReadToEnd())) } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }";
+
+/// The command line that reads a script from the input, in the terms the
+/// host's shell uses, and the script to write to it. The script has the
+/// input to itself: whatever it needs to know is written into it.
+pub fn loaded_command(platform: &str, script: &str) -> (String, Vec<u8>) {
+    if platform != "windows" {
+        return (remote_command(platform, &[String::from("bash"), String::from("-lc"), script.to_string()]), Vec::new());
+    }
+    (format!("powershell.exe -NoProfile -EncodedCommand {}", encode_utf16_le_base64(POWERSHELL_LOADER)), script.as_bytes().to_vec())
+}
+
+/// Run a script that is too long for a command line. On a Windows host the
+/// script is read from the channel's input; elsewhere it is a shell script.
+pub fn run_loaded(data: &Path, host: &Value, script: &str, language: &str) -> Result<String, String> {
+    let (command, input) = loaded_command(host["platform"].as_str().unwrap_or("linux"), script);
+    exec_command(data, host, &command, Some(&input), language)
+}
+
 pub fn decode_powershell_command(command: &str) -> Option<String> {
     let encoded = command.split_whitespace().skip_while(|part| *part != "-EncodedCommand").nth(1)?;
     let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).ok()?;
@@ -581,6 +604,110 @@ pub fn stream_file(data: &Path, host: &Value, command: &str, source: &Path, tota
     key_stream(host, command, source, total, progress, cancel, language)
 }
 
+/// Stream what a remote command writes to a local file, as a download reads
+/// a file on the host. What the command wrote on its error output is said
+/// when it did not end well; a cancel ends the session first and says so.
+/// The cancel flag is shared: the read waits for the host, so it is another
+/// thread that ends the command once the flag is set.
+pub fn receive_file(data: &Path, host: &Value, command: &str, target: &mut std::fs::File, progress: &(dyn Fn(u64) + Send + Sync), cancel: &Arc<AtomicBool>, language: &str) -> Result<(), String> {
+    if host["auth"] == "password" {
+        let password = password_of(data, host).ok_or_else(|| translate(language, "请填写 SSH 登录密码", &[] as &[String]))?;
+        return runtime().block_on(password_receive(data, host, &password, command, target, progress, cancel, language));
+    }
+    key_receive(host, command, target, progress, cancel, language)
+}
+
+/// What to say about a remote command that did not end well: the last of
+/// what it wrote on its error output, or its exit code.
+fn remote_failure(stderr: &[u8], code: Option<i32>, language: &str) -> String {
+    let detail = String::from_utf8_lossy(stderr).trim().to_string();
+    if !detail.is_empty() { return detail.chars().rev().take(240).collect::<String>().chars().rev().collect(); }
+    match code {
+        Some(value) => translate(language, "远程命令退出码 {{0}}", &[value.to_string()]),
+        None => translate(language, "SSH 连接中断", &[] as &[String]),
+    }
+}
+
+type HeldChild = Arc<Mutex<Option<std::process::Child>>>;
+
+/// End the command and wait for it, wherever the reading stopped.
+fn end_command(child: &HeldChild) {
+    let ended = { let mut held = child.lock().expect("child"); held.take().map(|mut child| child.wait()) };
+    let _ = ended;
+}
+
+fn key_receive(host: &Value, command: &str, target: &mut std::fs::File, progress: &(dyn Fn(u64) + Send + Sync), cancel: &Arc<AtomicBool>, language: &str) -> Result<(), String> {
+    use std::io::Read;
+    let mut ssh = std::process::Command::new(ssh_program());
+    for arg in ssh_batch_args(host) { ssh.arg(arg); }
+    ssh.arg(command);
+    ssh.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let mut child = ssh.spawn().map_err(|error| error.to_string())?;
+    let mut stdout = child.stdout.take().ok_or_else(|| translate(language, "下载失败", &[] as &[String]))?;
+    let mut pipe = child.stderr.take().ok_or_else(|| translate(language, "下载失败", &[] as &[String]))?;
+    // The error output has a thread of its own: read on the same thread as
+    // the file, a pipe that has nothing to say yet would hold back the bytes
+    // that are ready.
+    let stderr: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let tail = Arc::clone(&stderr);
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 16 * 1024];
+        loop {
+            match pipe.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(size) => {
+                    let mut held = tail.lock().expect("download errors");
+                    held.extend_from_slice(&buffer[..size]);
+                    if held.len() > 16000 { let cut = held.len() - 16000; held.drain(..cut); }
+                }
+            }
+        }
+    });
+    // The child is kept here and ended on cancel: a read that waits for a
+    // host with nothing to say only returns once the child is ended.
+    let child: HeldChild = Arc::new(Mutex::new(Some(child)));
+    let to_end = Arc::clone(&child);
+    let watched = Arc::clone(cancel);
+    std::thread::spawn(move || {
+        loop {
+            let ended = { let mut held = to_end.lock().expect("child"); held.as_mut().map(|child| child.try_wait().ok().flatten().is_some()).unwrap_or(true) };
+            if ended { return }
+            if watched.load(Ordering::SeqCst) { break }
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        let mut held = to_end.lock().expect("child");
+        if let Some(child) = held.as_mut() { let _ = child.kill(); }
+    });
+    let mut buffer = [0u8; 64 * 1024];
+    let mut received = 0u64;
+    loop {
+        let read = match stdout.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(size) => size,
+            Err(_) if cancel.load(Ordering::SeqCst) => break,
+            Err(error) => { end_command(&child); return Err(error.to_string()) }
+        };
+        if let Err(error) = target.write_all(&buffer[..read]) {
+            end_command(&child);
+            return Err(error.to_string());
+        }
+        received += read as u64;
+        progress(received);
+    }
+    // The child is waited for here, whether it ended by itself or was ended
+    // on cancel; a child that was taken already was waited for there.
+    let status = match { let mut held = child.lock().expect("child"); held.take() } {
+        Some(mut child) => child.wait().map_err(|error| error.to_string())?,
+        None => return Err(translate(language, "传输已取消", &[] as &[String])),
+    };
+    if cancel.load(Ordering::SeqCst) { return Err(translate(language, "传输已取消", &[] as &[String])) }
+    if !status.success() {
+        let detail = stderr.lock().expect("download errors").clone();
+        return Err(remote_failure(&detail, status.code(), language));
+    }
+    Ok(())
+}
+
 fn open_upload_source(source: &Path, total: u64, language: &str) -> Result<(std::fs::File, Option<std::time::SystemTime>), String> {
     let meta = std::fs::symlink_metadata(source).map_err(|error| error.to_string())?;
     if meta.file_type().is_symlink() { return Err(translate(language, "不上传符号链接", &[] as &[String])) }
@@ -700,6 +827,65 @@ async fn password_stream(data: &Path, host: &Value, password: &str, command: &st
         None => Err(translate(language, "SSH 连接中断", &[] as &[String])),
         Some(code) => Err(translate(language, "远程命令退出码 {{0}}", &[code.to_string()])),
     }
+}
+
+/// The password session's counterpart of `key_receive`: the command's output
+/// is written to the file as it comes, and a cancel ends the session.
+async fn password_receive(data: &Path, host: &Value, password: &str, command: &str, target: &mut std::fs::File, progress: &(dyn Fn(u64) + Send + Sync), cancel: &Arc<AtomicBool>, language: &str) -> Result<(), String> {
+    let session = open_password(data, host, password, language).await?;
+    // The command has no input, and is told so at once: a command that waits
+    // for the end of an input that never comes never starts.
+    let mut channel = start_command(&session, command, &[], language).await?;
+    let ended = |session: client::Handle<KeyHandler>| async move {
+        let _ = tokio::time::timeout(Duration::from_secs(2), session.disconnect(Disconnect::ByApplication, "", "en")).await;
+    };
+    let mut stderr: Vec<u8> = Vec::new();
+    let mut code = None;
+    let mut received = 0u64;
+    // Why the reading ended before the command did, if it did.
+    let mut stopped: Option<String> = None;
+    let started_at = std::time::Instant::now();
+    loop {
+        if started_at.elapsed() > Duration::from_secs(3600) {
+            stopped = Some(translate(language, "远程命令执行超时", &[] as &[String]));
+            break;
+        }
+        let waiting = channel.wait();
+        tokio::pin!(waiting);
+        let message = tokio::select! {
+            biased;
+            message = &mut waiting => message,
+            // The channel is closed after the loop: it is borrowed here for
+            // as long as the wait is followed.
+            _ = until_cancel(cancel) => {
+                stopped = Some(translate(language, "传输已取消", &[] as &[String]));
+                break;
+            }
+        };
+        let Some(message) = message else { break };
+        match message {
+            ChannelMsg::Data { data } => {
+                if let Err(error) = target.write_all(&data) {
+                    stopped = Some(error.to_string());
+                    break;
+                }
+                received += data.len() as u64;
+                progress(received);
+            }
+            ChannelMsg::ExtendedData { data, ext: 1 } => {
+                stderr.extend_from_slice(&data);
+                if stderr.len() > 16000 { stderr.drain(..stderr.len() - 16000); }
+            }
+            ChannelMsg::ExitStatus { exit_status } => code = Some(exit_status as i32),
+            _ => {}
+        }
+    }
+    let _ = channel.close().await;
+    ended(session).await;
+    if let Some(stopped) = stopped { return Err(stopped) }
+    if cancel.load(Ordering::SeqCst) { return Err(translate(language, "传输已取消", &[] as &[String])) }
+    if code == Some(0) { return Ok(()) }
+    Err(remote_failure(&stderr, code, language))
 }
 
 /// A remote command whose output is read as it comes, one line at a time, as
@@ -1125,8 +1311,15 @@ impl server::Handler for FixtureClient {
         // 'python3 -u -c …'`. It is recognised by that program name, so that
         // the test does not depend on how the shell quotes the script.
         let search_holds = command.contains("python3 -u -c ") && serde_json::from_slice::<serde_json::Value>(&input).ok().and_then(|query| query["query"].as_str().map(|query| query == "hold")).unwrap_or(false);
+        // A download of the file `awb-hold.bin` is answered with the start of
+        // a file and then held open, so that a download can be stopped while
+        // it is being read, and the closing of the workbench can be seen to
+        // wait for it. The command is quoted twice over by the time it is
+        // sent, so it is known by the name being in it, not by where it ends.
+        let download_holds = command.contains("python3") && command.contains("awb-hold.bin");
         let held = match command.strip_prefix("awb-hold:") {
             Some(lines) => Some(lines.to_string()),
+            None if download_holds => Some("held".to_string()),
             None if search_holds => Some((0..40).map(|index| json!({ "file": { "path": format!("src/file{index}.txt"), "matches": [{ "line": index + 1, "column": 1, "text": "hold", "before": "", "after": "" }] } }).to_string()).collect::<Vec<String>>().join("|")),
             None => None,
         };

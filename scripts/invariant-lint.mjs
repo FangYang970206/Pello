@@ -194,9 +194,11 @@ export function checkInvariants(files) {
   const uploadFile = 'src/renderer/UploadStatus.tsx', upload = source(uploadFile)
   const uploadTags = nodes(upload, (node) => ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node))
   require(!nodes(upload, (node) => ts.isPropertyAccessExpression(node) && ['task.current', 'task.destination', 'task.overallBytes', 'task.overallTotal'].includes(node.getText())).length && !uploadTags.some((node) => node.tagName.getText() === 'progress') && hasString(upload, '上传中') && hasString(upload, '上传成功') && called(upload, 'transferCancel').length &&
-    nodes(upload, (node) => ts.isVariableDeclaration(node) && node.name.getText() === 'UPLOAD_SUCCESS_DURATION' && node.initializer?.getText() === '2000').length &&
-    called(app, 'setTimeout').some((call) => call.arguments[1]?.getText() === 'UPLOAD_SUCCESS_DURATION') && named(upload, 'uploadSucceeded')?.getText().includes('!task.warnings?.length') && called(named(upload, 'uploadSucceeded'), 'every').length,
+    nodes(upload, (node) => ts.isVariableDeclaration(node) && node.name.getText() === 'TRANSFER_SUCCESS_DURATION' && node.initializer?.getText() === '2000').length &&
+    called(app, 'setTimeout').some((call) => call.arguments[1]?.getText() === 'TRANSFER_SUCCESS_DURATION') && named(upload, 'transferSucceeded')?.getText().includes('!task.warnings?.length') && called(named(upload, 'transferSucceeded'), 'every').length,
   'AWB038', uploadFile, '上传只显示状态与取消，全部成功且无警告才在 2 秒后移除，不能恢复路径或进度明细')
+  require(uploadTags.some((node) => node.tagName.getText() === 'FileOperationDialog') && hasString(upload, '传输详情') && hasString(upload, 'transfer-error-details') && !hasString(upload, 'transfer-details') && hasString(upload, 'dialog'),
+    'AWB104', uploadFile, '传输错误详情使用居中模态弹窗与关闭、焦点恢复，不在右下角提示内展开')
   require(['review', 'windows-icon', 'shell-profile', 'terminal', 'terminal-shutdown', 'session-restore', 'ssh-password', 'remote-terminal', 'render', 'workspace', 'multi-repo', 'program-status', 'sidebar', 'editor', 'design', 'appearance', 'resources', 'resource-import', 'resource-import-ui', 'opencode-mcp', 'host-management', 'directory-browser', 'autosave', 'resources-ui', 'resource-dialog', 'html-preview'].every((name) => scripts.check?.includes(`scripts/${name}-check.mjs`)) && scripts.check?.includes('npm run check:shells') && scripts['check:shells']?.includes('scripts/local-shells-check.mjs'),
     'AWB018', 'package.json', '保留已有行为回归入口，不能删检查来绕过失败')
   require(files.get('AGENTS.md')?.includes('npm run lint') && files.get('AGENTS.md')?.includes('npm run check'), 'AWB019', 'AGENTS.md', '项目规则必须注明静态与行为验证入口')

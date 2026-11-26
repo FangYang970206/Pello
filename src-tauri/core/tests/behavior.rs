@@ -822,6 +822,13 @@ fn parse_ssh_calls(log: &str) -> Vec<SshCall> {
     }).collect()
 }
 
+/// The scripts the stand-in read on the input of a call whose command line
+/// was only the reader: the long scripts, as a Windows host receives them.
+/// The request that follows the functions is not kept, as it carries a file.
+fn logged_input_scripts(log: &str) -> Vec<String> {
+    log.lines().filter_map(|line| line.strip_prefix("INPUT\u{1e}")).map(|script| script.replace('\u{1f}', "\n")).collect()
+}
+
 /// Install the stand-in `ssh` the workbench is pointed at, and return its
 /// path and the log it records every call in.
 fn install_ssh_shim(root: &std::path::Path) -> (PathBuf, PathBuf) {
@@ -872,9 +879,10 @@ if [[ "$last" == *"-EncodedCommand "* ]]; then
   encoded="${last##*-EncodedCommand }"
   encoded="${encoded%% *}"
   script=$(printf '%s' "$encoded" | base64 -d | iconv -f UTF-16LE -t UTF-8 || true)
-  if [[ "$script" == *"AWB_UPLOAD_OP"* ]]; then
-    op=$(printf '%s\n' "$script" | sed -n 's/.*AWB_UPLOAD_OP \([a-z]*\).*/\1/p' | head -1)
-    exec python3 "$(dirname "$0")/upload-op.py" "$op"
+  # The reader on the command line runs the script that follows on the input,
+  # which carries the upload operation and the request written into it.
+  if [[ "$script" == *"ScriptBlock"* ]]; then
+    exec python3 "$(dirname "$0")/upload-op.py" script
   fi
   exit 0
 fi
@@ -2693,7 +2701,7 @@ fn wired_channels_do_real_work() {
     let _open_log = var_guard("AWB_OPEN_LOG", open_log.to_str().unwrap());
     let _open_bin = var_guard("AWB_OPEN_BIN", "true");
     let _pick = var_guard("AWB_PICK_PATHS", source.to_str().unwrap());
-    let (bench, _) = workbench(&root);
+    let (bench, events) = workbench(&root);
     let local = bench.dispatch("db:get", &[]).unwrap()["db"]["hosts"][0].clone();
     bench.dispatch("db:hosts", &[json!([local, { "id": "remote", "name": "Remote", "addr": "127.0.0.1", "port": 22, "user": "wire", "auth": "key", "on": true, "platform": "linux" }])]).unwrap();
     bench.dispatch("db:projects", &[json!([
@@ -2703,17 +2711,20 @@ fn wired_channels_do_real_work() {
     bench.dispatch("db:custom", &[json!([{ "id": "mine", "name": "Mine", "command": "echo" }])]).unwrap();
     let picked = assert_implemented(bench.dispatch("transfer:pick", &[json!("p"), json!(""), json!("files")]));
     assert!(picked.as_str().is_some(), "{picked}");
-    // A Linux remote cannot be reached from a Windows host; the download must
-    // report the failure rather than claim a file.
-    #[cfg(windows)]
-    {
-        let failed = bench.dispatch("transfer:download", &[json!("r"), json!("payload.txt"), json!(false)]).unwrap_err();
-        assert!(!failed.is_empty(), "a download that cannot run must not succeed");
+    // A download is a task: the channel answers with its id, and the task
+    // ends with a result for the file. The Windows stand-in cannot run a
+    // Linux remote command, so there the result is a failure and no file is
+    // claimed; elsewhere the file is saved where the dialog said.
+    let download = assert_implemented(bench.dispatch("transfer:download", &[json!("r"), json!("payload.txt"), json!(false)]));
+    let download = wait_upload(&events, download.as_str().expect("a download answers with its task id"), "completed")["payload"].clone();
+    assert_eq!(download["items"][0]["source"], "payload.txt", "{download}");
+    if cfg!(windows) {
+        assert_eq!(download["items"][0]["status"], "failed", "{download}");
+        assert!(!save.exists(), "a download that could not run must not leave a file");
+    } else {
+        assert_eq!(download["items"][0]["status"], "done", "{download}");
+        assert_eq!(fs::read_to_string(&save).unwrap(), "remote-bytes");
     }
-    #[cfg(unix)]
-    let downloaded = assert_implemented(bench.dispatch("transfer:download", &[json!("r"), json!("payload.txt"), json!(false)]));
-    #[cfg(unix)]
-    assert_eq!(fs::read_to_string(downloaded.as_str().unwrap()).unwrap(), "remote-bytes");
     let opened = assert_implemented(bench.dispatch("file:open-html", &[json!("p"), json!("docs/page.html")]));
     assert!(opened.as_str().unwrap_or("").contains("page.html"), "{opened}");
     assert!(fs::read_to_string(&open_log).unwrap().contains("page.html"));
@@ -2817,7 +2828,12 @@ fn windows_remote_upload_publishes_with_powershell_and_keeps_the_old_directory()
     assert_eq!(done["payload"]["phase"], "cancelled");
     assert_eq!(fs::read_to_string(project.join("same folder/old-only.txt")).unwrap(), "keep-me");
     assert!(fs::read_dir(&project).unwrap().flatten().all(|entry| !entry.file_name().to_string_lossy().starts_with(".awb-upload-")));
-    let scripts: Vec<String> = parse_ssh_calls(&fs::read_to_string(&log).unwrap()).iter().filter_map(|call| call.args.last().and_then(|arg| pello_core::ssh::decode_powershell_command(arg))).collect();
+    // The script is too long for a command line: each call carries only the
+    // reader, and the script comes on the input, where it names the functions
+    // the upload is made of and no other program.
+    let command_lines: Vec<String> = parse_ssh_calls(&fs::read_to_string(&log).unwrap()).iter().map(|call| call.args.last().cloned().unwrap_or_default()).collect();
+    let scripts = logged_input_scripts(&fs::read_to_string(&log).unwrap());
+    assert!(command_lines.iter().all(|line| line.len() < 2000), "a command line must stay short: {}", command_lines.iter().map(String::len).max().unwrap_or(0));
     let joined = scripts.join("\n");
     assert!(joined.contains("Get-AwbEntryVersion") && joined.contains("Move-AwbEntry") && joined.contains("Remove-AwbStage"), "decoded={} log={}", scripts.len(), fs::read_to_string(&log).unwrap_or_default().chars().take(500).collect::<String>());
     assert!(!joined.contains("python3 -c"), "{joined}");
@@ -3648,4 +3664,467 @@ fn saves_made_from_many_threads_at_once_all_succeed_and_leave_a_whole_file() {
     let in_app = bench.dispatch("db:get", &[]).unwrap()["db"].clone();
     assert_eq!(on_disk["projects"][0]["branch"], in_app["projects"][0]["branch"]);
     assert_eq!(on_disk["settings"]["fontSize"], in_app["settings"]["fontSize"]);
+}
+
+/// A local transfer's questions, answered from another thread the way the
+/// page answers once it has drawn the question. Each conflict on show is
+/// answered once, with what `answer` says for it.
+struct TransferPage {
+    events: Arc<Mutex<Vec<serde_json::Value>>>,
+    seen: usize,
+    questions: Vec<serde_json::Value>,
+}
+
+impl TransferPage {
+    fn new(events: Arc<Mutex<Vec<serde_json::Value>>>) -> Self { Self { events, seen: 0, questions: Vec::new() } }
+
+    /// The next question that is on show and has not been answered, if
+    /// there is one.
+    fn next_question(&mut self) -> Option<serde_json::Value> {
+        let all = self.events.lock().unwrap();
+        let at = all.iter().enumerate().skip(self.seen).position(|(_, event)| event["channel"] == "transfer:update" && event["payload"]["state"] == "conflicts").map(|offset| offset + self.seen)?;
+        self.seen = at + 1;
+        Some(all[at]["payload"].clone())
+    }
+
+    /// Answers a question that is on show.
+    fn answer(&mut self, bench: &Workbench, question: &serde_json::Value, choice: &'static str, apply: bool) {
+        self.questions.push(question.clone());
+        let _ = bench.dispatch("transfer:decide", &[question["id"].clone(), json!(choice), json!(apply)]);
+    }
+}
+
+/// Electron `TransferManager` in `src/main/transfer.ts` checks the whole
+/// batch for names that exist already before it copies anything, shows one
+/// conflict at a time with the number waiting after it, and takes a choice
+/// for the conflicts of one kind when it is asked to. No file is copied
+/// while a conflict is on show.
+#[test]
+fn local_transfer_asks_about_every_name_before_copying_and_a_choice_can_cover_a_kind() {
+    let _lock = env_lock();
+    let root = temp_dir("local-preflight");
+    let (bench, events) = workbench(&root);
+    let bench = Arc::new(bench);
+    let source = root.join("来源");
+    let target = root.join("项目");
+    for directory in [source.join("folder").join("nested"), target.join("folder").join("nested")] { fs::create_dir_all(directory).unwrap(); }
+    for name in ["first.txt", "second.txt", "folder/nested/a.txt", "folder/nested/b.txt"] {
+        fs::write(source.join(name), format!("new {name}")).unwrap();
+        fs::write(target.join(name), format!("old {name}")).unwrap();
+    }
+    fs::write(source.join("fresh.txt"), "fresh").unwrap();
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": target.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+
+    let sources: Vec<serde_json::Value> = ["fresh.txt", "first.txt", "second.txt", "folder"].iter().map(|name| json!(source.join(name).display().to_string())).collect();
+    let id = bench.dispatch("transfer:drop", &[json!("p"), json!(""), json!(sources)]).unwrap();
+    let mut page = TransferPage::new(Arc::clone(&events));
+    // While a question is on show nothing has been copied yet.
+    let mut copied_while_asking = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let ended = loop {
+        while let Some(question) = page.next_question() {
+            // A question is on show: nothing may have been copied yet.
+            if target.join("fresh.txt").exists() { copied_while_asking = true; }
+            let item = &question["items"][0];
+            let name = item["destination"].as_str().unwrap_or("").rsplit(['\\', '/']).next().unwrap_or("");
+            let (choice, apply) = if name == "first.txt" { ("skip", false) }
+                else if name == "second.txt" { ("keep", false) }
+                else if item["mergeable"] == true { ("merge", false) }
+                else { ("overwrite", true) };
+            page.answer(&bench, &question, choice, apply);
+        }
+        let over = events.lock().unwrap().iter().rev().find(|event| event["channel"] == "transfer:update" && event["payload"]["id"] == id && matches!(event["payload"]["state"].as_str(), Some("completed" | "cancelled"))).map(|event| event["payload"].clone());
+        if let Some(ended) = over { break ended }
+        assert!(std::time::Instant::now() < deadline, "the transfer did not end: {:?}", *events.lock().unwrap());
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    // What main shows for these choices, in order: the name asked about
+    // and how many conflicts are waiting after it.
+    let asked: Vec<(String, serde_json::Value)> = page.questions.iter().map(|snapshot| (
+        snapshot["items"][0]["destination"].as_str().unwrap_or("").rsplit(['\\', '/']).next().unwrap_or("").to_string(), snapshot["pendingConflicts"].clone(),
+    )).collect();
+    assert_eq!(asked, [
+        ("first.txt".to_string(), json!(3)), ("second.txt".to_string(), json!(2)), ("folder".to_string(), json!(1)),
+        ("nested".to_string(), json!(1)), ("a.txt".to_string(), json!(2)),
+    ], "the conflicts are asked one at a time: {:?}", page.questions);
+    for (index, snapshot) in page.questions.iter().enumerate() {
+        assert_eq!(snapshot["items"].as_array().map(|items| items.len()), Some(1), "one conflict is on show at a time");
+        let _ = index;
+    }
+    assert!(page.questions.iter().any(|snapshot| snapshot["items"][0]["mergeable"] == true), "the folder is offered to be merged: {:?}", page.questions);
+    assert!(page.questions.iter().filter(|snapshot| snapshot["items"][0]["destination"].as_str().is_some_and(|name| name.ends_with("folder"))).all(|snapshot| snapshot["items"][0]["replaceable"] != true), "a folder is not offered to be overwritten: {:?}", page.questions);
+    assert_eq!(copied_while_asking, false, "nothing is copied while a conflict is on show");
+    assert_eq!(ended["state"], "completed");
+    // What was copied, in the order main tells it. A skipped name stays as
+    // a conflict; a name kept gets the next free one.
+    let told: Vec<(String, String)> = ended["items"].as_array().map(|items| items.iter().map(|item| (
+        item["destination"].as_str().unwrap_or("").rsplit(['\\', '/']).next().unwrap_or("").to_string(), item["status"].as_str().unwrap_or("").to_string(),
+    )).collect()).unwrap_or_default();
+    assert_eq!(told, [
+        ("fresh.txt".to_string(), "done".to_string()), ("first.txt".to_string(), "conflict".to_string()),
+        ("second (1).txt".to_string(), "done".to_string()), ("a.txt".to_string(), "done".to_string()),
+        ("b.txt".to_string(), "done".to_string()), ("nested".to_string(), "done".to_string()), ("folder".to_string(), "done".to_string()),
+    ], "each entry tells how its copy went: {ended}");
+    // The files, as main leaves them: the skipped one is as it was, the kept
+    // one is beside the one that was there, the merged folder has the new files.
+    assert_eq!(fs::read_to_string(target.join("first.txt")).unwrap(), "old first.txt");
+    assert_eq!(fs::read_to_string(target.join("second.txt")).unwrap(), "old second.txt");
+    assert_eq!(fs::read_to_string(target.join("second (1).txt")).unwrap(), "new second.txt");
+    assert_eq!(fs::read_to_string(target.join("fresh.txt")).unwrap(), "fresh");
+    for name in ["a.txt", "b.txt"] {
+        assert_eq!(fs::read_to_string(target.join("folder").join("nested").join(name)).unwrap(), format!("new folder/nested/{name}"));
+    }
+    // No temporary file of the copy is left behind.
+    let leftovers: Vec<String> = fs::read_dir(&target).unwrap().filter_map(|entry| entry.ok()).map(|entry| entry.file_name().to_string_lossy().into_owned()).filter(|name| name.ends_with(".tmp")).collect();
+    assert_eq!(leftovers, Vec::<String>::new());
+    let _ = fs::remove_dir_all(root);
+}
+
+/// Electron's replacement guard (+"src/main/index.ts"+) is asked by the
+/// local transfer too: while it waits for the page to let a file be
+/// replaced, a save of that file is refused, and it goes through again
+/// once the transfer is over.
+#[test]
+fn a_file_being_replaced_by_a_local_transfer_cannot_be_saved_meanwhile() {
+    let _lock = env_lock();
+    let root = temp_dir("local-guard");
+    let (bench, events) = workbench(&root);
+    let bench = Arc::new(bench);
+    let source = root.join("source");
+    let target = root.join("project");
+    fs::create_dir_all(&source).unwrap();
+    fs::create_dir_all(&target).unwrap();
+    fs::write(source.join("same.txt"), "new").unwrap();
+    fs::write(target.join("same.txt"), "old").unwrap();
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": target.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    // The page has a draft, so the replacement is not allowed until it says so.
+    bench.dispatch("files:dirty", &[json!(true)]).unwrap();
+    let id = bench.dispatch("transfer:drop", &[json!("p"), json!(""), json!([source.join("same.txt").display().to_string()])]).unwrap();
+    let mut page = TransferPage::new(Arc::clone(&events));
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let prepare = loop {
+        if let Some(found) = events.lock().unwrap().iter().find(|event| event["channel"] == "file:replacement" && event["payload"]["id"] == id && event["payload"]["phase"] == "prepare").map(|event| event["payload"].clone()) { break found }
+        while let Some(question) = page.next_question() { page.answer(&bench, &question, "overwrite", false); }
+        assert!(std::time::Instant::now() < deadline, "the replacement was never asked about: {:?}", *events.lock().unwrap());
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(prepare["path"], "same.txt");
+    // The transfer waits for the page: a save of the file is refused meanwhile.
+    let refused = bench.dispatch("git:write", &[json!("p"), json!("same.txt"), json!("saved"), serde_json::Value::Null]).unwrap_err();
+    assert_eq!(refused, "文件正在进行其他写入操作");
+    assert_eq!(fs::read_to_string(target.join("same.txt")).unwrap(), "old");
+    bench.dispatch("file:replacement-ready", &[id.clone(), json!(false)]).unwrap();
+    let ended = wait_upload(&events, id.as_str().unwrap(), "completed")["payload"].clone();
+    assert_eq!(ended["items"][0]["status"], "failed", "{ended}");
+    assert_eq!(fs::read_to_string(target.join("same.txt")).unwrap(), "old", "the page refused: nothing is replaced");
+    // The transfer is over, so the file can be saved again.
+    let version = bench.dispatch("git:read", &[json!("p"), json!("same.txt")]).unwrap()["version"].clone();
+    bench.dispatch("git:write", &[json!("p"), json!("same.txt"), json!("saved"), version]).unwrap();
+    assert_eq!(fs::read_to_string(target.join("same.txt")).unwrap(), "saved");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// Electron's tree:move refuses an entry that is being replaced, that lies
+/// in a replaced folder, or that is a folder holding what is replaced, while
+/// a local transfer waits for the page. An entry beside them can be moved.
+#[test]
+fn a_tree_entry_in_the_way_of_a_local_transfer_cannot_be_moved_meanwhile() {
+    let _lock = env_lock();
+    let root = temp_dir("local-move-guard");
+    let (bench, events) = workbench(&root);
+    let bench = Arc::new(bench);
+    let source = root.join("source");
+    let target = root.join("project");
+    for directory in [source.join("folder").join("nested"), target.join("folder").join("nested"), target.join("beside")] { fs::create_dir_all(directory).unwrap(); }
+    for name in ["folder/nested/a.txt", "folder/nested/b.txt"] {
+        fs::write(source.join(name), format!("new {name}")).unwrap();
+        fs::write(target.join(name), format!("old {name}")).unwrap();
+    }
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": target.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    bench.dispatch("files:dirty", &[json!(true)]).unwrap();
+    let id = bench.dispatch("transfer:drop", &[json!("p"), json!(""), json!([source.join("folder").display().to_string()])]).unwrap();
+    let mut page = TransferPage::new(Arc::clone(&events));
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let prepare = loop {
+        if let Some(found) = events.lock().unwrap().iter().find(|event| event["channel"] == "file:replacement" && event["payload"]["id"] == id && event["payload"]["phase"] == "prepare").map(|event| event["payload"].clone()) { break found }
+        while let Some(question) = page.next_question() {
+            // The folders are merged; the first file inside is replaced, which is where the transfer waits.
+            page.answer(&bench, &question, if question["items"][0]["mergeable"] == true { "merge" } else { "overwrite" }, false);
+        }
+        assert!(std::time::Instant::now() < deadline, "the replacement was never asked about: {:?}", *events.lock().unwrap());
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let waiting = prepare["path"].as_str().unwrap_or("").to_string();
+    assert!(waiting.ends_with("a.txt"), "the first file is being replaced: {prepare}");
+    // What is replaced is one file. It cannot be moved, a folder holding it
+    // cannot be moved, and it cannot be saved meanwhile.
+    let refused = |rel: &str, directory: bool| bench.dispatch("tree:move", &[json!("p"), json!(rel), json!("beside"), json!(directory)]).unwrap_err();
+    assert_eq!(refused(&waiting, false), "文件正在保存或进行其他操作");
+    assert_eq!(refused("folder", true), "文件正在保存或进行其他操作");
+    assert_eq!(refused("folder/nested", true), "文件正在保存或进行其他操作");
+    assert_eq!(bench.dispatch("git:write", &[json!("p"), json!(&waiting), json!("saved"), serde_json::Value::Null]).unwrap_err(), "文件正在进行其他写入操作");
+    assert!(target.join("beside").join("a.txt").exists() == false, "nothing was moved");
+    // An entry that is not in the way is moved.
+    bench.dispatch("tree:move", &[json!("p"), json!("beside"), json!("folder"), json!(true)]).unwrap();
+    assert!(target.join("folder").join("beside").is_dir());
+    // The page refuses the file, and the next one when it is asked about in turn.
+    bench.dispatch("file:replacement-ready", &[id.clone(), json!(false)]).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !events.lock().unwrap().iter().any(|event| event["channel"] == "file:replacement" && event["payload"]["id"] == id && event["payload"]["phase"] == "prepare" && event["payload"]["path"] == "folder/nested/b.txt") {
+        assert!(std::time::Instant::now() < deadline, "the second file was never asked about: {:?}", *events.lock().unwrap());
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    bench.dispatch("file:replacement-ready", &[id.clone(), json!(false)]).unwrap();
+    let ended = wait_upload(&events, id.as_str().unwrap(), "completed")["payload"].clone();
+    assert_eq!(ended["state"], "completed");
+    // The transfer is over: what was to be replaced can be saved and moved again.
+    let version = bench.dispatch("git:read", &[json!("p"), json!(&waiting)]).unwrap()["version"].clone();
+    bench.dispatch("git:write", &[json!("p"), json!(&waiting), json!("saved"), version]).unwrap();
+    assert_eq!(fs::read_to_string(target.join(&waiting)).unwrap(), "saved");
+    // `beside` was moved into `folder` above, so that is where the file goes.
+    bench.dispatch("tree:move", &[json!("p"), json!("folder/nested/b.txt"), json!("folder/beside"), json!(false)]).unwrap();
+    assert_eq!(fs::read_to_string(target.join("folder").join("beside").join("b.txt")).unwrap(), "old folder/nested/b.txt", "the page refused: nothing is replaced");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// Electron's closeTransfers cancels every transfer and waits for each to
+/// end before the window goes. A local transfer that is waiting for the page
+/// to let a file be replaced is answered by the closing: it ends as
+/// cancelled, the file is as it was, and no temporary file is left behind.
+#[test]
+fn closing_the_workbench_cancels_a_local_transfer_and_waits_for_it() {
+    let _lock = env_lock();
+    let root = temp_dir("local-shutdown");
+    let (bench, events) = workbench(&root);
+    let bench = Arc::new(bench);
+    let source = root.join("source");
+    let target = root.join("project");
+    fs::create_dir_all(&source).unwrap();
+    fs::create_dir_all(&target).unwrap();
+    fs::write(source.join("same.txt"), "new").unwrap();
+    fs::write(target.join("same.txt"), "old").unwrap();
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": target.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    // The page has a draft, so the replacement is asked about before it is made.
+    bench.dispatch("files:dirty", &[json!(true)]).unwrap();
+    let id = bench.dispatch("transfer:drop", &[json!("p"), json!(""), json!([source.join("same.txt").display().to_string()])]).unwrap();
+    let id = id.as_str().unwrap().to_string();
+    let mut page = TransferPage::new(Arc::clone(&events));
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        if events.lock().unwrap().iter().any(|event| event["channel"] == "file:replacement" && event["payload"]["id"] == id && event["payload"]["phase"] == "prepare") { break }
+        while let Some(question) = page.next_question() { page.answer(&bench, &question, "overwrite", false); }
+        assert!(std::time::Instant::now() < deadline, "the replacement was never asked about: {:?}", *events.lock().unwrap());
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // The transfer is going on: its file has been copied to a temporary one and it waits for the page.
+    let temporary: Vec<String> = fs::read_dir(&target).unwrap().filter_map(|entry| entry.ok()).map(|entry| entry.file_name().to_string_lossy().into_owned()).filter(|name| name.ends_with(".tmp")).collect();
+    assert_eq!(temporary.len(), 1, "the copy is waiting to be published: {temporary:?}");
+    bench.shutdown_sessions();
+    // The closing waited for the transfer: it is over when this returns,
+    // without waiting any further here. (No page answers the history flush
+    // in this case, so the closing first waits its three seconds for that.)
+    let over = events.lock().unwrap().iter().rev().find(|event| event["channel"] == "transfer:update" && event["payload"]["id"] == id).map(|event| event["payload"]["state"].clone());
+    assert_eq!(over, Some(json!("cancelled")), "the transfer was cancelled by the closing: {:?}", *events.lock().unwrap());
+    assert_eq!(fs::read_to_string(target.join("same.txt")).unwrap(), "old");
+    let leftovers: Vec<String> = fs::read_dir(&target).unwrap().filter_map(|entry| entry.ok()).map(|entry| entry.file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(leftovers, ["same.txt".to_string()], "no temporary file is left behind: {leftovers:?}");
+    let _ = fs::remove_dir_all(root);
+}
+/// A download is a task, as an upload is: it reports itself, ends as
+/// completed, and what it wrote is the file on the host, byte for byte. A
+/// file that is at the destination already is replaced, as the save dialog
+/// confirmed it, and no temporary file is left behind.
+#[test]
+fn a_download_is_a_task_that_writes_the_remote_file_and_replaces_what_the_dialog_confirmed() {
+    let _lock = env_lock();
+    let password = "s3cret-pass";
+    let fixture = pello_core::ssh::start_fixture(password).expect("ssh fixture");
+    let root = temp_dir("download");
+    let remote = root.join("remote");
+    fs::create_dir_all(remote.join("nested")).unwrap();
+    let bytes: Vec<u8> = (0..200_000u32).map(|index| (index % 251) as u8).collect();
+    fs::write(remote.join("payload.bin"), &bytes).unwrap();
+    fs::write(remote.join("nested/inner.txt"), "inner").unwrap();
+    let (bench, events) = workbench(&root);
+    let local = bench.dispatch("db:get", &[]).unwrap()["db"]["hosts"][0].clone();
+    // The fixture runs what it is asked on this machine, and here that is a
+    // Linux: the shell it finds is the one of the Linux subsystem, where the
+    // file is read by the read script of a Linux host.
+    let host = json!({
+        "id": "dl-box", "name": "Download box", "addr": "127.0.0.1", "port": fixture.port, "user": "me",
+        "auth": "password", "password": password, "color": "blue", "on": false, "os": "", "platform": "linux"
+    });
+    bench.dispatch("db:hosts", &[json!([local, host])]).expect("the fixture host should connect");
+    // The same folder, as the Linux subsystem names it.
+    let remote_linux = format!("/mnt/{}", remote.display().to_string().replace('\\', "/").replace(':', "").to_lowercase());
+    bench.dispatch("db:projects", &[json!([{ "id": "remote", "name": "Remote", "host": "dl-box", "path": remote_linux, "branch": "", "agent": "shell" }])]).unwrap();
+    let save = root.join("saved.bin");
+    let save_log = root.join("save.log");
+    let _save = var_guard("AWB_SAVE_PATH", save.to_str().unwrap());
+    let _save_log = var_guard("AWB_SAVE_LOG", save_log.to_str().unwrap());
+
+    let id = bench.dispatch("transfer:download", &[json!("remote"), json!("payload.bin"), json!(false)]).expect("the download starts");
+    // The save dialog offers the remote file under its own name and asks
+    // before replacing a file, as the Electron build's dialog did.
+    let asked: serde_json::Value = serde_json::from_str(&fs::read_to_string(&save_log).unwrap()).unwrap();
+    assert_eq!(asked["title"], "下载文件", "{asked}");
+    assert_eq!(asked["defaultPath"], "payload.bin", "{asked}");
+    assert_eq!(asked["showOverwriteConfirmation"], true, "{asked}");
+    let id = id.as_str().unwrap().to_string();
+    let done = wait_upload(&events, &id, "completed");
+    assert_eq!(done["channel"], "transfer:update");
+    assert_eq!(done["payload"]["direction"], "download", "{done}");
+    assert_eq!(done["payload"]["items"][0]["status"], "done", "{done}");
+    assert_eq!(fs::read(&save).unwrap(), bytes, "the file is the one on the host, byte for byte");
+    let leftovers: Vec<String> = fs::read_dir(&root).unwrap().filter_map(|entry| entry.ok()).map(|entry| entry.file_name().to_string_lossy().into_owned()).filter(|name| name.starts_with(".awb-download-")).collect();
+    assert!(leftovers.is_empty(), "no temporary file is left behind: {leftovers:?}");
+
+    // The dialog confirmed the file that is there: it is replaced.
+    fs::write(&save, "what was there").unwrap();
+    let second = bench.dispatch("transfer:download", &[json!("remote"), json!("payload.bin"), json!(false)]).expect("the second download starts");
+    let second = second.as_str().unwrap().to_string();
+    wait_upload(&events, &second, "completed");
+    assert_eq!(fs::read(&save).unwrap(), bytes, "the file that was there is replaced by the one on the host");
+
+    // A directory is put into a directory that is chosen, under its own name,
+    // with what is in it; nothing that is there already is replaced.
+    let into = root.join("into");
+    fs::create_dir_all(&into).unwrap();
+    let _pick = var_guard("AWB_PICK_PATHS", into.to_str().unwrap());
+    let tree = bench.dispatch("transfer:download", &[json!("remote"), json!("nested"), json!(true)]).expect("the directory download starts");
+    let tree = tree.as_str().unwrap().to_string();
+    let tree_done = wait_upload(&events, &tree, "completed");
+    assert_eq!(tree_done["payload"]["items"].as_array().unwrap().len(), 1, "{tree_done}");
+    assert_eq!(fs::read_to_string(into.join("nested/inner.txt")).unwrap(), "inner");
+    // The directory is there now: downloading it again fails the tree and
+    // keeps what is there.
+    let again = bench.dispatch("transfer:download", &[json!("remote"), json!("nested"), json!(true)]).expect("the second directory download starts");
+    let again = again.as_str().unwrap().to_string();
+    let again_done = wait_upload(&events, &again, "completed");
+    assert_eq!(again_done["payload"]["items"][0]["status"], "failed", "{again_done}");
+    assert_eq!(fs::read_to_string(into.join("nested/inner.txt")).unwrap(), "inner");
+
+    // What failed is kept and can be tried again, as a new download, once
+    // the file is on the host; what is at the destination is not touched.
+    let missing = bench.dispatch("transfer:download", &[json!("remote"), json!("gone.bin"), json!(false)]).expect("a download of what is not there starts");
+    let missing = missing.as_str().unwrap().to_string();
+    let missing_done = wait_upload(&events, &missing, "completed");
+    assert_eq!(missing_done["payload"]["items"][0]["status"], "failed", "{missing_done}");
+    assert_eq!(fs::read(&save).unwrap(), bytes, "a download that failed leaves what is at the destination as it was");
+    // The retry is asked for once the file is on the host: it begins at once.
+    fs::write(remote.join("gone.bin"), "late").unwrap();
+    let retried = bench.dispatch("transfer:retry", &[json!(missing)]).expect("the failed entry is tried again");
+    let retried = retried.as_str().unwrap().to_string();
+    let retried_done = wait_upload(&events, &retried, "completed");
+    assert_eq!(retried_done["payload"]["items"][0]["status"], "done", "{retried_done}");
+    // The retry goes where the failed download was going, and asks nothing:
+    // the file that was there is replaced, as it was confirmed before.
+    assert_eq!(fs::read_to_string(&save).unwrap(), "late");
+    let leftovers: Vec<String> = fs::read_dir(&root).unwrap().filter_map(|entry| entry.ok()).map(|entry| entry.file_name().to_string_lossy().into_owned()).filter(|name| name.starts_with(".awb-download-")).collect();
+    assert!(leftovers.is_empty(), "no temporary file is left behind: {leftovers:?}");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A download can be stopped while the file is being read, and the workbench
+/// waits for a download that is going on when it closes. In both the file
+/// that was being downloaded is not published and no temporary file is left.
+#[test]
+fn a_download_can_be_stopped_while_it_is_read_and_the_closing_waits_for_it() {
+    let _lock = env_lock();
+    let password = "s3cret-pass";
+    let fixture = pello_core::ssh::start_fixture(password).expect("ssh fixture");
+    let root = temp_dir("download-stop");
+    let remote = root.join("remote");
+    fs::create_dir_all(&remote).unwrap();
+    let (bench, events) = workbench(&root);
+    let local = bench.dispatch("db:get", &[]).unwrap()["db"]["hosts"][0].clone();
+    let host = json!({
+        "id": "dl-stop-box", "name": "Download box", "addr": "127.0.0.1", "port": fixture.port, "user": "me",
+        "auth": "password", "password": password, "color": "blue", "on": false, "os": "", "platform": "linux"
+    });
+    bench.dispatch("db:hosts", &[json!([local, host])]).expect("the fixture host should connect");
+    let remote_linux = format!("/mnt/{}", remote.display().to_string().replace('\\', "/").replace(':', "").to_lowercase());
+    bench.dispatch("db:projects", &[json!([{ "id": "remote", "name": "Remote", "host": "dl-stop-box", "path": remote_linux, "branch": "", "agent": "shell" }])]).unwrap();
+    let save = root.join("held.bin");
+    let _save = var_guard("AWB_SAVE_PATH", save.to_str().unwrap());
+
+    let id = bench.dispatch("transfer:download", &[json!("remote"), json!("awb-hold.bin"), json!(false)]).expect("the download starts");
+    let id = id.as_str().unwrap().to_string();
+    // The host has said the start of the file and holds the rest back.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let held = events.lock().unwrap().iter().any(|event| event["channel"] == "transfer:update" && event["payload"]["id"] == id && event["payload"]["bytes"].as_u64().unwrap_or(0) > 0);
+        if held { break }
+        assert!(std::time::Instant::now() < deadline, "nothing of the file came: {:?}", *events.lock().unwrap());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let temporary: Vec<String> = fs::read_dir(&root).unwrap().filter_map(|entry| entry.ok()).map(|entry| entry.file_name().to_string_lossy().into_owned()).filter(|name| name.starts_with(".awb-download-")).collect();
+    assert_eq!(temporary.len(), 1, "the file is being written to a temporary one: {temporary:?}");
+    let before = fixture.closed_channels();
+    bench.dispatch("transfer:cancel", &[json!(id)]).unwrap();
+    let cancelled = wait_upload(&events, &id, "cancelled");
+    assert_eq!(cancelled["payload"]["items"].as_array().unwrap().len(), 0, "what was stopped is not a result: {cancelled}");
+    assert!(!save.exists(), "a download that was stopped publishes nothing");
+    let leftovers: Vec<String> = fs::read_dir(&root).unwrap().filter_map(|entry| entry.ok()).map(|entry| entry.file_name().to_string_lossy().into_owned()).filter(|name| name.starts_with(".awb-download-")).collect();
+    assert!(leftovers.is_empty(), "the temporary file of what was stopped is removed: {leftovers:?}");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while fixture.closed_channels() <= before && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
+    assert!(fixture.closed_channels() > before, "stopping the download closes the channel, so the command on the host ends");
+
+    // A download that is going on when the workbench closes is stopped by the
+    // closing, and the closing waits for it to be over.
+    let second = bench.dispatch("transfer:download", &[json!("remote"), json!("awb-hold.bin"), json!(false)]).expect("the second download starts");
+    let second = second.as_str().unwrap().to_string();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let held = events.lock().unwrap().iter().any(|event| event["channel"] == "transfer:update" && event["payload"]["id"] == second && event["payload"]["bytes"].as_u64().unwrap_or(0) > 0);
+        if held { break }
+        assert!(std::time::Instant::now() < deadline, "nothing of the second file came: {:?}", *events.lock().unwrap());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    bench.shutdown_sessions();
+    let over = events.lock().unwrap().iter().rev().find(|event| event["channel"] == "transfer:update" && event["payload"]["id"] == second).map(|event| event["payload"]["state"].clone());
+    assert_eq!(over, Some(json!("cancelled")), "the download was cancelled by the closing: {:?}", *events.lock().unwrap());
+    assert!(!save.exists(), "nothing is published by a download the closing stopped");
+    let leftovers: Vec<String> = fs::read_dir(&root).unwrap().filter_map(|entry| entry.ok()).map(|entry| entry.file_name().to_string_lossy().into_owned()).filter(|name| name.starts_with(".awb-download-")).collect();
+    assert!(leftovers.is_empty(), "no temporary file is left behind: {leftovers:?}");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// What the file dialogs ask for, as the Electron build asked: the download
+/// save dialog offers the remote file under its own name and confirms before
+/// replacing; a download place and an import source are chosen by what they
+/// select; a resource is chosen with the filter of its kind. Titles follow
+/// the language.
+#[test]
+fn file_dialogs_ask_for_what_the_electron_build_asked_for() {
+    let _lock = env_lock();
+    let root = temp_dir("dialogs");
+    let (bench, _) = workbench(&root);
+
+    let save = |kind: &str, name: &str| bench.dispatch("menu:save", &[json!(kind), json!(name)]).unwrap();
+    let download = save("download", "report.pdf");
+    assert_eq!(download, json!({ "title": "下载文件", "defaultPath": "report.pdf", "filters": [{ "name": "所有文件", "extensions": ["*"] }], "showOverwriteConfirmation": true, "createDirectory": true }));
+    let save_as = save("save-as", "D:/notes/a.txt");
+    assert_eq!(save_as, json!({ "title": "另存为（请选择新文件名）", "defaultPath": "D:/notes/a.txt", "filters": [{ "name": "所有文件", "extensions": ["*"] }], "showOverwriteConfirmation": false, "createDirectory": true }));
+    let history = save("history", "");
+    assert_eq!(history, json!({ "title": "", "defaultPath": "terminal-history.ansi", "filters": [{ "name": "ANSI 终端记录", "extensions": ["ansi"] }], "showOverwriteConfirmation": false, "createDirectory": false }));
+
+    let open = |kind: &str| bench.dispatch("menu:open", &[json!(kind)]).unwrap();
+    assert_eq!(open("download"), json!({ "title": "选择下载位置", "select": "directory", "filters": [], "createDirectory": true }));
+    assert_eq!(open("directory"), json!({ "title": "选择导入来源", "select": "directory", "filters": [], "createDirectory": false }));
+    assert_eq!(open("files"), json!({ "title": "选择导入来源", "select": "many", "filters": [], "createDirectory": false }));
+    assert_eq!(open("folder"), json!({ "title": "", "select": "directory", "filters": [], "createDirectory": false }));
+    assert_eq!(open("zip"), json!({ "title": "", "select": "file", "filters": [{ "name": "ZIP 压缩包", "extensions": ["zip"] }], "createDirectory": false }));
+    assert_eq!(open("config")["filters"], json!([{ "name": "Agent 配置", "extensions": ["json", "jsonc", "toml", "yaml", "yml"] }]));
+
+    bench.dispatch("db:settings", &[json!({ "language": "en" })]).unwrap();
+    assert_eq!(save("download", "report.pdf")["title"], "Download file");
+    assert_eq!(save("save-as", "a.txt")["title"], "Save as (choose a new name)");
+    assert_eq!(save("history", "")["filters"][0]["name"], "ANSI terminal history");
+    assert_eq!(open("download")["title"], "Choose where to download");
+    assert_eq!(open("files")["title"], "Choose what to import");
+    assert_eq!(open("zip")["filters"][0]["name"], "ZIP archive");
+    assert_eq!(open("config")["filters"][0]["name"], "Agent configuration");
+    let _ = fs::remove_dir_all(root);
 }

@@ -1,3 +1,5 @@
+pub mod file_id;
+pub mod download;
 pub mod files;
 pub mod gate;
 pub mod git;

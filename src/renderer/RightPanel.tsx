@@ -5,7 +5,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Icon } from './icons'
 import type { TermTab } from './Workspace'
 import { FileOperationDialog } from './FileOperationDialog'
-import { UploadStatus } from './UploadStatus'
+import { UploadStatus, transferNeedsAttention } from './UploadStatus'
 import { ContentSearchResults } from './ContentSearchResults'
 
 function MoveEntryDialog({ projectId, path, directory, onCancel, onMove }: { projectId: string; path: string; directory: boolean; onCancel: () => void; onMove: (parent: string) => Promise<void> }) {
@@ -181,24 +181,13 @@ export function RightPanel({
   function updateSearch(options: Partial<ProjectSearchOptions>) {
     setSearchOptions((current) => ({ ...current, [project.id]: { sensitive, regex, whole, ...options } }))
   }
-  const [conflictBatch, setConflictBatch] = useState<Record<string, boolean>>({})
-  function transferPath(destination: string): string {
-    const value = destination.replaceAll('\\', '/')
-    const root = project.path.replaceAll('\\', '/').replace(/\/+$/, '') + '/'
-    const inside = host.platform === 'windows' ? value.toLowerCase().startsWith(root.toLowerCase()) : value.startsWith(root)
-    return inside ? value.slice(root.length) : value.split('/').pop() || value
-  }
   const [creating, setCreating] = useState<{ projectId: string; parent: string; directory: boolean } | null>(null)
   const [referencePath, setReferencePath] = useState<string | null>(null)
   const [renaming, setRenaming] = useState<{ projectId: string; path: string; dir: boolean } | null>(null)
   const [moving, setMoving] = useState<{ projectId: string; path: string; dir: boolean } | null>(null)
   const [renameFocus, setRenameFocus] = useState<{ projectId: string; path: string } | null>(null)
   const [dropTarget, setDropTarget] = useState<string | null>(null)
-  const transferList = useRef<HTMLElement>(null)
-  const latestTransferId = transfers.at(-1)?.id
-  useLayoutEffect(() => {
-    if (transferList.current) transferList.current.scrollTop = transferList.current.scrollHeight
-  }, [project.id, latestTransferId])
+  const attention = transfers.filter(transferNeedsAttention)
   const query = queries[project.id] || ''
   const contentQuery = contentQueries[project.id] || ''
   const searching = useRef(false)
@@ -551,17 +540,10 @@ export function RightPanel({
       </div>
       {body}
       {moving ? <MoveEntryDialog projectId={moving.projectId} path={moving.path} directory={moving.dir} onCancel={() => setMoving(null)} onMove={async (parent) => { await onMove(moving.projectId, moving.path, parent, moving.dir); setMoving(null) }} /> : null}
-      {transfers.length ? <section ref={transferList} className="transfer-list" aria-label={t("传输任务")}>{transfers.map((task) => task.direction === 'upload' ? <UploadStatus key={task.id} task={task} onDismiss={onDismissTransfer} /> : <div className="transfer-task" key={task.id}>
-        <strong>{task.state === 'running' ? (task.direction === 'download' ? t("正在下载") : t("正在导入")) : task.state === 'conflicts' ? t("请选择同名项目的处理方式") : task.state === 'cancelled' ? t("已取消") : (task.direction === 'download' ? t("下载结束") : t("导入结束"))}</strong>
-        <span title={task.current}>{transferPath(task.current || task.destination)}</span>
-        {task.state === 'running' && task.total ? <progress max={task.total} value={task.bytes} aria-label={t("当前文件进度")} /> : null}
-        {task.warnings?.map((message) => <small key={message} role="alert" title={message}>{message}</small>)}
-        {task.state === 'running' && !task.total && task.direction === 'download' ? <span>{t("已下载 ")}{task.bytes} {t(" 字节")}</span> : null}
-        {task.items.map((item) => <small key={`${item.source}:${item.destination}`} title={item.destination}>{item.status === 'done' ? t("完成") : item.status === 'conflict' ? t("同名冲突") : t("失败")} · {transferPath(item.destination)}{item.error ? ` · ${item.error}` : ''}</small>)}
-        {task.state === 'conflicts' ? <label className="transfer-batch"><input type="checkbox" checked={!!conflictBatch[task.id]} onChange={(event) => setConflictBatch((current) => ({ ...current, [task.id]: event.target.checked }))} />{t("应用到本批次同类冲突")}</label> : null}
-        {task.state === 'conflicts' && task.pendingConflicts ? <span>{t("待处理 ")}{task.pendingConflicts} {t(" 项冲突")}</span> : null}
-        {task.state === 'running' ? <button className="btn sm" disabled={task.phase === 'publishing'} title={task.phase === 'publishing' ? t("正在完成替换，请稍候") : undefined} onClick={() => void window.awb.transferCancel(task.id)}>{t("取消传输")}</button> : task.state === 'conflicts' ? <div>{([['skip', t("跳过冲突项")], ['keep', t("冲突项保留两者")], ...(task.items.length && task.items.every((item) => item.replaceable) ? [['overwrite', t("覆盖冲突文件")] as const] : []), ...(task.items.some((item) => item.mergeable) ? [['merge', t("合并同名目录")] as const] : []), ['cancel', t("取消传输")]] as const).map(([choice, label]) => <button className="btn sm" key={choice} onClick={() => { void window.awb.transferDecide(task.id, choice, !!conflictBatch[task.id]).catch((error: unknown) => setTreeError(error instanceof Error ? error.message : t("处理冲突失败"))) }}>{label}</button>)}</div> : <div>{task.items.some((item) => item.status === 'conflict') ? <button className="btn sm" onClick={() => { void window.awb.transferKeepBoth(task.id).catch((error: unknown) => setTreeError(error instanceof Error ? error.message : t("处理冲突失败"))) }}>{t("冲突项保留两者")}</button> : null}{task.retryable !== false && task.items.some((item) => item.status === 'failed' && item.source && item.error !== '部分内容未能复制' && item.error !== '部分内容未能上传') ? <button className="btn sm" onClick={() => { void window.awb.transferRetry(task.id).catch((error: unknown) => setTreeError(error instanceof Error ? error.message : t("重试失败"))) }}>{t("重试失败项")}</button> : null}<button className="btn sm" onClick={() => onDismissTransfer(task.id)}>{t("关闭")}</button></div>}
-      </div>)}</section> : null}
+      {transfers.length ? <section className="transfer-list" aria-label={t("传输任务")}>
+        {transfers.filter((task) => !transferNeedsAttention(task)).map((task) => <UploadStatus key={task.id} tasks={[task]} onDismiss={onDismissTransfer} />)}
+        {attention.length ? <UploadStatus key="attention" tasks={attention} onDismiss={onDismissTransfer} /> : null}
+      </section> : null}
       {referencePath !== null ? <ReferenceDialog projectId={project.id} path={referencePath} terms={referenceTerms} onCancel={() => setReferencePath(null)} onConfirm={(id, value) => { onReference(id, value); setReferencePath(null) }} /> : null}
       {creating ? <CreateEntryDialog parent={creating.parent} directory={creating.directory} windows={host.platform === 'windows'} existing={(creating.parent ? treeChildren[`${creating.projectId}:${creating.parent}`] || [] : tree).map((node) => node.name)} onCancel={() => setCreating(null)} onCreate={async (name) => {
         const entry = creating
