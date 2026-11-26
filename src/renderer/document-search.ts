@@ -21,17 +21,31 @@ export function domText(root: HTMLElement) {
   return { text, range }
 }
 
+const highlights = new Map<HTMLElement, { ranges: Range[]; current: Range[] }>()
+
+function publishHighlights() {
+  for (const root of highlights.keys()) if (!root.isConnected) highlights.delete(root)
+  CSS.highlights.set('document-matches', new Highlight(...[...highlights.values()].flatMap((value) => value.ranges)))
+  CSS.highlights.set('document-current', new Highlight(...[...highlights.values()].flatMap((value) => value.current)))
+}
+
+export function setSearchHighlights(root: HTMLElement, ranges: Range[], current: Range[]) {
+  if (ranges.length || current.length) highlights.set(root, { ranges, current })
+  else highlights.delete(root)
+  publishHighlights()
+}
+
 export function highlightMatches(root: HTMLElement, matches: TextMatch[], active: number) {
   const map = domText(root)
   const ranges = matches.slice(0, 2000).map(map.range).filter((range): range is Range => !!range)
   const current = matches[active] ? map.range(matches[active]) : null
-  CSS.highlights.set('document-matches', new Highlight(...ranges))
-  CSS.highlights.set('document-current', new Highlight(...(current ? [current] : [])))
+  setSearchHighlights(root, ranges, current ? [current] : [])
   return current
 }
 
-export function clearSearchHighlights() {
-  CSS.highlights.delete('document-matches'); CSS.highlights.delete('document-current')
+export function clearSearchHighlights(root: HTMLElement | null) {
+  for (const owner of highlights.keys()) if (owner === root || root?.contains(owner)) highlights.delete(owner)
+  publishHighlights()
 }
 
 /** Reveal a match in its own viewport without focusing it or scrolling the app. */

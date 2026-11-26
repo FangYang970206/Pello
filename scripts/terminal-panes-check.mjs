@@ -32,10 +32,20 @@ const app = await launchWorkbench({ args: ['.'], env })
 try {
   const page = await app.firstWindow()
   page.setDefaultTimeout(15000)
+  // A pane's menu is asked for on its tab, and what it offers depends on the
+  // pane: a terminal's own entries, then the splits.
   const split = async (id, command) => {
     fs.writeFileSync(app.menuFile, command)
-    await page.locator(`[data-a=pane][data-id="${id}"]`).dispatchEvent('contextmenu')
+    await page.locator(`[data-a=tab][data-id="${id}"]`).dispatchEvent('contextmenu')
+    const end = Date.now() + 5000
+    while (Date.now() < end) {
+      if (fs.readFileSync(app.menuFile, 'utf8').trim() !== command) return
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    throw new Error(`pane menu command was not consumed: ${command}`)
   }
+  // Each pane has a tab bar of its own; the one that has the keyboard says so.
+  const shown = () => page.locator('.tabbar[data-focused=true] .tab.on [data-a=tab]')
   await page.locator('[data-a=tab][data-id=shell-1]').waitFor()
   await page.waitForFunction(() => !!document.querySelector('[data-a=pane][data-id=shell-1]'))
   // The pane is drawn before its terminal has started. A split asked for in
@@ -43,7 +53,8 @@ try {
   await page.locator('[data-a=tab][data-id=shell-1][data-state=idle]').waitFor()
   await split('shell-1', 'split-right')
   await page.waitForFunction(() => document.querySelectorAll('.pane:not([hidden])').length === 2)
-  const second = await page.locator('.tab.on [data-a=tab]').getAttribute('data-id')
+  await page.locator('[data-a=tab][data-state=idle]').nth(1).waitFor({ state: 'attached' })
+  const second = await shown().getAttribute('data-id')
   await split('shell-1', 'split-down')
   await page.waitForFunction(() => document.querySelectorAll('.pane:not([hidden])').length === 3)
   await split(second, 'split-down')
@@ -55,7 +66,7 @@ try {
   // all the same does nothing: no pane and no terminal is added.
   fs.rmSync(`${app.menuFile}.json`, { force: true })
   fs.writeFileSync(app.menuFile, '')
-  await page.locator(`[data-a=pane][data-id="${second}"]`).dispatchEvent('contextmenu')
+  await page.locator(`[data-a=tab][data-id="${second}"]`).dispatchEvent('contextmenu')
   let items
   const menuDeadline = Date.now() + 5000
   while (Date.now() < menuDeadline && !items) {
@@ -63,6 +74,8 @@ try {
     else await new Promise((resolve) => setTimeout(resolve, 20))
   }
   assert.ok(items, 'The terminal menu must open on a fourth pane')
+  // It is a terminal's pane menu: what a terminal offers by itself, then the splits.
+  assert.deepEqual(items.filter((item) => item.id).slice(0, 2).map((item) => item.id), ['rename', 'export-history'])
   assert.deepEqual(['split-left', 'split-right', 'split-up', 'split-down'].map((id) => items.find((item) => item.id === id)?.enabled), [false, false, false, false])
   assert.equal(items.find((item) => item.id === 'merge')?.enabled, true)
   const terminals = await page.evaluate(async () => (await window.awb.getState()).db.sessions.p.length)

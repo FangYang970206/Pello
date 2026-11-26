@@ -2,6 +2,13 @@ import { t } from '../shared/i18n'
 import { encode } from 'plantuml-encoder'
 
 let sequence = 0
+let readers = 0
+
+/** A closing split view must not cancel diagrams still used by its neighbours. */
+export function retainDiagramRenderer(): () => void {
+  readers++
+  return () => { if (--readers === 0) void window.awb.cancelDiagrams().catch(() => {}) }
+}
 
 /** Generated SVG stays in an image rather than joining the workbench DOM. */
 export function diagramPreview(language: string, content: string, applyPreview: (value: HTMLElement | null) => void): void | null {

@@ -28,6 +28,8 @@ import type {
   WorkSession
 } from './types'
 
+export type PaneLayoutOptions = { horizontal: boolean; vertical: boolean; merge: boolean }
+
 export interface WorkbenchApi {
   appUpdateState(): Promise<import('./types').AppUpdateState>
   checkAppUpdate(): Promise<import('./types').AppUpdateState>
@@ -99,11 +101,11 @@ export interface WorkbenchApi {
   treeMenu(projectId: string, rel: string, directory: boolean): Promise<string | null>
   treeAction(projectId: string, rel: string, directory: boolean, action: string): Promise<void>
   treeReference(projectId: string, rel: string, kind: string, shell: ShellKind): Promise<string>
-  documentMenu(options: { markdown: boolean; visual: boolean; undo: boolean; redo: boolean; editable: boolean }): Promise<string | null>
+  documentMenu(options: { markdown: boolean; visual: boolean; undo: boolean; redo: boolean; editable: boolean; layout?: PaneLayoutOptions }): Promise<string | null>
   previewMenu?: () => Promise<string | null>
   documentLink(projectId: string, source: string, href: string): Promise<{ path: string; anchor?: string } | null>
-  terminalMenu(options: { horizontal: boolean; vertical: boolean; merge: boolean; reconnect?: boolean }): Promise<string | null>
-  onPreviewSource(cb: () => void): () => void
+  paneMenu(options: PaneLayoutOptions & { terminal: boolean; reconnect?: boolean }): Promise<string | null>
+  onPreviewSource(cb: (url: string) => void): () => void
   ptyCreate(req: PtyCreateRequest): Promise<{ id: string; state: string; exitCode: number | null; startedAt: number | null; inputReady: boolean; shell: ShellKind; kind: string; agentKind?: string | null; agentSessionId?: string | null; replay?: string }>
   ptyWrite(id: string, data: string, binary?: boolean): void
   ptyShiftEnter(id: string): void
@@ -112,7 +114,6 @@ export interface WorkbenchApi {
   ptyKill(id: string): Promise<void>
   ptyRestart(id: string): Promise<void>
   ptyClose(id: string): Promise<void>
-  terminalSplit(request: { projectId: string; sessionId: string; termId: string; direction: 'left' | 'right' | 'up' | 'down' }): Promise<{ id: string; born: number; tiles: { id: string; x: number; y: number; width: number; height: number }[] }>
   terminalHistory(id: string): Promise<string>
   exportTerminalHistory(id: string): Promise<void>
   saveTerminalHistory(id: string, text: string): void

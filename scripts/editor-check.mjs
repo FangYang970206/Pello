@@ -108,14 +108,20 @@ try {
   await page.click('[data-a=confirm]')
   console.log('PASS conflicting autosave pauses and keeps the draft without overwriting external changes')
 
+  // Typing that arrives while the confirmed reload is still reading the file
+  // is kept: the file read is the document's base again, and what was typed
+  // stays in it, still unsaved.
   await source.fill('discard this draft')
+  assert.equal(await source.inputValue(), 'discard this draft', 'Typing right after confirming a reload must not be lost to the file that is read')
+  assert.equal(fs.readFileSync(path.join(project, 'note.txt'), 'utf8'), 'external change')
   await page.locator('.tab.on [data-a=close]').click()
   await page.getByRole('dialog').filter({ hasText: '文件尚未保存' }).waitFor()
   await new Promise((resolve) => setTimeout(resolve, 1100))
   assert.equal(fs.readFileSync(path.join(project, 'note.txt'), 'utf8'), 'external change', 'A discard dialog must pause autosave')
   await page.click('[data-a=confirm]')
   assert.equal(fs.readFileSync(path.join(project, 'note.txt'), 'utf8'), 'external change')
-  console.log('PASS discard confirmation pauses autosave without writing the abandoned draft')
+  assert.equal(await page.getByRole('dialog').count(), 0, 'The draft was discarded, so the tab closes')
+  console.log('PASS typing during a confirmed reload is kept; discard confirmation pauses autosave without writing the abandoned draft')
 
   await page.click('[data-a=preview][data-id="docs/page.html"]')
   await page.evaluate(() => { window.__autosaveDelay = 120000 })

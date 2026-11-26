@@ -1,16 +1,17 @@
 import { t } from '../shared/i18n'
 import { useEffect, useRef, useState } from 'react'
 import type { AgentInfo, FileDiff, ProcState, Project, SearchLocation, ShellKind, ThemeName } from '../shared/types'
-import { resolveAgent, shellLabel, shellLetter } from '../shared/types'
+import { resolveAgent } from '../shared/types'
 import { Icon, Mark } from './icons'
 import { TerminalPane } from './TerminalPane'
 import { DiffPane } from './DiffPane'
 import { FilePane } from './FilePane'
-import type { DocumentDraft } from './documents'
-import { terminalStatus } from './terminal-state'
+import { documentKey, type DocumentDraft } from './documents'
+import type { PaneLayoutOptions } from '../shared/api'
 import { sessionOf } from '../shared/work-sessions'
-import { NameEditor } from './ProjectSidebar'
-import { loadTerminalLayouts, type SplitDirection, type Tile } from './terminal-layout'
+import { reconcileGroups, splitGroup, mergeGroups, moveGroupTab } from './workspace-layout'
+import { WorkspaceTabs } from './WorkspaceTabs'
+import { loadTerminalLayouts, splitTile, type SplitDirection } from './terminal-layout'
 
 export type TermTab = {
   id: string
@@ -39,20 +40,21 @@ export function Workspace({
   tabs,
   active,
   rightOpen,
-  dmode,
+  diffModes,
+  defaultDiffMode,
   theme,
   fontSize,
   fontFamily,
   agents,
   installed,
-  diff,
-  baseline,
+  diffs,
+  baselines,
   onBaseline,
   onBaselineHistory,
-  preview,
+  documents,
   onSelect,
   onRenameTerm,
-  onSplitTerm,
+  onSplitTab,
   onNavigateFile,
   onClose,
   onNewTerm,
@@ -77,20 +79,21 @@ export function Workspace({
   tabs: Tab[]
   active?: Tab
   rightOpen: boolean
-  dmode: 'unified' | 'split'
+  diffModes: Record<string, 'unified' | 'split'>
+  defaultDiffMode: 'unified' | 'split'
   theme: ThemeName
   fontSize: number
   fontFamily?: string
   agents: AgentInfo[]
   installed: Record<string, boolean>
-  diff: FileDiff | null
-  baseline?: string
-  onBaseline: (text: string) => void
-  onBaselineHistory: (redo: boolean) => void
-  preview: DocumentDraft | null
+  diffs: Record<string, FileDiff>
+  baselines: Record<string, DocumentDraft>
+  onBaseline: (id: string, text: string) => void
+  onBaselineHistory: (id: string, redo: boolean) => void
+  documents: Record<string, DocumentDraft>
   onSelect: (id: string) => void
   onRenameTerm: (id: string, name: string) => Promise<void>
-  onSplitTerm: (id: string, direction: SplitDirection) => Promise<{ id: string; tiles: Tile[] }>
+  onSplitTab: (id: string) => Promise<string>
   onNavigateFile: (path: string, anchor?: string) => void
   onClose: (id: string) => void
   onNewTerm: () => void
@@ -98,8 +101,8 @@ export function Workspace({
   onInterrupt: (id: string) => void
   onReconnect: (id: string) => void
   onToggleRight: () => void
-  onDmode: (mode: 'unified' | 'split') => void
-  onDiscard: () => void
+  onDmode: (id: string, mode: 'unified' | 'split') => void
+  onDiscard: (id: string) => void
   onAppKey: (key: string) => void
   onEditFile: (id: string, text: string) => void
   onSaveFile: (id: string) => void
@@ -107,104 +110,71 @@ export function Workspace({
   onHistoryFile: (id: string, redo: boolean) => void
   onComposeFile: (id: string, composing: boolean) => void
   onPreviewHtml: (id: string) => void
-  untracked?: boolean
+  untracked: Record<string, boolean>
 }) {
-  const scroller = useRef<HTMLDivElement>(null)
-  const [overflow, setOverflow] = useState(false)
-  const [fade, setFade] = useState<'none' | 'left' | 'right' | 'both'>('none')
-  const [menu, setMenu] = useState(false)
   const [renaming, setRenaming] = useState<string | null>(null)
-  const renameFocus = useRef<string | null>(null)
-  useEffect(() => {
-    if (renaming) { renameFocus.current = renaming; return }
-    const id = renameFocus.current
-    renameFocus.current = null
-    if (id) scroller.current?.querySelector<HTMLElement>(`[data-a="tab"][data-id="${CSS.escape(id)}"]`)?.focus()
-  }, [renaming])
   const [layouts, setLayouts] = useState(loadTerminalLayouts)
   const [splitting, setSplitting] = useState(false)
   const [layoutError, setLayoutError] = useState('')
   const mine = project ? tabs.filter((tab) => tab.projectId === project.id && (tab.type !== 'term' || sessionOf(tab) === sessionId)) : []
   const shown = mine.find((tab) => tab.id === active?.id) ?? mine[0]
+  const tabById = new Map(mine.map((tab) => [tab.id, tab]))
+  // Tab content keeps one parent and stable keys when its group changes.
   const terms = tabs.filter((tab): tab is TermTab => tab.type === 'term')
   const layoutKey = `${project?.id}:${sessionId}`
   const savedTiles = layouts[layoutKey]
-  const tiles = savedTiles?.every((tile) => mine.some((tab) => tab.id === tile.id)) && savedTiles.some((tile) => tile.id === shown?.id) ? savedTiles : null
+  const lastShown = useRef<Record<string, string | undefined>>({})
+  const groups = reconcileGroups(savedTiles, mine.map((tab) => tab.id), shown?.id, lastShown.current[layoutKey])
+  const serializedGroups = JSON.stringify(groups)
+  useEffect(() => {
+    if (!shown) return
+    lastShown.current[layoutKey] = shown.id
+    const next = JSON.parse(serializedGroups)
+    setLayouts((value) => JSON.stringify(value[layoutKey]) === serializedGroups ? value : { ...value, [layoutKey]: next })
+  }, [layoutKey, shown?.id, serializedGroups])
 
   useEffect(() => { localStorage.setItem('awb:terminalLayouts', JSON.stringify(layouts)) }, [layouts])
 
-  async function terminalMenu(id: string) {
+  function layoutOptions(id: string): PaneLayoutOptions {
+    const group = groups.find((group) => group.tabs.includes(id))!
+    return { horizontal: !splitting && groups.length < 4 && group.width === 2, vertical: !splitting && groups.length < 4 && group.height === 2, merge: !splitting && groups.length > 1 }
+  }
+  async function layoutCommand(id: string, command: string | null) {
     if (splitting) return
-    const current = tiles?.some((tile) => tile.id === id) ? tiles : [{ id, x: 0, y: 0, width: 2, height: 2 }]
-    const tile = current.find((item) => item.id === id)!
-    const tab = mine.find((item): item is TermTab => item.id === id && item.type === 'term')
-    const command = await window.awb.terminalMenu({ horizontal: current.length < 4 && tile.width === 2, vertical: current.length < 4 && tile.height === 2, merge: current.length > 1, reconnect: tab?.state === 'failed' })
+    const group = groups.find((group) => group.tabs.includes(id))
+    if (!group) return
+    if (command === 'merge') { setLayouts((value) => ({ ...value, [layoutKey]: mergeGroups(groups, id) })); onSelect(id); return }
+    if (!command?.startsWith('split-')) return
+    setSplitting(true); setLayoutError('')
+    try {
+      const direction = command.slice(6) as SplitDirection
+      splitTile(groups, group.id, '__validate__', direction)
+      const nextId = await onSplitTab(id)
+      lastShown.current[layoutKey] = nextId
+      setLayouts((value) => ({ ...value, [layoutKey]: splitGroup(groups, id, nextId, direction) }))
+    } catch (error) { setLayoutError(String(error)) }
+    finally { setSplitting(false) }
+  }
+  function moveTab(id: string, target: string) {
+    if (!mine.some((tab) => tab.id === id) || splitting) return
+    setLayouts((value) => ({ ...value, [layoutKey]: moveGroupTab(groups, id, target) }))
+    lastShown.current[layoutKey] = id
+    onSelect(id)
+  }
+
+  async function paneMenu(id: string) {
+    if (splitting) return
+    const tab = mine.find((item) => item.id === id)
+    if (!tab) return
+    const command = await window.awb.paneMenu({ ...layoutOptions(id), terminal: tab.type === 'term', reconnect: tab.type === 'term' && tab.state === 'failed' })
     if (command === 'reconnect') { onReconnect(id); return }
     if (command === 'export-history') {
       try { await window.awb.exportTerminalHistory(id) } catch (error) { setLayoutError(String(error)) }
       return
     }
     if (command === 'rename') { setRenaming(id); return }
-    if (command === 'merge') { setLayouts((value) => { const next = { ...value }; delete next[layoutKey]; return next }); onSelect(id); return }
-    if (!command?.startsWith('split-')) return
-    setSplitting(true); setLayoutError('')
-    try {
-      const direction = command.slice(6) as SplitDirection
-      const result = await onSplitTerm(id, direction)
-      setLayouts((value) => ({ ...value, [layoutKey]: result.tiles }))
-    } catch (error) { setLayoutError(String(error)) }
-    finally { setSplitting(false) }
+    await layoutCommand(id, command)
   }
-
-  useEffect(() => {
-    const el = scroller.current
-    if (!el) return
-    const reveal = () => {
-      const node = el.querySelector('.tab.on') as HTMLElement | null
-      if (!node) return
-      node.scrollIntoView({ inline: 'nearest', block: 'nearest' })
-      const pad = 24
-      const view = el.getBoundingClientRect()
-      const box = node.getBoundingClientRect()
-      if (box.width <= 0 || view.width <= 0 || el.scrollWidth <= el.clientWidth + 1) return
-      if (box.right > view.right - pad) el.scrollLeft += box.right - (view.right - pad)
-      else if (box.left < view.left + pad) el.scrollLeft -= view.left + pad - box.left
-    }
-    const sync = () => {
-      const kids = [...el.children] as HTMLElement[]
-      const width = kids.reduce((sum, kid) => sum + kid.offsetWidth, 0) + Math.max(0, kids.length - 1) * 2
-      const over = width > el.clientWidth + 1
-      setOverflow((prev) => (prev === over ? prev : over))
-      if (!over) {
-        setFade((prev) => (prev === 'none' ? prev : 'none'))
-        return
-      }
-      const max = el.scrollWidth - el.clientWidth
-      const left = el.scrollLeft > 1
-      const right = max - el.scrollLeft > 1
-      const next = left && right ? 'both' : left ? 'left' : right ? 'right' : 'none'
-      setFade((prev) => (prev === next ? prev : next))
-    }
-    reveal()
-    sync()
-    const frame = requestAnimationFrame(() => {
-      reveal()
-      sync()
-    })
-    const ro = new ResizeObserver(() => {
-      reveal()
-      sync()
-    })
-    ro.observe(el)
-    if (el.parentElement) ro.observe(el.parentElement)
-    const onScroll = () => sync()
-    el.addEventListener('scroll', onScroll, { passive: true })
-    return () => {
-      cancelAnimationFrame(frame)
-      ro.disconnect()
-      el.removeEventListener('scroll', onScroll)
-    }
-  }, [shown?.id, mine.length, project?.id, overflow])
 
   const agentOf = (id: string) => agents.find((item) => item.id === id) || resolveAgent(id, [], installed)
 
@@ -222,84 +192,9 @@ export function Workspace({
         </div>
       ) : (
         <>
-          <div className="tabbar" role="tablist">
-            <div className={`tabs ${overflow ? 'over' : ''} ${fade === 'both' ? 'fade-l fade-r' : fade === 'left' ? 'fade-l' : fade === 'right' ? 'fade-r' : ''}`} ref={scroller}>
-              {mine.map((tab) => {
-                const on = tab.id === shown?.id
-                if (tab.type !== 'term') {
-                  const label = tab.path.split('/').pop() || tab.path
-                  return (
-                    <div key={tab.id} className={`tab ${on ? 'on' : ''}`} role="tab" aria-selected={on}>
-                      <button
-                        className="grow"
-                        style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}
-                        data-a="tab"
-                        data-id={tab.id}
-                        onClick={() => onSelect(tab.id)}
-                      >
-                        <Icon name="file" className="s" />
-                        <span className="lbl" title={tab.path}>{label}</span>
-                        {tab.dirty ? <span className="dot unsaved" role="img" aria-label={t("有未保存的更改")} /> : null}
-                      </button>
-                      <button className="x" data-a="close" data-id={tab.id} aria-label={t("关闭")} onClick={() => onClose(tab.id)}>
-                        <Icon name="x" className="s" />
-                      </button>
-                    </div>
-                  )
-                }
-                const agent = agentOf(tab.kind)
-                const name = tab.name || (tab.kind === 'shell' ? shellLabel(tab.shell) : agent.name)
-                const letter = tab.kind === 'shell' ? shellLetter(tab.shell) : agent.letter
-                const color = tab.kind === 'shell' ? '#8fa3cc' : agent.color
-                const status = terminalStatus(tab)
-                return (
-                  <div key={tab.id} className={`tab ${on ? 'on' : ''}`} role="tab" aria-selected={on} onContextMenu={(event) => { event.preventDefault(); void terminalMenu(tab.id) }}>
-                    {renaming === tab.id ? <NameEditor initial={name} onCancel={() => setRenaming(null)} onSave={async (name) => { await onRenameTerm(tab.id, name); setRenaming(null) }} /> : <button style={{ display: 'flex', alignItems: 'center', gap: 8 }} data-a="tab" data-id={tab.id} data-state={tab.state} title={`${name} · ${status.label}`} onClick={() => onSelect(tab.id)} onDoubleClick={() => setRenaming(tab.id)} onKeyDown={(event) => { if (event.key === 'F2') { event.preventDefault(); setRenaming(tab.id) } else if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) { event.preventDefault(); void terminalMenu(tab.id) } }}>
-                      <Mark letter={letter} color={color} />
-                      <span className="lbl">{name}</span>
-                      <span className={`dot terminal-status ${status.color}${status.spinning ? ' spinning' : ''}`} role="img" aria-label={status.label} />
-                    </button>}
-                    <button className="x" data-a="close" data-id={tab.id} aria-label={t("关闭 {{0}}", name)} onClick={() => onClose(tab.id)}>
-                      <Icon name="x" className="s" />
-                    </button>
-                  </div>
-                )
-              })}
-            </div>
-            <div className="tabtools">
-              {overflow ? (
-                <button className="addtab" data-a="tabs-menu" aria-label={t("全部标签")} title={t("全部标签")} onClick={() => setMenu((value) => !value)}>
-                  <Icon name="chev" className="s chev open" />
-                </button>
-              ) : null}
-              <button className="addtab" data-a="newterm" title={t("新建终端")} aria-label={t("新建终端")} onClick={onNewTerm}>
-                <Icon name="plus" />
-              </button>
-            </div>
-            <span className="grow" />
-            {!rightOpen ? <button className="ib" data-a="right" title={t("显示文件面板")} aria-label={t("显示文件面板")} onClick={onToggleRight}><Icon name="panel" /></button> : null}
-            {menu ? (
-              <div className="pop" style={{ left: 8, right: 'auto' }}>
-                {mine.map((tab) => {
-                  const label = tab.type === 'term' ? tab.name || (tab.kind === 'shell' ? shellLabel(tab.shell) : agentOf(tab.kind).name) : tab.path.split('/').pop()
-                  return (
-                    <button
-                      key={tab.id}
-                      className={`row ${tab.id === shown?.id ? 'on' : ''}`}
-                      onClick={() => {
-                        onSelect(tab.id)
-                        setMenu(false)
-                      }}
-                    >
-                      <span style={{ width: 14, flex: 'none', color: 'var(--muted)' }}>{tab.id === shown?.id ? '✓' : ''}</span>
-                      <span className="nm grow">{label}</span>
-                      {tab.type === 'term' ? <span className={`dot terminal-status ${terminalStatus(tab).color}${terminalStatus(tab).spinning ? ' spinning' : ''}`} role="img" aria-label={terminalStatus(tab).label} /> : null}
-                    </button>
-                  )
-                })}
-              </div>
-            ) : null}
-          </div>
+          {!shown ? <WorkspaceTabs groupId="empty" index={0} focused style={{ width: '100%' }} tabs={[]} activeId="" agents={agents} installed={installed}
+            rightOpen={rightOpen} onToggleRight={onToggleRight} onSelect={onSelect} onClose={onClose} onPaneMenu={(id) => void paneMenu(id)} onRenameTerm={onRenameTerm}
+            renaming={renaming} setRenaming={setRenaming} onMoveTab={(id) => moveTab(id, 'empty')} onNewTerm={onNewTerm} /> : null}
           {!shown ? (
             <div className="empty">
               <div className="in">
@@ -319,51 +214,46 @@ export function Workspace({
                 </div>
               </div>
             </div>
-          ) : shown.type === 'diff' ? (
-            <DiffPane key={`${shown.projectId}:${shown.path}`} diff={diff && diff.path === shown.path ? diff : null} mode={dmode} onMode={onDmode} onDiscard={onDiscard} untracked={untracked}
-              document={preview?.path === shown.path ? preview : null} baseline={baseline} onBaseline={onBaseline} onBaselineHistory={onBaselineHistory}
-              onEdit={(text) => onEditFile(shown.id, text)} onSave={() => onSaveFile(shown.id)} onReload={() => onReloadFile(shown.id)} onCompose={(value) => onComposeFile(shown.id, value)} onHistory={(redo) => onHistoryFile(shown.id, redo)} />
-          ) : shown.type === 'file' ? (
-            <FilePane
-              key={`${shown.projectId}:${shown.path}`}
-              path={shown.path}
-              anchor={shown.anchor}
-              location={shown.location}
-              onNavigate={onNavigateFile}
-              document={preview?.path === shown.path ? preview : null}
-              onEdit={(text) => onEditFile(shown.id, text)}
-              onSave={() => onSaveFile(shown.id)}
-              onReload={() => onReloadFile(shown.id)}
-              onHistory={(redo) => onHistoryFile(shown.id, redo)}
-              onCompose={(composing) => onComposeFile(shown.id, composing)}
-              onPreviewHtml={() => onPreviewHtml(shown.id)}
-              rightOpen={rightOpen}
-              onToggleRight={onToggleRight}
-            />
           ) : null}
         </>
       )}
             {layoutError ? <div role="alert" className="file-error">{layoutError}<button className="ib" aria-label={t("关闭错误")} onClick={() => setLayoutError('')}><Icon name="x" className="s" /></button></div> : null}
-            <div className="panes" data-split={!!tiles} hidden={!project || shown?.type !== 'term'} aria-busy={splitting || undefined}>
-              {terms.map((tab) => {
-                const tile = tiles?.find((item) => item.id === tab.id)
-                const visible = tab.projectId === project?.id && (!!tile || tab.id === shown?.id) && shown?.type === 'term'
+            <div className="panes" data-split={groups.length > 1} hidden={!project || !shown} aria-busy={splitting || undefined}>
+              {groups.map((group, index) => <WorkspaceTabs key={`group:${group.id}`} groupId={group.id} index={index} focused={group.tabs.includes(shown?.id || '')}
+                style={{ gridColumn: `${group.x + 1} / span ${group.width}`, gridRow: `${group.y + 1} / span ${group.height}` }}
+                tabs={group.tabs.map((id) => tabById.get(id)!)} activeId={group.active} agents={agents} installed={installed}
+                rightOpen={rightOpen} onToggleRight={onToggleRight} onSelect={onSelect} onClose={onClose} onPaneMenu={(id) => void paneMenu(id)} onRenameTerm={onRenameTerm}
+                renaming={renaming} setRenaming={setRenaming} onMoveTab={(id) => moveTab(id, group.id)}
+                onNewTerm={() => { onSelect(group.active); onNewTerm() }} />)}
+              {[...terms, ...mine.filter((tab) => tab.type !== 'term')].map((tab) => {
+                const tile = groups.find((group) => group.tabs.includes(tab.id))
+                const visible = tab.projectId === project?.id && tile?.active === tab.id
                 const focus = visible && tab.id === shown?.id
+                const key = tab.type === 'term' ? '' : documentKey(tab.projectId, tab.path)
                 return (
                   <div
                     key={tab.id}
                     className={`pane ${focus ? 'focus' : ''}`}
                     data-a="pane"
                     data-id={tab.id}
-                    data-state={tab.state}
+                    data-type={tab.type}
+                    data-group={tile?.id}
+                    data-state={tab.type === 'term' ? tab.state : undefined}
                     hidden={!visible}
                     style={tile ? { gridColumn: `${tile.x + 1} / span ${tile.width}`, gridRow: `${tile.y + 1} / span ${tile.height}` } : undefined}
-                    onContextMenu={(event) => { event.preventDefault(); void terminalMenu(tab.id) }}
-                    onMouseDown={() => {
-                      if (!focus) onSelect(tab.id)
-                    }}
+                    onContextMenu={(event) => { if (!event.defaultPrevented) { event.preventDefault(); void paneMenu(tab.id) } }}
+                    onKeyDown={(event) => { if (!event.defaultPrevented && (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) { event.preventDefault(); void paneMenu(tab.id) } }}
+                    onFocusCapture={() => { if (!focus) onSelect(tab.id) }}
+                    onMouseDownCapture={() => { if (!focus) onSelect(tab.id) }}
                   >
-                    <TerminalPane id={tab.id} fontSize={fontSize} fontFamily={fontFamily} theme={theme} shell={tab.shell} visible={workspaceVisible && visible} focused={workspaceVisible && focus} onInterrupt={onInterrupt} onAppKey={onAppKey} />
+
+                    {tab.type === 'term' ? <TerminalPane id={tab.id} groupId={tile?.id} fontSize={fontSize} fontFamily={fontFamily} theme={theme} shell={tab.shell} visible={workspaceVisible && visible} focused={workspaceVisible && focus} onInterrupt={onInterrupt} onAppKey={onAppKey} />
+                      : visible && tab.type === 'diff' ? <DiffPane diff={diffs[key] || null} mode={diffModes[tab.id] || defaultDiffMode} onMode={(mode) => onDmode(tab.id, mode)} onDiscard={() => onDiscard(tab.id)} untracked={!!untracked[tab.path]}
+                        document={documents[key] || null} baseline={baselines[key]?.draft} onBaseline={(text) => onBaseline(tab.id, text)} onBaselineHistory={(redo) => onBaselineHistory(tab.id, redo)}
+                        onEdit={(text) => onEditFile(tab.id, text)} onSave={() => onSaveFile(tab.id)} onReload={() => onReloadFile(tab.id)} onCompose={(value) => onComposeFile(tab.id, value)} onHistory={(redo) => onHistoryFile(tab.id, redo)} />
+                      : visible && tab.type === 'file' ? <FilePane path={tab.path} anchor={tab.anchor} location={tab.location} onNavigate={onNavigateFile} document={documents[key] || null}
+                        onEdit={(text) => onEditFile(tab.id, text)} onSave={() => onSaveFile(tab.id)} onReload={() => onReloadFile(tab.id)} onHistory={(redo) => onHistoryFile(tab.id, redo)} onCompose={(value) => onComposeFile(tab.id, value)} onPreviewHtml={() => onPreviewHtml(tab.id)}
+                        rightOpen={rightOpen} onToggleRight={onToggleRight} layout={layoutOptions(tab.id)} onLayout={(command) => void layoutCommand(tab.id, command)} /> : null}
                   </div>
                 )
               })}

@@ -15,11 +15,11 @@ import { codeBlockConfig } from '@milkdown/kit/component/code-block'
 import type { NodeViewConstructor } from '@milkdown/kit/prose/view'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { tags } from '@lezer/highlight'
-import { diagramPreview } from './diagram-preview'
+import { diagramPreview, retainDiagramRenderer } from './diagram-preview'
 import { preserveCodeLayout } from './markdown-code-layout'
 import { Icon } from './icons'
 import type { SearchAdapter } from './search-types'
-import { clearSearchHighlights, domText, revealSearchRect } from './document-search'
+import { clearSearchHighlights, domText, revealSearchRect, setSearchHighlights } from './document-search'
 import '@milkdown/crepe/theme/common/style.css'
 import '@milkdown/crepe/theme/frame.css'
 import './styles/markdown.css'
@@ -128,6 +128,7 @@ export default function MarkdownEditor({ value, projectId, path, anchor, onNavig
   useEffect(() => {
     const root = host.current
     if (!root) return
+    const releaseDiagrams = retainDiagramRenderer()
     let disposed = false
     let started = false
     let releaseCodeLayout = () => {}
@@ -236,7 +237,7 @@ export default function MarkdownEditor({ value, projectId, path, anchor, onNavig
           reveal: (match, matches, active) => {
             const generation = ++searchGeneration
             stopSearchReveal(); stopSearchReveal = () => {}
-            clearSearchHighlights()
+            clearSearchHighlights(root)
             if (activeCode?.dom.isConnected) activeCode.dispatch({ effects: codeSearch.reconfigure([]) })
             activeCode = null
             const decorations = matches.slice(0, 2000).map((item, index) => Decoration.inline(position(item.from), position(item.to, true), { class: index === active ? 'search-hit search-active' : 'search-hit' }))
@@ -275,7 +276,7 @@ export default function MarkdownEditor({ value, projectId, path, anchor, onNavig
                   const placeholder = block.querySelector<HTMLElement>('.milkdown-code-block-placeholder')
                   const range = placeholder ? domText(placeholder).range({ from, to }) : null
                   if (range) {
-                    CSS.highlights.set('document-current', new Highlight(range))
+                    setSearchHighlights(root, [], [range])
                     revealSearchRect(scroller, range.getBoundingClientRect())
                   }
                   const observer = new MutationObserver(() => { if (!disposed && generation === searchGeneration && revealCode()) observer.disconnect() })
@@ -325,9 +326,9 @@ export default function MarkdownEditor({ value, projectId, path, anchor, onNavig
       disposed = true
       searchGeneration++
       stopSearchReveal()
-      clearSearchHighlights()
+      clearSearchHighlights(root)
       releaseCodeLayout()
-      void window.awb.cancelDiagrams().catch(() => {})
+      releaseDiagrams()
       ready.current = false
       editor.current = null
       localizeEditor.current = null

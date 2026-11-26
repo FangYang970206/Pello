@@ -5,7 +5,6 @@ pub mod gate;
 pub mod git;
 pub mod i18n;
 pub mod import;
-pub mod layout;
 pub mod legacy;
 pub mod menu;
 pub mod picker;

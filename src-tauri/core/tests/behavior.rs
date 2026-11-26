@@ -1376,39 +1376,33 @@ fn terminal_panes_rename_restore_and_run_state() {
     let (_, idle_status) = snap_status(&bench, "term-a");
     assert_eq!(idle_status["color"], "inactive");
 
-    let right = bench.dispatch("terminal:split", &[json!({ "projectId": "p", "sessionId": "s1", "termId": "term-a", "direction": "right" })]).unwrap();
-    assert_eq!(right["born"].as_u64(), Some(born));
-    assert_eq!(right["tiles"].as_array().unwrap().len(), 2);
-    let blocked = bench.dispatch("terminal:split", &[json!({ "projectId": "p", "sessionId": "s1", "termId": "term-a", "direction": "right" })]).unwrap_err();
-    assert!(blocked.contains("此方向已达到分栏上限"), "{blocked}");
+    // A split is laid out by the page, as the Electron build does it; the
+    // kernel says which splits a pane may still take, and nothing it does
+    // to say so touches the terminal the pane shows.
+    let one = assert_implemented(bench.dispatch("workspace:menu", &[json!({ "terminal": true, "horizontal": true, "vertical": true, "merge": false })]));
+    let enabled = |items: &serde_json::Value, id: &str| items.as_array().unwrap().iter().find(|item| item["id"] == id).map(|item| item["enabled"].as_bool().unwrap_or(true));
+    assert_eq!(enabled(&one, "split-right"), Some(true));
+    assert_eq!(enabled(&one, "split-down"), Some(true));
+    assert_eq!(enabled(&one, "merge"), Some(false));
+    assert_eq!(one.as_array().unwrap().iter().any(|item| item["id"] == "rename"), true, "{one}");
+    let edge = assert_implemented(bench.dispatch("workspace:menu", &[json!({ "terminal": true, "horizontal": false, "vertical": true, "merge": true })]));
+    assert_eq!(enabled(&edge, "split-left"), Some(false));
+    assert_eq!(enabled(&edge, "split-down"), Some(true));
+    assert_eq!(enabled(&edge, "merge"), Some(true));
     assert_eq!(bench.dispatch("pty:snapshot", &[json!("term-a")]).unwrap()["born"].as_u64(), Some(born));
-    bench.dispatch("terminal:split", &[json!({ "projectId": "p", "sessionId": "s1", "termId": "term-a", "direction": "down" })]).unwrap();
-    let other = right["tiles"].as_array().unwrap().iter().find(|tile| tile["id"] != "term-a").unwrap()["id"].as_str().unwrap().to_string();
-    let full = bench.dispatch("terminal:split", &[json!({ "projectId": "p", "sessionId": "s1", "termId": other, "direction": "down" })]).unwrap();
-    assert_eq!(full["tiles"].as_array().unwrap().len(), 4);
-    let overflow = bench.dispatch("terminal:split", &[json!({ "projectId": "p", "sessionId": "s1", "termId": "term-a", "direction": "down" })]).unwrap_err();
-    assert!(overflow.contains("最多支持四个终端分栏"), "{overflow}");
-    for tile in full["tiles"].as_array().unwrap() {
-        let id = tile["id"].as_str().unwrap();
-        assert!(bench.dispatch("pty:snapshot", &[json!(id)]).unwrap()["born"].is_number(), "{id} was closed by a split");
-    }
+    let document = assert_implemented(bench.dispatch("workspace:menu", &[json!({ "terminal": false, "horizontal": false, "vertical": false, "merge": true })]));
+    assert!(!document.as_array().unwrap().iter().any(|item| item["id"] == "rename" || item["id"] == "export-history"), "{document}");
+    assert_eq!(enabled(&document, "merge"), Some(true));
+    // A terminal is renamed by the page, as the Electron build renames it:
+    // the name it gives is saved with the project's terminals, and nothing
+    // else of the terminal is touched.
+    let terms = bench.dispatch("db:get", &[]).unwrap();
+    let mut saved = terms["db"]["sessions"]["p"].as_array().unwrap().clone();
+    let term = saved.iter_mut().find(|term| term["id"] == "term-a").unwrap();
+    term["name"] = json!("左侧");
+    let (active, groups, selected) = (terms["db"]["activeTab"]["p"].clone(), terms["db"]["workSessions"]["p"].clone(), terms["db"]["activeSession"]["p"].clone());
+    bench.dispatch("db:sessions", &[json!("p"), serde_json::Value::Array(saved), active, groups, selected]).unwrap();
     assert_eq!(bench.dispatch("pty:snapshot", &[json!("term-a")]).unwrap()["born"].as_u64(), Some(born));
-    let merged = bench.dispatch("terminal:merge", &[json!({ "projectId": "p", "sessionId": "s1", "termId": "term-a" })]).unwrap();
-    assert_eq!(merged["tiles"].as_array().unwrap().len(), 0);
-    assert_eq!(merged["born"].as_u64(), Some(born));
-    assert_eq!(merged["focus"], "term-a");
-    assert_eq!(bench.dispatch("pty:snapshot", &[json!("term-a")]).unwrap()["born"].as_u64(), Some(born));
-    let renamed = bench.dispatch("terminal:rename", &[json!({ "projectId": "p", "termId": "term-a", "name": "  左侧\u{0001}  " })]).unwrap();
-    assert_eq!(renamed["name"], "左侧");
-    assert_eq!(renamed["focus"], "term-a");
-    assert_eq!(renamed["cancelled"], false);
-    assert_eq!(bench.dispatch("pty:snapshot", &[json!("term-a")]).unwrap()["born"].as_u64(), Some(born));
-    let empty = bench.dispatch("terminal:rename", &[json!({ "projectId": "p", "termId": "term-a", "name": " \u{0001} " })]).unwrap_err();
-    assert!(empty.contains("名称不能为空"), "{empty}");
-    let cancelled = bench.dispatch("terminal:rename", &[json!({ "projectId": "p", "termId": "term-a", "name": "nope", "cancel": true })]).unwrap();
-    assert_eq!(cancelled["cancelled"], true);
-    assert_eq!(cancelled["focus"], "term-a");
-    assert_eq!(cancelled["name"], "左侧");
     let record = bench.dispatch("db:get", &[]).unwrap();
     let term = record["db"]["sessions"]["p"].as_array().unwrap().iter().find(|term| term["id"] == "term-a").unwrap();
     assert_eq!(term["name"], "左侧");
@@ -1416,6 +1410,15 @@ fn terminal_panes_rename_restore_and_run_state() {
     assert_eq!(record["db"]["projects"][0]["path"], project.display().to_string());
     assert_eq!(fs::read_to_string(project.join("marker.txt")).unwrap(), "stay");
     assert!(!project.join("左侧").exists());
+    // The page is where the name is cleaned and refused when empty, and it
+    // saves the rename with the terminals: no channel of the kernel's own.
+    let app = include_str!("../../../src/renderer/App.tsx");
+    let rename = app.split("async function renameTerm").nth(1).unwrap().split("function askDiscard").next().unwrap();
+    assert!(rename.contains("window.awb.saveSessions("), "{rename}");
+    let tabs = include_str!("../../../src/renderer/WorkspaceTabs.tsx");
+    assert!(tabs.contains("<NameEditor initial={name}"), "a tab is renamed through the name editor");
+    let editor = include_str!("../../../src/renderer/ProjectSidebar.tsx");
+    assert!(editor.contains("if (!value.trim()) { setError(t(\"名称不能为空\")); return }") && editor.contains("onSave(value.trim())"), "the name editor trims the name and refuses an empty one");
 
     pello_core::pty::save_history(&root.join("data"), "term-r", "上次输出\rline").unwrap();
     let replayed = bench.dispatch("pty:create", &[json!({ "id": "term-r", "projectId": "p", "kind": "shell", "shell": "bash" })]).unwrap();
@@ -3175,7 +3178,50 @@ fn context_menus_return_real_items_and_startup_installs_the_bar() {
     assert!(tree.as_array().unwrap().iter().any(|item| item["id"] == "create-file"), "{tree}");
     let file = assert_implemented(bench.dispatch("file:menu", &[json!({ "visual": false, "undo": true, "redo": false, "editable": true })]));
     assert!(file.as_array().unwrap().iter().any(|item| item["id"] == "save"), "{file}");
-    let terminal = assert_implemented(bench.dispatch("terminal:menu", &[json!({ "horizontal": true, "vertical": false, "merge": false })]));
+    // The editing items are the Electron build's roles: each says which, and
+    // the shell carries it out on the page's focused control. Cutting and
+    // pasting are off for a document that cannot be edited; copying and
+    // selecting stay on.
+    let role = |menu: &serde_json::Value, id: &str| menu.as_array().unwrap().iter().find(|item| item["id"] == id).map(|item| (item["edit"].as_str().unwrap_or("").to_string(), item["enabled"].as_bool()));
+    assert_eq!(role(&file, "cut"), Some(("cut".to_string(), Some(true))));
+    assert_eq!(role(&file, "copy"), Some(("copy".to_string(), Some(true))));
+    assert_eq!(role(&file, "paste"), Some(("paste".to_string(), Some(true))));
+    assert_eq!(role(&file, "pasteAndMatchStyle"), Some(("pasteAndMatchStyle".to_string(), Some(true))));
+    assert_eq!(role(&file, "selectAll"), Some(("selectAll".to_string(), Some(true))));
+    let readonly = assert_implemented(bench.dispatch("file:menu", &[json!({ "visual": false, "undo": false, "redo": false, "editable": false })]));
+    assert_eq!(role(&readonly, "cut").unwrap().1, Some(false));
+    assert_eq!(role(&readonly, "paste").unwrap().1, Some(false));
+    assert_eq!(role(&readonly, "pasteAndMatchStyle").unwrap().1, Some(false));
+    assert_eq!(role(&readonly, "copy").unwrap().1, Some(true));
+    assert_eq!(role(&readonly, "selectAll").unwrap().1, Some(true));
+    // No other item stands for a role: the page is told of those and acts.
+    assert!(file.as_array().unwrap().iter().filter(|item| item["id"].is_string() && item["edit"].is_null()).count() >= 6);
+    assert!(file.as_array().unwrap().iter().all(|item| item["edit"].is_null() || ["cut", "copy", "paste", "pasteAndMatchStyle", "selectAll"].contains(&item["edit"].as_str().unwrap_or(""))));
+    // An HTML preview's menu, as the Electron build pops it on the preview.
+    let preview = assert_implemented(bench.dispatch("menu:preview", &[]));
+    assert_eq!(preview.as_array().unwrap().iter().filter_map(|item| item["id"].as_str()).collect::<Vec<_>>(), ["source", "reload", "copy", "selectAll"]);
+    assert_eq!(preview.as_array().unwrap().iter().filter(|item| item["type"] == "separator").count(), 1);
+    assert_eq!(role(&preview, "copy").unwrap().0, "copy");
+    assert_eq!(role(&preview, "selectAll").unwrap().0, "selectAll");
+    assert!(preview.as_array().unwrap().iter().find(|item| item["id"] == "source").unwrap()["edit"].is_null());
+    // The shell carries a role out itself instead of returning it to the page.
+    let shell_edit = include_str!("../../src/edit.rs");
+    assert!(shell_edit.contains("\"pasteAndMatchStyle\" => Some((b'V', true))"));
+    assert!(shell_edit.contains("Input.dispatchKeyEvent"));
+    assert!(!shell_edit.contains("document.execCommand"), "a role is the shell's to carry out, not page script's");
+    let lib = include_str!("../../src/lib.rs");
+    assert!(lib.contains("if edit::is_role(&edit) { edit::run(window, &edit); return Value::Null }"), "a role is carried out and nothing is returned");
+    assert!(lib.contains("\"menu:preview\""), "the preview's menu is the kernel's template");
+    // A document's menu offers the splits only when asked with a layout, as
+    // the Electron build's does: the items come last, after "切换文件面板".
+    assert!(!file.as_array().unwrap().iter().any(|item| item["id"] == "split-right"), "{file}");
+    let laid_out = assert_implemented(bench.dispatch("file:menu", &[json!({ "visual": false, "undo": true, "redo": false, "editable": true, "layout": { "horizontal": false, "vertical": true, "merge": true } })]));
+    let ids = laid_out.as_array().unwrap().iter().map(|item| item["id"].as_str().unwrap_or("")).collect::<Vec<_>>();
+    assert_eq!(ids.last(), Some(&"merge"));
+    let vertical_only = laid_out.as_array().unwrap().iter().find(|item| item["id"] == "split-up").unwrap()["enabled"].as_bool();
+    assert_eq!(vertical_only, Some(true));
+    assert_eq!(laid_out.as_array().unwrap().iter().find(|item| item["id"] == "split-right").unwrap()["enabled"].as_bool(), Some(false));
+    let terminal = assert_implemented(bench.dispatch("workspace:menu", &[json!({ "terminal": true, "horizontal": true, "vertical": false, "merge": false })]));
     assert!(terminal.as_array().unwrap().iter().any(|item| item["id"] == "export-history"), "{terminal}");
     let shell = include_str!("../../src/lib.rs");
     assert!(shell.contains("install_app_menu"));
@@ -3224,7 +3270,7 @@ fn the_folder_dialog_is_the_system_one_for_a_local_project_and_the_page_picker_f
 }
 
 #[test]
-fn pane_split_keeps_the_terminal_and_claude_gets_settings() {
+fn a_split_is_the_pages_and_claude_gets_settings() {
     let root = temp_dir("split-settings");
     let project = root.join("project");
     fs::create_dir_all(&project).unwrap();
@@ -3253,10 +3299,10 @@ fn pane_split_keeps_the_terminal_and_claude_gets_settings() {
     let value = printed.rsplit("AWB_ENV:").next().unwrap_or("").lines().next().unwrap_or("").trim().to_string();
     assert_eq!(value, "1", "the terminal must start Pi's native status reporting: {printed:?}");
     wait_terminal(&bench, "term-split", true, "idle");
-    let split = assert_implemented(bench.dispatch("terminal:split", &[json!({ "projectId": "p", "sessionId": "s", "termId": "term-split", "direction": "right" })]));
-    assert_ne!(split["id"], "term-split");
+    // A split does not go through the kernel: the page lays the panes out
+    // itself, as the Electron build's does, and a split terminal is opened
+    // the way any terminal is, so what was split keeps its process.
     assert_eq!(bench.dispatch("pty:snapshot", &[json!("term-split")]).unwrap()["born"], born);
-    assert!(bench.dispatch("pty:snapshot", &[json!(split["id"].as_str().unwrap())]).unwrap()["id"] == split["id"]);
     let claude = assert_implemented(bench.dispatch("pty:create", &[json!({ "id": "claude-1", "projectId": "p", "kind": "claude", "shell": "bash" })]));
     let command = claude["launchCommand"].as_str().unwrap_or("");
     assert!(command.contains("--settings"), "{command}");
@@ -3264,11 +3310,13 @@ fn pane_split_keeps_the_terminal_and_claude_gets_settings() {
     let body = fs::read_to_string(settings).unwrap_or_else(|error| panic!("{error}: {settings} from {command}"));
     assert!(body.contains("127.0.0.1") && body.contains("hooks") && body.contains("SessionStart"), "{body}");
     let app = include_str!("../../../src/renderer/App.tsx");
-    let handler = app.split("onSplitTerm={async").nth(1).unwrap().split("onClose").next().unwrap();
-    assert!(handler.contains("terminalSplit"));
-    assert!(!handler.contains("ptyCreate") && !handler.contains("openTerm"));
+    let handler = app.split("onSplitTab={async").nth(1).unwrap().split("onClose").next().unwrap();
+    // A document is shown again in the new pane under a new tab; a terminal
+    // is started again through `openTerm`, and the split fails when it does.
+    assert!(handler.contains("openTerm("));
+    assert!(handler.contains("分栏终端启动失败"));
+    assert!(!handler.contains("terminalSplit") && !handler.contains("ptyCreate"));
     bench.dispatch("pty:close", &[json!("term-split")]).unwrap();
-    bench.dispatch("pty:close", &[json!(split["id"].as_str().unwrap())]).unwrap();
     bench.dispatch("pty:close", &[json!("claude-1")]).unwrap();
     let _ = fs::remove_dir_all(root);
 }

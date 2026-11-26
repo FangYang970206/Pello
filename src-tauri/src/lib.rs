@@ -1,13 +1,15 @@
 use pello_core::paths::Paths;
 mod diagram;
+#[cfg(windows)]
+mod edit;
 mod window;
 use pello_core::workbench::Workbench;
 use serde_json::Value;
 use std::sync::Arc;
-use tauri::{Emitter, Manager, State, Window};
+use tauri::{Emitter, Manager, State, WebviewWindow};
 
 #[tauri::command]
-async fn awb(window: Window, state: State<'_, Arc<Workbench>>, channel: String, args: Vec<Value>) -> Result<Value, String> {
+async fn awb(window: WebviewWindow, state: State<'_, Arc<Workbench>>, channel: String, args: Vec<Value>) -> Result<Value, String> {
     match channel.as_str() {
         "win:min" => {
             window.minimize().map_err(|error| error.to_string())?;
@@ -69,25 +71,14 @@ async fn awb(window: Window, state: State<'_, Arc<Workbench>>, channel: String, 
             Ok(Value::Null)
         }
         "preview:menu" => {
-            let mut language = "zh-CN".to_string();
-            if let Ok(db) = state.dispatch("db:get", &[]) {
-                if let Some(value) = db["db"]["settings"]["language"].as_str() { language = value.to_string(); }
-            }
-            let source = pello_core::i18n::translate(&language, "源码模式", &[] as &[String]);
-            let copy = pello_core::i18n::translate(&language, "复制", &[] as &[String]);
-            let select_all = pello_core::i18n::translate(&language, "全选", &[] as &[String]);
-            let template = serde_json::json!([
-                { "id": "source", "label": source },
-                { "id": "copy", "label": copy },
-                { "id": "selectAll", "label": select_all }
-            ]);
+            let template = off_runtime(Arc::clone(state.inner()), "menu:preview", Vec::new()).await?;
             popup_menu(&window, &template)
         }
-        "terminal:menu" | "file:menu" | "tree:menu" => {
+        "workspace:menu" | "file:menu" | "tree:menu" => {
             let template_channel = match channel.as_str() {
-                "terminal:menu" => "menu:terminal",
                 "file:menu" => "menu:file",
-                _ => "menu:tree",
+                "tree:menu" => "menu:tree",
+                _ => "workspace:menu",
             };
             let template = off_runtime(Arc::clone(state.inner()), template_channel, args).await?;
             popup_menu(&window, &template)
@@ -115,45 +106,100 @@ async fn off_runtime(workbench: Arc<Workbench>, channel: &str, args: Vec<Value>)
     .map_err(|error| format!("{error:?}"))?
 }
 
+/// Whether a choice is on the menu and may be taken. The items of a submenu
+/// are on the menu too.
 fn menu_choice_enabled(template: &Value, choice: &str) -> bool {
-    template.as_array().map(|items| items.iter().any(|item| item["id"].as_str() == Some(choice) && item["enabled"].as_bool().unwrap_or(true))).unwrap_or(false)
+    template.as_array().map(|items| items.iter().any(|item| {
+        (item["id"].as_str() == Some(choice) && item["enabled"].as_bool().unwrap_or(true)) || menu_choice_enabled(&item["items"], choice)
+    })).unwrap_or(false)
 }
 
-fn popup_menu(window: &Window, template: &Value) -> Result<Value, String> {
-    use tauri::menu::{ContextMenu, Menu, MenuItem};
+/// A menu and a submenu both take items, each by its own method and through
+/// no trait they share; this is the one way of adding to either.
+trait TakesItems<R: tauri::Runtime> {
+    fn take(&self, item: &dyn tauri::menu::IsMenuItem<R>) -> tauri::Result<()>;
+}
+
+impl<R: tauri::Runtime> TakesItems<R> for tauri::menu::Menu<R> {
+    fn take(&self, item: &dyn tauri::menu::IsMenuItem<R>) -> tauri::Result<()> { self.append(item) }
+}
+
+impl<R: tauri::Runtime> TakesItems<R> for tauri::menu::Submenu<R> {
+    fn take(&self, item: &dyn tauri::menu::IsMenuItem<R>) -> tauri::Result<()> { self.append(item) }
+}
+
+/// Add the items of a template to a menu: an entry by its id, a separator
+/// where the template says so, and a submenu by its items.
+fn append_menu_items<R: tauri::Runtime>(app: &tauri::AppHandle<R>, menu: &impl TakesItems<R>, template: &Value) -> Result<(), String> {
+    use tauri::menu::{MenuItem, PredefinedMenuItem, Submenu};
+    for item in template.as_array().cloned().unwrap_or_default() {
+        if item["type"] == "separator" {
+            menu.take(&PredefinedMenuItem::separator(app).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
+            continue;
+        }
+        let id = item["id"].as_str().unwrap_or("").to_string();
+        if id.is_empty() { continue; }
+        let label = item["label"].as_str().unwrap_or(&id).to_string();
+        let enabled = item["enabled"].as_bool().unwrap_or(true);
+        if item["items"].is_array() {
+            let submenu = Submenu::with_id(app, id, label, enabled).map_err(|error| error.to_string())?;
+            append_menu_items(app, &submenu, &item["items"])?;
+            menu.take(&submenu).map_err(|error| error.to_string())?;
+            continue;
+        }
+        let entry = MenuItem::with_id(app, id, label, enabled, None::<&str>).map_err(|error| error.to_string())?;
+        menu.take(&entry).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn popup_menu(window: &WebviewWindow, template: &Value) -> Result<Value, String> {
+    use tauri::menu::{ContextMenu, Menu};
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     window.on_menu_event(move |_window, event| {
         let _ = sender.send(event.id.0.clone());
     });
     let app = window.app_handle();
     let menu = Menu::new(app).map_err(|error| error.to_string())?;
-    for item in template.as_array().cloned().unwrap_or_default() {
-        let id = item["id"].as_str().unwrap_or("");
-        if id.is_empty() { continue; }
-        let label = item["label"].as_str().unwrap_or(id);
-        let enabled = item["enabled"].as_bool().unwrap_or(true);
-        let entry = MenuItem::with_id(app, id, label, enabled, None::<&str>).map_err(|error| error.to_string())?;
-        menu.append(&entry).map_err(|error| error.to_string())?;
-    }
+    append_menu_items(app, &menu, template)?;
     if let Ok(path) = std::env::var("AWB_MENU_FILE") {
         let _ = std::fs::write(format!("{path}.json"), template.to_string());
         let choice = std::fs::read_to_string(&path).unwrap_or_default();
         let choice = choice.trim().to_string();
         let _ = std::fs::write(&path, "");
         if choice.is_empty() { return Ok(Value::Null) }
-        return Ok(if menu_choice_enabled(template, &choice) { serde_json::json!(choice) } else { Value::Null });
+        return Ok(if menu_choice_enabled(template, &choice) { chosen(window, template, &choice) } else { Value::Null });
     }
     if let Ok(choice) = std::env::var("AWB_MENU_CHOICE") {
         if choice.is_empty() { return Ok(Value::Null) }
-        return Ok(if menu_choice_enabled(template, &choice) { serde_json::json!(choice) } else { Value::Null });
+        return Ok(if menu_choice_enabled(template, &choice) { chosen(window, template, &choice) } else { Value::Null });
     }
-    if menu.popup(window.clone()).is_err() {
+    if menu.popup(window.as_ref().window()).is_err() {
         return Ok(Value::Null);
     }
     match receiver.try_recv() {
-        Ok(id) => Ok(serde_json::json!(id)),
+        Ok(id) => Ok(chosen(window, template, &id)),
         Err(_) => Ok(Value::Null),
     }
+}
+
+/// What the page is told of a choice: a role is carried out on the page's
+/// focused control and nothing is returned; any other item is the page's own.
+fn chosen(window: &WebviewWindow, template: &Value, id: &str) -> Value {
+    let edit = menu_edit(template, id);
+    // Elsewhere the page is told the role and carries it out itself.
+    #[cfg(windows)]
+    if edit::is_role(&edit) { edit::run(window, &edit); return Value::Null }
+    serde_json::json!(id)
+}
+
+/// The role an item stands for, if it is one; the items of a submenu are on
+/// the menu too.
+fn menu_edit(template: &Value, id: &str) -> String {
+    template.as_array().and_then(|items| items.iter().find_map(|item| {
+        if item["items"].is_array() { return Some(menu_edit(&item["items"], id)) }
+        (item["id"].as_str() == Some(id)).then(|| item["edit"].as_str().unwrap_or("").to_string())
+    })).unwrap_or_default()
 }
 
 fn install_app_menu(app: &tauri::App) -> Result<(), String> {

@@ -134,7 +134,21 @@ const cases = [
   ['AWB075', 'src/renderer/SettingsView.tsx', "'Ctrl Shift F'", "'F12'"],
   ['AWB076', 'src/renderer/ContentSearchResults.tsx', '<summary title={file.path}>', '<summary title={file.path}><span className="content-search-count">1</span>'],
   ['AWB076', 'src/renderer/styles/extra.css', '.file-name-search .tx { width: 100%; height: 24px;', '.file-name-search .tx { width: 100%; height: 36px;'],
-  ['AWB076', 'src/renderer/styles/extra.css', '.content-search-hit mark {', '.content-search-hit mark { font-weight: 600;']
+  ['AWB076', 'src/renderer/styles/extra.css', '.content-search-hit mark {', '.content-search-hit mark { font-weight: 600;'],
+  ['AWB077', 'src/renderer/Workspace.tsx', 'documents[key]', 'documents.active'],
+  ['AWB077', 'src/renderer/Workspace.tsx', 'onBaseline(tab.id, text)', 'onBaseline(shown.id, text)'],
+  ['AWB077', 'src/renderer/DocumentSearch.tsx', "closest('.pane:not(.focus)')", "closest('.missing')"],
+  ['AWB077', 'src-tauri/core/src/menu.rs', 'template.extend(layout_menu_items(language, &options["layout"]))', 'template.push(json!({ "id": "split-right", "label": "向右分栏", "enabled": true }))'],
+  ['AWB077', 'src-tauri/core/src/menu.rs', 'items.extend(layout_menu_items(language, options))', 'items.push(json!({ "id": "merge", "label": "撤销分栏（合并）", "enabled": true }))'],
+  ['AWB077', 'src/renderer/styles/workbench.css', '.panes{flex:1;display:grid;', '.panes{flex:1;display:flex;'],
+  ['AWB077', 'src/renderer/Workspace.tsx', 'tabs={group.tabs.map((id) => tabById.get(id)!)}', 'tabs={mine}'],
+  ['AWB077', 'src/renderer/Workspace.tsx', 'aria-busy={splitting || undefined}>', 'aria-busy={splitting || undefined}><div className="pane-caption">File</div>'],
+  ['AWB078', 'src-tauri/core/src/menu.rs', 'role("pasteAndMatchStyle", "粘贴为纯文本", editable)', 'enabled("pasteAndMatchStyle", "粘贴为纯文本", editable)'],
+  ['AWB078', 'src-tauri/core/src/menu.rs', 'role("copy", "复制"),', '{ "id": "copy", "label": said("复制") },'],
+  ['AWB078', 'src-tauri/core/src/workbench.rs', '"menu:preview" => Ok(menu::preview_menu(&language))', '"menu:preview" => Ok(menu::file_menu(&language, &Value::Null))'],
+  ['AWB078', 'src-tauri/src/lib.rs', 'if edit::is_role(&edit) { edit::run(window, &edit); return Value::Null }', ''],
+  ['AWB078', 'src-tauri/src/edit.rs', String.raw`"pasteAndMatchStyle" => Some((b'V', true))`, '"pasteAndMatchStyle" => None'],
+  ['AWB078', 'src-tauri/src/edit.rs', 'Input.dispatchKeyEvent', 'Input.insertText'],
 ]
 for (const [id, file, before, after] of cases) {
   const mutated = new Map(files)

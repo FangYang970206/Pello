@@ -7,7 +7,6 @@ use crate::gate::Gate;
 use crate::git;
 use crate::i18n::{self, translate};
 use crate::import;
-use crate::layout::{self, Tile};
 use crate::legacy;
 use crate::menu;
 use crate::paths::Paths;
@@ -47,7 +46,6 @@ pub struct Workbench {
     /// for, which holds the lock on the searches.
     content_stops: Mutex<HashMap<String, crate::ssh::CancelFlag>>,
     tree_searches: Mutex<HashMap<String, TreeSearch>>,
-    layouts: Mutex<HashMap<String, Vec<Tile>>>,
     restore_failures: Mutex<HashMap<String, String>>,
     preview: preview::Service,
     resources: resources::Resources,
@@ -93,7 +91,7 @@ impl Workbench {
             db["settings"]["language"] = json!("zh-CN");
         }
         let updates = updates::Service::new(db["settings"]["autoCheckUpdates"] != false);
-        Ok(Self { paths, saves: Arc::new(Gate::new()), db: Mutex::new(db), pty: Manager::new(), dirty: Arc::new(Mutex::new(false)), content_searches: Mutex::new(HashMap::new()), content_stops: Mutex::new(HashMap::new()), tree_searches: Mutex::new(HashMap::new()), layouts: Mutex::new(HashMap::new()), restore_failures: Mutex::new(HashMap::new()), preview: preview::Service::new(), resources: resources::Resources::new(), updates: Mutex::new(updates), uploads: upload::Service::new(),
+        Ok(Self { paths, saves: Arc::new(Gate::new()), db: Mutex::new(db), pty: Manager::new(), dirty: Arc::new(Mutex::new(false)), content_searches: Mutex::new(HashMap::new()), content_stops: Mutex::new(HashMap::new()), tree_searches: Mutex::new(HashMap::new()), restore_failures: Mutex::new(HashMap::new()), preview: preview::Service::new(), resources: resources::Resources::new(), updates: Mutex::new(updates), uploads: upload::Service::new(),
             downloads: download::Service::new(), imports: import::Imports::new(), pickers: Mutex::new(HashMap::new()), history_flushed: Mutex::new(false), closing: AtomicBool::new(false), emit })
     }
 
@@ -197,9 +195,6 @@ impl Workbench {
             "pty:create" => self.pty_create(args.first().cloned().unwrap_or(json!({})), &language),
             "pty:snapshot" => Ok(self.pty.snapshot_of(str_arg(args, 0)).unwrap_or(Value::Null)),
             "pty:feed" => { self.pty.feed(str_arg(args, 0), str_arg(args, 1), &self.emit); Ok(Value::Null) }
-            "terminal:split" => self.split_terminal(args.first().cloned().unwrap_or(json!({})), &language),
-            "terminal:merge" => self.merge_terminal(args.first().cloned().unwrap_or(json!({})), &language),
-            "terminal:rename" => self.rename_terminal(args.first().cloned().unwrap_or(json!({})), &language),
             "terminal:failure" => Ok(self.terminal_failure(str_arg(args, 0))),
             "terminal:hook" => Ok(self.terminal_hook(str_arg(args, 0))),
             "pty:write" => { let bytes = pty_bytes(str_arg(args, 1), args.get(2).and_then(|value| value.as_bool()).unwrap_or(false)); self.pty.write(str_arg(args, 0), &bytes, &self.emit); Ok(Value::Null) }
@@ -272,13 +267,15 @@ impl Workbench {
             "menu:app" => Ok(menu::app_menu(&language)),
             "menu:project" => self.project_menu(str_arg(args, 0), &language),
             "menu:file" => Ok(menu::file_menu(&language, args.first().unwrap_or(&Value::Null))),
-            "menu:terminal" => Ok(menu::terminal_menu(&language, args.first().unwrap_or(&Value::Null))),
+            "menu:preview" => Ok(menu::preview_menu(&language)),
             "menu:tree" => self.tree_template(str_arg(args, 0), str_arg(args, 1), bool_arg(args, 2).unwrap_or(false), &language),
             "menu:save" => Ok(menu::save_dialog(&language, str_arg(args, 0), args.get(1).and_then(Value::as_str).unwrap_or(""))),
             "menu:open" => Ok(menu::open_dialog(&language, str_arg(args, 0))),
             "tree:menu" => self.tree_template(str_arg(args, 0), str_arg(args, 1), bool_arg(args, 2).unwrap_or(false), &language),
             "file:menu" => Ok(menu::file_menu(&language, args.first().unwrap_or(&Value::Null))),
-            "terminal:menu" => Ok(menu::terminal_menu(&language, args.first().unwrap_or(&Value::Null))),
+            // The panes are laid out by the page; the kernel only says which
+            // splits a pane may still take.
+            "workspace:menu" => Ok(menu::pane_menu(&language, args.first().unwrap_or(&Value::Null))),
             "tree:action" => self.tree_action(str_arg(args, 0), str_arg(args, 1), bool_arg(args, 2).unwrap_or(false), str_arg(args, 3), &language),
             "resources:targets" => Ok(Value::Array(resources::targets(&self.paths.data, &self.custom()))),
             "resources:scope" => { resources::set_scope(&self.resources, args.first().unwrap_or(&Value::Null)); Ok(Value::Null) },
@@ -1227,74 +1224,6 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
     fn term_saved(&self, id: &str) -> bool {
         let db = self.db.lock().expect("db");
         db["sessions"].as_object().is_some_and(|map| map.values().any(|list| list.as_array().is_some_and(|terms| terms.iter().any(|term| term["id"] == id))))
-    }
-
-    fn term_kind(&self, project_id: &str, term_id: &str) -> (String, String) {
-        let db = self.db.lock().expect("db");
-        let term = db["sessions"][project_id].as_array().and_then(|list| list.iter().find(|term| term["id"] == term_id));
-        let kind = term.and_then(|term| term["kind"].as_str()).unwrap_or("shell").to_string();
-        let shell = term.and_then(|term| term["shell"].as_str()).unwrap_or("bash").to_string();
-        (kind, shell)
-    }
-
-    fn append_term(&self, project_id: &str, id: &str, kind: &str, shell: &str, session_id: &str) -> Result<Value, String> {
-        let (terms, active, groups, selected) = {
-            let db = self.db.lock().expect("db");
-            let mut terms = db["sessions"][project_id].as_array().cloned().unwrap_or_default();
-            terms.push(json!({ "id": id, "kind": kind, "shell": shell, "sessionId": session_id }));
-            let active = db["activeTab"][project_id].as_str().unwrap_or("").to_string();
-            let groups = db["workSessions"][project_id].clone();
-            let selected = db["activeSession"][project_id].clone();
-            (terms, active, groups, selected)
-        };
-        self.save_sessions(&[json!(project_id), Value::Array(terms), json!(active), groups, selected])
-    }
-
-    fn split_terminal(&self, request: Value, language: &str) -> Result<Value, String> {
-        let project_id = request["projectId"].as_str().unwrap_or("").to_string();
-        let session_id = request["sessionId"].as_str().unwrap_or("").to_string();
-        let term_id = request["termId"].as_str().unwrap_or("").to_string();
-        let direction = request["direction"].as_str().unwrap_or("");
-        self.project(&project_id, language)?;
-        let key = format!("{project_id}:{session_id}");
-        let current = self.layouts.lock().expect("layout").get(&key).cloned().unwrap_or_else(|| vec![Tile::full(&term_id)]);
-        let next_id = uid("t");
-        let tiles = layout::split_tile(&current, &term_id, &next_id, direction, language)?;
-        let born = self.pty.born(&term_id);
-        let (kind, shell) = self.term_kind(&project_id, &term_id);
-        self.pty_create(json!({ "id": next_id, "projectId": project_id, "kind": kind, "shell": shell }), language)?;
-        if self.pty.born(&term_id) != born {
-            return Err(translate(language, "终端已关闭", &[] as &[String]));
-        }
-        self.append_term(&project_id, &next_id, &kind, &shell, &session_id)?;
-        self.layouts.lock().expect("layout").insert(key, tiles.clone());
-        Ok(json!({ "id": next_id, "born": born, "tiles": tiles.iter().map(Tile::to_json).collect::<Vec<_>>() }))
-    }
-
-    fn merge_terminal(&self, request: Value, _language: &str) -> Result<Value, String> {
-        let project_id = request["projectId"].as_str().unwrap_or("");
-        let session_id = request["sessionId"].as_str().unwrap_or("");
-        let kept = request["termId"].as_str().unwrap_or("");
-        self.layouts.lock().expect("layout").remove(&format!("{project_id}:{session_id}"));
-        Ok(json!({ "tiles": [], "born": self.pty.born(kept), "focus": kept }))
-    }
-
-    fn rename_terminal(&self, request: Value, language: &str) -> Result<Value, String> {
-        let project_id = request["projectId"].as_str().unwrap_or("");
-        let term_id = request["termId"].as_str().unwrap_or("");
-        let cancel = request["cancel"].as_bool().unwrap_or(false);
-        let mut db = self.db.lock().expect("db");
-        let terms = db["sessions"][project_id].as_array_mut().ok_or_else(|| translate(language, "终端已关闭", &[] as &[String]))?;
-        let term = terms.iter_mut().find(|term| term["id"] == term_id).ok_or_else(|| translate(language, "终端已关闭", &[] as &[String]))?;
-        if cancel {
-            return Ok(json!({ "focus": term_id, "cancelled": true, "name": term["name"].clone() }));
-        }
-        let cleaned = layout::display_name(request["name"].as_str().unwrap_or(""));
-        if cleaned.is_empty() { return Err(translate(language, "名称不能为空", &[] as &[String])); }
-        term["name"] = json!(cleaned.clone());
-        drop(db);
-        self.persist()?;
-        Ok(json!({ "focus": term_id, "cancelled": false, "name": cleaned }))
     }
 
     fn terminal_failure(&self, id: &str) -> Value {

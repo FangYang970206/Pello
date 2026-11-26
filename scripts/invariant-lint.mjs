@@ -15,7 +15,7 @@ export function projectFiles() {
     }
   }
   read('src')
-  for (const rel of ['package.json', 'AGENTS.md', 'electron-builder.yml', 'electron.vite.config.ts', 'assets/installer.nsh', 'src/renderer/index.html']) files.set(rel, fs.readFileSync(path.join(root, rel), 'utf8'))
+  for (const rel of ['package.json', 'AGENTS.md', 'electron-builder.yml', 'electron.vite.config.ts', 'assets/installer.nsh', 'src/renderer/index.html', 'src-tauri/core/src/menu.rs', 'src-tauri/core/src/workbench.rs', 'src-tauri/src/lib.rs', 'src-tauri/src/edit.rs']) files.set(rel, fs.readFileSync(path.join(root, rel), 'utf8'))
   return files
 }
 
@@ -242,6 +242,14 @@ export function checkInvariants(files) {
   require(media.includes('usePreviewWheel(viewport') && media.includes('target.scrollTop + target.clientHeight') && files.get('src/renderer/usePreviewWheel.ts')?.includes('passive: false') && files.get('src/renderer/FilePane.tsx')?.includes('useContentZoom()') && files.get('src/renderer/DiffPane.tsx')?.includes('useContentZoom()') && scripts.check?.includes('scripts/preview-wheel-check.mjs'),
     'AWB070', 'src/renderer/usePreviewWheel.ts', 'PDF 滚轮在页面边缘翻页，媒体、文件及 Diff 支持局部 Ctrl+滚轮缩放并保留行为回归')
   const search = files.get('src/renderer/DocumentSearch.tsx') || ''
+  const workspaceText = files.get(workspaceFile) || ''
+  const groupTabs = files.get('src/renderer/WorkspaceTabs.tsx') || ''
+  // The splits a pane offers are listed by the kernel, in the Rust build, as
+  // the Electron build's main process listed them: one list for a document's menu and a pane's.
+  const kernelMenu = files.get('src-tauri/core/src/menu.rs') || ''
+  const layoutItems = kernelMenu.includes('fn layout_menu_items(') && /fn file_menu[\s\S]*?template\.extend\(layout_menu_items\(language, &options\["layout"\]\)\)/.test(kernelMenu) && /fn pane_menu[\s\S]*?items\.extend\(layout_menu_items\(language, options\)\)/.test(kernelMenu)
+  require(workspaceText.includes('[...terms, ...mine.filter') && workspaceText.includes('documents[key]') && workspaceText.includes('diffs[key]') && workspaceText.includes('onBaseline(tab.id, text)') && workspaceText.includes('reconcileGroups(') && workspaceText.includes('tabs={group.tabs.map((id) => tabById.get(id)!)}') && groupTabs.includes('tabs.map((tab)') && !workspaceText.includes('pane-caption') && declarations('.panes').get('display') === 'grid' && search.includes("closest('.pane:not(.focus)')") && layoutItems && scripts.check?.includes('scripts/workspace-split-check.mjs') && scripts.check?.includes('scripts/editor-groups-check.mjs'),
+    'AWB077', workspaceFile, '终端、文件与 Diff 统一分栏，按内容管理草稿与比较基准，查找只接管当前栏并保留混合分栏回归')
   require(files.get('src/renderer/MarkdownEditor.tsx')?.includes('revealSearchRect(scroller') && scripts.check?.includes('scripts/search-navigation-check.mjs'),
     'AWB072', 'src/renderer/MarkdownEditor.tsx', '查找和上下导航定位实际匹配文字，使用所属视口并保留长文档及虚拟代码块回归')
   require(search.includes('useDocumentSearch') && search.includes('event.isComposing') && sidebarCss.includes('.document-search { position: absolute;') && sidebarCss.includes('.editor-surface { position: relative;') && files.get('src/renderer/MarkdownEditor.tsx')?.includes('tr.insertText(value, position(match.from)') && files.get('src/renderer/SettingsView.tsx')?.includes("'Ctrl F'") && !media.includes('正在加载预览') && !files.get('src/renderer/FilePane.tsx')?.includes('正在加载预览') && scripts.check?.includes('scripts/document-search-check.mjs'),
@@ -257,6 +265,16 @@ export function checkInvariants(files) {
     'AWB076', 'src/renderer/ContentSearchResults.tsx', '搜索输入框保持紧凑，结果不显示跳过统计、文件分布、行号或文件内匹配数')
   require(declarations('.editor-surface').get('container') === 'editor / inline-size' && /width:\s*clamp\([^;]*cqi/.test(sidebarCss) && containers.some((node) => node.params.startsWith('editor ')) && containers.some((node) => node.params.startsWith('media ')) && declarations('.media-zoom').get('flex-wrap') === 'wrap' && files.get('AGENTS.md')?.includes('日常自适应检查'),
     'AWB073', 'src/renderer/styles/extra.css', '搜索按实际编辑区宽度收窄，媒体工具栏允许换行，窄容器检查纳入日常开发约定')
+  // A menu's editing items are roles, as the Electron build's are: the kernel
+  // says which each is, the shell carries it out on the page's focused control
+  // and returns nothing of it to the page, and the preview's menu is the
+  // kernel's own template.
+  const shellLib = files.get('src-tauri/src/lib.rs') || ''
+  const shellEdit = files.get('src-tauri/src/edit.rs') || ''
+  require(kernelMenu.includes('let role = |id: &str, label: &str, on: bool| json!({ "id": id, "label": said(label), "enabled": on, "edit": id });') && ['cut', 'copy', 'paste', 'pasteAndMatchStyle', 'selectAll'].every((id) => kernelMenu.includes('role("' + id + '", ')) && /fn preview_menu[\s\S]*?role\("copy", "复制"\),/.test(kernelMenu) && files.get('src-tauri/core/src/workbench.rs')?.includes('"menu:preview" => Ok(menu::preview_menu(&language))'),
+    'AWB078', 'src-tauri/core/src/menu.rs', '文档菜单的剪切、复制、粘贴、粘贴为纯文本与全选是 role，预览菜单由内核提供模板')
+  require(shellLib.includes('if edit::is_role(&edit) { edit::run(window, &edit); return Value::Null }') && shellLib.includes('Ok(if menu_choice_enabled(template, &choice) { chosen(window, template, &choice) } else { Value::Null })') && shellEdit.includes(String.raw`"pasteAndMatchStyle" => Some((b'V', true))`) && shellEdit.includes('Input.dispatchKeyEvent') && !shellEdit.includes('document.execCommand') && scripts.check?.includes('scripts/edit-roles-check.mjs'),
+    'AWB078', 'src-tauri/src/edit.rs', '编辑 role 由外壳在页面焦点控件上执行且不返回页面，保留行为回归')
   return errors
 }
 

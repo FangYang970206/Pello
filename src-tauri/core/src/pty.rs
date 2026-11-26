@@ -331,12 +331,6 @@ impl Manager {
         Some((live.cwd.clone(), live.kind.clone(), live.shell.clone(), live.command.clone()))
     }
 
-    pub fn born(&self, id: &str) -> Option<u64> {
-        let sessions = self.sessions.lock().expect("pty");
-        let born = sessions.get(id)?.live.lock().expect("pty live").born;
-        Some(born)
-    }
-
     pub fn hook(&self, id: &str) -> Option<(u16, String)> {
         let sessions = self.sessions.lock().expect("pty");
         let session = sessions.get(id)?;

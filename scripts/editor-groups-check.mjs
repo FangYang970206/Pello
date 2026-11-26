@@ -1,0 +1,178 @@
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { execFileSync } from 'node:child_process'
+import { installDocumentHarness } from './fixtures/document-harness.mjs'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
+import { loadTypeScript } from './fixtures/load-ts.mjs'
+
+const { reconcileGroups, splitGroup, moveGroupTab, mergeGroups, preferredGroupTab } = await loadTypeScript(new URL('../src/renderer/workspace-layout.ts', import.meta.url))
+let groups = reconcileGroups(undefined, ['term', 'a'], 'a')
+groups = splitGroup(groups, 'a', 'b', 'right')
+groups = reconcileGroups(groups, ['term', 'a', 'b', 'c'], 'c', 'b')
+assert.deepEqual(groups.map((group) => group.tabs), [['term', 'a'], ['b', 'c']])
+assert.equal(groups[0].active, 'a')
+groups = reconcileGroups(groups, ['term', 'a', 'b', 'c'], 'term', 'c')
+assert.equal(groups[1].active, 'c')
+assert.equal(preferredGroupTab(groups, ['term', 'a', 'b'], 'c'), 'b')
+groups = moveGroupTab(groups, 'term', groups[1].id)
+assert.deepEqual(groups.map((group) => group.tabs), [['a'], ['b', 'c', 'term']])
+groups = mergeGroups(groups, 'term')
+assert.deepEqual(groups[0].tabs, ['a', 'b', 'c', 'term'])
+assert.equal(groups[0].width * groups[0].height, 4)
+console.log('PASS unique group ownership, local selection/new tabs, focus after close, moving and merge')
+
+const shots = path.resolve('output/playwright/editor-groups'); fs.mkdirSync(shots, { recursive: true })
+// The page is drawn at the scale the loop names: the desktop's own without
+// `--visual`, the four scales with it.
+const visual = process.argv.includes('--visual')
+const scales = visual ? [1, 1.25, 1.5, 2] : [null]
+for (const scale of scales) {
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'pello-editor-groups-'))
+  const repo = path.join(data, 'repo'); fs.mkdirSync(repo)
+  for (const name of ['alpha', 'beta', 'gamma']) fs.writeFileSync(path.join(repo, name + '.txt'), name + ' original\n')
+  const git = (...args) => execFileSync('git', args, { cwd: repo, windowsHide: true })
+  git('init', '-q'); git('add', 'alpha.txt', 'beta.txt', 'gamma.txt')
+  git('-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture')
+  fs.writeFileSync(path.join(repo, 'beta.txt'), 'beta changed\n')
+  const shell = process.platform === 'win32' ? 'pwsh' : 'bash'
+  fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: { layout: 'balanced', restore: true, confirmKill: false, defShell: shell, defAgent: 'shell' }, projects: [{ id: 'p', name: 'Editor groups', path: repo, host: 'local', agent: 'shell' }], sessions: { p: [{ id: 'term', kind: 'shell', shell }] }, activeTab: { p: 'term' } }))
+  const env = { ...process.env, AWB_USER_DATA: data }; delete env.ELECTRON_RUN_AS_NODE
+  const launch = () => launchWorkbench({ args: ['.'], env, cwd: path.resolve('.'), scale })
+  let app = await launch()
+  const dpi = app.scale
+  try {
+    let page = await app.firstWindow(); page.setDefaultTimeout(15000)
+    const errors = []; page.on('pageerror', (error) => errors.push(error.message))
+    await installDocumentHarness(app, page, false)
+    const tab = (id) => page.locator(`[data-a=tab][data-id="${id}"]`)
+    const pane = (id) => page.locator(`[data-a=pane][data-id="${id}"]`)
+    const group = (id) => page.locator(`[data-a=editor-group]:has([data-a=tab][data-id="${id}"])`)
+    const activeId = () => page.locator('[data-a=editor-group][data-focused=true] .tab.on [data-a=tab]').getAttribute('data-id')
+    const count = (n) => page.waitForFunction((n) => document.querySelectorAll('[data-a=editor-group]').length === n && document.querySelectorAll('.pane:not([hidden])').length === n, n)
+    // A menu command is chosen without opening the menu: by a hook on the
+    // Electron build's menu, or by the file the Tauri build's shell reads the
+    // choice from and consumes.
+    const command = async (id, action) => {
+      if (app.menuFile) fs.writeFileSync(app.menuFile, action)
+      else await app.evaluate((_electron, value) => { globalThis.__documentMenuCommand = value }, action)
+      await tab(id).dispatchEvent('contextmenu')
+      if (!app.menuFile) return
+      const end = Date.now() + 5000
+      while (Date.now() < end) {
+        if (fs.readFileSync(app.menuFile, 'utf8').trim() !== action) return
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      }
+      throw new Error(`tab menu command was not consumed: ${action}`)
+    }
+    const dragTab = async (id, target) => {
+      await tab(id).click()
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+      await tab(id).locator('..').dragTo(target, { targetPosition: { x: 12, y: 3 } })
+    }
+    const openFile = async (name) => { await page.click('[data-a=rmode][data-id=files]'); await page.click(`[data-a=preview][data-id="${name}"]`); return activeId() }
+    const source = (id) => pane(id).getByRole('textbox', { name: '文件内容', exact: true })
+    await page.waitForFunction(() => window.__awbBuffer?.('term')?.includes('>'))
+    await page.evaluate(() => { window.__editorGroupTerm = document.querySelector('[data-term=term] .xterm'); window.awb.ptyWrite('term', 'echo EDITOR_GROUP_CONTENT\r') })
+    await page.waitForFunction(() => window.__awbBuffer('term').includes('EDITOR_GROUP_CONTENT'))
+    const alpha = await openFile('alpha.txt')
+    await command(alpha, 'split-right'); await count(2)
+    const clone = await activeId(), left = await group(alpha).getAttribute('data-group'), right = await group(clone).getAttribute('data-group')
+    assert.notEqual(left, right)
+    assert.equal(await group(alpha).locator(`[data-a=tab][data-id="${clone}"]`).count(), 0)
+    assert.equal(await group(clone).locator('[data-a=tab]').count(), 1)
+    assert.equal(await openFile('alpha.txt'), clone, 'Opening an already split file prefers the current group\'s view')
+    assert.equal(await page.locator('.pane-caption,.pane .ph').count(), 0)
+    await page.evaluate((id) => { window.__editorGroupSource = document.querySelector(`[data-a=pane][data-id="${id}"] textarea`) }, alpha)
+    const beta = await openFile('beta.txt')
+    assert.equal(await group(beta).getAttribute('data-group'), right)
+    assert.equal(await source(alpha).inputValue(), 'alpha original\n')
+    assert.equal(await page.evaluate((id) => window.__editorGroupSource === document.querySelector(`[data-a=pane][data-id="${id}"] textarea`), alpha), true)
+    await tab(alpha).click()
+    const gamma = await openFile('gamma.txt')
+    assert.equal(await group(gamma).getAttribute('data-group'), left)
+    assert.equal(await source(beta).inputValue(), 'beta changed\n')
+    await source(beta).fill('beta unsaved group draft\n')
+    await tab(gamma).click()
+    const localBeta = await openFile('beta.txt')
+    assert.notEqual(localBeta, beta, 'Opening a file that exists only in another group creates a view in the current group')
+    assert.equal(await group(localBeta).getAttribute('data-group'), left)
+    assert.equal(await source(localBeta).inputValue(), 'beta unsaved group draft\n')
+    assert.equal(await tab(localBeta).locator('.dot.unsaved').count(), 1, 'A new view inherits the shared document dirty state')
+    await page.locator(`[data-a=close][data-id="${localBeta}"]`).click(); await count(2)
+    await source(beta).press('Control+z')
+    assert.equal(await source(beta).inputValue(), 'beta changed\n')
+    await tab(clone).click()
+    assert.equal(await source(gamma).inputValue(), 'gamma original\n')
+    await source(clone).fill('shared group draft\n')
+    await tab(alpha).click()
+    assert.equal(await source(alpha).inputValue(), 'shared group draft\n')
+    await source(alpha).press('Control+z')
+    assert.equal(await source(clone).inputValue(), 'alpha original\n')
+    // Native HTML dragging changes tab ownership without reparenting terminal DOM.
+    await dragTab('term', group(clone))
+    await pane('term').waitFor({ state: 'visible' })
+    await page.waitForFunction(() => document.activeElement?.closest('[data-term]')?.getAttribute('data-term') === 'term')
+    assert.equal(await group('term').getAttribute('data-group'), right)
+    assert.deepEqual(await group('term').locator('[data-a=tab]').evaluateAll((nodes) => nodes.map((node) => node.dataset.id)), [clone, beta, 'term'], 'A moved tab appends to its target group in the saved order')
+    assert.equal(await page.evaluate(() => window.__editorGroupTerm === document.querySelector('[data-term=term] .xterm')), true)
+    assert.ok(await page.evaluate(() => window.__awbBuffer('term').includes('EDITOR_GROUP_CONTENT')))
+    await group('term').hover(); await group('term').locator('[data-a=newterm]').click()
+    await page.click('[data-a=ntk][data-id=shell]'); await page.click('[data-a=nt-ok]'); await page.locator('#modal .dlg').waitFor({ state: 'detached' })
+    const created = await activeId()
+    assert.equal(await group(created).getAttribute('data-group'), right, 'The group-local plus creates its terminal in that group')
+    await page.locator(`[data-a=close][data-id="${created}"]`).click(); await count(2)
+    await dragTab(alpha, group(clone))
+    await dragTab(gamma, group(clone)); await count(1)
+    assert.equal(await page.evaluate(() => window.__editorGroupTerm === document.querySelector('[data-term=term] .xterm')), true)
+    assert.equal(await page.locator('[data-a=tab]').count(), new Set(await page.locator('[data-a=tab]').evaluateAll((nodes) => nodes.map((node) => node.dataset.id))).size)
+    await tab(alpha).click(); await command(alpha, 'split-right'); await count(2)
+    const rightTop = await activeId()
+    await command(rightTop, 'split-down'); await count(3)
+    const rightBottom = await activeId()
+    await page.click('[data-a=rmode][data-id=changes]'); await page.click('[data-a=diff][data-id="beta.txt"]')
+    const diff = await activeId()
+    await pane(diff).locator('.diff').waitFor()
+    assert.equal(await group(diff).getAttribute('data-group'), await group(rightBottom).getAttribute('data-group'))
+    await tab('term').click(); await command('term', 'split-down'); await count(4)
+    for (const theme of ['light', 'dark']) for (const [width, height] of [[1440, 900], [1024, 680]]) for (const size of [12, 16]) {
+      await page.evaluate(([width, height]) => window.awb.winResize(width, height), [width, height])
+      await page.click('[data-a=settings]'); await page.click('[data-a=sec][data-id=look]'); await page.click(`[data-a=theme][data-id=${theme}]`)
+      await page.getByLabel('界面字号', { exact: true }).selectOption(String(size)); await page.click('[data-a=back]')
+      await page.waitForTimeout(100)
+      const geometry = await page.locator('[data-a=editor-group]').evaluateAll((nodes) => nodes.map((bar) => {
+        const box = bar.getBoundingClientRect(), id = bar.querySelector('.tab.on [data-a=tab]').dataset.id
+        const pane = document.querySelector(`[data-a=pane][data-id="${id}"]`), area = pane.getBoundingClientRect(), content = pane.querySelector('.termhost,.file-content,.diff')?.getBoundingClientRect()
+        return { id, width: box.width, aligned: Math.abs(box.x - area.x) < 1 && Math.abs(box.width - area.width) < 1 && Math.abs(box.y - area.y) < 1, contentHeight: content?.height, below: content?.top >= box.bottom - 1 }
+      }))
+      assert.ok(geometry.every((item) => item.aligned && item.width > 150 && item.contentHeight > 100 && item.below), JSON.stringify(geometry))
+      assert.equal(await page.locator('.pane-caption,.pane .ph').count(), 0)
+      await page.screenshot({ path: path.join(shots, `${dpi}-${theme}-${width}-${size}.png`) })
+    }
+    await source(rightTop).fill('draft retained after closing a group\n')
+    await page.locator(`[data-a=close][data-id="${rightTop}"]`).click(); await count(3)
+    assert.equal(await page.locator('#modal .dlg').count(), 0, 'Closing a shared view keeps the draft without a discard prompt')
+    await tab(alpha).click()
+    assert.equal(await source(alpha).inputValue(), 'draft retained after closing a group\n')
+    await source(alpha).press('Control+z')
+    assert.equal(await source(alpha).inputValue(), 'alpha original\n')
+    await command('term', 'merge'); await count(1)
+    const allIds = await page.locator('[data-a=tab]').evaluateAll((nodes) => nodes.map((node) => node.dataset.id))
+    assert.equal(allIds.length, new Set(allIds).size)
+    assert.equal(await page.evaluate(() => window.__editorGroupTerm === document.querySelector('[data-term=term] .xterm')), true)
+    await command('term', 'split-right'); await count(2)
+    const restored = await activeId()
+    // Once, on the last scale: the groups come back after a restart.
+    if (scale === scales.at(-1)) {
+      await app.close(); app = await launch(); page = await app.firstWindow(); page.setDefaultTimeout(15000)
+      await installDocumentHarness(app, page, false); await count(2)
+      assert.notEqual(await group('term').getAttribute('data-group'), await group(restored).getAttribute('data-group'))
+      await page.waitForFunction(() => window.__awbBuffer?.('term')?.includes('EDITOR_GROUP_CONTENT'))
+    }
+    assert.deepEqual(errors, [])
+    console.log(`PASS ${dpi * 100}% independent tab lists/content, group-local file/terminal opening, draft/undo, drag ownership, empty groups, four-way layout, merge and restart/history; eight fresh theme/size/font captures`)
+  } catch (error) {
+    const page = await app.firstWindow(); await page.screenshot({ path: path.join(shots, `failure-${dpi}.png`) }); throw error
+  } finally { await app.close() }
+}

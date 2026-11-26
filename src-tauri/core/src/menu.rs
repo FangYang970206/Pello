@@ -16,8 +16,8 @@ pub fn app_menu(language: &str) -> Value {
         { "id": "edit", "label": translate(language, "编辑", &[] as &[String]), "items": [
             { "id": "undo", "label": translate(language, "撤销", &[] as &[String]) },
             { "id": "redo", "label": translate(language, "重做", &[] as &[String]) },
-            { "id": "copy", "label": translate(language, "复制", &[] as &[String]) },
-            { "id": "paste", "label": translate(language, "粘贴", &[] as &[String]) }
+            { "id": "copy", "label": translate(language, "复制", &[] as &[String]), "edit": "copy" },
+            { "id": "paste", "label": translate(language, "粘贴", &[] as &[String]), "edit": "paste" }
         ]},
         { "id": "view", "label": translate(language, "视图", &[] as &[String]), "items": [
             { "id": "toggle-panel", "label": translate(language, "切换文件面板", &[] as &[String]) }
@@ -38,13 +38,11 @@ pub fn project_menu(language: &str, local: bool) -> Value {
     Value::Array(items)
 }
 
-pub fn terminal_menu(language: &str, options: &Value) -> Value {
+/// The splits a pane may still take, as the Electron build's `layoutMenuItems`
+/// lists them: left and right when the pane spans both columns, up and down
+/// when it spans both rows, then merging when it is one of several.
+fn layout_menu_items(language: &str, options: &Value) -> Vec<Value> {
     let mut items = Vec::new();
-    if options["reconnect"].as_bool().unwrap_or(false) {
-        items.push(json!({ "id": "reconnect", "label": translate(language, "重新连接会话", &[] as &[String]), "enabled": true }));
-    }
-    items.push(json!({ "id": "rename", "label": translate(language, "重命名终端", &[] as &[String]), "enabled": true }));
-    items.push(json!({ "id": "export-history", "label": translate(language, "导出完整终端记录", &[] as &[String]), "enabled": true }));
     for (id, label, flag) in [
         ("split-left", "向左分栏", "horizontal"),
         ("split-right", "向右分栏", "horizontal"),
@@ -53,7 +51,25 @@ pub fn terminal_menu(language: &str, options: &Value) -> Value {
     ] {
         items.push(json!({ "id": id, "label": translate(language, label, &[] as &[String]), "enabled": options[flag].as_bool().unwrap_or(false) }));
     }
+    items.push(json!({ "type": "separator" }));
     items.push(json!({ "id": "merge", "label": translate(language, "撤销分栏（合并）", &[] as &[String]), "enabled": options["merge"].as_bool().unwrap_or(false) }));
+    items
+}
+
+/// A pane's menu: what a terminal offers by its own, then the splits. A
+/// document's pane leaves the terminal's part out.
+pub fn pane_menu(language: &str, options: &Value) -> Value {
+    let mut items = Vec::new();
+    if options["terminal"].as_bool().unwrap_or(false) {
+        if options["reconnect"].as_bool().unwrap_or(false) {
+            items.push(json!({ "id": "reconnect", "label": translate(language, "重新连接会话", &[] as &[String]), "enabled": true }));
+            items.push(json!({ "type": "separator" }));
+        }
+        items.push(json!({ "id": "rename", "label": translate(language, "重命名终端", &[] as &[String]), "enabled": true }));
+        items.push(json!({ "id": "export-history", "label": translate(language, "导出完整终端记录", &[] as &[String]), "enabled": true }));
+        items.push(json!({ "type": "separator" }));
+    }
+    items.extend(layout_menu_items(language, options));
     Value::Array(items)
 }
 
@@ -83,16 +99,61 @@ pub fn tree_menu(language: &str, directory: bool, local: bool, root: bool) -> Va
     Value::Array(items)
 }
 
+/// A document's menu, item for item as the Electron build builds it. The
+/// editing roles act on the focused control themselves, so the page is left
+/// to carry them out; a submenu holds its items under `items`.
 pub fn file_menu(language: &str, options: &Value) -> Value {
-    json!([
-        { "id": "mode", "label": translate(language, if options["visual"].as_bool().unwrap_or(false) { "源码模式" } else { "渲染模式" }, &[] as &[String]) },
-        { "id": "undo", "label": translate(language, "撤销", &[] as &[String]), "enabled": options["undo"].as_bool().unwrap_or(false) },
-        { "id": "redo", "label": translate(language, "重做", &[] as &[String]), "enabled": options["redo"].as_bool().unwrap_or(false) },
-        { "id": "cut", "label": translate(language, "剪切", &[] as &[String]) },
-        { "id": "copy", "label": translate(language, "复制", &[] as &[String]) },
-        { "id": "paste", "label": translate(language, "粘贴", &[] as &[String]) },
-        { "id": "save", "label": translate(language, "保存", &[] as &[String]), "enabled": options["editable"].as_bool().unwrap_or(false) },
-        { "id": "reload", "label": translate(language, "重新加载", &[] as &[String]) }
+    let said = |text: &str| translate(language, text, &[] as &[String]);
+    let editable = options["editable"].as_bool().unwrap_or(false);
+    let enabled = |id: &str, label: &str, on: bool| json!({ "id": id, "label": said(label), "enabled": on });
+    // What the Electron build's roles are: the shell carries them out on the
+    // focused control, and the page never hears of them.
+    let role = |id: &str, label: &str, on: bool| json!({ "id": id, "label": said(label), "enabled": on, "edit": id });
+    let mut template = vec![
+        enabled("mode", if options["visual"].as_bool().unwrap_or(false) { "源码模式" } else { "渲染模式" }, true),
+        json!({ "type": "separator" }),
+        enabled("undo", "撤销", options["undo"].as_bool().unwrap_or(false)),
+        enabled("redo", "重做", options["redo"].as_bool().unwrap_or(false)),
+        json!({ "type": "separator" }),
+        role("cut", "剪切", editable),
+        role("copy", "复制", true),
+        role("paste", "粘贴", editable),
+        role("pasteAndMatchStyle", "粘贴为纯文本", editable),
+        role("selectAll", "全选", true),
+    ];
+    if options["markdown"].as_bool().unwrap_or(false) && options["visual"].as_bool().unwrap_or(false) && editable {
+        template.push(json!({ "type": "separator" }));
+        template.push(json!({ "id": "format", "label": said("格式"), "items": [
+            enabled("bold", "加粗", true), enabled("italic", "斜体", true), enabled("code", "行内代码", true)
+        ] }));
+        template.push(json!({ "id": "paragraph", "label": said("段落"), "items": [
+            enabled("heading", "一级标题", true), enabled("quote", "引用", true), enabled("bullet", "无序列表", true), enabled("ordered", "有序列表", true), enabled("codeblock", "代码块", true), enabled("table", "插入表格", true)
+        ] }));
+    }
+    template.push(json!({ "type": "separator" }));
+    template.push(enabled("save", "保存", editable));
+    template.push(enabled("reload", "重新读取", true));
+    template.push(enabled("panel", "切换文件面板", true));
+    if options["layout"].is_object() {
+        template.push(json!({ "type": "separator" }));
+        template.extend(layout_menu_items(language, &options["layout"]));
+    }
+    Value::Array(template)
+}
+
+/// The menu of an HTML preview, as the Electron build pops it on the preview:
+/// back to the source, the file read again, then copying and selecting the
+/// preview's own text, which the shell carries out in the frame that has the
+/// keyboard, the preview's after a right click on it.
+pub fn preview_menu(language: &str) -> Value {
+    let said = |text: &str| translate(language, text, &[] as &[String]);
+    let role = |id: &str, label: &str| json!({ "id": id, "label": said(label), "edit": id });
+    Value::Array(vec![
+        json!({ "id": "source", "label": said("源码模式") }),
+        json!({ "id": "reload", "label": said("刷新文件") }),
+        json!({ "type": "separator" }),
+        role("copy", "复制"),
+        role("selectAll", "全选"),
     ])
 }
 

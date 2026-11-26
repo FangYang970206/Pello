@@ -42,7 +42,7 @@ export function useDocumentSearch({ root, text, replace, replaceRanges, reveal, 
   }
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
-      if (!enabled || !root.current || root.current.closest('[inert]') || document.querySelector('dialog[open],[role=dialog][aria-modal=true]') || event.isComposing || event.defaultPrevented) return
+      if (!enabled || !root.current || root.current.closest('[inert]') || root.current.closest('.pane:not(.focus)') || document.querySelector('dialog[open],[role=dialog][aria-modal=true]') || event.isComposing || event.defaultPrevented) return
       const target = event.target instanceof Element ? event.target : null
       if (target?.closest('.xterm,.settings,.project-search')) return
       const modifier = (event.ctrlKey || event.metaKey) && !event.altKey
