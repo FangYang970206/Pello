@@ -14,6 +14,7 @@ pub mod preview;
 pub mod pty;
 pub mod resources;
 pub mod shells;
+pub mod shell;
 pub mod ssh;
 pub mod store;
 pub mod sys;

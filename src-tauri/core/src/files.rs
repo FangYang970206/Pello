@@ -51,6 +51,12 @@ fn inside(root: &Path, path: &Path) -> bool {
     path.starts_with(root)
 }
 
+/// Whether a path is a directory, as `fs.statSync` tells a directory from a
+/// file, following links. `None` when there is nothing there.
+pub fn is_directory(path: &Path) -> Option<bool> {
+    std::fs::metadata(path).ok().map(|meta| meta.is_dir())
+}
+
 pub fn local_existing(root: &Path, rel: &str, language: &str) -> Result<(PathBuf, String), String> {
     let root = canonical_dir(root)?;
     let relative = clean_relative(rel, language)?;

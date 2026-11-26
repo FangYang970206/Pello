@@ -596,6 +596,166 @@ fn a_closing_workbench_ignores_what_is_asked_of_a_terminal() {
     let _ = fs::remove_dir_all(root);
 }
 
+/// The menu of an entry of the file tree, item for item as the Electron
+/// build builds it, and what its items do. Copying a path puts it on the
+/// clipboard rather than handing it back: the page is told nothing of it. A
+/// file opens with its default application or with an editor that is
+/// installed for it, and can be saved under another name. An entry whose
+/// kind has changed since the menu was asked for is said to have changed.
+#[test]
+fn the_file_tree_menu_copies_paths_opens_files_with_and_saves_them_elsewhere() {
+    let _lock = env_lock();
+    let root = temp_dir("tree-actions");
+    let project = root.join("project");
+    fs::create_dir_all(project.join("src")).unwrap();
+    let source = project.join("note.txt");
+    fs::write(&source, "a note to be saved elsewhere\n").unwrap();
+    let real = pello_core::real_path(&project).unwrap();
+    // A remote project on a machine that is configured but not connected: it
+    // is written before the workbench opens, as saving a host tries to reach it.
+    fs::create_dir_all(root.join("data")).unwrap();
+    fs::write(root.join("data").join("workbench.json"), json!({ "hosts": [{ "id": "local", "name": "本机", "on": true }, { "id": "remote", "name": "Remote", "addr": "127.0.0.1", "user": "wire", "port": 1, "auth": "key", "platform": "linux", "os": "Linux", "on": false }] }).to_string()).unwrap();
+    let (bench, _events) = workbench(&root);
+    let clipboard_file = root.join("clipboard.txt");
+    let open_log = root.join("open.log");
+    let _clipboard = var_guard("AWB_CLIPBOARD_FILE", clipboard_file.to_str().unwrap());
+    let _open_bin = var_guard("AWB_OPEN_BIN", "true");
+    let _open_log = var_guard("AWB_OPEN_LOG", open_log.to_str().unwrap());
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    let menu = |rel: &str, directory: bool| bench.dispatch("tree:menu", &[json!("p"), json!(rel), json!(directory)]).unwrap();
+    let slashes = |value: &str| value.replace('\\', "/");
+    let ids = |items: &serde_json::Value| items.as_array().unwrap().iter().map(|item| (item["id"].as_str().unwrap_or("").to_string(), item["label"].as_str().unwrap_or("").to_string())).collect::<Vec<_>>();
+
+    // A file's menu.
+    let file = menu("note.txt", false);
+    let file_ids = ids(&file);
+    for (id, label) in [("open", "打开"), ("reload", "刷新文件"), ("reference", "引用到当前终端"), ("rename", "重命名"), ("move", "移动到…"), ("trash", "删除"), ("reveal", "在资源管理器中显示"), ("save-as", "另存为…")] {
+        assert!(file_ids.contains(&(id.to_string(), label.to_string())), "a file's menu has {label}: {file}");
+    }
+    let submenu = |id: &str| file.as_array().unwrap().iter().find(|item| item["id"] == id).expect("the item").clone();
+    assert_eq!(submenu("copy-path")["label"], "复制路径");
+    assert_eq!(ids(&submenu("copy-path")["items"]), [("copy-full".to_string(), "复制完整路径".to_string()), ("copy-relative".to_string(), "复制项目相对路径".to_string())]);
+    assert_eq!(submenu("open-with")["label"], "打开方式");
+    let open_with = ids(&submenu("open-with")["items"]);
+    assert_eq!(open_with[0], ("open-default".to_string(), "默认应用".to_string()), "the default application comes first: {open_with:?}");
+    // Items come in the Electron build's order, with its separators: one after
+    // the file's own three, one at the end of a folder's four.
+    assert_eq!(file_ids.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["open", "reload", "reference", "", "rename", "move", "trash", "copy-path", "reveal", "open-with", "save-as"], "{file}");
+    assert_eq!(file.as_array().unwrap().iter().filter(|item| item["type"] == "separator").count(), 1, "{file}");
+    assert_eq!(menu("src", true).as_array().unwrap().iter().filter(|item| item["type"] == "separator").count(), 1);
+    // The project's root has no rename, move or delete.
+    let project_root = menu("", true);
+    let root_ids = ids(&project_root).into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+    assert_eq!(root_ids, ["create-file", "create-directory", "import-files", "import-directory", "", "copy-path", "reveal"], "{root_ids:?}");
+
+    // A directory's menu has no file items, and still copies its path.
+    let dir = menu("src", true);
+    let dir_ids = ids(&dir);
+    assert!(dir_ids.contains(&("create-file".to_string(), "新建文件".to_string())) && dir_ids.contains(&("import-files".to_string(), "导入文件…".to_string())));
+    assert!(!dir_ids.iter().any(|(id, _)| id == "open" || id == "save-as" || id == "open-with"), "{dir}");
+    assert!(dir_ids.contains(&("reveal".to_string(), "在资源管理器中打开".to_string())));
+
+    // Copying a path writes the clipboard and tells the page nothing.
+    let copied = bench.dispatch("tree:action", &[json!("p"), json!("note.txt"), json!(false), json!("copy-full")]).unwrap();
+    assert!(copied.is_null(), "the page is told nothing of a copied path: {copied}");
+    let clipboard = bench.dispatch("clipboard:read", &[]).unwrap();
+    let expected_full = slashes(&real.join("note.txt").to_string_lossy());
+    assert_eq!(slashes(clipboard.as_str().unwrap_or("")), expected_full, "the full path is on the clipboard");
+    bench.dispatch("tree:action", &[json!("p"), json!("note.txt"), json!(false), json!("copy-relative")]).unwrap();
+    assert_eq!(bench.dispatch("clipboard:read", &[]).unwrap(), "note.txt", "the relative path is on the clipboard");
+
+    // An entry whose kind changed is said to have changed.
+    let changed = bench.dispatch("tree:menu", &[json!("p"), json!("note.txt"), json!(true)]).unwrap_err();
+    assert_eq!(changed, "文件类型已更改，请刷新目录");
+    let changed = bench.dispatch("tree:action", &[json!("p"), json!("note.txt"), json!(true), json!("reveal")]).unwrap_err();
+    assert_eq!(changed, "文件类型已更改，请刷新目录");
+
+    // A file is shown selected in its folder, and opens with its default
+    // application; a folder opens in its folder. Each is asked for by its real path.
+    fs::remove_file(&open_log).ok();
+    bench.dispatch("tree:action", &[json!("p"), json!("note.txt"), json!(false), json!("reveal")]).unwrap();
+    assert_eq!(slashes(&fs::read_to_string(&open_log).unwrap_or_default()), expected_full, "the file is shown in its folder");
+    fs::remove_file(&open_log).ok();
+    bench.dispatch("tree:action", &[json!("p"), json!("note.txt"), json!(false), json!("open-default")]).unwrap();
+    assert_eq!(slashes(fs::read_to_string(&open_log).unwrap_or_default().trim()), expected_full, "the file is opened with its default application");
+    fs::remove_file(&open_log).ok();
+    bench.dispatch("tree:action", &[json!("p"), json!("src"), json!(true), json!("reveal")]).unwrap();
+    assert_eq!(slashes(fs::read_to_string(&open_log).unwrap_or_default().trim()), slashes(&real.join("src").to_string_lossy()), "the folder is opened");
+    // What is not an item of the menu is refused, and copying works on a
+    // remote project where nothing else does.
+    assert_eq!(bench.dispatch("tree:action", &[json!("p"), json!("note.txt"), json!(false), json!("print")]).unwrap_err(), "不支持此操作");
+    bench.dispatch("db:projects", &[json!([
+        { "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" },
+        { "id": "r", "name": "R", "host": "remote", "path": "/srv/site", "branch": "", "agent": "shell" }
+    ])]).unwrap();
+    let copied = bench.dispatch("tree:action", &[json!("r"), json!("docs"), json!(true), json!("copy-full")]).unwrap();
+    assert!(copied.is_null(), "{copied}");
+    assert_eq!(bench.dispatch("clipboard:read", &[]).unwrap(), "/srv/site/docs", "a remote project's path is copied too");
+    assert_eq!(bench.dispatch("tree:action", &[json!("r"), json!("docs"), json!(true), json!("reveal")]).unwrap_err(), "远程项目不支持本机打开");
+    let remote_menu = bench.dispatch("tree:menu", &[json!("r"), json!("docs"), json!(true)]).unwrap();
+    let remote_ids = ids(&remote_menu).into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+    assert_eq!(remote_ids, ["create-file", "create-directory", "import-files", "import-directory", "", "rename", "move", "trash", "copy-path", "download"], "{remote_menu}");
+    assert_eq!(remote_menu[3]["label"], "上传文件夹…");
+    // An editor that is not there any more is said to be unavailable.
+    let gone = bench.dispatch("tree:action", &[json!("p"), json!("note.txt"), json!(false), json!("editor:gone")]).unwrap_err();
+    assert_eq!(gone, "该编辑器不可用，请重新打开菜单");
+
+    // Saving elsewhere copies the file to the name chosen, and only to a
+    // name that is free; a copy that is cancelled writes nothing, and one
+    // that is refused leaves nothing behind.
+    let chosen = root.join("saved-elsewhere.txt");
+    let _save_path = var_guard("AWB_SAVE_PATH", "");
+    bench.dispatch("tree:action", &[json!("p"), json!("note.txt"), json!(false), json!("save-as")]).unwrap();
+    assert!(!chosen.exists(), "a cancelled copy writes nothing");
+    drop(_save_path);
+    let save_log = root.join("save.log");
+    let _save_log = var_guard("AWB_SAVE_LOG", save_log.to_str().unwrap());
+    let _save_path = var_guard("AWB_SAVE_PATH", chosen.to_str().unwrap());
+    bench.dispatch("tree:action", &[json!("p"), json!("note.txt"), json!(false), json!("save-as")]).unwrap();
+    assert_eq!(fs::read_to_string(&chosen).unwrap(), "a note to be saved elsewhere\n", "the file is saved under the name chosen");
+    let asked = fs::read_to_string(&save_log).unwrap();
+    assert!(asked.contains("另存为（请选择新文件名）") && asked.contains("note.txt"), "{asked}");
+    fs::write(&chosen, "something else already here").unwrap();
+    let taken = bench.dispatch("tree:action", &[json!("p"), json!("note.txt"), json!(false), json!("save-as")]).unwrap_err();
+    assert_eq!(taken, "目标已存在，请选择新的文件名");
+    assert_eq!(fs::read_to_string(&chosen).unwrap(), "something else already here", "what is there is not replaced");
+    let leftovers = fs::read_dir(&root).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).filter(|name| name.starts_with(".awb-copy-")).collect::<Vec<_>>();
+    assert!(leftovers.is_empty(), "no half-made copy is left behind: {leftovers:?}");
+    // The source is read again after the dialog: a file that became a folder
+    // while the dialog was open is said to have changed, and nothing is copied.
+    // The program that runs while the dialog is open is given the file's name.
+    let swapped = project.join("swapped.txt");
+    fs::write(&swapped, "soon a folder").unwrap();
+    let swapped_out = root.join("swapped-out.txt");
+    let _swapped = var_guard("AWB_SAVE_PATH", swapped_out.to_str().unwrap());
+    #[cfg(windows)]
+    let (swap, body) = (root.join("swap.cmd"), "@echo off\r\ndel /q %1\r\nif errorlevel 1 exit /b 1\r\nmkdir %1\r\n");
+    #[cfg(not(windows))]
+    let (swap, body) = (root.join("swap.sh"), "#!/bin/sh\nrm -f \"$1\" && mkdir -p \"$1\"\n");
+    fs::write(&swap, body).unwrap();
+    #[cfg(unix)]
+    { use std::os::unix::fs::PermissionsExt; fs::set_permissions(&swap, fs::Permissions::from_mode(0o755)).unwrap(); }
+    let _while = var_guard("AWB_SAVE_WHILE", swap.to_str().unwrap());
+    assert_eq!(bench.dispatch("tree:action", &[json!("p"), json!("swapped.txt"), json!(false), json!("save-as")]).unwrap_err(), "源文件已更改");
+    assert!(swapped.is_dir() && !swapped_out.exists(), "the folder is as it was made and nothing was copied");
+    drop(_while);
+
+    // An English page is told the same in its language.
+    let mut settings = bench.dispatch("db:get", &[]).unwrap()["db"]["settings"].clone();
+    settings["language"] = json!("en");
+    bench.dispatch("db:settings", &[settings]).unwrap();
+    let english = bench.dispatch("tree:menu", &[json!("p"), json!("note.txt"), json!(false)]).unwrap();
+    let english_ids = english.as_array().unwrap().iter().map(|item| item["label"].as_str().unwrap_or("")).collect::<Vec<_>>();
+    assert_eq!(english_ids, ["Open", "Refresh file", "Reference in current terminal", "", "Rename", "Move to…", "Delete", "Copy path", "Show in File Explorer", "Open with", "Save as…"], "{english_ids:?}");
+    assert_eq!(english[7]["items"][1]["label"], "Copy project-relative path");
+    assert_eq!(english[9]["items"][0]["label"], "Default application");
+    assert_eq!(bench.dispatch("tree:action", &[json!("p"), json!("note.txt"), json!(false), json!("editor:gone")]).unwrap_err(), "This editor is unavailable. Reopen the menu.");
+    assert_eq!(bench.dispatch("tree:menu", &[json!("p"), json!("note.txt"), json!(true)]).unwrap_err(), "File type has changed. Refresh the directory.");
+    assert_eq!(bench.dispatch("tree:action", &[json!("p"), json!("note.txt"), json!(false), json!("print")]).unwrap_err(), "Unsupported operation");
+    assert_eq!(bench.dispatch("tree:action", &[json!("r"), json!("docs"), json!(true), json!("reveal")]).unwrap_err(), "Remote projects cannot open local applications");
+    let _ = fs::remove_dir_all(root);
+}
+
 #[test]
 fn local_shell_reports_prompt_idle_without_touching_user_shell_config() {
     // A terminal is closed here, and what a closing writes to the logs of
@@ -2706,8 +2866,12 @@ fn native_menu_translates_labels_and_project_actions_keep_the_record() {
     let english = bench.dispatch("menu:project", &[json!("p")]).unwrap();
     assert!(english.as_array().unwrap().iter().any(|item| item["label"] == "Copy path"));
     assert_eq!(bench.dispatch("menu:app", &[]).unwrap()[0]["label"], "File");
+    // A copied path goes to the clipboard and not back to the page.
+    let clipboard_file = root.join("clipboard.txt");
+    let _clipboard = var_guard("AWB_CLIPBOARD_FILE", clipboard_file.to_str().unwrap());
     let copied = bench.dispatch("tree:action", &[json!("p"), json!(""), json!(true), json!("copy-full")]).unwrap();
-    assert_eq!(copied.as_str().unwrap(), pello_core::real_path(&project).unwrap().to_str().unwrap());
+    assert!(copied.is_null(), "the page is told nothing of a copied path: {copied}");
+    assert_eq!(fs::read_to_string(&clipboard_file).unwrap(), pello_core::real_path(&project).unwrap().display().to_string(), "the project's real path is on the clipboard");
     let open_log = root.join("open.log");
     let save_log = root.join("save.log");
     let save_path = root.join("history.ansi");
@@ -2715,8 +2879,10 @@ fn native_menu_translates_labels_and_project_actions_keep_the_record() {
     let _open_log = var_guard("AWB_OPEN_LOG", open_log.to_str().unwrap());
     let _save_path = var_guard("AWB_SAVE_PATH", save_path.to_str().unwrap());
     let _save_log = var_guard("AWB_SAVE_LOG", save_log.to_str().unwrap());
+    // The project's folder is opened, as a folder is; and the page makes a
+    // new entry itself, so asking the kernel for one is not an operation it has.
     bench.dispatch("tree:action", &[json!("p"), json!(""), json!(true), json!("reveal")]).unwrap();
-    assert_eq!(fs::read_to_string(&open_log).unwrap(), pello_core::real_path(&project).unwrap().display().to_string());
+    assert_eq!(fs::read_to_string(&open_log).unwrap().trim(), pello_core::real_path(&project).unwrap().display().to_string());
     let history = root.join("data/terminal-history").join(format!("{}.ansi", pello_core::pty::history_name("term-1")));
     fs::create_dir_all(history.parent().unwrap()).unwrap();
     fs::write(&history, "recorded-history").unwrap();
@@ -2725,7 +2891,8 @@ fn native_menu_translates_labels_and_project_actions_keep_the_record() {
     let dialog = fs::read_to_string(&save_log).unwrap();
     assert!(dialog.contains("ANSI terminal history") && dialog.contains("terminal-history.ansi"), "{dialog}");
     let create = bench.dispatch("tree:action", &[json!("p"), json!(""), json!(true), json!("create-file")]).unwrap_err();
-    assert!(create.contains("does not create") || create.contains("不提供新建"), "{create}");
+    // The page has been speaking English since above, and so has the kernel.
+    assert_eq!(create, "Unsupported operation", "as the Electron build's `tree:action` has no such operation");
     let after = bench.dispatch("db:get", &[]).unwrap()["db"]["projects"].clone();
     assert_eq!(after[0]["path"], project.display().to_string());
     assert_eq!(after[0]["name"], "P");

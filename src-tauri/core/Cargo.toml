@@ -32,8 +32,10 @@ ssh-rsa = ["russh/rsa"]
 
 [target.'cfg(windows)'.dependencies]
 # Pipes, IO and Security serve the behavior tests' stand-in `ssh` agent;
-# Authorization gives private files an owner-only ACL.
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Threading", "Win32_UI_Shell"] }
+# Authorization gives private files an owner-only ACL. The shell opens files
+# and links with what the system opens them with, as Electron's `shell` does;
+# DataExchange, Memory and Ole are the clipboard a copied path is written to.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_DataExchange", "Win32_System_IO", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Pipes", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging" ] }
 
 # The stand-in CLI reads the Windows console the way a native TUI does.
 [target.'cfg(windows)'.dev-dependencies]

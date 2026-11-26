@@ -15,7 +15,7 @@ export function projectFiles() {
     }
   }
   read('src')
-  for (const rel of ['package.json', 'AGENTS.md', 'electron-builder.yml', 'electron.vite.config.ts', 'assets/installer.nsh', 'src/renderer/index.html', 'src-tauri/core/src/menu.rs', 'src-tauri/core/src/workbench.rs', 'src-tauri/core/src/pty.rs', 'src-tauri/core/src/i18n.rs', 'src-tauri/src/lib.rs', 'src-tauri/src/edit.rs']) files.set(rel, fs.readFileSync(path.join(root, rel), 'utf8'))
+  for (const rel of ['package.json', 'AGENTS.md', 'electron-builder.yml', 'electron.vite.config.ts', 'assets/installer.nsh', 'src/renderer/index.html', 'src-tauri/core/src/menu.rs', 'src-tauri/core/src/workbench.rs', 'src-tauri/core/src/pty.rs', 'src-tauri/core/src/i18n.rs', 'src-tauri/core/src/shell.rs', 'src-tauri/src/lib.rs', 'src-tauri/src/edit.rs']) files.set(rel, fs.readFileSync(path.join(root, rel), 'utf8'))
   return files
 }
 
@@ -289,6 +289,15 @@ export function checkInvariants(files) {
     'AWB079', 'src-tauri/core/src/pty.rs', '工作台关闭中忽略终端的写入、缩放与重启，关闭终端时删除其历史且不再续写记录')
   require((JSON.parse(files.get('package.json') || '{}').scripts || {}).check?.includes('scripts/executor-test-check.mjs') && i18nTable.includes('("请先填写命令。", "Enter a command first."),'),
     'AWB079', 'package.json', '执行器测试的界面回归纳入日常检查，内核翻译表包含其固定消息')
+  // What the file tree's menu does goes through the desktop layer of the
+  // kernel: a copied path is on the clipboard and nothing is returned to the
+  // page, an entry is acted on only while it is still of the kind the page
+  // showed, a file is saved elsewhere only under a free name through a copy
+  // published in one step, and on Windows the system's own calls open a file
+  // and show it in its folder.
+  const kernelShell = files.get('src-tauri/core/src/shell.rs') || ''
+  require(kernel.includes('if action == "copy-full" || action == "copy-relative" {') && kernel.includes('shell::set_clipboard_text(if action == "copy-full" { &place.root } else { &relative });') && kernel.includes('if place.local && files::is_directory(Path::new(&place.root)) != Some(directory) {') && kernel.includes('if files::is_directory(&full) != Some(directory) {') && kernel.includes('shell::copy_to_new_file(') && kernel.includes('translate(language, "源文件已更改"') && kernelShell.includes('ShellExecuteW(') && kernelShell.includes('.args(["/select,", &target])') && kernelShell.includes('SetClipboardData(CF_UNICODETEXT as u32, memory)') && kernelShell.includes('match crate::sys::rename_noreplace(&temporary, destination) {'),
+    'AWB080', 'src-tauri/core/src/shell.rs', '文件树菜单经内核桌面层复制、打开、另存为：复制写剪贴板且不返回页面，动作前复核类型，另存为只发布到空闲文件名，Windows 走系统调用')
   return errors
 }
 

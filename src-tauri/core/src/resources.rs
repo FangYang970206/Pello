@@ -915,10 +915,9 @@ pub fn skill_directory(resources: &Resources, data: &Path, custom: &Value, agent
 pub fn open_skill(resources: &Resources, data: &Path, custom: &Value, agent: &str, item: &Value, language: &str) -> Result<Value, String> {
     let folder = skill_directory(resources, data, custom, agent, item, false, language)?;
     let real = crate::real_path(&folder).unwrap_or(folder);
-    if std::env::var_os("AWB_OPEN_BIN").is_some() || std::env::var_os("AWB_OPEN_LOG").is_some() {
-        crate::menu::reveal_path(&real, language)?;
-    } else if std::env::var("AWB_OPEN_SKILL").ok().as_deref() != Some("0") {
-        let _ = std::process::Command::new("xdg-open").arg(&real).spawn();
+    // `AWB_OPEN_SKILL=0` is a test that has no desktop to open a folder on.
+    if std::env::var("AWB_OPEN_SKILL").ok().as_deref() != Some("0") {
+        crate::shell::open_path(&real, language)?;
     }
     Ok(json!(real.display().to_string()))
 }

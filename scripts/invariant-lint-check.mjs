@@ -160,6 +160,15 @@ const cases = [
   ['AWB079', 'src-tauri/core/src/pty.rs', 'if !chunk.is_empty() && recorded_for_restore && !closing { let _ = append_ansi(&data, id, chunk); }', 'if !chunk.is_empty() { let _ = append_ansi(&data, id, chunk); }'],
   ['AWB079', 'package.json', 'node scripts/executor-test-check.mjs && ', ''],
   ['AWB079', 'src-tauri/core/src/i18n.rs', '("请先填写命令。", "Enter a command first."),', ''],
+  ['AWB080', 'src-tauri/core/src/workbench.rs', 'shell::set_clipboard_text(if action == "copy-full" { &place.root } else { &relative });', 'return Ok(json!(place.root));'],
+  ['AWB080', 'src-tauri/core/src/workbench.rs', 'if place.local && files::is_directory(Path::new(&place.root)) != Some(directory) {', ''],
+  ['AWB080', 'src-tauri/core/src/workbench.rs', 'if files::is_directory(&full) != Some(directory) {', ''],
+  ['AWB080', 'src-tauri/core/src/workbench.rs', 'shell::copy_to_new_file(', 'std::fs::copy('],
+  ['AWB080', 'src-tauri/core/src/workbench.rs', 'translate(language, "源文件已更改"', '"源文件已更改".to_string()'],
+  ['AWB080', 'src-tauri/core/src/shell.rs', 'ShellExecuteW(', 'std::process::Command::new("rust-open").arg('],
+  ['AWB080', 'src-tauri/core/src/shell.rs', '.args(["/select,", &target])', '.args([&target])'],
+  ['AWB080', 'src-tauri/core/src/shell.rs', 'SetClipboardData(CF_UNICODETEXT as u32, memory)', 'std::fs::write("clipboard.txt", text)'],
+  ['AWB080', 'src-tauri/core/src/shell.rs', 'match crate::sys::rename_noreplace(&temporary, destination) {', 'std::fs::rename(&temporary, destination);'],
 ]
 for (const [id, file, before, after] of cases) {
   const mutated = new Map(files)

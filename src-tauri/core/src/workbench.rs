@@ -15,6 +15,7 @@ use crate::preview;
 use crate::pty::{self, Manager};
 use crate::resources;
 use crate::search::{self, ContentSearch, TreeSearch};
+use crate::shell;
 use crate::shells::{self, installed_agents};
 use crate::ssh;
 use crate::store::{self, apply_saved_settings, host_color, public_host, PlatformInfo};
@@ -31,6 +32,17 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 type Emit = Arc<dyn Fn(Value) + Send + Sync>;
+
+/// Where an entry of a project's tree is, as the Electron build's `treePath`
+/// resolves it: the path on its machine and the relative one. `root` is the
+/// real path of the entry on this machine, and the project's path joined
+/// with the relative one on another.
+struct TreePlace {
+    local: bool,
+    root: String,
+    relative: String,
+    platform: String,
+}
 
 pub struct Workbench {
     pub paths: Paths,
@@ -292,6 +304,9 @@ impl Workbench {
             // splits a pane may still take.
             "workspace:menu" => Ok(menu::pane_menu(&language, args.first().unwrap_or(&Value::Null))),
             "tree:action" => self.tree_action(str_arg(args, 0), str_arg(args, 1), bool_arg(args, 2).unwrap_or(false), str_arg(args, 3), &language),
+            // What a copy put on the clipboard, for a test to see: only a
+            // clipboard kept in a file is read, never the user's own.
+            "clipboard:read" => Ok(shell::read_clipboard().map(Value::String).unwrap_or(Value::Null)),
             "resources:targets" => Ok(Value::Array(resources::targets(&self.paths.data, &self.custom()))),
             "resources:scope" => { resources::set_scope(&self.resources, args.first().unwrap_or(&Value::Null)); Ok(Value::Null) },
             "resources:target" => resources::save_target(&self.paths.data, &self.custom(), args.first().unwrap_or(&Value::Null), &language).map(|_| Value::Null),
@@ -1189,35 +1204,98 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
         Ok(menu)
     }
 
-    fn tree_template(&self, project_id: &str, rel: &str, directory: bool, language: &str) -> Result<Value, String> {
+    fn tree_place(&self, project_id: &str, rel: &str, language: &str) -> Result<TreePlace, String> {
         let project = self.project(project_id, language)?;
-        let local = project["host"].as_str().unwrap_or("local") == "local" || project["host"].as_str().unwrap_or("").is_empty();
-        let root = files::clean_relative(rel, language).unwrap_or_default().is_empty();
-        Ok(menu::tree_menu(language, directory, local, root))
+        let host_id = project["host"].as_str().unwrap_or("local").to_string();
+        let root = project["path"].as_str().unwrap_or("").to_string();
+        let relative = files::clean_relative(rel, language)?;
+        let remote = !host_id.is_empty() && host_id != "local";
+        let platform = if remote {
+            self.optional_host(&host_id)?.map_or("linux".to_string(), |host| host["platform"].as_str().unwrap_or("linux").to_string())
+        } else if cfg!(windows) {
+            "win32".to_string()
+        } else {
+            "linux".to_string()
+        };
+        // A colon in a part of the path is a drive or a stream on Windows.
+        if platform == "windows" && relative.split('/').any(|part| part.contains(':')) {
+            return Err(translate(language, "非法文件路径", &[] as &[String]));
+        }
+        let relative = if relative.is_empty() { ".".to_string() } else { relative };
+        if remote {
+            // Joined with the other machine's own separators. `..` was
+            // refused already, so the entry is inside the project.
+            let separator = if platform == "windows" { '\\' } else { '/' };
+            let tail = if relative == "." { String::new() } else { relative.replace('/', &separator.to_string()) };
+            let full = [root.trim_end_matches(['\\', '/']).to_string(), tail].into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join(&separator.to_string());
+            return Ok(TreePlace { local: false, root: full, relative, platform });
+        }
+        // As `localPath` reads it: the real path of the entry, which is
+        // inside the real path of the project or not resolved at all.
+        let (full, _) = files::local_existing(Path::new(&root), &relative, language)?;
+        Ok(TreePlace { local: true, root: full.display().to_string(), relative, platform })
     }
 
-    fn tree_action(&self, project_id: &str, rel: &str, _directory: bool, action: &str, language: &str) -> Result<Value, String> {
-        let before = self.project(project_id, language)?;
-        let root = before["path"].as_str().unwrap_or("");
-        let relative = files::clean_relative(rel, language).unwrap_or_default();
-        let local = before["host"].as_str().unwrap_or("local") == "local" || before["host"].as_str().unwrap_or("").is_empty();
-        let full = if relative.is_empty() {
-            if local { crate::real_path(root).map(|path| path.display().to_string()).unwrap_or_else(|_| root.to_string()) } else { root.to_string() }
-        } else if root.contains('\\') {
-            format!("{}\\{}", root.trim_end_matches('\\'), relative.replace('/', "\\"))
+    fn tree_template(&self, project_id: &str, rel: &str, directory: bool, language: &str) -> Result<Value, String> {
+        let place = self.tree_place(project_id, rel, language)?;
+        if place.local && files::is_directory(Path::new(&place.root)) != Some(directory) {
+            return Err(translate(language, "文件类型已更改，请刷新目录", &[] as &[String]));
+        }
+        let editors = if directory || !place.local {
+            Vec::new()
         } else {
-            format!("{}/{}", root.trim_end_matches('/'), relative)
+            shell::installed_editors(Path::new(&place.root), &place.platform, &|name| std::env::var(name).ok())
+                .into_iter()
+                .map(|editor| (editor.id.to_string(), editor.name.to_string()))
+                .collect()
         };
-        let result = match action {
-            "copy-full" => Ok(json!(full)),
-            "copy-relative" => Ok(json!(if relative.is_empty() { "." } else { &relative })),
-            "reveal" if local => menu::reveal_path(Path::new(&full), language).map(|_| json!(full)),
-            "reveal" => Err(translate(language, "远程项目不支持本机打开", &[] as &[String])),
-            "create-file" | "create-directory" => Err(translate(language, "项目菜单不提供新建文件或文件夹", &[] as &[String])),
-            _ => Err(translate(language, "不支持此操作", &[] as &[String])),
-        }?;
+        Ok(menu::tree_menu(language, directory, place.local, place.relative == ".", &editors))
+    }
+
+    fn tree_action(&self, project_id: &str, rel: &str, directory: bool, action: &str, language: &str) -> Result<Value, String> {
+        let before = self.project(project_id, language)?;
+        let place = self.tree_place(project_id, rel, language)?;
+        let full = PathBuf::from(&place.root);
+        let relative = place.relative.clone();
+        let local = place.local;
+        // Copying a path puts it on the clipboard, and the page is told
+        // nothing of it, on whichever machine the project is.
+        if action == "copy-full" || action == "copy-relative" {
+            shell::set_clipboard_text(if action == "copy-full" { &place.root } else { &relative });
+            return Ok(Value::Null);
+        }
+        if !local { return Err(translate(language, "远程项目不支持本机打开", &[] as &[String])) }
+        // The entry may have changed since the menu was asked for.
+        if files::is_directory(&full) != Some(directory) {
+            return Err(translate(language, "文件类型已更改，请刷新目录", &[] as &[String]));
+        }
+        let result = if !directory && action.starts_with("editor:") {
+            let editor = shell::installed_editors(&full, &place.platform, &|name| std::env::var(name).ok())
+                .into_iter()
+                .find(|editor| format!("editor:{}", editor.id) == action)
+                .ok_or_else(|| translate(language, "该编辑器不可用，请重新打开菜单", &[] as &[String]))?;
+            shell::launch_editor(&editor, &full)?;
+            Value::Null
+        } else if action == "save-as" && !directory {
+            let Some(chosen) = menu::choose_save_path(language, "save-as", &place.root)? else { return Ok(Value::Null) };
+            // Asked for again after the dialog, which may have been open a long time.
+            let source = self.tree_place(project_id, rel, language)?;
+            if !source.local || !Path::new(&source.root).is_file() { return Err(translate(language, "源文件已更改", &[] as &[String])) }
+            match shell::copy_to_new_file(Path::new(&source.root), Path::new(&chosen)).map_err(|error| error.to_string())? {
+                shell::Copy::Copied => Value::Null,
+                shell::Copy::Taken => return Err(translate(language, "目标已存在，请选择新的文件名", &[] as &[String])),
+            }
+        } else if action == "reveal" && !directory {
+            shell::show_in_folder(&full);
+            Value::Null
+        } else if (action == "reveal" && directory) || (action == "open-default" && !directory) {
+            shell::open_path(&full, language)?;
+            Value::Null
+        } else {
+            return Err(translate(language, "不支持此操作", &[] as &[String]));
+        };
         let after = self.project(project_id, language)?;
-        if before != after { return Err(translate(language, "项目记录被意外修改", &[] as &[String])); }
+        if before != after { return Err(translate(language, "项目记录被意外修改", &[] as &[String])) }
         Ok(result)
     }
 
@@ -1348,7 +1426,7 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
         if !lower.ends_with(".html") && !lower.ends_with(".htm") { return Err(translate(language, "仅支持在浏览器中预览 HTML 文件", &[] as &[String])) }
         let url = self.preview_url(&[json!(project_id), json!(relative), Value::Null], language)?;
         let href = url.as_str().unwrap_or("").to_string();
-        menu::open_external(&href);
+        shell::open_external(&href);
         Ok(json!(href))
     }
 
@@ -1357,7 +1435,7 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
         let trimmed = href.trim();
         if trimmed.contains("://") || trimmed.starts_with("//") {
             if !web_link(trimmed) { return Err(translate(language, "仅支持网页链接和项目内文件链接", &[] as &[String])) }
-            menu::open_external(trimmed);
+            shell::open_external(trimmed);
             return Ok(Value::Null);
         }
         let project = self.project(project_id, language)?;

@@ -1,11 +1,8 @@
 //! Native menu templates. Labels come from the shared catalog.
-//! Project actions copy or reveal the real path and do not rewrite the project record.
 
 use crate::i18n::translate;
 use serde_json::{json, Value};
 use std::fs;
-use std::path::Path;
-use std::process::Command;
 
 pub fn app_menu(language: &str) -> Value {
     json!([
@@ -73,28 +70,43 @@ pub fn pane_menu(language: &str, options: &Value) -> Value {
     Value::Array(items)
 }
 
-pub fn tree_menu(language: &str, directory: bool, local: bool, root: bool) -> Value {
+/// The menu of an entry of the file tree, item for item as the Electron
+/// build builds it. `editors` are the editors installed for the file, in the
+/// order they are offered under "open with"; the default application comes
+/// before them. A submenu holds its items under `items`.
+pub fn tree_menu(language: &str, directory: bool, local: bool, root: bool, editors: &[(String, String)]) -> Value {
+    let said = |text: &str| translate(language, text, &[] as &[String]);
+    let item = |id: &str, label: &str| json!({ "id": id, "label": said(label) });
+    let separator = || json!({ "type": "separator" });
     let mut items = Vec::new();
     if directory {
-        items.push(json!({ "id": "create-file", "label": translate(language, "新建文件", &[] as &[String]) }));
-        items.push(json!({ "id": "create-directory", "label": translate(language, "新建文件夹", &[] as &[String]) }));
-        items.push(json!({ "id": if local { "import-files" } else { "import-files" }, "label": translate(language, if local { "导入文件…" } else { "上传文件…" }, &[] as &[String]) }));
-        items.push(json!({ "id": "import-directory", "label": translate(language, if local { "导入文件夹…" } else { "上传文件夹…" }, &[] as &[String]) }));
+        items.push(item("create-file", "新建文件"));
+        items.push(item("create-directory", "新建文件夹"));
+        items.push(item("import-files", if local { "导入文件…" } else { "上传文件…" }));
+        items.push(item("import-directory", if local { "导入文件夹…" } else { "上传文件夹…" }));
+        items.push(separator());
     } else {
-        items.push(json!({ "id": "open", "label": translate(language, "打开", &[] as &[String]) }));
-        items.push(json!({ "id": "reference", "label": translate(language, "引用到当前终端", &[] as &[String]) }));
+        items.push(item("open", "打开"));
+        items.push(item("reload", "刷新文件"));
+        items.push(item("reference", "引用到当前终端"));
+        items.push(separator());
     }
     if !root {
-        items.push(json!({ "id": "rename", "label": translate(language, "重命名", &[] as &[String]) }));
-        items.push(json!({ "id": "move", "label": translate(language, "移动到…", &[] as &[String]) }));
-        items.push(json!({ "id": "trash", "label": translate(language, "删除", &[] as &[String]) }));
+        items.push(item("rename", "重命名"));
+        items.push(item("move", "移动到…"));
+        items.push(item("trash", "删除"));
     }
-    items.push(json!({ "id": "copy-full", "label": translate(language, "复制完整路径", &[] as &[String]) }));
-    items.push(json!({ "id": "copy-relative", "label": translate(language, "复制项目相对路径", &[] as &[String]) }));
+    items.push(json!({ "id": "copy-path", "label": said("复制路径"), "items": [item("copy-full", "复制完整路径"), item("copy-relative", "复制项目相对路径")] }));
     if local {
-        items.push(json!({ "id": "reveal", "label": translate(language, if directory { "在资源管理器中打开" } else { "在资源管理器中显示" }, &[] as &[String]) }));
+        items.push(item("reveal", if directory { "在资源管理器中打开" } else { "在资源管理器中显示" }));
+        if !directory {
+            let mut open_with = vec![item("open-default", "默认应用")];
+            open_with.extend(editors.iter().map(|(id, name)| item(&format!("editor:{id}"), name)));
+            items.push(json!({ "id": "open-with", "label": said("打开方式"), "items": open_with }));
+            items.push(item("save-as", "另存为…"));
+        }
     } else if !root {
-        items.push(json!({ "id": "download", "label": translate(language, "下载…", &[] as &[String]) }));
+        items.push(item("download", "下载…"));
     }
     Value::Array(items)
 }
@@ -203,13 +215,19 @@ fn rfd_dialog(spec: &Value) -> rfd::FileDialog {
 }
 
 /// Ask for a save path. `AWB_SAVE_PATH` supplies the choice in tests; an
-/// empty value cancels. `AWB_SAVE_LOG` receives what was asked for.
+/// empty value cancels. `AWB_SAVE_LOG` receives what was asked for, and
+/// `AWB_SAVE_WHILE` names a program that runs while the dialog is open, given
+/// the name the file is offered under, as a test changes something that the
+/// caller must read again afterwards.
 pub fn choose_save_path(language: &str, kind: &str, name: &str) -> Result<Option<String>, String> {
     let spec = save_dialog(language, kind, name);
     if let Ok(log) = std::env::var("AWB_SAVE_LOG") {
         let _ = fs::write(log, spec.to_string());
     }
     if let Ok(path) = std::env::var("AWB_SAVE_PATH") {
+        if let Ok(program) = std::env::var("AWB_SAVE_WHILE") {
+            let _ = std::process::Command::new(program).arg(spec["defaultPath"].as_str().unwrap_or("")).status();
+        }
         if path.is_empty() { return Ok(None); }
         return Ok(Some(path));
     }
@@ -239,36 +257,4 @@ pub fn choose_open_paths(kind: &str, language: &str) -> Vec<String> {
 
 pub fn choose_open_path(kind: &str, language: &str) -> Value {
     choose_open_paths(kind, language).into_iter().next().map(|path| json!(path)).unwrap_or(Value::Null)
-}
-
-pub fn open_external(target: &str) {
-    if let Ok(log) = std::env::var("AWB_OPEN_LOG") {
-        if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(log) {
-            use std::io::Write;
-            let _ = writeln!(file, "{target}");
-        }
-    }
-    let program = std::env::var("AWB_OPEN_BIN").unwrap_or_else(|_| "xdg-open".into());
-    if program == "true" || Path::new(&program).file_name().and_then(|name| name.to_str()) == Some("true") { return }
-    let _ = Command::new(program).arg(target).status();
-}
-
-pub fn reveal_path(path: &Path, language: &str) -> Result<(), String> {
-    if !path.exists() { return Err(translate(language, "目录不存在", &[] as &[String])); }
-    let program = std::env::var("AWB_OPEN_BIN").unwrap_or_else(|_| "xdg-open".into());
-    if let Ok(log) = std::env::var("AWB_OPEN_LOG") {
-        let _ = fs::write(log, path.display().to_string());
-        if program == "true" || Path::new(&program).file_name().and_then(|name| name.to_str()) == Some("true") {
-            return Ok(());
-        }
-    }
-    let output = Command::new(&program).arg(path).output().map_err(|error| error.to_string())?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let detail = if !stderr.is_empty() { stderr } else { stdout };
-        Err(if detail.is_empty() { translate(language, "无法在资源管理器中打开", &[] as &[String]) } else { detail })
-    }
 }
