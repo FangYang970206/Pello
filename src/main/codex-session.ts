@@ -1,27 +1,31 @@
 import { t } from '../shared/i18n'
 import { spawn } from 'node:child_process'
 import type { Readable, Writable } from 'node:stream'
-import type { Host } from '../shared/types'
+import type { EnvVar, Host } from '../shared/types'
 import { bashQuote, psQuote, sshBatchArgs } from './platform'
 import { needsSshClient, connectPasswordHost, remoteCommand } from './ssh'
+import { encodeRemoteEnv, receiveRemoteEnv, redactExecutorOutput, REMOTE_ENV_APPLIED } from './executor-env'
 
 /** Allocate a durable native thread without a model request, then attach the CLI by ID. */
-export async function createCodexThread(cwd: string, host?: Host, signal?: AbortSignal): Promise<string> {
+export async function createCodexThread(cwd: string, host?: Host, signal?: AbortSignal, env: EnvVar[] = []): Promise<string> {
   let input: Writable, output: Readable, dispose: () => void
   const remote = host && host.id !== 'local'
+  const receive = remote && env.length ? receiveRemoteEnv(host.platform) : ''
   const boot = host?.platform === 'windows'
-    ? ['powershell.exe', '-NoProfile', '-Command', `Set-Location -LiteralPath ${psQuote(cwd)}; codex --no-daemon app-server`]
-    : ['bash', '-lc', `[ ! -f ~/.bashrc ] || source ~/.bashrc; cd -- ${bashQuote(cwd)} && codex --no-daemon app-server`]
+    ? ['powershell.exe', '-NoProfile', '-Command', `${receive}\nSet-Location -LiteralPath ${psQuote(cwd)}; codex --no-daemon app-server`]
+    : ['bash', '-lc', `[ ! -f ~/.bashrc ] || source ~/.bashrc\n${receive}\ncd -- ${bashQuote(cwd)} && exec codex --no-daemon app-server`]
   if (remote && needsSshClient(host)) {
-    const client = await connectPasswordHost(host)
-    const stream = await new Promise<import('ssh2').ClientChannel>((resolve, reject) => client.exec(remoteCommand(host, boot), (error, stream) => error ? reject(error) : resolve(stream)))
+    const client = await connectPasswordHost(host, signal)
+    let stream: import('ssh2').ClientChannel
+    try { stream = await new Promise<import('ssh2').ClientChannel>((resolve, reject) => client.exec(remoteCommand(host, boot), (error, stream) => error ? reject(error) : resolve(stream))) }
+    catch (error) { client.end(); throw error }
     input = output = stream
     stream.stderr.resume()
     dispose = () => { stream.destroy(); client.end() }
   } else {
     const proc = remote
       ? spawn('ssh', sshBatchArgs(host, [remoteCommand(host, boot)]), { windowsHide: true })
-      : spawn(process.platform === 'win32' ? 'codex.exe' : 'codex', ['--no-daemon', 'app-server'], { cwd, windowsHide: true, env: { ...process.env, CODEX_INTERNAL_ORIGINATOR_OVERRIDE: 'pello' } })
+      : spawn(process.platform === 'win32' ? 'codex.exe' : 'codex', ['--no-daemon', 'app-server'], { cwd, windowsHide: true, env: { ...process.env, ...Object.fromEntries(env.map(({ k, v }) => [k, v])), CODEX_INTERNAL_ORIGINATOR_OVERRIDE: 'pello' } })
     input = proc.stdin; output = proc.stdout
     proc.stderr.resume()
     // Some CLI launchers inherit pipe handles into a shared daemon. Close our
@@ -30,7 +34,7 @@ export async function createCodexThread(cwd: string, host?: Host, signal?: Abort
     proc.on('error', (error) => output.destroy(error))
   }
   return new Promise<string>((resolve, reject) => {
-    let pending = '', settled = false, threadId = ''
+    let pending = '', settled = false, threadId = '', waitingForEnvironment = !!receive
     const finish = (error?: Error, id?: string) => {
       if (settled) return
       settled = true; clearTimeout(timer); signal?.removeEventListener('abort', abort)
@@ -46,16 +50,24 @@ export async function createCodexThread(cwd: string, host?: Host, signal?: Abort
     output.on('end', () => finish(new Error(t("Codex 在创建会话前退出"))))
     output.setEncoding('utf8')
     const send = (message: object) => input.write(JSON.stringify(message) + '\n')
+    const initialize = () => send({ id: 1, method: 'initialize', params: { clientInfo: { name: 'pello', version: '0.1' } } })
     output.on('data', (data: string) => {
       pending += data
       if (pending.length > 2_000_000) { finish(new Error(t("Codex 会话响应过大"))); return }
+      if (waitingForEnvironment) {
+        const marker = pending.indexOf(REMOTE_ENV_APPLIED)
+        if (marker < 0) return
+        pending = pending.slice(marker + REMOTE_ENV_APPLIED.length)
+        waitingForEnvironment = false
+        initialize()
+      }
       let end: number
       while ((end = pending.indexOf('\n')) >= 0) {
         const line = pending.slice(0, end); pending = pending.slice(end + 1)
         let response: { id?: number; error?: { message?: string }; result?: { thread?: { id?: string } } }
         try { response = JSON.parse(line) } catch { continue }
         if (![1, 2, 3].includes(response.id!)) continue
-        if (response.error) { finish(new Error(response.error.message || t("Codex 会话初始化失败"))); return }
+        if (response.error) { finish(new Error(redactExecutorOutput(response.error.message || t("Codex 会话初始化失败"), env))); return }
         if (response.id === 1) {
           send({ method: 'initialized' })
           send({ id: 2, method: 'thread/start', params: { cwd, persistExtendedHistory: true } })
@@ -67,6 +79,7 @@ export async function createCodexThread(cwd: string, host?: Host, signal?: Abort
       }
     })
     if (signal?.aborted) { abort(); return }
-    send({ id: 1, method: 'initialize', params: { clientInfo: { name: 'pello', version: '0.1' } } })
+    if (waitingForEnvironment) input.write(encodeRemoteEnv(env))
+    else initialize()
   })
 }

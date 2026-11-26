@@ -1,17 +1,18 @@
 import { t } from '../shared/i18n'
 import { useState, type ReactNode } from 'react'
 import { useAnchoredMenu } from './useAnchoredMenu'
-import type { Executor, Host, Project, Settings, SettingsSection, ShellKind } from '../shared/types'
+import type { Database, Executor, Host, Project, Settings, SettingsSection, ShellKind } from '../shared/types'
 import { FileSearchSettings } from './FileSearchSettings'
 import { hostColor } from '../shared/host-colors'
-import { PRESETS, cmdline, hostDisplayName, hostLine, preferredAgent, shellLabel } from '../shared/types'
+import { PRESETS, hostDisplayName, hostLine, preferredAgent, shellLabel } from '../shared/types'
 import { useLocalShells } from './useLocalShells'
 import { ResourceSettings } from './ResourceSettings'
+import { ExecutorSettings } from './ExecutorSettings'
 import { AppUpdate } from './AppUpdate'
 import { AboutView } from './AboutView'
 import { CODE_FONTS, UI_FONTS } from '../shared/fonts'
 import { THEMES } from '../shared/themes'
-import { Icon, type IconName, Mark } from './icons'
+import { Icon, type IconName } from './icons'
 
 const SECTIONS: { id: SettingsSection; label: string; icon: IconName }[] = [
   { id: 'general', get label() { return t("通用") }, icon: 'sliders' },
@@ -53,6 +54,9 @@ export function SettingsView({
   settings,
   custom,
   hosts,
+  templates,
+  templateBindings,
+  onDatabase,
   projects,
   installed,
   onSection,
@@ -69,13 +73,16 @@ export function SettingsView({
   settings: Settings
   custom: Executor[]
   hosts: Host[]
+  templates: Database['templates']
+  templateBindings: Database['templateBindings']
+  onDatabase: (next: Database) => void
   projects: Project[]
   installed: Record<string, boolean>
   onSection: (id: SettingsSection) => void
   onBack: () => void
   onSettings: (next: Settings, options?: { inlineError: boolean }) => Promise<boolean>
-  onEditExec: (id: string) => void
-  onNewExec: () => void
+  onEditExec: (id: string, hostId: string) => void
+  onNewExec: (hostId: string) => void
   onEditHost: (id: string) => void
   onNewHost: () => void
   onInstall: (name: string, cmd: string) => void
@@ -92,6 +99,11 @@ export function SettingsView({
   const agentValue = preferredAgent(settings.defAgent, agentChoices)
   const agentLabel = agentChoices.find((item) => item.id === agentValue)?.name || t("仅 Shell")
   const [agentOpen, setAgentOpen] = useState(false)
+  const [selectedHost, setSelectedHost] = useState('local')
+  const [templateId, setTemplateId] = useState<string>()
+  const [bindingFocus, setBindingFocus] = useState<string>()
+  const hostId = hosts.some((host) => host.id === selectedHost) ? selectedHost : 'local'
+  const resourceState = { hosts, custom, templates, templateBindings }
   const agentMenu = useAnchoredMenu(agentOpen, () => setAgentOpen(false))
   let body: ReactNode = null
   if (section === 'general') {
@@ -248,66 +260,8 @@ export function SettingsView({
       </>
     )
   }
-  if (section === 'agents') {
-    body = (
-      <>
-        <div className="group">
-          <h2>{t("内置预设")}</h2>
-          <div className="card">
-            {PRESETS.map((preset) => {
-              const ok = !!installed[preset.cmd]
-              return (
-                <Row
-                  key={preset.id}
-                  lead={<Mark letter={preset.letter} color={preset.color} size="md" />}
-                  title={preset.name}
-                  desc={<span className="mono">{preset.cmd}</span>}
-                  control={
-                    ok ? (
-                      <span className="okt">
-                        <Icon name="check" className="s" />
-                        {t("已安装")}</span>
-                    ) : (
-                      <>
-                        <span className="tag warn">{t("未找到命令")}</span>
-                        <button className="btn sm" data-a="install" onClick={() => onInstall(preset.name, preset.cmd)}>
-                          {t("安装说明")}</button>
-                      </>
-                    )
-                  }
-                />
-              )
-            })}
-          </div>
-        </div>
-        <div className="group">
-          <h2>
-            <span className="grow">{t("自定义")}</span>
-            <button className="btn sm" data-a="custom" onClick={onNewExec}>
-              <Icon name="plus" className="s" />
-              {t("添加")}</button>
-          </h2>
-          <div className="card">
-            {custom.length ? (
-              custom.map((item) => (
-                <button key={item.id} className="srow click" data-a="custom" data-id={item.id} onClick={() => onEditExec(item.id)}>
-                  <Mark letter={item.letter} color={item.color} size="md" />
-                  <div className="lt">
-                    <b>{item.name}</b>
-                    <small className="mono">{cmdline(item)}</small>
-                  </div>
-                  <span className="tag">{shellLabel(item.shell)}</span>
-                  <Icon name="chev" className="s" />
-                </button>
-              ))
-            ) : (
-              <Row title={t("还没有自定义执行器")} desc={t("可添加 CLI，并按目标机器配置命令与 Shell")} />
-            )}
-          </div>
-        </div>
-      </>
-    )
-  }
+  if (section === 'agents') body = <ExecutorSettings state={resourceState} hostId={hostId} onHost={setSelectedHost}
+    onDatabase={onDatabase} installed={installed} onInstall={onInstall} onEditExec={onEditExec} onNewExec={onNewExec} templateId={templateId} bindingFocus={bindingFocus} />
   if (section === 'hosts') {
     body = (
       <>
@@ -347,7 +301,8 @@ export function SettingsView({
       </>
     )
   }
-  if (section === 'mcp' || section === 'skills') body = <ResourceSettings key={section} kind={section} />
+  if (section === 'mcp' || section === 'skills') body = <ResourceSettings key={section} kind={section} state={resourceState} hostId={hostId}
+    onHost={setSelectedHost} onManageTemplate={(agent, id) => { setTemplateId(id); setBindingFocus(id ? undefined : agent); onSection('agents') }} />
   if (section === 'keys') {
     const rows: [string, string][] = [
       [t("新建项目"), 'Ctrl N'],
@@ -424,7 +379,9 @@ export function SettingsView({
         <div className="sec" style={{ paddingTop: 0 }}>
           {t("设置")}</div>
         {SECTIONS.map((item) => (
-          <button key={item.id} className={`navb ${section === item.id ? 'on' : ''}`} data-a="sec" data-id={item.id} aria-current={section === item.id ? 'page' : undefined} onClick={() => onSection(item.id)}>
+          <button key={item.id} className={`navb ${section === item.id ? 'on' : ''}`} data-a="sec" data-id={item.id} aria-current={section === item.id ? 'page' : undefined} onClick={() => {
+            setTemplateId(undefined); setBindingFocus(undefined); onSection(item.id)
+          }}>
             <Icon name={item.icon} />
             {item.label}
           </button>

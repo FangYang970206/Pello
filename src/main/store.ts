@@ -10,6 +10,8 @@ import { cleanSessions, legacySessionId } from '../shared/work-sessions'
 import { PRESETS, uid } from '../shared/types'
 import { publicHost } from './credentials'
 import { hostPlatform, osLabel } from './platform'
+import { migrateExecutorTemplates, pruneTemplateBindings } from './executor-templates'
+import { parse as parseJson } from 'jsonc-parser'
 
 function file(): string {
   return path.join(app.getPath('userData'), 'workbench.json')
@@ -40,6 +42,8 @@ export function defaultDatabase(): Database {
       autoCheckUpdates: true
     },
     custom: [],
+    templates: [],
+    templateBindings: [],
     hosts: [local],
     projects: [],
     sessions: {},
@@ -104,6 +108,9 @@ function sanitize(raw: Partial<Database> | null): Database {
   const coloredHosts: Host[] = []
   for (const host of base.hosts) coloredHosts.push(publicHost({ ...host, color: host.color ? hostColor(host.color) : nextHostColor(coloredHosts) }))
   base.hosts = coloredHosts
+  base.templates = Array.isArray(raw.templates) ? raw.templates.filter((item) => item && typeof item.id === 'string' && typeof item.name === 'string' && Array.isArray(item.env)) : []
+  base.templateBindings = Array.isArray(raw.templateBindings) ? raw.templateBindings.filter((item) => item && typeof item.executorId === 'string') : []
+  pruneTemplateBindings(base)
   const sessions: Database['sessions'] = {}
   const activeTab: Record<string, string> = {}
   if (raw.sessions && typeof raw.sessions === 'object') {
@@ -218,14 +225,23 @@ function sessionsNeedSave(raw: Partial<Database>, next: Database): boolean {
 }
 
 export function loadDb(): Database {
+  let raw: Partial<Database>
   try {
-    const raw = JSON.parse(fs.readFileSync(file(), 'utf8')) as Partial<Database>
-    const next = sanitize(raw)
-    if (sessionsNeedSave(raw, next) || Object.hasOwn(raw, 'plugins')) saveDb(next)
-    return next
+    raw = JSON.parse(fs.readFileSync(file(), 'utf8')) as Partial<Database>
   } catch {
     return defaultDatabase()
   }
+  const next = sanitize(raw)
+  if (!raw || typeof raw !== 'object') return next
+  const migrate = !Array.isArray(raw.templates)
+  if (migrate) {
+    let legacy = {}
+    try { legacy = parseJson(fs.readFileSync(path.join(app.getPath('userData'), 'resource-targets.json'), 'utf8').replace(/^\ufeff/, '')) || {} }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+    migrateExecutorTemplates(next, legacy)
+  }
+  if (migrate || sessionsNeedSave(raw, next) || Object.hasOwn(raw, 'plugins')) saveDb(next)
+  return next
 }
 
 export function saveDb(db: Database): void {
@@ -253,9 +269,10 @@ export function db(): Database {
 }
 
 export function mutate(fn: (draft: Database) => void): Database {
-  const draft = db()
+  const draft = structuredClone(db())
   fn(draft)
   saveDb(draft)
+  cache = draft
   setLanguage(draft.settings.language)
   return draft
 }

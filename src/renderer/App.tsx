@@ -28,7 +28,7 @@ type Modal =
   | { type: 'temporary' }
   | { type: 'temporary-term'; root: string; hostId: string }
   | { type: 'term'; newSession?: boolean }
-  | { type: 'exec'; id?: string }
+  | { type: 'exec'; id?: string; hostId?: string }
   | { type: 'host'; id?: string }
   | { type: 'confirm'; title: string; body: ReactNode; ok: string; run: () => void | Promise<void>; save?: () => void }
 
@@ -1518,6 +1518,9 @@ export function App() {
               settings={db.settings}
               custom={db.custom}
               hosts={db.hosts}
+              templates={db.templates}
+              templateBindings={db.templateBindings}
+              onDatabase={(saved) => setDb((current) => current ? { ...current, templates: saved.templates, templateBindings: saved.templateBindings } : current)}
               projects={db.projects}
               installed={installed}
               onSection={(id) => {
@@ -1528,8 +1531,8 @@ export function App() {
               onSettings={(settings, options) => {
                 return window.awb.saveSettings(settings).then((saved) => { setLanguage(saved.settings.language); setDb(saved); return true }).catch((error) => { if (!options?.inlineError) toast(String(error), true); return false })
               }}
-              onEditExec={(id) => setModal({ type: 'exec', id })}
-              onNewExec={() => setModal({ type: 'exec' })}
+              onEditExec={(id, hostId) => setModal({ type: 'exec', id, hostId })}
+              onNewExec={(hostId) => setModal({ type: 'exec', hostId })}
               onEditHost={(id) => setModal({ type: 'host', id })}
               onNewHost={() => setModal({ type: 'host' })}
               onInstall={(name, cmd) => toast(cmd ? t("请先安装 {{0}}，并确保命令 {{1}} 在 PATH 中", name, cmd) : name)}
@@ -1552,7 +1555,7 @@ export function App() {
             onToast={toast}
             onHosts={async (hosts) => {
               const saved = await window.awb.saveHosts(hosts)
-              setDb((current) => current ? { ...current, hosts: saved.hosts } : current)
+              setDb((current) => current ? { ...current, hosts: saved.hosts, custom: saved.custom, templates: saved.templates, templateBindings: saved.templateBindings } : current)
             }}
             onCreate={(draft) => {
               const created = { id: uid('p'), name: draft.name, host: draft.host, path: draft.path, branch: draft.branch, agent: draft.agent }
@@ -1585,20 +1588,21 @@ export function App() {
         {modal?.type === 'exec' && db ? (
           <ExecDialog
             initial={editing && modal.id ? editing : null}
+            hostId={modal.hostId}
             cwd={project?.path || ''}
             hosts={db.hosts}
             onClose={() => setModal(null)}
             onToast={toast}
-            onDelete={(id) => {
+            onDelete={async (id) => {
               const custom = db.custom.filter((item) => item.id !== id)
-              setDb({ ...db, custom })
+              const saved = await window.awb.saveCustom(custom)
+              setDb((current) => current ? { ...current, custom: saved.custom, templateBindings: saved.templateBindings } : current)
               setModal(null)
-              void window.awb.saveCustom(custom)
             }}
             onSave={async (exec) => {
               const custom = exec.id ? db.custom.map((item) => (item.id === exec.id ? exec : item)) : [...db.custom, { ...exec, id: uid('c') }]
               const saved = await window.awb.saveCustom(custom)
-              setDb((current) => current ? { ...current, custom: saved.custom } : current)
+              setDb((current) => current ? { ...current, custom: saved.custom, templateBindings: saved.templateBindings } : current)
               setModal(null)
               const state = await window.awb.getState(); setInstalled(state.installed)
               toast(t("已保存执行器"))
@@ -1621,7 +1625,7 @@ export function App() {
                   const hosts = db.hosts.filter((item) => item.id !== id)
                   try {
                     const saved = await window.awb.saveHosts(hosts)
-                    setDb((current) => current ? { ...current, hosts: saved.hosts } : current)
+                    setDb((current) => current ? { ...current, hosts: saved.hosts, custom: saved.custom, templates: saved.templates, templateBindings: saved.templateBindings } : current)
                     setModal(null)
                   } catch (error) { toast(String(error), true) }
                 }

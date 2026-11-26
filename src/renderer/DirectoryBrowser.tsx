@@ -4,9 +4,11 @@ import type { DirListing } from '../shared/types'
 import { Icon } from './icons'
 import { ResourceDialog } from './ResourceDialog'
 
-export function DirectoryBrowser({ hostId, initialPath, onSelect, onClose }: {
+export function DirectoryBrowser({ hostId, initialPath, onSelect, onClose, mode = 'directory', resource = false }: {
   hostId: string; initialPath: string; onSelect: (path: string) => void; onClose: () => void
+  mode?: 'directory' | 'file'; resource?: boolean
 }) {
+  const fileMode = mode === 'file'
   const [address, setAddress] = useState(initialPath)
   const [query, setQuery] = useState('')
   const [listing, setListing] = useState<DirListing | null>(null)
@@ -19,7 +21,7 @@ export function DirectoryBrowser({ hostId, initialPath, onSelect, onClose }: {
     const token = ++request.current
     setLoading(true); setAddress(input); setQuery(''); setSelected('')
     try {
-      const next = await window.awb.listDir(hostId, input.trim())
+      const next = resource ? await window.awb.browseResources(hostId, input.trim(), fileMode) : await window.awb.listDir(hostId, input.trim())
       if (token !== request.current) return
       setListing(next); setAddress(next.path)
       if (!next.error) setHistory((old) => historyIndex !== undefined ? { ...old, index: historyIndex } :
@@ -28,23 +30,24 @@ export function DirectoryBrowser({ hostId, initialPath, onSelect, onClose }: {
       if (token !== request.current) return
       setListing({ path: input, parent: null, dirs: [], error: String(error) })
     } finally { if (token === request.current) setLoading(false) }
-  }, [hostId])
+  }, [hostId, resource, fileMode])
 
   useEffect(() => {
     void navigate(initialPath)
     return () => { request.current++ }
   }, [initialPath, navigate])
 
-  const dirs = listing?.dirs.filter((entry) => entry.name.toLocaleLowerCase().includes(query.toLocaleLowerCase())) || []
-  const picked = selected || listing?.path || ''
+  const entries = [...(listing?.dirs || []).map((item) => ({ ...item, dir: true })), ...(listing?.files || []).map((item) => ({ ...item, dir: false }))]
+    .filter((entry) => entry.name.toLocaleLowerCase().includes(query.toLocaleLowerCase()))
+  const picked = fileMode ? entries.find((item) => item.path === selected && !item.dir)?.path || '' : selected || listing?.path || ''
   const windows = /^[A-Za-z]:[\\/]/.test(listing?.path || '')
   const crumbs = listing?.path.split(windows ? /[\\/]/ : '/').filter(Boolean) || []
   const breadcrumbPath = (index: number) => windows ? crumbs.slice(0, index + 1).join('\\') + (index === 0 ? '\\' : '') : '/' + crumbs.slice(0, index + 1).join('/')
   const move = (offset: number) => { const index = history.index + offset; if (history.paths[index]) void navigate(history.paths[index], index) }
-  return <ResourceDialog title={t("选择文件夹")} onClose={onClose} footer={<>
-    <div className="directory-picked"><span>{t("文件夹")}</span><span className="mono" title={picked}>{picked}</span></div>
+  return <ResourceDialog title={fileMode ? t("选择文件") : t("选择文件夹")} onClose={onClose} footer={<>
+    <div className="directory-picked"><span>{fileMode ? t("文件") : t("文件夹")}</span><span className="mono" title={picked}>{picked}</span></div>
     <button className="btn ghost" onClick={onClose}>{t("取消")}</button>
-    <button className="btn pri directory-select" disabled={loading || !listing || !!listing.error} onClick={() => onSelect(picked)}>{t("使用此目录")}</button>
+    <button className="btn pri directory-select" disabled={loading || !listing || !!listing.error || !picked} onClick={() => onSelect(picked)}>{fileMode ? t("使用此文件") : t("使用此目录")}</button>
   </>}>
     <div className="directory-browser" aria-label={t("远程目录浏览")} onKeyDown={(event) => {
       if (event.altKey && event.key === 'ArrowLeft') { event.preventDefault(); move(-1) }
@@ -65,7 +68,7 @@ export function DirectoryBrowser({ hostId, initialPath, onSelect, onClose }: {
           {!windows ? <button className="btn ghost sm" onClick={() => void navigate('/')}>/</button> : null}
           {crumbs.map((name, index) => <button key={index} className="btn ghost sm" title={breadcrumbPath(index)} onClick={() => void navigate(breadcrumbPath(index))}>{name}<Icon name="chev" className="s" /></button>)}
         </nav>
-        <input className="tx" aria-label={t("筛选子目录")} placeholder={t("筛选当前目录中的文件夹")} value={query} onChange={(event) => { setQuery(event.target.value); setSelected('') }} />
+        <input className="tx" aria-label={fileMode ? t("筛选文件和文件夹") : t("筛选子目录")} placeholder={fileMode ? t("筛选文件和文件夹") : t("筛选当前目录中的文件夹")} value={query} onChange={(event) => { setQuery(event.target.value); setSelected('') }} />
       </div>
       <div className="directory-body">
         <aside><button className="btn ghost" onClick={() => void navigate('')}><Icon name="home" className="s" />{t("主目录")}</button></aside>
@@ -74,21 +77,22 @@ export function DirectoryBrowser({ hostId, initialPath, onSelect, onClose }: {
           <div className="directory-list" ref={list} role="group" aria-label={t("文件夹")} aria-busy={loading}>
             {loading ? <p className="directory-empty" role="status">{t("正在读取目录…")}</p> : listing?.error ? <div className="directory-empty" role="alert">
               <p className="bad">{t("无法读取目录：")}{listing.error}</p><button className="btn sm" onClick={() => void navigate(address)}>{t("重试")}</button>
-            </div> : dirs.length ? dirs.map((entry) => <button key={entry.path} className={`directory-entry${selected === entry.path ? ' on' : ''}`} aria-pressed={selected === entry.path}
-              onClick={() => setSelected(entry.path)} onDoubleClick={() => void navigate(entry.path)} onKeyDown={(event) => {
+            </div> : entries.length ? entries.map((entry) => <button key={entry.path} className={`directory-entry${selected === entry.path ? ' on' : ''}`} aria-pressed={selected === entry.path}
+              onClick={() => setSelected(entry.path)} onDoubleClick={() => entry.dir ? void navigate(entry.path) : onSelect(entry.path)} onKeyDown={(event) => {
                 if (event.key === 'Enter' || event.key === 'ArrowRight') {
                   event.preventDefault()
-                  void navigate(entry.path).then(() => requestAnimationFrame(() => { list.current?.querySelector<HTMLButtonElement>('button')?.focus() }))
+                  if (entry.dir) void navigate(entry.path).then(() => requestAnimationFrame(() => { list.current?.querySelector<HTMLButtonElement>('button')?.focus() }))
+                  else if (event.key === 'Enter') onSelect(entry.path)
                 }
                 if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
                   event.preventDefault()
                   const buttons = Array.from(list.current?.querySelectorAll<HTMLButtonElement>('button') || [])
                   const index = buttons.indexOf(event.currentTarget), next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : Math.max(0, Math.min(buttons.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)))
-                  buttons[next]?.focus(); setSelected(dirs[next]?.path || '')
+                  buttons[next]?.focus(); setSelected(entries[next]?.path || '')
                 }
-              }}><Icon name="folder" className="s" /><span>{entry.name}</span></button>) : <p className="directory-empty">{query ? t("没有匹配的文件夹") : t("此目录没有子文件夹")}</p>}
+              }}><Icon name={entry.dir ? 'folder' : 'file'} className="s" /><span>{entry.name}</span></button>) : <p className="directory-empty">{fileMode ? t("没有匹配的条目") : query ? t("没有匹配的文件夹") : t("此目录没有子文件夹")}</p>}
           </div>
-          <small role="status" className="directory-count">{!loading && !listing?.error ? `${dirs.length} ${t(" 个文件夹")}` : '\u00a0'}</small>
+          <small role="status" className="directory-count">{!loading && !listing?.error ? fileMode ? t("共 {{0}} 项", entries.length) : `${entries.length} ${t(" 个文件夹")}` : '\u00a0'}</small>
         </div>
       </div>
     </div>

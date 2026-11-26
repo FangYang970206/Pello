@@ -7,6 +7,7 @@ import { promisify } from 'node:util'
 import type { OsKind, ShellKind } from '../shared/types'
 import { localShell } from './local-shells'
 import { terminalContextShell } from './terminal-context-shell'
+import { applyStartupEnvironment, receiveRemoteEnv, withExecutorEnvironment } from './executor-env'
 
 export const execFileP = promisify(execFile)
 
@@ -167,6 +168,8 @@ if [ -r "$HOME/.bashrc" ]; then
   . "$HOME/.bashrc"
 fi
 unset HISTFILE
+${applyStartupEnvironment('linux')}
+${withExecutorEnvironment('linux')}
 PS1='\\w\\$ '
 ${terminalContextShell()}
 __awb_prompt() {
@@ -183,6 +186,8 @@ fi
 
 export function zshRc(): string {
   return `unset HISTFILE
+${applyStartupEnvironment('linux')}
+${withExecutorEnvironment('linux')}
 PS1='%d$ '
 precmd() {
   local c=$?
@@ -196,6 +201,8 @@ fi
 
 export function pwshProfile(): string {
   return `$Global:__awb_ready = $true
+${applyStartupEnvironment('windows')}
+${withExecutorEnvironment('windows')}
 function prompt {
   $ec = $global:LASTEXITCODE
   if ($null -eq $ec) { $ec = 0 }
@@ -236,16 +243,15 @@ export function sshBatchArgs(host: { user: string; addr: string; port: number; a
   return ['-T', '-o', 'BatchMode=yes', ...sshArgs(host, remote).filter((a) => a !== '-tt')]
 }
 
-export function remoteBootstrap(platform: OsKind, cwd: string, token = ''): string[] {
+export function remoteBootstrap(platform: OsKind, cwd: string, token = '', hasEnvironment = false): string[] {
   if (platform === 'linux') {
-    const script = `export AWB_CWD=${bashQuote(cwd)} PELLO_CONTEXT_TOKEN=${bashQuote(token)}; exec bash --noprofile --rcfile <(cat << 'AWB_RC'
-${bashRc()}
-AWB_RC
-) -i`
+    const rc = Buffer.from(bashRc() + (hasEnvironment ? receiveRemoteEnv(platform, true) : '')).toString('base64')
+    const script = `export AWB_CWD=${bashQuote(cwd)} PELLO_CONTEXT_TOKEN=${bashQuote(token)}; exec bash --noprofile --rcfile <(printf %s ${rc} | base64 -d) -i`
     return ['bash', '-lc', script]
   }
   const script = `
 $Global:__awb_ready = $true
+${withExecutorEnvironment('windows')}
 function prompt {
   $ec = $global:LASTEXITCODE
   if ($null -eq $ec) { $ec = 0 }
@@ -254,6 +260,7 @@ function prompt {
   "PS $($executionContext.SessionState.Path.CurrentLocation)> "
 }
 if (Test-Path -LiteralPath ${psQuote(cwd)}) { Set-Location -LiteralPath ${psQuote(cwd)} }
+${hasEnvironment ? receiveRemoteEnv(platform, true) : ''}
 `
   return ['powershell.exe', '-NoLogo', '-NoExit', '-ExecutionPolicy', 'Bypass', '-Command', script]
 }

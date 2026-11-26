@@ -630,6 +630,7 @@ export function NewTermDialog({
 
 export function ExecDialog({
   initial,
+  hostId,
   cwd,
   hosts,
   onClose,
@@ -638,11 +639,12 @@ export function ExecDialog({
   onToast
 }: {
   initial: Executor | null
+  hostId?: string
   cwd: string
   hosts: Host[]
   onClose: () => void
   onSave: (exec: Executor) => Promise<void>
-  onDelete: (id: string) => void
+  onDelete: (id: string) => Promise<void>
   onToast: (text: string, bad?: boolean) => void
 }) {
   const [draft, setDraft] = useState<Executor>(
@@ -650,10 +652,10 @@ export function ExecDialog({
       ? { ...initial, env: initial.env.map((item) => ({ ...item })) }
       : { id: '', name: '', cmd: '', args: '', shell: 'pwsh', env: [], letter: '', color: EXEC_COLORS[1] }
   )
-  const [more, setMore] = useState(!!initial?.env.length)
+  const [more, setMore] = useState(false)
   const [output, setOutput] = useState('')
   const [running, setRunning] = useState(false)
-  const [scope, setScope] = useState('')
+  const [scope, setScope] = useState(hostId === 'local' ? '' : hostId || '')
   const local = useLocalShells()
   const target = hosts.find((host) => host.id === (scope || 'local')) || hosts[0]
   const launch = executorForHost(draft, scope)
@@ -664,17 +666,6 @@ export function ExecDialog({
     if (!scope) { patch(partial); return }
     patch({ hosts: { ...draft.hosts, [scope]: { cmd: launch.cmd, args: launch.args, shell: selectedShell, ...partial } } })
   }
-  const resourcePaths = draft.resources || { mcpPath: '', skillPath: '', format: 'standard' as const, skillAdapter: 'portable' as const, skillConfigPath: '' }
-  const resourcePatch = (partial: Partial<typeof resourcePaths>) => patch({ resources: { ...resourcePaths, ...partial } })
-  useEffect(() => {
-    if (!initial?.id || initial.resources) return
-    let stopped = false
-    void window.awb.resourceTargets().then((targets) => {
-      const target = targets.find((item) => item.id === initial.id)
-      if (!stopped && target) setDraft((value) => ({ ...value, resources: value.resources || target }))
-    }).catch(() => {})
-    return () => { stopped = true }
-  }, [initial])
   return (
     <Frame
       title={draft.id ? t("编辑执行器") : t("添加执行器")}
@@ -694,9 +685,8 @@ export function ExecDialog({
               setRunning(true)
               setOutput(t("正在启动…"))
               try {
-                const result = await window.awb.testExec({ cmd: launch.cmd, args: launch.args, shell: selectedShell, env: draft.env, cwd: target?.id === 'local' ? cwd : '', hostId: target?.id })
-                const envLine = draft.env.filter((item) => item.k).map((item) => `${item.k}=${item.secret ? '********' : item.v}`).join('  ')
-                const text = [envLine ? `env: ${envLine}` : '', result.text, result.running ? t("[启动观察结束 · 进程仍在运行，已停止测试；未验证服务连接]") : result.code === null ? t("[测试结束 · 已中断]") : t("[测试结束 · 退出码 {{0}}]", result.code)].filter(Boolean).join('\n')
+                const result = await window.awb.testExec({ executorId: draft.id, cmd: launch.cmd, args: launch.args, shell: selectedShell, env: draft.env, cwd: target?.id === 'local' ? cwd : '', hostId: target?.id })
+                const text = [result.text, result.running ? t("[启动观察结束 · 进程仍在运行，已停止测试；未验证服务连接]") : result.code === null ? t("[测试结束 · 已中断]") : t("[测试结束 · 退出码 {{0}}]", result.code)].filter(Boolean).join('\n')
                 setOutput(text)
               } catch (err) {
                 setOutput(err instanceof Error ? err.message : t("测试失败"))
@@ -708,7 +698,11 @@ export function ExecDialog({
             <Icon name="play" className="s" />
             {t("测试启动")}</button>
           {draft.id ? (
-            <button className="btn ghost" data-a="ce-del" style={{ color: 'var(--red)' }} onClick={() => onDelete(draft.id)}>
+            <button className="btn ghost" data-a="ce-del" disabled={running} style={{ color: 'var(--red)' }} onClick={async () => {
+              setRunning(true)
+              try { await onDelete(draft.id) } catch (error) { setOutput(String(error)) }
+              finally { setRunning(false) }
+            }}>
               {t("删除")}</button>
           ) : null}
           <span className="grow" />
@@ -719,16 +713,13 @@ export function ExecDialog({
             data-a="ce-save"
             disabled={running}
             onClick={async () => {
-              if (!draft.name.trim() || !draft.cmd.trim()) {
+              if (!draft.name.trim() || !(draft.cmd.trim() || launch.cmd.trim())) {
                 onToast(t("请填写名称和命令"))
                 return
               }
               const letter = draft.letter.trim() || draft.name.trim()[0].toUpperCase()
-              if (draft.session && (!draft.session.startArgs.includes('{sessionId}') || !draft.session.resumeArgs.includes('{sessionId}'))) {
-                setOutput(t("新建和恢复参数都必须包含 {sessionId}")); return
-              }
               setRunning(true)
-              try { await onSave({ ...draft, name: draft.name.trim(), cmd: draft.cmd.trim(), letter, env: draft.env.filter((item) => item.k) }) }
+              try { await onSave({ ...draft, name: draft.name.trim(), cmd: draft.cmd.trim() || launch.cmd.trim(), letter }) }
               catch (error) { setOutput(String(error)); onToast(String(error), true) }
               finally { setRunning(false) }
             }}
@@ -769,54 +760,10 @@ export function ExecDialog({
       </div>
       <button className="disc" data-a="ce-more" aria-expanded={more} onClick={() => setMore((value) => !value)}>
         <Icon name="chev" className={`s chev${more ? ' open' : ''}`} />
-        {t("高级属性")}{draft.env.length ? <span className="tag">{draft.env.length}</span> : null}
+        {t("标识与颜色")}
       </button>
       {more ? (
         <div style={{ margin: '-4px 0 16px 22px' }}>
-          <div className="executor-resources">
-            <div className="custom-session-toggle"><span>{t("原生会话恢复")}</span><button type="button" className={`switch${draft.session ? ' on' : ''}`} role="switch" aria-label={t("原生会话恢复")} aria-checked={!!draft.session} data-ce="resume" onClick={() => patch({ session: draft.session ? undefined : { startArgs: '', resumeArgs: '' } })} /></div>
-            {draft.session ? <><label className="fld"><span>{t("新建会话参数")}</span><input className="tx mono" data-ce="start-args" value={draft.session.startArgs} placeholder="--session-id {sessionId}" onChange={(event) => patch({ session: { ...draft.session!, startArgs: event.target.value } })} /></label><label className="fld"><span>{t("恢复会话参数")}</span><input className="tx mono" data-ce="resume-args" value={draft.session.resumeArgs} placeholder="--resume {sessionId}" onChange={(event) => patch({ session: { ...draft.session!, resumeArgs: event.target.value } })} /></label><p className="resource-help">{t("仅用于支持指定会话 ID 的 Agent。按原生 CLI 填写参数，{sessionId} 由工作台生成并保存；不支持此协议的 Agent 请勿开启。")}</p></> : null}
-            <label className="fld"><span>{t("Skill 存放目录")}</span><input className="tx mono" aria-label={t("Skill 存放目录")} value={resourcePaths.skillPath} placeholder={t("Skill 目录的绝对路径")} onChange={(event) => resourcePatch({ skillPath: event.target.value })} /></label>
-            <label className="fld"><span>{t("MCP 配置文件")}</span><input className="tx mono" aria-label={t("MCP 配置文件")} value={resourcePaths.mcpPath} placeholder={t("JSON、JSONC 或 TOML 文件的绝对路径")} onChange={(event) => resourcePatch({ mcpPath: event.target.value })} /></label>
-            <div className="two"><label className="fld"><span>{t("MCP 格式")}</span><select className="sel" aria-label={t("MCP 格式")} value={resourcePaths.format} onChange={(event) => resourcePatch({ format: event.target.value as typeof resourcePaths.format })}><option value="standard">JSON · mcpServers</option><option value="codex">TOML · mcp_servers</option><option value="opencode">JSONC · mcp</option></select></label>
-            <label className="fld"><span>{t("Skill 管理方式")}</span><select className="sel" aria-label={t("Skill 管理方式")} value={resourcePaths.skillAdapter || 'portable'} onChange={(event) => resourcePatch({ skillAdapter: event.target.value as typeof resourcePaths.skillAdapter })}>{['portable', 'claude', 'codex', 'opencode', 'pi', 'omp'].map((adapter) => <option key={adapter} value={adapter}>{adapter === 'portable' ? t("通用 · 文件开关") : adapter}</option>)}</select></label></div>
-            <label className="fld"><span>{t("Skill 配置文件（可选）")}</span><input className="tx mono" aria-label={t("Skill 配置文件")} value={resourcePaths.skillConfigPath || ''} onChange={(event) => resourcePatch({ skillConfigPath: event.target.value })} /></label>
-            <p className="resource-help">{t("选择执行器支持的原生格式。通用开关会保留文件，并切换 SKILL.md 的文件名；独立目录可避免影响其他执行器。")}</p>
-          </div>
-          {draft.env.map((item, index) => (
-            <div className="env" key={index}>
-              <input
-                className="tx mono"
-                value={item.k}
-                placeholder="KEY"
-                aria-label={t("变量名")}
-                onChange={(e) => patch({ env: draft.env.map((env, i) => (i === index ? { ...env, k: e.target.value } : env)) })}
-              />
-              <input
-                className="tx mono"
-                type={item.secret ? 'password' : 'text'}
-                value={item.v}
-                placeholder="value"
-                aria-label={t("变量值")}
-                onChange={(e) => patch({ env: draft.env.map((env, i) => (i === index ? { ...env, v: e.target.value } : env)) })}
-              />
-              <button
-                className={`ib ${item.secret ? 'on' : ''}`}
-                aria-pressed={item.secret}
-                title={item.secret ? t("密钥（已隐藏）") : t("设为密钥")}
-                aria-label={t("设为密钥")}
-                onClick={() => patch({ env: draft.env.map((env, i) => (i === index ? { ...env, secret: !env.secret } : env)) })}
-              >
-                <Icon name="eye" className="s" />
-              </button>
-              <button className="ib" aria-label={t("删除变量")} onClick={() => patch({ env: draft.env.filter((_, i) => i !== index) })}>
-                <Icon name="x" className="s" />
-              </button>
-            </div>
-          ))}
-          <button className="btn sm ghost" data-a="env-add" style={{ marginLeft: -10 }} onClick={() => patch({ env: [...draft.env, { k: '', v: '', secret: false }] })}>
-            <Icon name="plus" className="s" />
-            {t("添加变量")}</button>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-end', marginTop: 12 }}>
             <label className="fld" style={{ margin: 0, width: 88 }}>
               <span>{t("标识")}</span>

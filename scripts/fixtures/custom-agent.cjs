@@ -9,6 +9,12 @@ const file = path.join(args.includes('--fixture-home') ? value('--fixture-home')
 if (args.includes('--resume') && !fs.existsSync(file)) { console.error('MISSING_NATIVE_SESSION'); process.exit(2) }
 const messages = args.includes('--resume') ? JSON.parse(fs.readFileSync(file, 'utf8')) : []
 console.log('CUSTOM_READY ' + id + ' ' + JSON.stringify(messages))
+if (process.env.PELLO_TEMPLATE_MARKER) console.log('TEMPLATE_ENV ' + process.env.PELLO_TEMPLATE_MARKER)
+if (process.env.PELLO_TEST_LOG_SECRET) {
+  const value = process.env.PELLO_TEST_LOG_SECRET
+  process.stdout.write(value.slice(0, 8))
+  setTimeout(() => console.log(value.slice(8)), 40)
+}
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   if (line.startsWith('FIXTURE_STATUS_')) {
     process.stdout.write('\x1b]7501;state=' + line.slice('FIXTURE_STATUS_'.length) + ':app=custom-fixture\x07')

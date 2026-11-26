@@ -35,13 +35,16 @@ const server = createServer((req, res) => {
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
 server.unref()
 fs.writeFileSync(path.join(home, 'config.toml'), `model = "fixture"\nmodel_provider = "fixture"\n[model_providers.fixture]\nname = "Fixture"\nbase_url = "http://127.0.0.1:${server.address().port}/v1"\nwire_api = "responses"\n[projects.${JSON.stringify(project)}]\ntrust_level = "trusted"\n`)
-process.env.CODEX_HOME = home
 let source = fs.readFileSync(path.join(root, 'src/main/codex-session.ts'), 'utf8')
 source = source.replace(/import \{ bashQuote, psQuote, sshBatchArgs \} from '.\/platform'/, 'const bashQuote = JSON.stringify, psQuote = JSON.stringify, sshBatchArgs = () => []')
 source = source.replace(/import \{ needsSshClient, connectPasswordHost, remoteCommand \} from '.\/ssh'/, 'const needsSshClient = () => { throw new Error("unexpected remote") }, connectPasswordHost = () => { throw new Error("unexpected remote") }, remoteCommand = () => ""')
 assert.ok(!source.includes("from './ssh'"), 'The local native CLI fixture must replace its complete SSH seam')
 const { createCodexThread } = await loadTypeScript(path.join(root, 'src/main/codex-session.ts'), () => source)
-const ids = [await createCodexThread(project), await createCodexThread(project)]
+const fallback = path.join(data, 'fallback-home'); fs.mkdirSync(fallback)
+fs.copyFileSync(path.join(home, 'config.toml'), path.join(fallback, 'config.toml'))
+process.env.CODEX_HOME = fallback
+const templateEnv = [{ k: 'CODEX_HOME', v: home, secret: false }]
+const ids = [await createCodexThread(project, undefined, undefined, templateEnv), await createCodexThread(project, undefined, undefined, templateEnv)]
 assert.notEqual(ids[0], ids[1], 'same-directory terminals must own different native threads')
 const allFiles = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((item) => item.isDirectory() ? allFiles(path.join(dir, item.name)) : [path.join(dir, item.name)])
 for (const id of ids) {
@@ -51,12 +54,14 @@ for (const id of ids) {
 const shell = process.platform === 'win32' ? 'pwsh' : 'bash'
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({
   settings: { restore: true, theme: 'dark', confirmKill: false },
+  templates: [{ id: 'codex-profile', hostId: 'local', name: 'Native fixture', mcpPath: path.join(home, 'config.toml'), skillPath: path.join(home, 'skills'), format: 'codex', skillAdapter: 'codex', env: templateEnv }],
+  templateBindings: [{ hostId: 'local', executorId: 'codex', templateId: 'codex-profile' }],
   projects: [{ id: 'p', name: 'Codex native restore', path: project, host: 'local', agent: 'codex' }],
   workSessions: { p: [{ id: 'a', name: '会话一' }, { id: 'b', name: '会话二' }] },
   activeSession: { p: 'a' }, activeTab: { p: 'a-term' },
   sessions: { p: [...ids.map((id, i) => ({ id: i ? 'b-term' : 'a-term', kind: 'codex', shell, sessionId: i ? 'b' : 'a', agentSessionId: id })), { id: 'new-term', kind: 'codex', shell, sessionId: 'a' }] }
 }))
-const env = { ...process.env, AWB_USER_DATA: data, CODEX_HOME: home }
+const env = { ...process.env, AWB_USER_DATA: data, CODEX_HOME: fallback }
 delete env.ELECTRON_RUN_AS_NODE
 let allocated
 for (let launch = 0; launch < 2; launch++) {

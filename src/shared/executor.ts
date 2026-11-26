@@ -1,4 +1,25 @@
-import type { Executor } from './types'
+import type { Database, Executor, ExecutorTemplate, ResourcePaths } from './types'
+
+export function executorTemplate(db: Pick<Database, 'templates' | 'templateBindings'>, hostId: string, executorId: string) {
+  const binding = db.templateBindings.find((entry) => entry.hostId === hostId && entry.executorId === executorId)
+  return binding && db.templates.find((template) => template.id === binding.templateId && template.hostId === hostId)
+}
+
+export function templateCompatible(template: ResourcePaths, executorId: string) {
+  switch (executorId) {
+    case 'codex': return template.format === 'codex' && template.skillAdapter === 'codex'
+    case 'opencode': return template.format === 'opencode' && template.skillAdapter === 'opencode'
+    case 'claude':
+    case 'pi':
+    case 'omp': return template.format === 'standard' && template.skillAdapter === executorId
+    default: return true
+  }
+}
+
+export function effectiveExecutor(executor: Executor, hostId: string, template?: ExecutorTemplate): Executor {
+  const launch = executorForHost(executor, hostId)
+  return template ? { ...launch, env: template.env, session: template.session } : launch
+}
 
 export function executorForHost(executor: Executor, hostId: string): Executor {
   return { ...executor, ...executor.hosts?.[hostId] }

@@ -129,8 +129,23 @@ try {
     await waitTask(downloadId)
     assert.deepEqual(fs.readFileSync(destination), changed)
     assert.deepEqual(fs.readFileSync(source), changed)
+    const mcpFile = path.join(project, `settings-${auth} 中文.toml`)
+    fs.writeFileSync(mcpFile, '# original settings\nmodel = "fixture"\n')
+    const resource = await page.evaluate(async ({ auth, mcpFile }) => {
+      const scope = { hostId: `fixture-${auth}`, executorId: 'codex' }
+      const { templates } = await window.awb.saveTemplate({ hostId: scope.hostId, id: '', name: 'Windows fixture', mcpPath: mcpFile,
+        skillPath: '', format: 'codex', skillAdapter: 'codex', env: [] })
+      await window.awb.bindTemplate(scope, templates.find((template) => template.hostId === scope.hostId).id)
+      const [result] = await window.awb.addMcp('signed-mcp', { command: 'node' }, [scope])
+      const list = await window.awb.resourceList('mcp', scope, 1, '')
+      return { result, list }
+    }, { auth, mcpFile })
+    assert.ok(resource.result.ok, JSON.stringify(resource))
+    assert.ok(resource.list.items.some((item) => item.name === 'signed-mcp'))
+    assert.match(fs.readFileSync(mcpFile, 'utf8'), /# original settings/)
+    assert.doesNotMatch(fs.readFileSync(mcpFile + '.awb-backup', 'utf8'), /signed-mcp/)
     assert.ok(signedAuthentications > before, 'SSH server must verify a real public-key signature')
-    console.log(`PASS real OpenSSH ${auth} authentication: create, rename, move, delete, automatic file/directory replacement and binary upload/download above 2 MB`)
+    console.log(`PASS real OpenSSH ${auth} authentication: file operations, binary upload/download above 2 MB and Windows template TOML edit`)
   }
   assert.ok(fs.existsSync(path.join(home, '.ssh', 'known_hosts')), 'Host keys must be pinned in the isolated SSH profile')
   for (const client of clients) client.end()

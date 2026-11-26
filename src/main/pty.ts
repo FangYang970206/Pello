@@ -6,9 +6,9 @@ import { randomUUID } from 'node:crypto'
 import { promisify } from 'node:util'
 import { app } from 'electron'
 import * as pty from 'node-pty'
-import type { EnvVar, ProcState, PtyStateEvent, ShellKind } from '../shared/types'
+import type { EnvVar, Executor, ProcState, PtyStateEvent, ShellKind } from '../shared/types'
 import { cmdline, PRESETS } from '../shared/types'
-import { executorForHost, isConfiguredLaunch, submittedCustomAgent } from '../shared/executor'
+import { effectiveExecutor, executorTemplate, isConfiguredLaunch, submittedCustomAgent } from '../shared/executor'
 import { db } from './store'
 import { discoverLocalShells } from './local-shells'
 import { OscStrip } from './osc'
@@ -19,6 +19,8 @@ import { replyProgramStatus } from './windows-status'
 import { claudeLifecycle, nativeAgent, submittedAgent } from './agent-lifecycle'
 import { agentResumeCommand, customResumeCommand, validAgentSession, terminalSessionKey } from './agent-resume'
 import { createCodexThread } from './codex-session'
+import { encodeRemoteEnv, ExecutorLogRedactor, packExecutorEnv, receiveRemoteEnv, redactExecutorOutput, REMOTE_ENV_APPLIED, REMOTE_ENV_READY } from './executor-env'
+import { machine } from './executor-templates'
 import { flushTerminalRecording, loadTerminalHistory, recordTerminalOutput } from './terminal-history'
 import { legacyConversations, matchLegacyConversation } from './legacy-agent-session'
 import { needsSshClient, passwordTerminal, remoteCommand, type TerminalProcess } from './ssh'
@@ -161,13 +163,13 @@ function shellFiles(): { bash: string; pwsh: string; zsh: string } {
   return { bash, pwsh, zsh }
 }
 
-function agentCommand(kind: string, hostId: string): { command: string; env: EnvVar[] } {
-  if (kind === 'shell') return { command: '', env: [] }
+type TerminalLaunch = { command: string; env: EnvVar[]; session?: Executor['session']; shell?: ShellKind; custom?: boolean }
+function agentCommand(kind: string, hostId: string): TerminalLaunch {
+  const draft = db(), template = executorTemplate(draft, hostId, kind)
   const preset = PRESETS.find((p) => p.id === kind)
-  if (preset) return { command: cmdline(preset), env: [] }
-  const custom = db().custom.find((c) => c.id === kind)
-  if (custom) { const config = executorForHost(custom, hostId); return { command: cmdline(config), env: config.env || [] } }
-  return { command: '', env: [] }
+  const custom = draft.custom.find((c) => c.id === kind)
+  const config = custom && effectiveExecutor(custom, hostId, template)
+  return { command: cmdline(preset || config || {}), env: template?.env || config?.env || [], session: config?.session, shell: config?.shell, custom: !!custom }
 }
 
 class Session {
@@ -200,7 +202,7 @@ class Session {
   private activeAgent: string | null = null
   private agentSessionId: string | null = null
   private savedAgentSessionId: string | null
-  private readonly baseCommand: string
+  private readonly terminalOptions: TerminalLaunch
   private nativeStatus = false
   private shellInput = ''
   private lifecycle: Awaited<ReturnType<typeof claudeLifecycle>> | null = null
@@ -221,10 +223,13 @@ class Session {
   private treeKill: Promise<boolean> | null = null
   private disposeStarted = false
   private env: NodeJS.ProcessEnv
+  private logRedactor = new ExecutorLogRedactor()
+  private environmentTransfer?: { payload: string; seen: string; sent: boolean; timer: ReturnType<typeof setTimeout> }
 
   constructor(
     private send: Send,
-    opts: { id: string; projectId: string; kind: string; shell: ShellKind; cwd: string; command: string; env: EnvVar[]; hostId: string; agentSessionId?: string }
+    opts: { id: string; projectId: string; kind: string; shell: ShellKind; cwd: string; command: string; env: EnvVar[]; hostId: string; agentSessionId?: string },
+    private onProcessExit?: (code: number) => void
   ) {
     this.id = opts.id
     this.projectId = opts.projectId
@@ -232,23 +237,57 @@ class Session {
     this.shell = opts.shell
     this.cwd = opts.cwd
     this.command = opts.command
-    this.baseCommand = opts.command
+    this.terminalOptions = { command: opts.command, env: opts.env }
     this.agentSessionId = validAgentSession(opts.agentSessionId)
     // ConPTY omits the final position of a hidden hardware cursor. Pi's native
     // cursor mode keeps its IME anchor at the editor caret, including when Pi
     // is started manually from a Shell terminal. Custom executor env can opt out.
-    this.env = { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor', AWB_CWD: opts.cwd, PI_PROGRAM_STATUS: '1',
+    this.env = {}
+    this.hostId = opts.hostId
+    this.savedAgentSessionId = this.agentSessionId
+  }
+
+  private localEnvironment(env: EnvVar[]): NodeJS.ProcessEnv {
+    const result: NodeJS.ProcessEnv = { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor', AWB_CWD: this.cwd, PI_PROGRAM_STATUS: '1',
       ...(process.platform === 'win32' ? { PI_HARDWARE_CURSOR: '1' } : {}) }
     const ompDirectory = ompInstallDirectory()
     if (fs.existsSync(ompDirectory)) {
-      const pathKey = Object.keys(this.env).find((key) => key.toLowerCase() === 'path') || 'PATH'
-      this.env[pathKey] = [ompDirectory, this.env[pathKey] || ''].join(path.delimiter)
+      const pathKey = Object.keys(result).find((key) => key.toLowerCase() === 'path') || 'PATH'
+      result[pathKey] = [ompDirectory, result[pathKey] || ''].join(path.delimiter)
     }
-    for (const item of opts.env) {
-      if (item.k) this.env[item.k] = item.v
+    for (const item of env) {
+      if (item.k) result[item.k] = item.v
     }
-    this.hostId = opts.hostId
-    this.savedAgentSessionId = this.agentSessionId
+    return result
+  }
+
+  private transferEnvironment(rows: EnvVar[], startup: boolean) {
+    this.environmentTransfer = { payload: encodeRemoteEnv(rows).replaceAll('\n', '\r'), seen: '', sent: false,
+      timer: setTimeout(() => {
+        this.environmentTransfer = undefined
+        if (startup) this.proc?.kill()
+        else this.proc?.write('\x03')
+      }, 15000) }
+  }
+
+  private receiveEnvironment(data: string, proc: TerminalProcess): string {
+    const transfer = this.environmentTransfer
+    if (!transfer) return data
+    transfer.seen = (transfer.seen + data).slice(-4096)
+    const marker = transfer.sent ? REMOTE_ENV_APPLIED : REMOTE_ENV_READY
+    const at = transfer.seen.indexOf(marker)
+    if (at < 0) return ''
+    const tail = transfer.seen.slice(at + marker.length)
+    if (transfer.sent) {
+      clearTimeout(transfer.timer)
+      this.environmentTransfer = undefined
+      return tail
+    }
+    transfer.sent = true
+    transfer.seen = ''
+    proc.write(transfer.payload)
+    transfer.payload = ''
+    return ''
   }
 
   hostId: string
@@ -257,11 +296,23 @@ class Session {
     return { id: this.id, state: this.state, exitCode: this.exitCode, startedAt: this.startedAt, inputReady: this.phase === 'prompt' || this.programWaiting, shell: this.shell, kind: this.kind, agentKind: this.activeAgent, agentSessionId: this.agentSessionId }
   }
 
+  redactHistory(text: string): string { return this.logRedactor.complete(text) }
+  private record(data: string, flush = false) {
+    if (!this.recordHistory || !db().settings.restore) return
+    const text = this.logRedactor.push(data) + (flush ? this.logRedactor.flush() : '')
+    try { if (text) recordTerminalOutput(this.id, text) }
+    catch (error) { console.error('Unable to persist terminal output', error) }
+  }
+
   async spawn(): Promise<void> {
     if (this.disposed) return
     this.procExited = false
-    const draft = db()
-    const host = draft.hosts.find((h) => h.id === this.hostId) || draft.hosts[0]
+    const host = machine(db(), this.hostId, true)
+    const launchConfig = this.kind === '__executor_test__' ? this.terminalOptions : agentCommand(this.kind, this.hostId)
+    const { env } = launchConfig
+    this.logRedactor.track(env)
+    this.env = this.localEnvironment(host.id === 'local' ? env : [])
+    const sessionConfig = launchConfig.session
     this.contextTracker?.dispose()
     this.contextTracker = host.id !== 'local' && host.platform === 'linux' ? new TerminalContextTracker(this.contextToken, this.id, this.projectId, host) : undefined
     this.context = null
@@ -297,7 +348,7 @@ class Session {
       }
     }
     if (this.kind === 'codex' && !this.agentSessionId) {
-      this.agentSessionId = await createCodexThread(this.cwd, host, this.statusAbort.signal)
+      this.agentSessionId = await createCodexThread(this.cwd, host, this.statusAbort.signal, env)
       if (this.disposed) return
     }
     const quote = (text: string) => this.shell === 'pwsh' ? psQuote(text) : this.shell === 'cmd' ? `"${text.replaceAll('%', '%%')}"` : bashQuote(text.replaceAll('\\', '/'))
@@ -305,15 +356,16 @@ class Session {
     const directory = !host || host.id === 'local'
       ? quote(path.join(app.getPath('userData'), 'agent-sessions', key))
       : host.platform === 'windows' ? `(Join-Path $HOME '.pello/sessions/${key}')` : `"$HOME/.local/state/pello/sessions/${key}"`
-    const custom = draft.custom.find((item) => item.id === this.kind)
-    if (custom?.session && !this.agentSessionId && loadTerminalHistory(this.id)) throw new Error(t("旧自定义 Agent 会话缺少原生 ID，原终端历史已保留；未创建空白对话"))
-    const launch = custom?.session
-      ? customResumeCommand(this.baseCommand, this.agentSessionId, custom.session, quote)
-      : agentResumeCommand(this.kind, this.baseCommand, this.agentSessionId || undefined, directory, quote)
+    if (sessionConfig && !this.agentSessionId && loadTerminalHistory(this.id)) throw new Error(t("旧自定义 Agent 会话缺少原生 ID，原终端历史已保留；未创建空白对话"))
+    if (launchConfig.custom && this.agentSessionId && !sessionConfig) throw new Error(t("当前执行器模板缺少会话恢复参数，已保留终端历史"))
+    const launch = sessionConfig
+      ? customResumeCommand(launchConfig.command, this.agentSessionId, sessionConfig, quote)
+      : agentResumeCommand(this.kind, launchConfig.command, this.agentSessionId || undefined, directory, quote)
     this.command = launch.command
     this.agentSessionId = launch.session || this.agentSessionId
     this.savedAgentSessionId = this.agentSessionId
     let proc: TerminalProcess
+    const remoteEnvironment = host.id !== 'local' && !!env.length
     if (!host || host.id === 'local') {
       if (!this.lifecycle && ['claude', 'shell'].includes(this.kind)) {
         const lifecycle = await claudeLifecycle((report) => {
@@ -334,6 +386,7 @@ class Session {
       const rc = this.shell === 'pwsh' ? files.pwsh : this.shell === 'zsh' ? files.zsh : files.bash
       const spec = resolveLocalShell(this.shell, rc, this.env)
       this.shell = spec.shell
+      if (env.length && this.shell !== 'cmd') this.env.PELLO_STARTUP_ENV = packExecutorEnv(env)
       if (spec.env) Object.assign(this.env, spec.env)
       if (process.platform === 'win32' && spec.env?.PATH) for (const key of Object.keys(this.env)) { if (key.toLowerCase() === 'path' && key !== 'PATH') delete this.env[key] }
       if (process.platform === 'win32' && spec.shell === 'bash') this.env.AWB_CWD = this.cwd.replaceAll('\\', '/')
@@ -346,7 +399,7 @@ class Session {
       })
     } else {
       this.shell = shellForHost(host.platform, this.shell)
-      const boot = remoteBootstrap(host.platform, this.cwd, this.contextToken)
+      const boot = remoteBootstrap(host.platform, this.cwd, this.contextToken, remoteEnvironment)
       this.remoteAbort = new AbortController()
       proc = needsSshClient(host) ? await passwordTerminal(host, boot, this.remoteAbort.signal) : pty.spawn('ssh', sshArgs(host, [remoteCommand(host, boot)]), {
         name: 'xterm-256color',
@@ -361,47 +414,67 @@ class Session {
     let finishExit: () => void = () => undefined
     this.processExit = new Promise<void>((resolve) => { finishExit = resolve })
     proc.resize(this.cols, this.rows)
+    if (remoteEnvironment) this.transferEnvironment(env, true)
     proc.onData((data) => {
       if (this.disposed) return
-      if (process.env.AWB_DEBUG) console.log(`[pty ${this.id}]`, JSON.stringify(data).slice(0, 300))
+      data = this.receiveEnvironment(data, proc)
+      if (!data) return
+      if (process.env.AWB_DEBUG && !this.logRedactor.hasValues) console.log(`[pty ${this.id}]`, JSON.stringify(data).slice(0, 300))
       this.outputQueue = this.outputQueue.then(() => this.onData(data)).catch((error) => { if (!this.disposed) console.error('Terminal status reply failed', error) })
     })
     setTimeout(() => {
-      if (this.phase === 'starting') {
+      if (!this.environmentTransfer && this.phase === 'starting') {
         this.skipPrompt = true
         this.phase = 'armed'
         this.armLaunch()
       }
     }, 1200)
     proc.onExit((result) => {
+      if (this.environmentTransfer) { clearTimeout(this.environmentTransfer.timer); this.environmentTransfer = undefined }
       this.procExited = true
       finishExit()
       this.statusAbort.abort()
       this.outputQueue = this.outputQueue.then(() => {
         if (this.disposed) return
+        this.record('', true)
         const code = typeof result === 'number' ? result : (result?.exitCode ?? 1)
         this.phase = 'dead'
         this.programWaiting = false
         const state: ProcState = code === 0 ? 'exited' : 'failed'
         this.apply(state, code, !this.exitAnnounced, 'exit')
+        this.onProcessExit?.(code)
       })
     })
   }
 
   write(data: string, binary = false): void {
-    if (!this.proc || this.phase === 'dead') return
+    if (!this.proc || this.phase === 'dead' || this.environmentTransfer) return
     const bracketed = !binary && data.startsWith('\x1b[200~') && data.endsWith('\x1b[201~')
     const submitted = !binary && !bracketed && (data.includes('\r') || data.includes('\n'))
     if (submitted && this.phase === 'prompt' && this.state !== 'running') {
       const command = this.shellInput + data.slice(0, data.search(/[\r\n]/))
-      const custom = submittedCustomAgent(command, db().custom, this.hostId)
+      const draft = db()
+      const custom = submittedCustomAgent(command, draft.custom, this.hostId)
+      const config = custom && effectiveExecutor(custom, this.hostId, executorTemplate(draft, this.hostId, custom.id))
       this.activeAgent = custom?.id || submittedAgent(command) || null
-      if (custom?.session && isConfiguredLaunch(command, custom, this.hostId)) {
+      if (custom && config && isConfiguredLaunch(command, custom, this.hostId)) {
         const quote = (text: string) => this.shell === 'pwsh' ? psQuote(text) : this.shell === 'cmd' ? `"${text}"` : bashQuote(text)
-        const launch = customResumeCommand(command, null, custom.session, quote)
+        const launch = customResumeCommand(command, null, config.session, quote)
+        this.logRedactor.track(config.env || [])
         // Only extend a simple, newly typed launch. Shell history/editing is not reinterpreted.
-        const suffix = launch.command.slice(command.length)
-        data = data.replace(/[\r\n]/, (enter) => suffix + enter)
+        if (config.env?.length) {
+          const bash = this.shell === 'bash' || this.shell === 'zsh'
+          const script = receiveRemoteEnv('windows', true) + `\ncmd.exe /d /c ${psQuote(launch.command)}`
+          const wrapper = bash ? `__pello_with_env ${bashQuote(launch.command)}` :
+            this.shell === 'pwsh' ? `__pello_with_env { ${launch.command} }` :
+              `powershell.exe -NoProfile -EncodedCommand ${Buffer.from(script, 'utf16le').toString('base64')}`
+          const clear = this.shellInput ? (bash ? '\x15' : '\x1b') : ''
+          data = clear + wrapper + data.slice(data.search(/[\r\n]/))
+          this.transferEnvironment(config.env, false)
+        } else {
+          const suffix = launch.command.slice(command.length)
+          data = data.replace(/[\r\n]/, (enter) => suffix + enter)
+        }
         this.savedAgentSessionId = this.agentSessionId = launch.session || null
       }
       this.nativeStatus = false
@@ -561,6 +634,7 @@ class Session {
     this.contextTracker?.dispose()
     if (this.disposeStarted) return
     this.disposeStarted = true
+    this.record('', true)
     this.disposed = true
     clearTimeout(this.inputTimer)
     this.inputTimer = undefined
@@ -722,10 +796,7 @@ class Session {
 
   private emitData(data: string): void {
     if (data) {
-      if (this.recordHistory && db().settings.restore) {
-        try { recordTerminalOutput(this.id, data) }
-        catch (error) { console.error('Unable to persist terminal output', error) }
-      }
+      this.record(data)
       this.send({ type: 'data', id: this.id, data })
     }
   }
@@ -740,7 +811,7 @@ class Session {
     if (this.closing) {
       // The renderer snapshot was already flushed. Keep the complete journal,
       // but do not turn shutdown-generated prompts into a saved Shell session.
-      if (this.recordHistory && db().settings.restore) recordTerminalOutput(this.id, chunk)
+      this.record(chunk)
       return
     }
     const activity = this.programStatus.push(chunk)
@@ -753,7 +824,7 @@ class Session {
     }
     if (this.disposed) return
     if (this.closing) {
-      if (this.recordHistory && db().settings.restore) recordTerminalOutput(this.id, chunk)
+      this.record(chunk)
       return
     }
     for (const report of activity.reports) {
@@ -874,10 +945,10 @@ export async function createSession(
   const project = draft.projects.find((p) => p.id === opts.projectId)
   if (!project) throw new Error(t("项目不存在"))
   if (opts.agentSessionId && !validAgentSession(opts.agentSessionId)) throw new Error(t("保存的 Agent 会话 ID 无效，已保留原记录"))
-  const host = draft.hosts.find((h) => h.id === project.host)
-  if (host && host.id !== 'local' && !host.on) throw new Error(t("这台机器未连接"))
+  const host = machine(draft, project.host, true)
   const agent = agentCommand(opts.kind, project.host)
-  const shell = (!host || host.id === 'local') && process.platform === 'win32' && opts.shell === 'bash' ? 'bash' : shellForHost(host?.platform || (process.platform === 'win32' ? 'windows' : 'linux'), opts.shell)
+  const requestedShell = agent.shell || opts.shell
+  const shell = host.id === 'local' && process.platform === 'win32' && requestedShell === 'bash' ? 'bash' : shellForHost(host.platform, requestedShell)
   const existing = sessions.get(opts.id)
   await existing?.dispose()
   const session = new Session(send, {
@@ -904,6 +975,10 @@ export async function createSession(
 
 export function writeSession(id: string, data: string, binary = false): void {
   sessions.get(id)?.write(data, binary)
+}
+
+export function redactTerminalHistory(id: string, content: string): string {
+  return sessions.get(id)?.redactHistory(content) ?? content
 }
 
 export function writeSessionShiftEnter(id: string): void {
@@ -997,23 +1072,40 @@ export async function testExecutor(opts: {
   env: EnvVar[]
   cwd: string
   hostId?: string
+  executorId?: string
 }): Promise<{ text: string; code: number | null; running?: boolean }> {
   let command = cmdline(opts)
   if (!command.trim()) return { text: t("请先填写命令。"), code: null }
   const hostId = opts.hostId || 'local'
+  const template = opts.executorId && executorTemplate(db(), hostId, opts.executorId)
+  const env = template ? template.env : opts.env
   const host = db().hosts.find((item) => item.id === hostId)
   if (!host || (hostId !== 'local' && !host.on)) throw new Error(t("这台机器未连接"))
   const local = hostId === 'local'
   const cwd = local ? opts.cwd && fs.existsSync(opts.cwd) ? opts.cwd : process.cwd() : opts.cwd || (host.platform === 'windows' ? 'C:\\' : '/')
   const shell = local && process.platform === 'win32' && opts.shell === 'bash' ? 'bash' : shellForHost(host.platform, opts.shell)
-  if (shell === 'pwsh') command += '; if (-not $?) { $global:LASTEXITCODE = 1 }'
   const id = `executor-test-${randomUUID()}`
+  const marker = `\x1b]777;awb;${id};`
+  const exitPattern = shell === 'cmd' ? new RegExp(`${id}:(-?\\d+)[\\r\\n]`) : new RegExp(`\\x1b\\]777;awb;${id};(-?\\d+)(?:\\x07|\\x1b\\\\)`)
+  if (shell === 'pwsh') {
+    command += `; $pelloOk = $?; $pelloCode = if ($pelloOk) { 0 } elseif ($global:LASTEXITCODE) { $global:LASTEXITCODE } else { 1 }; [Console]::Out.Write(([char]27).ToString()+'${marker.slice(1)}'+$pelloCode+([char]7))`
+  } else if (shell === 'cmd') command += ` & echo ${id}:!ERRORLEVEL!`
+  else command += `; printf '\\033${marker.slice(1)}%s\\007' "$?"`
   let buf = '', finish: (code: number | null) => void = () => undefined
+  let settle: ReturnType<typeof setTimeout> | undefined
   const done = new Promise<number | null>((resolve) => { finish = resolve })
   const session = new Session((event) => {
-    if (event.type === 'data') buf = (buf + event.data).slice(-12000)
-    else if (event.state === 'exited' || event.state === 'failed') finish(event.exitCode)
-  }, { id, projectId: '', kind: '__executor_test__', shell, cwd, command, env: opts.env, hostId })
+    if (event.type !== 'data') return
+    buf = (buf + event.data).slice(-12000)
+    // A shell may render additional prompts during startup. Only the command's
+    // completion marker or the actual process exit can finish a launch test.
+    const match = exitPattern.exec(buf)
+    if (match) {
+      buf = buf.slice(0, match.index) + buf.slice(match.index + match[0].length)
+      // ConPTY can deliver formatted PowerShell output after its console marker.
+      settle ??= setTimeout(() => finish(Number(match[1])), 180)
+    }
+  }, { id, projectId: '', kind: '__executor_test__', shell, cwd, command, env, hostId }, (code) => finish(code))
   session.recordHistory = false
   sessions.set(id, session)
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -1021,9 +1113,16 @@ export async function testExecutor(opts: {
     await session.spawn()
     timer = setTimeout(() => finish(null), 8000)
     const code = await done
-    return { text: buf, code, ...(code === null ? { running: true } : {}) }
+    return { text: redactExecutorOutput(buf, env), code, ...(code === null ? { running: true } : {}) }
+  } catch (error) {
+    if (error instanceof Error) {
+      error.message = redactExecutorOutput(error.message, env)
+      throw error
+    }
+    return { text: redactExecutorOutput(String(error), env), code: null }
   } finally {
     clearTimeout(timer)
+    clearTimeout(settle)
     await session.dispose()
     if (sessions.get(id) === session) sessions.delete(id)
   }

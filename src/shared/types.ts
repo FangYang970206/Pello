@@ -66,11 +66,20 @@ export interface Host {
 
 export type ResourceFormat = 'standard' | 'codex' | 'opencode'
 export interface ResourcePaths { mcpPath: string; skillPath: string; format: ResourceFormat; skillAdapter?: 'claude' | 'codex' | 'opencode' | 'pi' | 'omp' | 'portable'; skillConfigPath?: string }
-export interface ResourceTarget extends ResourcePaths { id: string; name: string }
+export interface ExecutorTemplate extends ResourcePaths {
+  id: string
+  hostId: string
+  name: string
+  env: EnvVar[]
+  session?: Executor['session']
+}
+export interface TemplateBinding { hostId: string; executorId: string; templateId: string }
+export interface ResourceScope { hostId: string; executorId: string }
+export interface ResourceTarget extends ResourcePaths { id: string; name: string; hostId?: string; templateName?: string }
 export interface ResourceItem { name: string; description: string; path: string; transport?: string; enabled?: boolean }
 export interface ResourceDetail extends ResourceItem { content: string; notice?: string }
 export interface ResourcePage { items: ResourceItem[]; total: number; page: number; pages: number; errors: string[] }
-export interface ResourceResult { agent: string; ok: boolean; error?: string; name?: string; id?: string }
+export interface ResourceResult { agent: string; hostId?: string; ok: boolean; skipped?: boolean; error?: string; name?: string; id?: string }
 export interface ResourceSourceItem { id: string; name: string; path: string; description?: string; enabled?: boolean; error?: string }
 
 export interface Project {
@@ -101,6 +110,8 @@ export type TransferSnapshot = { id: string; projectId: string; state: 'running'
 export interface Database {
   settings: Settings
   custom: Executor[]
+  templates: ExecutorTemplate[]
+  templateBindings: TemplateBinding[]
   hosts: Host[]
   projects: Project[]
   treeIgnores?: Record<string, string[]>
@@ -208,6 +219,7 @@ export interface DirListing {
   path: string
   parent: string | null
   dirs: { name: string; path: string }[]
+  files?: { name: string; path: string }[]
   error?: string
 }
 
@@ -251,6 +263,7 @@ export interface PtyCreateRequest {
 }
 
 export interface TestExecRequest {
+  executorId?: string
   cmd: string
   args: string
   shell: ShellKind

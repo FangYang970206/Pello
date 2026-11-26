@@ -9,9 +9,11 @@ import type { PaneLayoutOptions } from '../shared/api'
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, shell, type MenuItemConstructorOptions } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
-import { PRESETS, type Executor, type Host, type Project, type SavedTerm, type Settings, type ShellKind, type ResourceTarget, type WorkSession } from '../shared/types'
+import { PRESETS, type Executor, type ExecutorTemplate, type Host, type Project, type SavedTerm, type Settings, type ShellKind, type ResourceScope, type TestExecRequest, type WorkSession } from '../shared/types'
 import { hostColor } from '../shared/host-colors'
-import { ResourceManager, validateResourcePaths } from './resources'
+import { bindTemplate, deleteTemplate, machine, pruneTemplateBindings, putTemplate, resourcePath, validateResourcePaths } from './executor-templates'
+import { ScopedResources, scopeOf, type ResourceKind } from './resource-scopes'
+import { browseRemoteResources } from './remote-resources'
 import { db, mutate, saveSettings, validTreeIgnores, writeSessions } from './store'
 import { bashQuote, commandExists, osLabel, psQuote } from './platform'
 import { workbenchTheme } from '../shared/themes'
@@ -22,6 +24,7 @@ import {
   createSession,
   interruptSession,
   killSession,
+  redactTerminalHistory,
   resizeSession,
   restartSession,
   testExecutor,
@@ -481,9 +484,13 @@ function registerIpc(): void {
     if (draft.treeIgnores) for (const id of Object.keys(draft.treeIgnores)) if (!projects.some((project) => project.id === id)) delete draft.treeIgnores[id]
   }))
   ipcMain.handle('db:custom', (_e, custom: Executor[]) => mutate((draft) => {
-    for (const executor of custom) { validateResourcePaths(executor.resources); validateCustomSession(executor.session) }
+    for (const executor of custom) { validateResourcePaths(executor.resources, machine(draft, 'local').platform); validateCustomSession(executor.session) }
     draft.custom = custom
+    pruneTemplateBindings(draft)
   }))
+  ipcMain.handle('templates:save', (_e, template: ExecutorTemplate) => mutate((draft) => { putTemplate(draft, template) }))
+  ipcMain.handle('templates:bind', (_e, scope: ResourceScope, templateId: string) => mutate((draft) => { bindTemplate(draft, scope, templateId) }))
+  ipcMain.handle('templates:delete', (_e, id: string) => mutate((draft) => { deleteTemplate(draft, id) }))
   ipcMain.handle('db:hosts', async (_e, hosts: Host[]) => {
     for (const host of hosts) {
       if (host.id === 'local') continue
@@ -507,40 +514,48 @@ function registerIpc(): void {
         rememberPassword(host)
         return publicHost({ ...host, color: hostColor(host.color) })
       })
+      pruneTemplateBindings(draft)
+      for (const executor of draft.custom) {
+        if (!executor.hosts) continue
+        executor.hosts = Object.fromEntries(Object.entries(executor.hosts).filter(([id]) => draft.hosts.some((host) => host.id === id)))
+      }
     })
   })
-  const resources = new ResourceManager(app.getPath('userData'))
-  const targets = () => resources.targets(db().custom)
-  ipcMain.handle('resources:targets', () => targets())
+  const resources = new ScopedResources(app.getPath('userData'), db)
+  ipcMain.handle('resources:targets', (_e, hostId = 'local') => resources.targets(hostId))
   ipcMain.handle('resources:open-recommendation', async (_e, id: string) => {
     const item = SKILL_REPOSITORIES.find((entry) => entry.id === id)
     if (!item) throw new Error(t("推荐仓库不存在"))
     await shell.openExternal(`https://github.com/${item.repository}`)
   })
-  ipcMain.handle('resources:target', (_e, target: ResourceTarget) => resources.saveTarget(target, db().custom))
-  ipcMain.handle('resources:list', async (_e, kind: 'mcp' | 'skills', agent: string, page: number, query: string) => {
+  ipcMain.handle('resources:list', async (_e, kind: ResourceKind, agent: ResourceScope | string, page: number, query: string) => {
     resourceListing?.abort()
     const controller = resourceListing = new AbortController()
-    try { return await resources.listAsync(targets(), kind, agent, page, query, false, controller.signal) }
+    try { return await resources.list(kind, scopeOf(agent), page, query, controller.signal) }
     finally { if (resourceListing === controller) resourceListing = undefined }
   })
-  ipcMain.handle('resources:toggle', (_e, kind, agent, item, enabled) => resources.toggle(targets(), kind, agent, item, enabled))
-  ipcMain.handle('resources:detail', (_e, kind, agent, item) => resources.detail(targets(), kind, agent, item))
+  ipcMain.handle('resources:toggle', (_e, kind, agent, item, enabled) => resources.toggle(kind, scopeOf(agent), item, enabled))
+  ipcMain.handle('resources:detail', (_e, kind, agent, item) => resources.detail(kind, scopeOf(agent), item))
   ipcMain.handle('resources:skill-open', async (_e, agent, item) => {
-    const error = await shell.openPath(resources.skillDirectory(targets(), agent, item))
+    const error = await shell.openPath(await resources.skillDirectory(scopeOf(agent), item))
     if (error) throw new Error(error)
   })
   ipcMain.handle('resources:skill-delete', async (_e, agent, item) => {
-    await shell.trashItem(resources.skillDirectory(targets(), agent, item, true))
+    await shell.trashItem(await resources.skillDirectory(scopeOf(agent), item, true))
   })
-  ipcMain.handle('resources:mcp', (_e, name: string, config: Record<string, unknown>, agents: string[]) => resources.addMcp(targets(), name, config, agents))
-  ipcMain.handle('resources:scan', (_e, kind: string, source: string) => kind === 'skills' ? resources.scanSkills(source).map((item) => ({ ...item, id: item.name })) : resources.scanMcp(source))
-  ipcMain.handle('resources:import-mcp', (_e, source: string, agents: string[], ids: string[]) => resources.importMcpConfig(targets(), source, agents, ids))
-  ipcMain.handle('resources:skills', (_e, source: string, agents: string[], names?: string[]) => resources.importSkills(targets(), source, agents, names))
+  ipcMain.handle('resources:mcp', (_e, name: string, config: Record<string, unknown>, agents: (ResourceScope | string)[]) => resources.addMcp(name, config, agents.map(scopeOf)))
+  ipcMain.handle('resources:scan', (_e, kind: ResourceKind, source: string, hostId?: string) => resources.scan(kind, source, hostId))
+  ipcMain.handle('resources:import-mcp', (_e, source: string, agents: (ResourceScope | string)[], ids: string[], hostId?: string) => resources.importMcp(source, agents.map(scopeOf), ids, hostId))
+  ipcMain.handle('resources:skills', (_e, source: string, agents: (ResourceScope | string)[], names?: string[]) => resources.importSkills(source, agents.map(scopeOf), names))
+  ipcMain.handle('resources:browse', async (_e, hostId: string, input: string, files: boolean) => {
+    const host = machine(db(), hostId, true)
+    if (host.id === 'local') throw new Error(t("请选择 SSH 机器"))
+    return browseRemoteResources(host, input ? resourcePath(input, host.platform) : '', files)
+  })
   ipcMain.handle('resources:pick', async (_e, kind: string) => {
     if (!win) return null
     const result = await dialog.showOpenDialog(win, { properties: [kind === 'folder' ? 'openDirectory' : 'openFile'],
-      filters: kind === 'folder' ? undefined : [{ name: kind === 'zip' ? t("ZIP 压缩包") : t("Agent 配置"), extensions: kind === 'zip' ? ['zip'] : ['json', 'jsonc', 'toml', 'yaml', 'yml'] }] })
+      filters: kind === 'folder' || kind === 'file' ? undefined : [{ name: kind === 'zip' ? t("ZIP 压缩包") : t("Agent 配置"), extensions: kind === 'zip' ? ['zip'] : ['json', 'jsonc', 'toml', 'yaml', 'yml'] }] })
     return result.canceled ? null : result.filePaths[0] || null
   })
   ipcMain.handle('db:sessions', (_e, projectId: string, terms: SavedTerm[], activeId?: string | null, groups?: WorkSession[], selected?: string) => mutate((draft) => {
@@ -572,7 +587,7 @@ function registerIpc(): void {
   })
   ipcMain.handle('path:list', async (_e, hostId: string, input: string) => {
     const draft = db()
-    const host = draft.hosts.find((h) => h.id === hostId) || draft.hosts[0]
+    const host = machine(draft, hostId, true)
     const target = targetFor(input || '/', host.id === 'local' ? null : host)
     return listDir(target, input)
   })
@@ -955,7 +970,7 @@ function registerIpc(): void {
   })
   ipcMain.handle('terminal:history', (_e, id: string) => typeof id === 'string' && id ? loadTerminalHistory(id) : '')
   ipcMain.on('terminal:history-save', (_e, id: string, text: string) => {
-    if (typeof id === 'string' && id && typeof text === 'string') saveTerminalHistory(id, text)
+    if (typeof id === 'string' && id && typeof text === 'string') saveTerminalHistory(id, redactTerminalHistory(id, text))
   })
   ipcMain.on('pty:write', (_e, id: string, data: string, binary = false) => { if (!closingWindow && !quitting) writeSession(id, String(data), !!binary) })
   ipcMain.on('pty:shift-enter', (_e, id: string) => { if (!closingWindow && !quitting) writeSessionShiftEnter(id) })
@@ -972,7 +987,7 @@ function registerIpc(): void {
     await deleteTerminalHistory(id)
   })
 
-  ipcMain.handle('exec:test', async (_e, req: { cmd: string; args: string; shell: ShellKind; env: { k: string; v: string; secret: boolean }[]; cwd?: string; hostId?: string }) => {
+  ipcMain.handle('exec:test', async (_e, req: TestExecRequest) => {
     if (closingWindow || quitting) throw new Error(t("工作台正在关闭"))
     return testExecutor({
       cmd: req.cmd || '',
@@ -980,7 +995,8 @@ function registerIpc(): void {
       shell: req.shell || 'bash',
       env: Array.isArray(req.env) ? req.env : [],
       cwd: req.cwd || '',
-      hostId: req.hostId
+      hostId: req.hostId,
+      executorId: req.executorId
     })
   })
 

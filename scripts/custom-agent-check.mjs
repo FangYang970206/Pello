@@ -67,13 +67,29 @@ try {
    await page.evaluate(()=>window.awb.ptyWrite('manual','MANUAL_FIRST\r'))
    await page.waitForFunction(()=>window.__awbBuffer('manual').includes('CUSTOM_REPLY ["MANUAL_FIRST"]'))
  })
+ const before = (await page.evaluate(() => window.awb.getState())).db.sessions.p.find((term) => term.id === 'a').agentSessionId
+ const templateId = await page.evaluate(async (session) => {
+   const saved = await window.awb.saveTemplate({ id: '', hostId: 'local', name: 'Resume environment', env: [{ k: 'PELLO_TEMPLATE_MARKER', v: 'latest-template', secret: false },
+     { k: 'PELLO_TEST_LOG_SECRET', v: 'confidential-fixture-secret', secret: true }],
+     mcpPath: '', skillPath: '', format: 'standard', session })
+   const id = saved.templates.find((template) => template.name === 'Resume environment').id
+   await window.awb.bindTemplate({ hostId: 'local', executorId: 'custom-fixture' }, id)
+   return id
+ }, custom.session)
+ assert.doesNotMatch(await page.evaluate(() => window.__awbBuffer('a')), /latest-template/, 'A running terminal keeps its environment')
  await app.close(); app=null
  app=await launch(); page=await app.firstWindow()
  await page.waitForFunction(()=>window.__awbBuffer?.('a')?.includes('CUSTOM_READY'))
  await check('relaunch resumes each native conversation, beyond transcript replay',async()=>{
    const text=await page.evaluate(()=>window.__awbBuffer('a'))
    const last=text.slice(text.lastIndexOf('CUSTOM_READY'))
-   assert.ok(last.includes('FIRST_A')&&last.includes('SECOND_A')&&!last.includes('FIRST_B'),last)
+   assert.ok(last.includes(before)&&last.includes('FIRST_A')&&last.includes('SECOND_A')&&!last.includes('FIRST_B'),last)
+   await page.waitForFunction(() => window.__awbBuffer('a')?.includes('TEMPLATE_ENV latest-template'))
+   await page.waitForFunction(() => window.__awbBuffer('a')?.includes('confidential-fixture-secret'))
+   const exported = path.join(data, 'redacted.ansi')
+   await app.evaluate(({ dialog }, file) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: file }) }, exported)
+   await page.evaluate(() => window.awb.exportTerminalHistory('a'))
+   assert.doesNotMatch(fs.readFileSync(exported, 'utf8'), /confidential-fixture-secret|confiden/)
    await page.waitForFunction(()=>window.__awbBuffer?.('manual')?.includes('CUSTOM_READY'))
    const manual=await page.evaluate(()=>window.__awbBuffer('manual'))
    assert.ok(manual.slice(manual.lastIndexOf('CUSTOM_READY')).includes('MANUAL_FIRST'))
@@ -93,6 +109,15 @@ try {
      await page.waitForFunction(() => window.__awbBuffer('a')?.includes('FIRST_A'))
      await page.screenshot({ path: path.join(output, `${theme}-${width}.png`) })
    }
+ })
+ await page.evaluate(async (id) => {
+   const { db } = await window.awb.getState()
+   await window.awb.saveTemplate({ ...db.templates.find((template) => template.id === id), session: undefined })
+ }, templateId)
+ await app.close(); app = await launch(); page = await app.firstWindow()
+ await check('recovery with a template missing resume arguments preserves history and reports an error', async () => {
+   await page.waitForFunction(() => window.__awbBuffer?.('a')?.includes('缺少会话恢复参数'))
+   assert.match(await page.evaluate(() => window.__awbBuffer('a')), /FIRST_A/)
  })
 }finally{await app?.close()}
 console.log('Evidence: '+data)

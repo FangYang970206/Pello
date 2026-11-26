@@ -29,7 +29,11 @@ export function ResourceDialog({ title, onClose, children, footer, busy = false,
   }, [returnFocus])
   const outside = (x: number, y: number) => { const box = ref.current!.getBoundingClientRect(); return x < box.left || x > box.right || y < box.top || y > box.bottom }
   return createPortal(<dialog ref={ref} className={`dlg lg resource-dialog${compact ? ' resource-dialog-compact' : ''} ${className}`} aria-labelledby={heading}
-    onCancel={(event) => { event.preventDefault(); if (!busy) onClose() }}
+    onCancel={(event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      if (event.target === event.currentTarget && !busy) onClose()
+    }}
     onPointerDown={(event) => { pressedOutside.current = event.target === event.currentTarget && outside(event.clientX, event.clientY) }}
     onPointerUp={(event) => { if (dismissOnBackdrop && !busy && pressedOutside.current && event.target === event.currentTarget && outside(event.clientX, event.clientY)) onClose(); pressedOutside.current = false }}
     onKeyDown={(event) => event.stopPropagation()}>

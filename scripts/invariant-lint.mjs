@@ -316,7 +316,7 @@ export function checkInvariants(files) {
   require(rows.includes('items.length > 300') && rows.includes('data-virtual-count') && rows.includes("event.key === 'End'") && rows.includes("event.key === 'Tab'") && files.get('src/renderer/RightPanel.tsx')?.includes('<VirtualFileRows') && scripts.check?.includes('npm run check:performance') && scripts['check:performance']?.includes('scripts/large-project-regression-check.mjs'),
     'AWB079', 'src/renderer/VirtualFileRows.tsx', '大量变更和文件结果按视口渲染，完整结果可滚动和键盘访问，并保留大项目回归')
   const performance = JSON.parse(files.get('scripts/performance-budgets.json') || '{}')
-  require(files.get('src/renderer/App.tsx')?.includes("if (!project || route !== 'work' || !right) return") && files.get('src/renderer/App.tsx')?.includes('route, right, rmode, gitTick') && files.get('src/main/index.ts')?.includes('resources.listAsync(targets()') && ['scripts/hotspot-performance-check.mjs', 'scripts/hotspot-ui-check.mjs', 'scripts/background-work-check.mjs'].every((entry) => scripts['check:performance']?.includes(entry)) && performance.hotspots?.limits.skillsGapMs <= 100 && performance.hotspotUi?.limits.savePaintMs === performance.regression?.limits.savePaintMs,
+  require(files.get('src/renderer/App.tsx')?.includes("if (!project || route !== 'work' || !right) return") && files.get('src/renderer/App.tsx')?.includes('route, right, rmode, gitTick') && files.get('src/main/resource-scopes.ts')?.includes('manager.listAsync([target]') && ['scripts/hotspot-performance-check.mjs', 'scripts/hotspot-ui-check.mjs', 'scripts/background-work-check.mjs'].every((entry) => scripts['check:performance']?.includes(entry)) && performance.hotspots?.limits.skillsGapMs <= 100 && performance.hotspotUi?.limits.savePaintMs === performance.regression?.limits.savePaintMs,
     'AWB101', 'src/renderer/App.tsx', '收起文件面板停止轮询，展开立即刷新；大资源列表让出事件循环，保留完整性与性能门限回归')
   require(scripts.check?.includes('npm run check:performance') && scripts['check:performance']?.includes('scripts/performance-budget-check.mjs') && scripts['bench:large-project']?.includes('--enforce-budget') &&
     ['regression', 'github'].every((suite) => ['filenameMs', 'contentMs', 'mainThreadGapMs', 'savePaintMs', 'renderedGitRows'].every((metric) => Number.isFinite(performance[suite]?.limits?.[metric]) && performance[suite].limits[metric] > 0)) &&
@@ -333,9 +333,17 @@ export function checkInvariants(files) {
   require(actionButtons?.length === 3 && actionButtons.every((node) => attr(node.openingElement, 'aria-label') && attr(node.openingElement, 'title') && nodes(node, (child) => ts.isJsxSelfClosingElement(child) && child.tagName.getText() === 'Icon').length),
     'AWB083', 'src/renderer/DiffPane.tsx', 'Diff 保存、视图与放弃操作使用带无障碍名称和提示的图标')
   require(called(named(pty, 'testExecutor'), 'spawn').some((call) => call.expression.getText() === 'session.spawn') &&
-    called(named(pty, 'agentCommand'), 'executorForHost').length && called(named(pty, 'write'), 'submittedCustomAgent').length &&
+    called(named(pty, 'agentCommand'), 'effectiveExecutor').length && called(named(pty, 'write'), 'submittedCustomAgent').length &&
     called(named(pty, 'spawn'), 'customResumeCommand').length && called(named(pty, 'closeAllSessionsNow'), 'prepareShutdown').length && scripts['check:custom-agent']?.includes('scripts/custom-agent-check.mjs'),
     'AWB084', 'src/main/pty.ts', '自定义执行器按机器解析、复用实际终端启动测试、识别手动启动并按原生 ID 续接，保留行为回归')
+  const templates = source('src/main/executor-templates.ts')
+  require(called(named(templates, 'bindTemplate'), 'checkCompatibility').length &&
+    named(templates, 'bindTemplate')?.getText().includes('template.hostId !== hostId') &&
+    called(named(main, 'registerIpc'), 'pruneTemplateBindings').length >= 2 &&
+    files.get('src/main/resource-scopes.ts')?.includes('JSON.stringify([context.host.id, identity])') &&
+    files.get('src/main/remote-resources.ts')?.includes("guard?.()\n          stream.stdin.end('1\\n')") &&
+    scripts['check:executor-templates']?.includes('scripts/executor-templates-check.mjs'),
+    'AWB109', 'src/main/executor-templates.ts', '模板绑定校验机器与原生格式，删除时清理关联，分发按机器和真实路径去重并在发布前复核')
   require(called(named(pty, 'closeSession'), 'enqueueTerminalClose').length && called(named(pty, 'closeAllSessions'), 'enqueueTerminalClose').length &&
     named(pty, 'enqueueTerminalClose')?.getText().includes('terminalCloseQueue.then(close)') && scripts.check?.includes('scripts/terminal-disposal-check.mjs'),
     'AWB105', 'src/main/pty.ts', 'Windows 标签、会话、项目与窗口关闭共用串行原生终端清理队列，失败不阻断后续清理')

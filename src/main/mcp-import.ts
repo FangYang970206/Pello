@@ -38,7 +38,11 @@ function normalize(raw: unknown): RecordValue {
 /** Decode source configuration without returning its credentials to the renderer. */
 export function readMcpImport(source: string): McpImportEntry[] {
   if (!path.isAbsolute(source) || fs.statSync(source).size > 32_000_000) throw new Error(t("请选择 32 MB 以内的 MCP 配置文件"))
-  const text = fs.readFileSync(source, 'utf8').replace(/^\ufeff/, '')
+  return parseMcpImport(source, fs.readFileSync(source, 'utf8'))
+}
+
+export function parseMcpImport(source: string, content: string): McpImportEntry[] {
+  const text = content.replace(/^\ufeff/, '')
   let value: unknown
   try {
     if (/\.toml$/i.test(source)) value = parseToml(text)
@@ -75,7 +79,8 @@ export function readMcpImport(source: string): McpImportEntry[] {
   }
   walk(value, '$', 0)
   if (!entries.length) {
-    if ('command' in value || 'url' in value) add(typeof value.name === 'string' ? value.name : path.basename(source, path.extname(source)).replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 64) || 'imported-mcp', value, '$')
+    const name = source.split(/[\\/]/).at(-1) || ''
+    if ('command' in value || 'url' in value) add(typeof value.name === 'string' ? value.name : name.slice(0, -path.extname(name).length || undefined).replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 64) || 'imported-mcp', value, '$')
     else if (Object.values(value).length && Object.values(value).every((item) => record(item) && ('command' in item || 'url' in item))) collection(value, '$')
   }
   if (!entries.length) throw new Error(t("未发现 MCP 服务器。支持 mcpServers、mcp_servers、mcp.servers、servers 和 context_servers"))

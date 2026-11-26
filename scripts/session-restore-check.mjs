@@ -31,7 +31,8 @@ fs.writeFileSync(path.join(project, 'long-diff.txt'), `${longLine} changed\n`)
   fs.writeFileSync(path.join(project, 'diff-depth.txt'), `${Array.from({ length: 80 }, (_, index) => `changed ${index + 1}`).join('\n')}\n`)
 const db = {
   settings: { layout: 'balanced', theme: 'dark', restore: true, defShell: shell, defAgent: 'shell', confirmKill: false },
-  custom: [{ id: 'native', name: 'Native fixture', cmd: node, args: `${quote(path.join(root, 'scripts/fixtures/program-status.cjs'))} claude session-42`, shell, letter: 'N', color: '#a9c3df', env: [] }],
+  custom: [{ id: 'native', name: 'Native fixture', cmd: node, args: `${quote(path.join(root, 'scripts/fixtures/program-status.cjs'))} claude`, shell, letter: 'N', color: '#a9c3df', env: [],
+    session: { startArgs: '{sessionId}', resumeArgs: '{sessionId}' } }],
   hosts: [
     { id: 'local', name: '本机', addr: '', user: '', os: 'Local', on: true, port: 22, platform: process.platform === 'win32' ? 'windows' : 'linux', auth: 'key', color: 'blue' },
     { id: 'remote', name: '离线机器', addr: 'example.invalid', user: 'test', os: 'Linux', on: false, port: 22, platform: 'linux', auth: 'key', color: 'purple' }
