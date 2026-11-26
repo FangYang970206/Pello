@@ -17,7 +17,8 @@ permissions:
 
 jobs:
   prepare:
-    runs-on: windows-2025
+    # The Electron rebuild toolchain supports Visual Studio 2022.
+    runs-on: windows-2022
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
@@ -51,7 +52,7 @@ jobs:
   validate:
     needs: prepare
     name: ${{ matrix.name }}
-    runs-on: windows-2025
+    runs-on: windows-2022
     timeout-minutes: 55
     strategy:
       fail-fast: false
