@@ -10,6 +10,26 @@ use std::path::{Path, PathBuf};
 
 pub const TREE_DEFAULT_IGNORE: &[&str] = &[".git", "node_modules", "dist", "out", ".next", "__pycache__", ".cache"];
 const MAX_DIFF: usize = 250_000;
+/// What a document may be, in bytes: the Electron build's
+/// `MAX_DOCUMENT_BYTES`. A PDF or an image may be more, as its preview is
+/// staged whole. A search reads less of a file than this, and that is its
+/// own limit, not a document's.
+pub const DOCUMENT_LIMIT: u64 = 10_000_000;
+pub const MEDIA_LIMIT: u64 = 12_000_000;
+
+/// Whether a file is one the workbench previews as it is, as the Electron
+/// build's `mediaKind` knows one.
+pub fn media_kind(rel: &str) -> Option<&'static str> {
+    let lower = rel.to_ascii_lowercase();
+    if lower.ends_with(".pdf") { return Some("pdf") }
+    if [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".ico", ".avif"].iter().any(|extension| lower.ends_with(extension)) { return Some("image") }
+    None
+}
+
+/// The most bytes of a file that are opened, by what the file is.
+pub fn limit_for(rel: &str) -> u64 {
+    if media_kind(rel).is_some() { MEDIA_LIMIT } else { DOCUMENT_LIMIT }
+}
 
 pub fn default_ignore() -> Vec<String> {
     TREE_DEFAULT_IGNORE.iter().map(|name| (*name).to_string()).collect()
@@ -76,6 +96,19 @@ fn looks_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(8000).any(|byte| *byte == 0)
 }
 
+/// A file over its limit: said so, and nothing of it is sent. Its version is
+/// not one, so that it cannot be saved over.
+pub(crate) fn oversized_file() -> Value {
+    json!({ "text": "", "binary": false, "missing": false, "version": Value::Null, "tooBig": true })
+}
+
+/// Decode a file that was read whole. One over its limit is said to be, and
+/// nothing of it is decoded.
+pub(crate) fn decode_file_limited(rel: &str, bytes: &[u8]) -> Value {
+    if bytes.len() as u64 > limit_for(rel) { return oversized_file() }
+    decode_file(bytes)
+}
+
 pub(crate) fn decode_file(bytes: &[u8]) -> Value {
     let binary = looks_binary(bytes) || std::str::from_utf8(bytes).is_err();
     json!({
@@ -83,7 +116,7 @@ pub(crate) fn decode_file(bytes: &[u8]) -> Value {
         "binary": binary,
         "missing": false,
         "version": version_of(bytes),
-        "tooBig": bytes.len() > 2_000_000
+        "tooBig": false
     })
 }
 
@@ -94,10 +127,15 @@ pub(crate) fn missing_file() -> Value {
 pub fn read_local(root: &Path, rel: &str, language: &str) -> Result<Value, String> {
     let Ok(relative) = clean_relative(rel, language) else { return Ok(missing_file()) };
     if relative.is_empty() { return Ok(missing_file()) }
-    match local_existing(root, &relative, language) {
-        Ok((full, _)) => Ok(fs::read(&full).map(|bytes| decode_file(&bytes)).unwrap_or_else(|_| missing_file())),
-        Err(_) => Ok(missing_file()),
-    }
+    let Ok((full, _)) = local_existing(root, &relative, language) else { return Ok(missing_file()) };
+    // Asked how large it is before anything of it is read, as the Electron
+    // build asks: a file over its limit is not read at all.
+    let Ok(mut file) = fs::File::open(&full) else { return Ok(missing_file()) };
+    let Ok(meta) = file.metadata() else { return Ok(missing_file()) };
+    if !meta.is_file() { return Ok(missing_file()) }
+    if meta.len() > limit_for(&relative) { return Ok(oversized_file()) }
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    Ok(std::io::Read::read_to_end(&mut file, &mut bytes).map(|_| decode_file(&bytes)).unwrap_or_else(|_| missing_file()))
 }
 
 pub fn write_local(root: &Path, rel: &str, text: &str, version: Option<&str>, language: &str) -> Result<Value, String> {
@@ -106,8 +144,8 @@ pub fn write_local(root: &Path, rel: &str, text: &str, version: Option<&str>, la
         return Err(translate(language, "请先读取文件再保存", &[] as &[String]));
     }
     let bytes = text.as_bytes();
-    if bytes.len() > 2_000_000 {
-        return Err(translate(language, "文件超过 2 MB，无法在内置编辑器中保存", &[] as &[String]));
+    if bytes.len() as u64 > DOCUMENT_LIMIT {
+        return Err(translate(language, "文件超过 10 MB，无法在内置编辑器中保存", &[] as &[String]));
     }
     if version.is_none() {
         return create_missing(root, &relative, bytes, language);
@@ -264,6 +302,57 @@ pub fn trash_entry(root: &Path, rel: &str, directory: bool, language: &str) -> R
         return Err(translate(language, "文件类型已更改，请刷新目录", &[] as &[String]));
     }
     crate::sys::trash(&lexical).map_err(|error| error.to_string())
+}
+
+/// What Node calls a failure of the file system, as `error.code` of the
+/// Electron build: `EACCES`, `ENOENT`, and so on. It is what is said of a
+/// folder that cannot be listed, so it covers what listing a folder meets;
+/// a failure it does not know has no name, and the caller says instead that
+/// the folder cannot be read. On POSIX an error is its errno already. On
+/// Windows the names are libuv's translation of the system's codes, as Node
+/// reports them: a folder it may not list is `EPERM` there, and not `EACCES`.
+pub fn errno_name(error: &std::io::Error) -> Option<&'static str> {
+    let code = error.raw_os_error()?;
+    #[cfg(unix)]
+    {
+        use libc::*;
+        Some(match code {
+            EACCES => "EACCES", EPERM => "EPERM", ENOENT => "ENOENT", ENOTDIR => "ENOTDIR", ELOOP => "ELOOP", ENAMETOOLONG => "ENAMETOOLONG",
+            EBUSY => "EBUSY", EIO => "EIO", EMFILE => "EMFILE", ENFILE => "ENFILE", ENOMEM => "ENOMEM", EROFS => "EROFS", EINTR => "EINTR",
+            ETIMEDOUT => "ETIMEDOUT", ENOSPC => "ENOSPC", EDQUOT => "EDQUOT", ESTALE => "ESTALE", EOVERFLOW => "EOVERFLOW", ENOTEMPTY => "ENOTEMPTY",
+            _ => return None,
+        })
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::*;
+        Some(match code as u32 {
+            ERROR_ELEVATION_REQUIRED | ERROR_CANT_ACCESS_FILE => "EACCES",
+            ERROR_OPERATION_ABORTED => "ECANCELED",
+            ERROR_ALREADY_EXISTS | ERROR_FILE_EXISTS => "EEXIST",
+            ERROR_LOCK_VIOLATION | ERROR_SHARING_VIOLATION => "EBUSY",
+            ERROR_CANT_RESOLVE_FILENAME => "ELOOP",
+            ERROR_TOO_MANY_OPEN_FILES => "EMFILE",
+            ERROR_BUFFER_OVERFLOW | ERROR_FILENAME_EXCED_RANGE => "ENAMETOOLONG",
+            ERROR_BAD_PATHNAME | ERROR_DIRECTORY | ERROR_ENVVAR_NOT_FOUND | ERROR_FILE_NOT_FOUND | ERROR_INVALID_NAME | ERROR_INVALID_DRIVE | ERROR_INVALID_REPARSE_DATA | ERROR_MOD_NOT_FOUND | ERROR_PATH_NOT_FOUND => "ENOENT",
+            ERROR_NOT_ENOUGH_MEMORY | ERROR_OUTOFMEMORY => "ENOMEM",
+            ERROR_CANNOT_MAKE | ERROR_DISK_FULL | ERROR_EA_TABLE_FULL | ERROR_END_OF_MEDIA | ERROR_HANDLE_DISK_FULL => "ENOSPC",
+            ERROR_DIR_NOT_EMPTY => "ENOTEMPTY",
+            ERROR_NOT_CONNECTED => "ENOTCONN",
+            ERROR_DISK_CORRUPT | ERROR_IO_DEVICE => "EIO",
+            ERROR_NOT_SUPPORTED => "ENOTSUP",
+            ERROR_ACCESS_DENIED | ERROR_PRIVILEGE_NOT_HELD => "EPERM",
+            ERROR_WRITE_PROTECT => "EROFS",
+            ERROR_SEM_TIMEOUT => "ETIMEDOUT",
+            ERROR_META_EXPANSION_TOO_LONG => "E2BIG",
+            _ => return None,
+        })
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = code;
+        None
+    }
 }
 
 pub fn check_path(input: &str, language: &str) -> Value {

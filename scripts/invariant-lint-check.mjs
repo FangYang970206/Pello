@@ -181,6 +181,30 @@ const cases = [
   ['AWB082', 'src-tauri/core/src/workbench.rs', 'Err(detail) => return Ok(json!({ "kind": "error", "detail": detail })),', 'Err(_) => false,'],
   ['AWB082', 'src-tauri/core/src/workbench.rs', 'let Some(host) = self.path_host(host_id) else { return Ok(files::check_path(input, language)) };', 'let Some(host) = self.project_target(host_id, language)?.1 else { return Ok(files::check_path(input, language)) };'],
   ['AWB082', 'src-tauri/core/src/workbench.rs', 'let Some(host) = self.path_host(host_id) else { return Ok(files::list_dir(input)) };', 'let Some(host) = self.optional_host(host_id, language)? else { return Ok(files::list_dir(input)) };'],
+  ['AWB083', 'src-tauri/core/src/files.rs', 'pub const DOCUMENT_LIMIT: u64 = 10_000_000;', 'pub const DOCUMENT_LIMIT: u64 = 2_000_000;'],
+  ['AWB083', 'src-tauri/core/src/files.rs', 'pub const MEDIA_LIMIT: u64 = 12_000_000;', 'pub const MEDIA_LIMIT: u64 = 10_000_000;'],
+  ['AWB083', 'src-tauri/core/src/files.rs', 'if meta.len() > limit_for(&relative) { return Ok(oversized_file()) }', ''],
+  ['AWB083', 'src-tauri/core/src/files.rs', '"version": Value::Null, "tooBig": true', '"version": "stale", "tooBig": true'],
+  ['AWB083', 'src-tauri/core/src/files.rs', 'if bytes.len() as u64 > DOCUMENT_LIMIT {', ''],
+  ['AWB083', 'src-tauri/core/src/git.rs', 'if bytes.len() as u64 > files::DOCUMENT_LIMIT {', 'if bytes.len() as u64 > 2_000_000 {'],
+  ['AWB083', 'src-tauri/core/src/preview.rs', 'const DRAFT_LIMIT: usize = crate::files::DOCUMENT_LIMIT as usize;', 'const DRAFT_LIMIT: usize = 2 * 1024 * 1024;'],
+  ['AWB084', 'src-tauri/core/src/git.rs', 'translate(language, "{{0}}：{{1}}", &[rel, reason])', 'format!("{rel}：无法读取")'],
+  ['AWB084', 'src-tauri/core/src/git.rs', 'unwrap_or_else(|| translate(language, "无法读取", &[] as &[String]))', 'unwrap_or_else(|| "无法读取".to_string())'],
+  ['AWB084', 'src-tauri/core/src/git.rs', 'files::errno_name(&error)', 'None'],
+  ['AWB084', 'src-tauri/core/src/git.rs', 'translate(language, "{{0}}：无法读取 Git 状态", &[prefix.clone()])', 'format!("{prefix}：无法读取 Git 状态")'],
+  ['AWB084', 'src-tauri/core/src/files.rs', 'ERROR_ACCESS_DENIED | ERROR_PRIVILEGE_NOT_HELD => "EPERM"', 'ERROR_ACCESS_DENIED | ERROR_PRIVILEGE_NOT_HELD => "EACCES"'],
+  ['AWB084', 'src-tauri/core/src/resources.rs', 'let unmovable = || t(language, "无法移入回收站");', 'let unmovable = || "无法移入回收站".to_string();'],
+  ['AWB084', 'src-tauri/core/src/resources.rs', 'else { return t(language, "无效 URL") };', 'else { return "无效 URL".into() };'],
+  ['AWB084', 'src-tauri/core/src/resources.rs', 'eq_ignore_ascii_case("https") { return t(language, "无效 URL") }', 'eq_ignore_ascii_case("https") { return "无效 URL".into() }'],
+  ['AWB084', 'src-tauri/core/src/shells.rs', 'translate(language, "Git Bash 或本机 Bash", &[] as &[String])', '"Git Bash 或本机 Bash".to_string()'],
+  ['AWB084', 'src-tauri/core/src/i18n.rs', '("{{0}}：{{1}}", "{{0}}: {{1}}"),', ''],
+  ['AWB084', 'src-tauri/core/src/i18n.rs', '("无法读取", "Cannot read"),', ''],
+  ['AWB084', 'src-tauri/core/src/i18n.rs', '("无法移入回收站", "Cannot move to the Recycle Bin"),', ''],
+  ['AWB084', 'src-tauri/core/src/i18n.rs', '("粘贴为纯文本", "Paste as plain text"),', ''],
+  ['AWB084', 'src-tauri/core/src/i18n.rs', '("重新读取", "Reload"),', ''],
+  // A message taken out of the code altogether is not seen by the check of
+  // callers, which goes from the code to the catalog; this rule holds it.
+  ['AWB084', 'src-tauri/core/src/git.rs', 'translate(language, "{{0}}：无法读取 Git 状态", &[prefix.clone()])', '"x".to_string()'],
 ]
 cases.forEach(([id, file, before, after], index) => {
   const mutated = new Map(files)

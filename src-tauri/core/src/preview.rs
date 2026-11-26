@@ -18,7 +18,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const PREVIEW_LIMIT: u64 = 12_000_000;
-const DRAFT_LIMIT: usize = 2 * 1024 * 1024;
+/// A previewed draft is a document, and may be as large as one.
+const DRAFT_LIMIT: usize = crate::files::DOCUMENT_LIMIT as usize;
 
 /// Same behavior as `htmlPreviewBridge` in `src/shared/preview-bridge.ts`.
 /// `awb-eval` exists because WebKitGTK's remote inspector does not evaluate a
@@ -149,7 +150,7 @@ impl Service {
         let relative = normalize_rel(rel, language)?;
         let _ = read_asset(root, &relative, language)?;
         if let Some(draft) = draft {
-            if !is_html(&relative) || draft.len() > DRAFT_LIMIT { return Err(translate(language, "预览草稿必须为 2 MB 以内的 HTML", &[] as &[String])); }
+            if !is_html(&relative) || draft.len() > DRAFT_LIMIT { return Err(translate(language, "预览草稿必须为 10 MB 以内的 HTML", &[] as &[String])); }
         }
         self.publish(project_id, &format!("{project_id}:{}", root.display()), Source::Local(root.to_path_buf()), &relative, draft, language)
     }
@@ -159,7 +160,7 @@ impl Service {
         let relative = normalize_rel(rel, language)?;
         let _ = read_remote_asset(data, host, root, &relative, language)?;
         if let Some(draft) = draft {
-            if !is_html(&relative) || draft.len() > DRAFT_LIMIT { return Err(translate(language, "预览草稿必须为 2 MB 以内的 HTML", &[] as &[String])); }
+            if !is_html(&relative) || draft.len() > DRAFT_LIMIT { return Err(translate(language, "预览草稿必须为 10 MB 以内的 HTML", &[] as &[String])); }
         }
         let source = Source::Remote { data: data.to_path_buf(), host: host.clone(), root: root.to_string() };
         let identity = format!("{project_id}:{}:{root}", host["id"].as_str().unwrap_or(""));

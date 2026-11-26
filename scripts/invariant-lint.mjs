@@ -15,7 +15,7 @@ export function projectFiles() {
     }
   }
   read('src')
-  for (const rel of ['package.json', 'AGENTS.md', 'electron-builder.yml', 'electron.vite.config.ts', 'assets/installer.nsh', 'src/renderer/index.html', 'src-tauri/core/src/menu.rs', 'src-tauri/core/src/workbench.rs', 'src-tauri/core/src/pty.rs', 'src-tauri/core/src/i18n.rs', 'src-tauri/core/src/shell.rs', 'src-tauri/src/lib.rs', 'src-tauri/src/edit.rs']) files.set(rel, fs.readFileSync(path.join(root, rel), 'utf8'))
+  for (const rel of ['package.json', 'AGENTS.md', 'electron-builder.yml', 'electron.vite.config.ts', 'assets/installer.nsh', 'src/renderer/index.html', 'src-tauri/core/src/menu.rs', 'src-tauri/core/src/workbench.rs', 'src-tauri/core/src/pty.rs', 'src-tauri/core/src/i18n.rs', 'src-tauri/core/src/shell.rs', 'src-tauri/core/src/files.rs', 'src-tauri/core/src/git.rs', 'src-tauri/core/src/preview.rs', 'src-tauri/core/src/resources.rs', 'src-tauri/core/src/shells.rs', 'src-tauri/src/lib.rs', 'src-tauri/src/edit.rs']) files.set(rel, fs.readFileSync(path.join(root, rel), 'utf8'))
   return files
 }
 
@@ -322,6 +322,33 @@ export function checkInvariants(files) {
   const asksDirectory = /let exists = match exists \{\r?\n(?:\s*\/\/[^\n]*\r?\n)*\s*Ok\(text\) => text\.trim\(\) == "yes",\r?\n(?:\s*\/\/[^\n]*\r?\n)*\s*Err\(detail\) => return Ok\(json!\(\{ "kind": "error", "detail": detail \}\)\),\r?\n(?:\s*\/\/[^\n]*\r?\n)*\s*\};/.test(pathCheck)
   require(pathHost.includes('.find(|host| host["id"] == host_id).or_else(|| hosts.first())?') && pathCheck.includes('self.path_host(host_id)') && body('path_list').includes('self.path_host(host_id)') && !pathCheck.includes('optional_host(') && !pathCheck.includes('project_target(') && /fn absolute_on[\s\S]*?if platform == "windows" \{ return bytes\.len\(\) >= 3 && bytes\[0\]\.is_ascii_alphabetic\(\) && bytes\[1\] == b':' && bytes\[2\] == b'\\\\' \}/.test(kernel) && asksDirectory && !/let exists = [^;]*unwrap_or_default\(\)/.test(pathCheck),
     'AWB082', 'src-tauri/core/src/workbench.rs', '路径检查与列举按机器 id 查找并回退到第一台机器，不经项目统一入口；绝对路径按目标平台判断，机器拒绝时如实返回错误而非路径不存在')
+  // A document is as large as the Electron build's `MAX_DOCUMENT_BYTES`, and
+  // no larger: a file is asked its size before a byte of it is read, so that
+  // a file beyond the limit is not read whole to be refused; one beyond it is
+  // opened as empty with no version, so that it can be neither saved nor
+  // previewed; and what is asked locally is asked of a remote file too.
+  const kernelFiles = files.get('src-tauri/core/src/files.rs') || ''
+  const kernelGit = files.get('src-tauri/core/src/git.rs') || ''
+  const kernelPreview = files.get('src-tauri/core/src/preview.rs') || ''
+  const readLocal = /fn read_local\([\s\S]*?\n\}/.exec(kernelFiles)?.[0] || ''
+  const oversized = /fn oversized_file\(\)[\s\S]*?\n\}/.exec(kernelFiles)?.[0] || ''
+  require(kernelFiles.includes('pub const DOCUMENT_LIMIT: u64 = 10_000_000;') && kernelFiles.includes('pub const MEDIA_LIMIT: u64 = 12_000_000;') && /fn limit_for\(rel: &str\) -> u64 \{\r?\n\s*if media_kind\(rel\)\.is_some\(\) \{ MEDIA_LIMIT \} else \{ DOCUMENT_LIMIT \}/.test(kernelFiles) && /meta\.len\(\) > limit_for\(&relative\) \{ return Ok\(oversized_file\(\)\) \}/.test(readLocal) && readLocal.indexOf('meta.len() > limit_for(&relative)') < readLocal.indexOf('read_to_end(') && oversized.includes('"version": Value::Null, "tooBig": true') && kernelFiles.includes('if bytes.len() as u64 > DOCUMENT_LIMIT {') && kernelGit.includes('if bytes.len() as u64 > files::DOCUMENT_LIMIT {') && kernelPreview.includes('const DRAFT_LIMIT: usize = crate::files::DOCUMENT_LIMIT as usize;'),
+    'AWB083', 'src-tauri/core/src/files.rs', '文档上限为 Electron 的 MAX_DOCUMENT_BYTES（10 MB，媒体 12 MB）：本机先看大小再读取，超限文件按空内容且无版本返回，本机与远程保存及预览草稿沿用同一上限')
+  // A message that reaches the user is said by the kernel's catalog and in
+  // no other way: what is said of a folder that cannot be listed names the
+  // system's reason as Node names it, and falls back to a translated word
+  // and not to Chinese written into the code; a skill that cannot be
+  // recycled, and the name of a shell that was not detected, are translated
+  // too. The full coverage of callers and menu texts is asked by
+  // `scripts/i18n-check.mjs`, which runs with the daily checks.
+  const kernelResources = files.get('src-tauri/core/src/resources.rs') || ''
+  const kernelShells = files.get('src-tauri/core/src/shells.rs') || ''
+  const trashPath = /fn trash_path\(path: &Path, language: &str\)[\s\S]*?\n\}/.exec(kernelResources)?.[0] || ''
+  const publicUrl = /fn public_url\(raw: &str, language: &str\)[\s\S]*?\n\}/.exec(kernelResources)?.[0] || ''
+  const discover = /fn discover\(root: &Path, language: &str\)[\s\S]*?\n\}/.exec(kernelGit)?.[0] || ''
+  const errnoName = /pub fn errno_name\(error: &std::io::Error\) -> Option<&'static str> \{[\s\S]*?\n\}/.exec(kernelFiles)?.[0] || ''
+  require(discover.includes('translate(language, "{{0}}：{{1}}", &[rel, reason])') && discover.includes('unwrap_or_else(|| translate(language, "无法读取", &[] as &[String]))') && discover.includes('files::errno_name(&error)') && !/format!\("[^"]*[\u3400-\u9fff]/.test(kernelGit) && kernelGit.includes('translate(language, "{{0}}：无法读取 Git 状态", &[prefix.clone()])') && errnoName.includes('ERROR_ACCESS_DENIED | ERROR_PRIVILEGE_NOT_HELD => "EPERM"') && errnoName.includes('| ERROR_PATH_NOT_FOUND => "ENOENT"') && trashPath.includes('let unmovable = || t(language, "无法移入回收站");') && !/^[^/]*"([^"]*[\u3400-\u9fff][^"]*)"/m.test(trashPath.replace(/t\(language, "[^"]*"\)/g, '')) && (publicUrl.match(/t\(language, "无效 URL"\)/g) || []).length === 2 && !/^[^/]*"([^"]*[\u3400-\u9fff][^"]*)"/m.test(publicUrl.replace(/t\(language, "[^"]*"\)/g, '')) && kernelShells.includes('translate(language, "Git Bash 或本机 Bash", &[] as &[String])') && i18nTable.includes('("{{0}}：{{1}}", "{{0}}: {{1}}"),') && i18nTable.includes('("无法读取", "Cannot read"),') && i18nTable.includes('("{{0}}：无法读取 Git 状态", "{{0}}: cannot read Git status"),') && i18nTable.includes('("无法移入回收站", "Cannot move to the Recycle Bin"),') && i18nTable.includes('("Git Bash 或本机 Bash", "Git Bash or local Bash"),') && i18nTable.includes('("无效 URL", "Invalid URL"),') && i18nTable.includes('("粘贴为纯文本", "Paste as plain text"),') && i18nTable.includes('("重新读取", "Reload"),') && (JSON.parse(files.get('package.json') || '{}').scripts || {}).check?.includes('scripts/i18n-check.mjs'),
+    'AWB084', 'src-tauri/core/src/git.rs', '内核面向用户的消息一律经翻译表：无法列出的目录按 Node 的错误码报告并以翻译兜底，回收站失败与未检测到的 Shell 名称同样翻译，菜单文本有词条，覆盖检查纳入日常检查')
   return errors
 }
 

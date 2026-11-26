@@ -6,6 +6,7 @@ import ts from 'typescript'
 import { launchWorkbench } from './fixtures/launch-workbench.mjs'
 import { loadTypeScript } from './fixtures/load-ts.mjs'
 import { installDocumentHarness } from './fixtures/document-harness.mjs'
+import { kernelMessages } from './fixtures/kernel-messages.mjs'
 
 const { t, setLanguage, hasMessageFragment, isMessage } = await loadTypeScript(new URL('../src/shared/i18n.ts', import.meta.url))
 const { en } = await loadTypeScript(new URL('../src/shared/locales/en.ts', import.meta.url))
@@ -24,6 +25,70 @@ for (const directory of ['src/main', 'src/renderer', 'src/shared']) for (const n
   }
   visit(ast)
 }
+// The Rust kernel carries the Electron build's main-process messages, and
+// says each one as the catalog says it. A message of the kernel's own is
+// listed here with what makes it the kernel's, and in no other way.
+const { entries, callers, menu } = kernelMessages()
+const parameters = (value) => [...value.matchAll(/\{\{\d+\}\}/g)].map((match) => match[0]).sort()
+const english = new Map(entries.map((entry) => [entry.source, entry.english]))
+assert.equal(english.size, entries.length, 'The kernel catalog has a message twice')
+for (const entry of entries) {
+  assert.deepEqual(parameters(entry.english), parameters(entry.source), `src-tauri/core/src/i18n.rs:${entry.line}: Parameter mismatch: ${entry.source}`)
+  if (Object.hasOwn(en, entry.source)) assert.equal(entry.english, en[entry.source], `src-tauri/core/src/i18n.rs:${entry.line}: The kernel words "${entry.source}" other than the catalog`)
+}
+const kernelOnly = new Map([
+  // The Electron build lets Electron's own calls fail, and shows what they
+  // said. This build has to say it itself. A source is compared as it is
+  // written in the Rust sources, so the newline is written as Rust writes it.
+  ['无法使用安装目录中的数据文件夹：{{0}}。请确认该目录可写。\\n{{1}}', 'the data folder is found by the kernel, where Electron found it'],
+  ['无法移入回收站', 'Electron shows the error of its own trashItem'],
+  ['无法在资源管理器中打开', 'Electron shows the error of its own shell.openPath'],
+  ['目录选择器已关闭', 'Electron shows the error of its own showOpenDialog'],
+  ['项目记录被意外修改', 'said of a save the kernel refused'],
+  ['SSH 连接超时', 'Electron kept waiting, and its ssh2 said something else'],
+  ['图表渲染器不可用', 'the kernel runs the diagram renderer in a process of its own'],
+  ['内容搜索进程无法启动', 'the kernel runs the search in a process of its own'],
+  // Said by a control of this build that the Electron build did not have.
+  ['退出', 'the application menu of this shell'],
+  ['所有文件', 'the save dialog of this shell offers a filter by name'],
+  // A port that is not finished says so, and does not pretend.
+  ['此功能尚未在 Rust 移植中实现：{{0}}', 'a feature that is not ported yet'],
+  ['上传不再询问同名处理', 'the port is ahead of the catalog here'],
+  // The Electron build ends a cancelled search without a word.
+  ['搜索已取消', 'the kernel reports a cancelled search as an error'],
+  // The Electron build says this from a change that is not ported yet
+  // (e665eb5), so the catalog of this branch does not have it: it goes with
+  // the port, and this line with it.
+  ['刷新文件', 'the Electron build says it, from a change not ported yet (e665eb5)'],
+])
+for (const entry of entries) {
+  if (Object.hasOwn(en, entry.source)) continue
+  assert.ok(kernelOnly.has(entry.source), `src-tauri/core/src/i18n.rs:${entry.line}: Not in the catalog and not the kernel's own: ${entry.source}`)
+}
+for (const [source] of kernelOnly) assert.ok(english.has(source), `Listed as the kernel's own and no longer said: ${source}`)
+for (const caller of callers.filter((caller) => caller.source !== null)) {
+  assert.ok(english.has(caller.source), `src-tauri/core/src/${caller.file}:${caller.line}: The kernel has no English for: ${caller.source}`)
+}
+// A message that reaches `translate` through a variable comes from one of
+// these helpers, each of which translates what it is given and nothing else:
+// a closure of the menu module, whose texts are the menu's; a helper that
+// translates and quotes what it is given for a remote script; a helper that
+// writes what it is given as a quoted string; and the two names a search
+// error goes by. A function that translates a variable is not one of them
+// until it is said here.
+const passesVariable = new Map([
+  ['menu.rs', ['layout_menu_items', 'tree_menu', 'file_menu', 'preview_menu']],
+  ['resources.rs', ['t']],
+  ['search.rs', ['from_remote_output', 'next']],
+  ['ssh.rs', ['ps_error']],
+  ['upload.rs', ['quoted_message', 'windows_upload_library', 'windows_write_script']],
+])
+for (const caller of callers.filter((caller) => caller.source === null)) {
+  assert.ok(passesVariable.get(caller.file)?.includes(caller.within), `src-tauri/core/src/${caller.file}:${caller.line} (${caller.within}): translate fixed messages only, or say here what passes ${caller.passed} on`)
+}
+for (const [file, names] of passesVariable) for (const name of names) assert.ok(callers.some((caller) => caller.source === null && caller.file === file && caller.within === name), `Said to pass a message on, and no longer does: ${file} ${name}`)
+for (const { line, text } of menu) assert.ok(english.has(text), `src-tauri/core/src/menu.rs:${line}: A menu text with no English: ${text}`)
+console.log(`PASS kernel messages (${entries.length} in the catalog, ${callers.filter((caller) => caller.source !== null).length} translated in place, ${kernelOnly.size} of the kernel's own)`)
 setLanguage('en')
 assert.equal(t('临时会话'), 'TempSessions')
 assert.equal(t('会话 {{0}}', '会话一 $& {{1}}'), 'Session 会话一 $& {{1}}', 'Names must remain verbatim')

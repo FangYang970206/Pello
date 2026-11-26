@@ -181,7 +181,7 @@ pub fn list(resources: &Resources, data: &Path, custom: &Value, kind: &str, agen
 fn mcp_items(target: &Target, language: &str) -> Result<Vec<Value>, String> {
     let text = read_text(Path::new(&target.mcp_path), language)?;
     if target.format == "codex" {
-        return Ok(toml_servers(&text).into_iter().map(|(name, value)| mcp_item(&name, &value, &target.mcp_path, value.get("enabled").and_then(|item| item.as_bool()) != Some(false))).collect());
+        return Ok(toml_servers(&text).into_iter().map(|(name, value)| mcp_item(&name, &value, &target.mcp_path, language, value.get("enabled").and_then(|item| item.as_bool()) != Some(false))).collect());
     }
     let config = parse_json_text(&text, language)?;
     let (_active_key, servers, v2) = mcp_root(target, &config);
@@ -189,32 +189,32 @@ fn mcp_items(target: &Target, language: &str) -> Result<Vec<Value>, String> {
     if let Some(map) = servers.as_object() {
         for (name, value) in map {
             let enabled = if v2 { value.get("disabled").and_then(|item| item.as_bool()) != Some(true) } else { value.get("enabled").and_then(|item| item.as_bool()) != Some(false) };
-            items.push(mcp_item(name, value, &target.mcp_path, enabled));
+            items.push(mcp_item(name, value, &target.mcp_path, language, enabled));
         }
     }
     if let Some(parked) = config.get("awbDisabledMcp").and_then(|value| value.as_object()) {
         for (name, value) in parked {
             if servers.get(name).is_some() { continue; }
-            items.push(mcp_item(name, value, &target.mcp_path, false));
+            items.push(mcp_item(name, value, &target.mcp_path, language, false));
         }
     }
     Ok(items)
 }
 
-fn mcp_item(name: &str, value: &Value, path: &str, enabled: bool) -> Value {
+fn mcp_item(name: &str, value: &Value, path: &str, language: &str, enabled: bool) -> Value {
     let transport = if value.get("url").and_then(|item| item.as_str()).is_some() { value.get("type").and_then(|item| item.as_str()).unwrap_or("http") } else { "stdio" };
-    json!({ "name": name, "description": mcp_description(value), "path": path, "transport": transport, "enabled": enabled })
+    json!({ "name": name, "description": mcp_description(value, language), "path": path, "transport": transport, "enabled": enabled })
 }
 
-fn mcp_description(value: &Value) -> String {
-    if let Some(url) = value.get("url").and_then(|item| item.as_str()) { return public_url(url); }
+fn mcp_description(value: &Value, language: &str) -> String {
+    if let Some(url) = value.get("url").and_then(|item| item.as_str()) { return public_url(url, language); }
     if let Some(command) = value.get("command").and_then(|item| item.as_array()) { return command.first().and_then(|item| item.as_str()).unwrap_or("").to_string(); }
     value.get("command").and_then(|item| item.as_str()).unwrap_or("").to_string()
 }
 
-fn public_url(raw: &str) -> String {
-    let Some(scheme_end) = raw.find("://") else { return "无效 URL".into() };
-    if !raw[..scheme_end].eq_ignore_ascii_case("http") && !raw[..scheme_end].eq_ignore_ascii_case("https") { return "无效 URL".into() }
+fn public_url(raw: &str, language: &str) -> String {
+    let Some(scheme_end) = raw.find("://") else { return t(language, "无效 URL") };
+    if !raw[..scheme_end].eq_ignore_ascii_case("http") && !raw[..scheme_end].eq_ignore_ascii_case("https") { return t(language, "无效 URL") }
     let rest = &raw[scheme_end + 3..];
     let rest = match (rest.find('@'), rest.find('/')) {
         (Some(at), Some(slash)) if at < slash => &rest[at + 1..],
@@ -837,14 +837,14 @@ pub fn detail(resources: &Resources, data: &Path, custom: &Value, kind: &str, ag
         let (_, servers, _) = mcp_root(&target, &config);
         servers.get(found["name"].as_str().unwrap_or("")).cloned().or_else(|| config.get("awbDisabledMcp").and_then(|value| value.get(found["name"].as_str().unwrap_or(""))).cloned()).unwrap_or_else(|| json!({}))
     };
-    let clean = redact(&value);
+    let clean = redact(&value, language);
     let mut detail = found;
     detail["content"] = json!(serde_json::to_string_pretty(&clean).unwrap_or_else(|_| "{}".into()));
     detail["notice"] = json!(t(language, "环境变量、请求头和认证信息已隐藏。"));
     Ok(detail)
 }
 
-fn redact(value: &Value) -> Value {
+fn redact(value: &Value, language: &str) -> Value {
     let mut clean = value.clone();
     let Some(object) = clean.as_object_mut() else { return clean };
     for field in ["env", "environment", "headers", "http_headers"] {
@@ -859,7 +859,7 @@ fn redact(value: &Value) -> Value {
         }
     }
     if let Some(url) = object.get("url").and_then(|item| item.as_str()).map(|item| item.to_string()) {
-        object.insert("url".into(), json!(public_url(&url)));
+        object.insert("url".into(), json!(public_url(&url, language)));
     }
     for field in ["args", "command"] {
         if let Some(list) = object.get_mut(field).and_then(|item| item.as_array_mut()) {
@@ -924,20 +924,21 @@ pub fn open_skill(resources: &Resources, data: &Path, custom: &Value, agent: &st
 
 pub fn delete_skill(resources: &Resources, data: &Path, custom: &Value, agent: &str, item: &Value, language: &str) -> Result<Value, String> {
     let folder = skill_directory(resources, data, custom, agent, item, true, language)?;
-    trash_path(&folder)?;
+    trash_path(&folder, language)?;
     Ok(Value::Null)
 }
 
-fn trash_path(path: &Path) -> Result<(), String> {
+fn trash_path(path: &Path, language: &str) -> Result<(), String> {
+    let unmovable = || t(language, "无法移入回收站");
     if let Ok(program) = std::env::var("AWB_TRASH_BIN") {
         let output = std::process::Command::new(program).arg(path).output().map_err(|error| error.to_string())?;
         if output.status.success() { return Ok(()) }
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let detail = if !stderr.is_empty() { stderr } else { stdout };
-        return Err(if detail.is_empty() { "无法移入回收站".into() } else { detail });
+        return Err(if detail.is_empty() { unmovable() } else { detail });
     }
-    crate::sys::trash(path).map_err(|_| "无法移入回收站".to_string())
+    crate::sys::trash(path).map_err(|_| unmovable())
 }
 
 pub fn add_mcp(resources: &Resources, data: &Path, custom: &Value, name: &str, config: &Value, agents: &[Value], enabled: bool, language: &str) -> Result<Value, String> {

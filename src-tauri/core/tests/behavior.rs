@@ -5118,3 +5118,165 @@ process.stdout.write(answer);
     assert_eq!(asked(), vec!["probe@127.0.0.1".to_string(); 2], "asked of the machine that is not connected: {:?}", asked());
     let _ = fs::remove_dir_all(root);
 }
+/// A document is opened, saved and previewed up to ten million bytes, as the
+/// Electron build's `MAX_DOCUMENT_BYTES` says. Two million is what a search
+/// skips a file at, and was taken for the limit of a document: a file of
+/// three was refused as too large to open, to save and to preview.
+#[test]
+fn a_document_is_opened_saved_and_previewed_up_to_ten_million_bytes() {
+    let root = temp_dir("document-limit");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    // Three million bytes of text: over what a search reads, well under what
+    // a document may be.
+    let three_million = "a".repeat(3_000_000);
+    let within = project.join("within.txt");
+    fs::write(&within, &three_million).unwrap();
+    // Over the document's limit by one byte, with a little to spare.
+    let beyond = project.join("beyond.txt");
+    fs::write(&beyond, "b".repeat(10_000_001)).unwrap();
+    let page = project.join("page.html");
+    fs::write(&page, "<p>page</p>").unwrap();
+    let (bench, _events) = workbench(&root);
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+
+    // Opened whole: the text is there and it is not said to be too large.
+    let read = bench.dispatch("git:read", &[json!("p"), json!("within.txt")]).unwrap();
+    assert_eq!(read["tooBig"], false, "{read}");
+    assert_eq!(read["text"].as_str().map(str::len), Some(3_000_000));
+    assert_eq!(read["binary"], false);
+    let version = read["version"].as_str().unwrap().to_string();
+
+    // Saved whole at that size, with the version it was read under.
+    assert_eq!(bench.dispatch("git:write", &[json!("p"), json!("within.txt"), json!(three_million), json!(version)]).unwrap()["version"], version);
+
+    // Previewed as a draft: a page of that size is still a page.
+    let draft = format!("<p>{}</p>", "c".repeat(3_000_000));
+    assert!(bench.dispatch("file:preview-url", &[json!("p"), json!("page.html"), json!(draft)]).unwrap().as_str().is_some_and(|url| url.starts_with("http")));
+
+    // Over the limit, said so at ten: not opened whole, not saved, not
+    // previewed as a draft.
+    let too_big = bench.dispatch("git:read", &[json!("p"), json!("beyond.txt")]).unwrap();
+    assert_eq!(too_big["tooBig"], true, "{too_big}");
+    assert_eq!(too_big["text"], "", "the text of a file too large is not sent");
+    let refused = bench.dispatch("git:write", &[json!("p"), json!("beyond.txt"), json!("d".repeat(10_000_001)), json!(null)]).unwrap_err();
+    assert_eq!(refused, "文件超过 10 MB，无法在内置编辑器中保存");
+    let draft = bench.dispatch("file:preview-url", &[json!("p"), json!("page.html"), json!("<p>".to_string() + &"c".repeat(10_000_000) + "</p>")]).unwrap_err();
+    assert_eq!(draft, "预览草稿必须为 10 MB 以内的 HTML");
+
+    // Said in English as the Electron build says it.
+    bench.dispatch("db:settings", &[json!({ "language": "en" })]).unwrap();
+    let refused = bench.dispatch("git:write", &[json!("p"), json!("beyond.txt"), json!("d".repeat(10_000_001)), json!(null)]).unwrap_err();
+    assert_eq!(refused, pello_core::i18n::translate("en", "文件超过 10 MB，无法在内置编辑器中保存", &[] as &[String]));
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A message that the Electron build never had to write, because Electron's
+/// own call threw the system's error, is still a message of this build: when
+/// the system cannot move a skill to the recycle bin, what is said of it
+/// follows the selected language.
+#[test]
+fn a_skill_that_cannot_be_recycled_is_said_so_in_the_selected_language() {
+    let _lock = env_lock();
+    let root = temp_dir("trash-wording");
+    let (bench, _) = workbench(&root);
+    let skills = root.join("skills");
+    fs::create_dir_all(skills.join("quiet")).unwrap();
+    fs::write(skills.join("quiet/SKILL.md"), "---\nname: quiet\ndescription: says nothing\n---\nbody\n").unwrap();
+    bench.dispatch("db:custom", &[json!([{
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
+        "resources": { "mcpPath": root.join("box-mcp.json").display().to_string(), "skillPath": skills.display().to_string(), "format": "standard", "skillAdapter": "portable" }
+    }])]).unwrap();
+    // A "recycle bin" that fails and says nothing, so that the message is the
+    // workbench's own and not a program's output.
+    #[cfg(windows)]
+    let failing = {
+        let script = root.join("fail-silent.cmd");
+        fs::write(&script, "@echo off\r\nexit /b 1\r\n").unwrap();
+        script
+    };
+    #[cfg(unix)]
+    let failing = {
+        let script = root.join("fail-silent");
+        fs::write(&script, "#!/bin/sh\nexit 1\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    };
+    let _bin = var_guard("AWB_TRASH_BIN", &failing.display().to_string());
+
+    let listed = bench.dispatch("resources:list", &[json!("skills"), json!("box"), json!(1), json!("")]).unwrap();
+    let quiet = listed["items"].as_array().unwrap().iter().find(|item| item["name"] == "quiet").cloned().expect("the skill is listed");
+    let refused = bench.dispatch("resources:skill-delete", &[json!("box"), quiet.clone()]).unwrap_err();
+    assert_eq!(refused, "无法移入回收站");
+    assert!(skills.join("quiet/SKILL.md").is_file(), "a skill that was not recycled is not removed either");
+
+    bench.dispatch("db:settings", &[json!({ "language": "en" })]).unwrap();
+    let refused = bench.dispatch("resources:skill-delete", &[json!("box"), quiet]).unwrap_err();
+    assert_eq!(refused, "Cannot move to the Recycle Bin", "a message of this build follows the language too: {refused}");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// What is said of a folder that cannot be listed is said in the selected
+/// language, and names the system's reason as the Electron build names it:
+/// the code Node gives for the failure, and otherwise that it cannot be read.
+#[test]
+fn an_unreadable_folder_is_reported_in_the_selected_language_with_the_systems_code() {
+    let _lock = env_lock();
+    let root = temp_dir("tree-errors");
+    let project = root.join("project");
+    fs::create_dir_all(project.join("locked/inner")).unwrap();
+    fs::create_dir_all(project.join("open")).unwrap();
+    fs::write(project.join("open/a.txt"), "a\n").unwrap();
+    let (bench, _) = workbench(&root);
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+
+    deny_listing(&project.join("locked"));
+    let status = bench.dispatch("git:status", &[json!("p")]).unwrap();
+    allow_listing(&project.join("locked"));
+    let errors: Vec<String> = status["errors"].as_array().unwrap().iter().map(|item| item.as_str().unwrap_or("").to_string()).collect();
+    // Node's code for a folder it may not list: EACCES where the mode denies
+    // it, and EPERM where Windows denies it (libuv's translation of
+    // ERROR_ACCESS_DENIED).
+    let code = if cfg!(windows) { "EPERM" } else { "EACCES" };
+    assert!(errors.contains(&format!("locked：{code}")), "the folder and the system's code, as the Electron build reports them: {errors:?}");
+
+    bench.dispatch("db:settings", &[json!({ "language": "en" })]).unwrap();
+    deny_listing(&project.join("locked"));
+    let status = bench.dispatch("git:status", &[json!("p")]).unwrap();
+    allow_listing(&project.join("locked"));
+    let errors: Vec<String> = status["errors"].as_array().unwrap().iter().map(|item| item.as_str().unwrap_or("").to_string()).collect();
+    assert!(errors.contains(&format!("locked: {code}")), "in English, with the same code: {errors:?}");
+    assert!(!errors.iter().any(|item| item.contains('\u{4e0d}')), "no Chinese is left in an English message: {errors:?}");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// An MCP server whose URL is not one is described so in the selected
+/// language: the Electron build says `Invalid URL` through its catalog, and
+/// so does this build, in the list and in the details.
+#[test]
+fn an_mcp_server_with_a_url_that_is_not_one_is_described_so_in_the_selected_language() {
+    let root = temp_dir("mcp-url-wording");
+    let (bench, _) = workbench(&root);
+    fs::write(root.join("box-mcp.json"), "{\n  \"mcpServers\": {\n    \"odd\": { \"url\": \"stdio://nowhere\", \"type\": \"http\" },\n    \"fine\": { \"url\": \"https://example.com/mcp\" }\n  }\n}\n").unwrap();
+    bench.dispatch("db:custom", &[json!([{
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
+        "resources": { "mcpPath": root.join("box-mcp.json").display().to_string(), "skillPath": root.join("box-skills").display().to_string(), "format": "standard", "skillAdapter": "portable" }
+    }])]).unwrap();
+    let listed = bench.dispatch("resources:list", &[json!("mcp"), json!("box"), json!(1), json!("")]).unwrap();
+    let items = listed["items"].as_array().unwrap();
+    let odd = items.iter().find(|item| item["name"] == "odd").expect("the server is listed");
+    assert_eq!(odd["description"], "无效 URL");
+    assert_eq!(items.iter().find(|item| item["name"] == "fine").unwrap()["description"], "https://example.com/mcp");
+
+    bench.dispatch("db:settings", &[json!({ "language": "en" })]).unwrap();
+    let listed = bench.dispatch("resources:list", &[json!("mcp"), json!("box"), json!(1), json!("")]).unwrap();
+    let odd = listed["items"].as_array().unwrap().iter().find(|item| item["name"] == "odd").expect("the server is listed").clone();
+    assert_eq!(odd["description"], "Invalid URL", "the Electron build's words, in English: {}", odd["description"]);
+
+    let detail = bench.dispatch("resources:detail", &[json!("mcp"), json!("box"), odd]).unwrap();
+    let content = detail["content"].as_str().unwrap();
+    assert!(content.contains("Invalid URL"), "the details say of the URL what the list says: {content}");
+    assert!(!content.contains("\u{65e0}\u{6548}"), "no Chinese is left in an English message: {content}");
+    let _ = fs::remove_dir_all(root);
+}

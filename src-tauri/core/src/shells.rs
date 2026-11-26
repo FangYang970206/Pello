@@ -213,7 +213,7 @@ pub fn resolve_local_shell(preferred: &str, rc: &ShellFiles, language: &str) -> 
             env: Vec::new(),
         });
     }
-    let name: String = match preferred { "bash" => "Git Bash 或本机 Bash".to_string(), "pwsh" => "PowerShell".to_string(), other => other.to_uppercase() };
+    let name: String = match preferred { "bash" => translate(language, "Git Bash 或本机 Bash", &[] as &[String]), "pwsh" => "PowerShell".to_string(), other => other.to_uppercase() };
     let shell = detected(preferred).ok_or_else(|| translate(language, "未检测到 {{0}}，请在设置中选择可用 Shell", &[name.to_string()]))?;
     if preferred == "bash" {
         // The Git root is the folder above `bin`, or above `usr\bin`.

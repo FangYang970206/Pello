@@ -13,7 +13,7 @@ pub fn status(root: &Path, language: &str) -> Result<Value, String> {
     if single["isRepo"] == true {
         return Ok(single);
     }
-    let (roots, errors) = discover(&root);
+    let (roots, errors) = discover(&root, language);
     let mut files = Vec::new();
     let mut flags = serde_json::Map::new();
     let mut repositories = Vec::new();
@@ -23,7 +23,7 @@ pub fn status(root: &Path, language: &str) -> Result<Value, String> {
         let repo = match single_status(&repo_root) {
             Ok(repo) if repo["isRepo"] == true => repo,
             _ => {
-                errors.push(json!(format!("{prefix}：无法读取 Git 状态")));
+                errors.push(json!(translate(language, "{{0}}：无法读取 Git 状态", &[prefix.clone()])));
                 continue;
             }
         };
@@ -40,7 +40,6 @@ pub fn status(root: &Path, language: &str) -> Result<Value, String> {
     }
     repositories.sort_by(|left, right| left["path"].as_str().unwrap_or("").cmp(right["path"].as_str().unwrap_or("")));
     files.sort_by(|left, right| left["path"].as_str().unwrap_or("").cmp(right["path"].as_str().unwrap_or("")));
-    let _ = language;
     Ok(json!({ "isRepo": false, "branch": "", "files": files, "repositories": repositories, "errors": errors, "untracked": flags }))
 }
 
@@ -85,7 +84,7 @@ fn empty_status() -> Value {
     json!({ "isRepo": false, "branch": "", "files": [], "untracked": {} })
 }
 
-fn discover(root: &Path) -> (Vec<std::path::PathBuf>, Vec<Value>) {
+fn discover(root: &Path, language: &str) -> (Vec<std::path::PathBuf>, Vec<Value>) {
     let mut queue = vec![root.to_path_buf()];
     let mut roots = Vec::new();
     let mut errors = Vec::new();
@@ -95,9 +94,14 @@ fn discover(root: &Path) -> (Vec<std::path::PathBuf>, Vec<Value>) {
         index += 1;
         let entries = match std::fs::read_dir(&folder) {
             Ok(entries) => entries,
-            Err(_) => {
-                let rel = folder.strip_prefix(root).map(|path| path.display().to_string()).unwrap_or_else(|_| ".".into());
-                errors.push(json!(format!("{rel}：无法读取")));
+            Err(error) => {
+                // The folder, and the system's reason for refusing it, as the
+                // Electron build reports them; a reason Node has no name for is
+                // left unsaid beyond that the folder cannot be read.
+                let rel = folder.strip_prefix(root).map(|path| path.display().to_string()).unwrap_or_default();
+                let rel = if rel.is_empty() { ".".to_string() } else { rel };
+                let reason = files::errno_name(&error).map(|code| code.to_string()).unwrap_or_else(|| translate(language, "无法读取", &[] as &[String]));
+                errors.push(json!(translate(language, "{{0}}：{{1}}", &[rel, reason])));
                 continue;
             }
         };
@@ -264,7 +268,7 @@ pub fn read_remote(data: &Path, host: &Value, root: &str, rel: &str, language: &
         return match crate::ssh::run(data, host, &script, None, language) {
             Ok(text) => {
                 let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, text.trim()).unwrap_or_default();
-                Ok(files::decode_file(&bytes))
+                Ok(files::decode_file_limited(&relative, &bytes))
             }
             Err(_) => Ok(files::missing_file()),
         };
@@ -275,7 +279,7 @@ pub fn read_remote(data: &Path, host: &Value, root: &str, rel: &str, language: &
     match crate::ssh::run(data, host, &script, None, language) {
         Ok(text) => {
             let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, text.trim()).unwrap_or_default();
-            Ok(files::decode_file(&bytes))
+            Ok(files::decode_file_limited(&relative, &bytes))
         }
         Err(_) => Ok(files::missing_file()),
     }
@@ -287,8 +291,8 @@ pub fn write_remote(data: &Path, host: &Value, root: &str, rel: &str, text: &str
         return Err(translate(language, "请先读取文件再保存", &[] as &[String]));
     }
     let bytes = text.as_bytes();
-    if bytes.len() > 2_000_000 {
-        return Err(translate(language, "文件超过 2 MB，无法在内置编辑器中保存", &[] as &[String]));
+    if bytes.len() as u64 > files::DOCUMENT_LIMIT {
+        return Err(translate(language, "文件超过 10 MB，无法在内置编辑器中保存", &[] as &[String]));
     }
     if version.is_none() {
         return create_remote_missing(data, host, root, &relative, bytes, language);
