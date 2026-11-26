@@ -106,6 +106,7 @@ export interface WorkbenchApi {
   onPreviewSource(cb: () => void): () => void
   ptyCreate(req: PtyCreateRequest): Promise<{ id: string; state: string; exitCode: number | null; startedAt: number | null; inputReady: boolean; shell: ShellKind; kind: string; agentKind?: string | null; agentSessionId?: string | null; replay?: string }>
   ptyWrite(id: string, data: string, binary?: boolean): void
+  ptyShiftEnter(id: string): void
   ptyResize(id: string, cols: number, rows: number): void
   ptyInterrupt(id: string): Promise<'hint' | 'exit' | 'signal'>
   ptyKill(id: string): Promise<void>

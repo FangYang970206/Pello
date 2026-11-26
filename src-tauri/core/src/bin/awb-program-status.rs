@@ -18,11 +18,29 @@ use std::time::Duration;
 
 const QUERY: &[u8] = b"\x1b]7501;?\x1b\\";
 const IDLE: &str = "idle";
+/// Held while the terminal is written to, by the main loop or by the reader.
+static OUT: Mutex<()> = Mutex::new(());
+
+/// Say what a key record was, as the console gives it. The reader of the
+/// Windows console calls this: a sequence the terminal sends for a key is
+/// decoded by ConPTY into one record, with the key and the modifiers held,
+/// and that record is all a native TUI ever sees of it.
+fn name_key(virtual_key: u16, modifiers: u32, character: u32) {
+    let _held = OUT.lock().expect("output");
+    let mut out = std::io::stdout();
+    let _ = out.write_all(format!("STATUS_KEYS_{virtual_key}:{modifiers}:{character}\r\n").as_bytes());
+    let _ = out.flush();
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let app = args.first().cloned().unwrap_or_else(|| "fixture".into());
     let session = args.get(1).cloned().unwrap_or_default();
+    // `AWB_PROBE_KEYS` has every key record named as it is read, with the key
+    // and the modifiers held. A sequence the terminal sends for a key is
+    // decoded by ConPTY into one such record, which is all a native TUI ever
+    // sees of it.
+    let named = std::env::var_os("AWB_PROBE_KEYS").is_some();
     let mut out = std::io::stdout();
     let input: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let (sender, receiver): (Sender<()>, Receiver<()>) = std::sync::mpsc::channel();
@@ -36,6 +54,7 @@ fn main() {
         // Woken by each arrival from the terminal; the long wait ends the
         // process once the terminal is gone.
         if receiver.recv_timeout(Duration::from_secs(600)).is_err() { return }
+        let _held = OUT.lock().expect("output");
         {
             let mut input = input.lock().expect("input");
             pending.append(&mut input);
@@ -51,6 +70,12 @@ fn main() {
             let command = String::from_utf8_lossy(&data[..at]).trim().to_string();
             data.drain(..at + 1);
             if command == "exit" { return }
+            // `exit 3` ends with that code, as a process that failed does.
+            if let Some(code) = command.strip_prefix("exit ") {
+                let _ = out.write_all(format!("STATUS_COMMAND_{command}\r\n").as_bytes());
+                let _ = out.flush();
+                std::process::exit(code.trim().parse().unwrap_or(1));
+            }
             for (name, state) in [("work", "working"), ("idle", IDLE), ("done", "done"), ("blocked", "blocked")] {
                 if command == name { report(&app, &session, state, &mut out) }
             }
@@ -59,7 +84,14 @@ fn main() {
             let _ = out.write_all(format!("STATUS_COMMAND_{command}\r\n").as_bytes());
         }
         pending = data;
+        // Where the input is read as bytes, a key the terminal sends without a
+        // line ending, as Shift+Enter is, is what is left after the lines.
+        if !cfg!(windows) && named && !pending.is_empty() {
+            let _ = out.write_all(format!("STATUS_KEYS_{}\r\n", pending.iter().map(|byte| format!("{byte:02x}")).collect::<String>()).as_bytes());
+            pending.clear();
+        }
         let _ = out.flush();
+        drop(_held);
     }
 }
 
@@ -108,6 +140,7 @@ fn spawn_reader(input: Arc<Mutex<Vec<u8>>>, sender: Sender<()>) -> bool {
         use windows_sys::Win32::System::Console::{ReadConsoleInputW, INPUT_RECORD, KEY_EVENT};
         let console = console as HANDLE;
         let mut records: [INPUT_RECORD; 64] = unsafe { std::mem::zeroed() };
+        let named = std::env::var_os("AWB_PROBE_KEYS").is_some();
         loop {
             let mut count = 0u32;
             if unsafe { ReadConsoleInputW(console, records.as_mut_ptr(), records.len() as u32, &mut count) } == 0 || count == 0 { break }
@@ -119,6 +152,8 @@ fn spawn_reader(input: Arc<Mutex<Vec<u8>>>, sender: Sender<()>) -> bool {
                 // A TUI takes the character of each key press.
                 if key.bKeyDown == 0 { continue }
                 let ch = unsafe { key.uChar.UnicodeChar };
+                // Each press of the return key is named with the modifiers.
+                if named && key.wVirtualKeyCode == 13 { name_key(key.wVirtualKeyCode, key.dwControlKeyState, ch as u32); }
                 if ch != 0 { units.push(ch); }
             }
             // The console gives UTF-16 units, one per key; an escape sequence is

@@ -106,6 +106,7 @@ const api: WorkbenchApi = {
   onPreviewSource: (callback) => subscribe('file:preview-source', () => callback()),
   ptyCreate: (request) => call('pty:create', [request]),
   ptyWrite: (id, data, binary) => { void call('pty:write', [id, data, binary ?? false]) },
+  ptyShiftEnter: (id) => { void call('pty:shift-enter', [id]) },
   ptyResize: (id, cols, rows) => { void call('pty:resize', [id, cols, rows]) },
   ptyInterrupt: (id) => call('pty:interrupt', [id]),
   ptyKill: (id) => call('pty:kill', [id]),

@@ -11,7 +11,11 @@ const isWin = process.platform === 'win32'
 const shell = isWin ? 'pwsh' : 'bash'
 const quote = (value) => `'${value.replaceAll("'", isWin ? "''" : "'\\''")}'`
 const notRun = []
-for (const scale of process.argv.includes('--quick') ? [1] : [1, 1.25, 1.5, 2]) {
+// `--scale=1.5` runs one factor; otherwise the quick run takes the first one
+// and the full run takes them all.
+const named = process.argv.find((argument) => argument.startsWith('--scale='))?.slice('--scale='.length)
+const scales = named ? [Number(named)] : process.argv.includes('--quick') ? [1] : [1, 1.25, 1.5, 2]
+for (const scale of scales) {
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'pello-terminal-input-'))
   const log = path.join(data, 'input.txt')
   fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({
@@ -132,6 +136,28 @@ for (const scale of process.argv.includes('--quick') ? [1] : [1, 1.25, 1.5, 2]) 
       await page.screenshot({ path: path.join(shots, `${theme}-${scale * 100}.png`) })
       console.log(`PASS ${scale * 100}% ${theme} ${width}x${height}: short/long IME, commit, cancel, ASCII, fixed bounds and intact header/footer`)
     }
+    // The fixture is an executor, so the terminal holds it as an Agent: what
+    // it logs is what reached the PTY.
+    await page.locator('[data-term=input] .xterm-helper-textarea').focus()
+    const logged = () => fs.readFileSync(log)
+    let mark = logged().length
+    await page.keyboard.press('Shift+Enter')
+    await page.waitForTimeout(400)
+    // Shift+Enter is the key sequence for it, not the Enter that submits.
+    assert.equal(logged().subarray(mark).toString('latin1'), '\x1b[13;2u', `Shift+Enter must reach an Agent as its key sequence at ${scale * 100}%`)
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
+    const pasted = `PASTED_${scale}`
+    await page.evaluate((text) => navigator.clipboard.writeText(text), pasted)
+    await page.waitForTimeout(150)
+    mark = logged().length
+    await page.keyboard.press('Control+V')
+    await page.waitForTimeout(700)
+    // The handler and the browser must not both forward the clipboard. What is
+    // pasted is wrapped in the bracketed paste sequences, which are not text.
+    const escape = String.fromCharCode(27)
+    const pasteWrapper = new RegExp(`${escape}\\[[0-9]*[a-z]`, 'g')
+    assert.equal(logged().subarray(mark).toString('latin1').replace(pasteWrapper, ''), pasted, `Ctrl+V must reach the PTY exactly once at ${scale * 100}%`)
+    console.log(`PASS ${scale * 100}%: Shift+Enter sends the Agent its key sequence, Ctrl+V pastes the clipboard once`)
   } finally { await app.close() }
 }
 for (const line of notRun) console.log(`NOT RUN ${line}`)

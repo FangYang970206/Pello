@@ -163,6 +163,13 @@ pub fn process_exited(pid: u32) -> bool {
     }
 }
 
+/// True once the process has exited, without waiting for it. A process that
+/// is still there answers the empty signal, one that is gone does not.
+pub fn process_gone(pid: u32) -> bool {
+    if pid == 0 { return true }
+    unsafe { libc::kill(pid as i32, 0) != 0 && *libc::__errno_location() == libc::ESRCH }
+}
+
 /// When the process started. The POSIX side writes a reply to the terminal, so
 /// nothing attaches to another process and the value is unused.
 pub fn process_created(_pid: u32) -> Option<u64> {

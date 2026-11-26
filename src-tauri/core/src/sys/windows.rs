@@ -311,7 +311,10 @@ pub fn kill_process(pid: u32) {
 /// not end every shell, so the root is ended as well once the console is gone.
 pub fn kill_tree(pid: u32) -> bool {
     if pid <= 4 { return false }
-    std::process::Command::new("taskkill").args(["/F", "/T", "/PID", &pid.to_string()]).status().map(|status| status.success()).unwrap_or(false)
+    // What `taskkill` says of it is not for the console of whoever asked.
+    std::process::Command::new("taskkill").args(["/F", "/T", "/PID", &pid.to_string()])
+        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+        .status().map(|status| status.success()).unwrap_or(false)
 }
 
 pub fn process_exited(pid: u32) -> bool {
@@ -321,6 +324,16 @@ pub fn process_exited(pid: u32) -> bool {
     let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
     if handle.is_null() { return true }
     let waited = unsafe { WaitForSingleObject(handle, 3000) };
+    unsafe { CloseHandle(handle) };
+    waited == WAIT_OBJECT_0
+}
+
+/// True once the process has exited, without waiting for it.
+pub fn process_gone(pid: u32) -> bool {
+    if pid == 0 { return true }
+    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+    if handle.is_null() { return true }
+    let waited = unsafe { WaitForSingleObject(handle, 0) };
     unsafe { CloseHandle(handle) };
     waited == WAIT_OBJECT_0
 }

@@ -61,6 +61,12 @@ pub fn process_exited(pid: u32) -> bool {
     imp::process_exited(pid)
 }
 
+/// True once the process has exited, as asked there and then: nothing is
+/// waited for.
+pub fn process_gone(pid: u32) -> bool {
+    imp::process_gone(pid)
+}
+
 /// A spawned helper and everything it starts, ended together.
 pub struct ProcessGroup(imp::Group);
 

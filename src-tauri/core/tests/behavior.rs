@@ -3597,7 +3597,9 @@ fn terminal_answers_the_native_status_capability_query() {
     let fixture = PathBuf::from(env!("CARGO_BIN_EXE_awb-program-status"));
     let custom = json!([{ "id": "probe", "name": "Probe", "cmd": shell_word(&fixture), "args": "probe" }]);
     let projects = json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }]);
-    // The helper path is a process-wide setting, so the whole test holds the lock.
+    // The helper path and the closing log are settings of the whole process,
+    // so what sets either runs one at a time with what reads the other.
+    let _env_lock = env_lock();
     let _held = REPLY_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     // The test program is not the installed one, so it names the helper itself.
     std::env::set_var("AWB_CONSOLE_REPLY_BIN", PathBuf::from(env!("CARGO_BIN_EXE_awb-console-reply")));
@@ -3656,6 +3658,381 @@ fn terminal_answers_the_native_status_capability_query() {
     quiet.dispatch("pty:close", &[json!("unanswered")]).unwrap();
     let _ = fs::remove_dir_all(root);
 }
+
+/// Shift+Enter is a plain Enter when nothing runs that could tell, and an
+/// Agent gets a key sequence for it. The native Codex on Windows reads console
+/// key events, and what is sent for it is decoded by ConPTY into the return
+/// key with shift held. The stand-ins name each press of the return key as
+/// the console gives it; where the input is read as bytes they name the bytes.
+#[test]
+fn terminal_shift_enter_sends_what_the_running_agent_reads() {
+    let root = temp_dir("shift-enter");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let fixture = PathBuf::from(env!("CARGO_BIN_EXE_awb-program-status"));
+    // Both stand-ins name every key record they read; each reports itself as
+    // an Agent, one without a name the terminal knows and one as Codex.
+    let custom = json!([
+        { "id": "keys", "name": "Keys", "cmd": format!("AWB_PROBE_KEYS=1 {}", shell_word(&fixture)), "args": "unnamed" },
+        { "id": "codexkeys", "name": "Codex keys", "cmd": format!("AWB_PROBE_KEYS=1 {}", shell_word(&fixture)), "args": "codex" }
+    ]);
+    let projects = json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }]);
+    // The helper path and the closing log are settings of the whole process,
+    // so what sets either runs one at a time with what reads the other.
+    let _env_lock = env_lock();
+    let _held = REPLY_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var("AWB_CONSOLE_REPLY_BIN", PathBuf::from(env!("CARGO_BIN_EXE_awb-console-reply")));
+    let (bench, events) = workbench(&root);
+    bench.dispatch("db:projects", &[projects.clone()]).unwrap();
+    bench.dispatch("db:custom", &[custom.clone()]).unwrap();
+    let keys = |events: &Arc<Mutex<Vec<serde_json::Value>>>| events.lock().unwrap().iter()
+        .filter_map(|event| event["payload"]["data"].as_str())
+        .flat_map(|data| data.split("STATUS_KEYS_").skip(1))
+        .filter_map(|tail| tail.split("\r").next().map(str::to_string))
+        .collect::<Vec<_>>();
+    let open = |bench: &Workbench, id: &str, kind: &str| {
+        bench.dispatch("pty:create", &[json!({ "id": id, "projectId": "p", "kind": kind, "shell": "bash" })]).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while bench.dispatch("pty:snapshot", &[json!(id)]).unwrap()["inputReady"] != true && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
+    };
+    let shift = |bench: &Workbench, id: &str| bench.dispatch("pty:shift-enter", &[json!(id)]).unwrap();
+
+    // A Shell has nothing running: the key submits what was typed, as Enter does.
+    // The command prints a word that is not in what was typed, so the echo of
+    // the line does not pass for its output.
+    open(&bench, "shell-keys", "shell");
+    let shown = |events: &Arc<Mutex<Vec<serde_json::Value>>>, text: &str| events.lock().unwrap().iter().any(|event| event["payload"]["data"].as_str().unwrap_or("").contains(text));
+    bench.dispatch("pty:write", &[json!("shell-keys"), json!("printf 'RAN_%s' ENTER"), json!(false)]).unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(!shown(&events, "RAN_ENTER"), "typing without Enter must not run the command");
+    shift(&bench, "shell-keys");
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !shown(&events, "RAN_ENTER") && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
+    assert!(shown(&events, "RAN_ENTER"), "Shift+Enter in a Shell with nothing running must reach it as an Enter");
+    // A stand-in that reports itself, as every Agent CLI does once it starts.
+    // The key is sent once the stand-in has heard the terminal's answer, so
+    // that it is there to read; what reaches it is then waited for. On
+    // Windows the console gives a record only for a sequence it decodes, and
+    // the one for an Agent that is not the native Codex it does not decode at
+    // all, so for that one a while with nothing is what is looked at.
+    let stand_in = |events: &Arc<Mutex<Vec<serde_json::Value>>>| keys(events);
+    let heard = |events: &Arc<Mutex<Vec<serde_json::Value>>>| shown(events, "STATUS_PROBE_OK");
+    let quiet = |events: &Arc<Mutex<Vec<serde_json::Value>>>| {
+        std::thread::sleep(Duration::from_millis(2500));
+        stand_in(events)
+    };
+    events.lock().unwrap().clear();
+    open(&bench, "agent-keys", "keys");
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !heard(&events) && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
+    assert!(heard(&events), "the stand-in must have heard the terminal's answer before the key is sent");
+    shift(&bench, "agent-keys");
+    let agent = quiet(&events);
+    // A stand-in that reports itself as Codex, on this machine.
+    events.lock().unwrap().clear();
+    open(&bench, "codex-keys", "codexkeys");
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !heard(&events) && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
+    assert!(heard(&events), "the stand-in must have heard the terminal's answer before the key is sent");
+    shift(&bench, "codex-keys");
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while stand_in(&events).is_empty() && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
+    let codex = stand_in(&events);
+    std::env::remove_var("AWB_CONSOLE_REPLY_BIN");
+    if cfg!(windows) {
+        // The native Codex reads console key events: ConPTY decodes what is
+        // sent for it as the return key with shift held.
+        assert!(codex.iter().any(|line| line == "13:16:13"), "the native Codex on this machine must get a return key with shift held; it read {codex:?}");
+        // Another Agent is sent a key sequence, not an Enter: none reaches the
+        // console as the return key, which would submit what was typed.
+        assert!(agent.is_empty(), "an Agent must not get Shift+Enter as an Enter; it read {agent:?}");
+    } else {
+        // The sequence is read as the bytes that were sent.
+        assert_eq!(agent, ["1b5b31333b3275"], "an Agent must get the key sequence for Shift+Enter");
+        assert_eq!(codex, ["1b5b31333b3275"], "the native Codex gets it too where it does not read the console");
+    }
+    bench.dispatch("pty:close", &[json!("agent-keys")]).unwrap();
+    bench.dispatch("pty:close", &[json!("codex-keys")]).unwrap();
+    bench.dispatch("pty:close", &[json!("shell-keys")]).unwrap();
+    let _ = fs::remove_dir_all(root);
+}
+
+/// The end of what ran in a terminal is said to the page once, and with why:
+/// a command that ended by itself with its code, a process forced to end,
+/// and an Agent interrupted twice. A Shell at its prompt says nothing, as a
+/// prompt after every command would say it all day. What was said is not said
+/// again when the process of the terminal ends after it.
+#[test]
+fn the_end_of_what_ran_is_said_once_and_with_why() {
+    let root = temp_dir("said-end");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let fixture = PathBuf::from(env!("CARGO_BIN_EXE_awb-program-status"));
+    let custom = json!([{ "id": "probe", "name": "Probe", "cmd": shell_word(&fixture), "args": "probe" }]);
+    let projects = json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }]);
+    // The helper path and the closing log are settings of the whole process,
+    // so what sets either runs one at a time with what reads the other.
+    let _env_lock = env_lock();
+    let _held = REPLY_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var("AWB_CONSOLE_REPLY_BIN", PathBuf::from(env!("CARGO_BIN_EXE_awb-console-reply")));
+    let (bench, events) = workbench(&root);
+    bench.dispatch("db:projects", &[projects.clone()]).unwrap();
+    bench.dispatch("db:custom", &[custom.clone()]).unwrap();
+    // Every state the page is told of a terminal, with what was said of it.
+    let said = |events: &Arc<Mutex<Vec<serde_json::Value>>>, id: &str| events.lock().unwrap().iter()
+        .filter(|event| event["payload"]["type"] == "state" && event["payload"]["id"] == id)
+        .map(|event| event["payload"].clone())
+        .collect::<Vec<_>>();
+    let announcements = |events: &Arc<Mutex<Vec<serde_json::Value>>>, id: &str| said(events, id).into_iter()
+        .filter(|event| event["announce"] == true)
+        .map(|event| (event["state"].clone(), event["exitCode"].clone(), event["reason"].clone()))
+        .collect::<Vec<_>>();
+    let shown = |events: &Arc<Mutex<Vec<serde_json::Value>>>, id: &str, text: &str| events.lock().unwrap().iter()
+        .any(|event| event["payload"]["id"] == id && event["payload"]["data"].as_str().unwrap_or("").contains(text));
+    let wait = |until: &dyn Fn() -> bool, what: &str| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while !until() && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
+        assert!(until(), "{what}: {:?}", said(&events, "forced").iter().map(|event| format!("{}:{}:{:?}/{}", event["state"], event["exitCode"], event["reason"], event["announce"])).collect::<Vec<_>>());
+    };
+    let open = |bench: &Workbench, id: &str| {
+        bench.dispatch("pty:create", &[json!({ "id": id, "projectId": "p", "kind": "probe", "shell": "bash" })]).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while !shown(&events, id, "STATUS_PROBE_OK") && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
+    };
+
+    // A command that ends by itself: said with its code, and nothing runs as
+    // an Agent in the terminal from there on.
+    open(&bench, "ended");
+    assert_eq!(announcements(&events, "ended"), [], "a stand-in that has only started has not ended");
+    assert_eq!(bench.dispatch("pty:snapshot", &[json!("ended")]).unwrap()["agentKind"], "probe");
+    bench.dispatch("pty:write", &[json!("ended"), json!("exit 3\n"), json!(false)]).unwrap();
+    wait(&|| announcements(&events, "ended").len() == 1, "the end of a command that ended by itself must be said");
+    let ended = announcements(&events, "ended");
+    assert_eq!(ended, [(json!("failed"), json!(3), json!("exit"))], "a command that ended by itself is said with its code");
+    let after = bench.dispatch("pty:snapshot", &[json!("ended")]).unwrap();
+    assert!(after["agentKind"].is_null() && after["inputReady"] == true, "nothing runs as an Agent once it ended: {after}");
+    // The shell of the terminal ends after it, and that is not said again.
+    bench.dispatch("pty:write", &[json!("ended"), json!("exit 0\n"), json!(false)]).unwrap();
+    wait(&|| bench.dispatch("pty:snapshot", &[json!("ended")]).unwrap()["state"] != "running", "the shell of the terminal must end");
+    let gone = bench.dispatch("pty:snapshot", &[json!("ended")]).unwrap();
+    assert_eq!((gone["state"].clone(), gone["exitCode"].clone(), gone["inputReady"].clone()), (json!("exited"), json!(0), json!(false)), "a shell that was asked to leave ends with no code: {gone}");
+    assert_eq!(announcements(&events, "ended").len(), 1, "the end of the process is not said again after the end of what ran in it");
+
+    // What is forced to end is said so, and the terminal stays.
+    open(&bench, "forced");
+    bench.dispatch("pty:write", &[json!("forced"), json!("work\n"), json!(false)]).unwrap();
+    wait(&|| bench.dispatch("pty:snapshot", &[json!("forced")]).unwrap()["inputReady"] == false, "the stand-in must be working");
+    bench.dispatch("pty:kill", &[json!("forced")]).unwrap();
+    wait(&|| announcements(&events, "forced").len() == 1, "a process forced to end must be said");
+    assert_eq!(announcements(&events, "forced"), [(json!("failed"), json!(1), json!("kill"))]);
+    // Whether the shell of the terminal stays depends on how soon it shows its
+    // prompt after what ran in it was ended; the state and the code do not.
+    let kept = bench.dispatch("pty:snapshot", &[json!("forced")]).unwrap();
+    assert_eq!((kept["state"].clone(), kept["exitCode"].clone(), kept["startedAt"].clone()), (json!("failed"), json!(1), json!(null)), "the terminal stays, saying what was said of it: {kept}");
+
+    // An Agent interrupted twice is said to have ended, with no code.
+    open(&bench, "twice");
+    bench.dispatch("pty:write", &[json!("twice"), json!("work\n"), json!(false)]).unwrap();
+    wait(&|| bench.dispatch("pty:snapshot", &[json!("twice")]).unwrap()["inputReady"] == false, "the stand-in must be working");
+    assert_eq!(bench.dispatch("pty:interrupt", &[json!("twice")]).unwrap(), "hint");
+    assert_eq!(bench.dispatch("pty:interrupt", &[json!("twice")]).unwrap(), "exit");
+    wait(&|| announcements(&events, "twice").len() == 1, "an Agent interrupted twice must be said to have ended");
+    assert_eq!(announcements(&events, "twice"), [(json!("exited"), json!(0), json!("ctrlc"))], "what the twice terminal said: {:?}", said(&events, "twice").iter().map(|event| format!("{}:{}:{:?}/{}", event["state"], event["exitCode"], event["reason"], event["announce"])).collect::<Vec<_>>());
+
+    // A Shell at its prompt says nothing of the command that just ended.
+    bench.dispatch("pty:create", &[json!({ "id": "quiet", "projectId": "p", "kind": "shell", "shell": "bash" })]).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while bench.dispatch("pty:snapshot", &[json!("quiet")]).unwrap()["inputReady"] != true && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
+    bench.dispatch("pty:write", &[json!("quiet"), json!("false\n"), json!(false)]).unwrap();
+    wait(&|| bench.dispatch("pty:snapshot", &[json!("quiet")]).unwrap()["state"] == "idle", "the command must end and the prompt return");
+    assert_eq!(announcements(&events, "quiet"), [], "a Shell at its prompt says nothing");
+    bench.dispatch("pty:write", &[json!("quiet"), json!("exit 7\n"), json!(false)]).unwrap();
+    wait(&|| announcements(&events, "quiet").len() == 1, "the end of the process is said with its code");
+    assert_eq!(announcements(&events, "quiet"), [(json!("failed"), json!(7), json!("exit"))], "a process that ends with a code is said with it");
+    std::env::remove_var("AWB_CONSOLE_REPLY_BIN");
+    for id in ["ended", "forced", "twice", "quiet"] { bench.dispatch("pty:close", &[json!(id)]).unwrap(); }
+    let _ = fs::remove_dir_all(root);
+}
+
+/// Windows: an executor forced to end in a PowerShell terminal is said to have
+/// been forced to end, whoever shows its prompt first. PowerShell returns to
+/// its prompt at once when the program in the foreground is ended, and
+/// reports no code for it; the end is the workbench's, and is said so.
+#[test]
+#[cfg(windows)]
+fn powershell_executor_forced_to_end_is_said_to_have_been_forced() {
+    let root = temp_dir("forced-pwsh");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let (bench, events) = workbench(&root);
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    let pid_file = root.join("forced-pids.txt");
+    let fixture = PathBuf::from(env!("CARGO_BIN_EXE_awb-session-tree"));
+    let quote = |path: &Path| format!("'{}'", path.display().to_string().replace('\'', "''"));
+    bench.dispatch("db:custom", &[json!([{ "id": "tree", "name": "Tree", "cmd": format!("& {}", quote(&fixture)), "args": quote(&pid_file), "shell": "pwsh" }])]).unwrap();
+    let _lock = env_lock();
+    bench.dispatch("pty:create", &[json!({ "id": "forced-ps", "projectId": "p", "kind": "tree", "shell": "pwsh" })]).unwrap();
+    wait_tree(&pid_file, &root);
+    let said = |events: &Arc<Mutex<Vec<serde_json::Value>>>, id: &str| events.lock().unwrap().iter()
+        .filter(|event| event["payload"]["type"] == "state" && event["payload"]["id"] == id)
+        .map(|event| event["payload"].clone())
+        .collect::<Vec<_>>();
+    bench.dispatch("pty:kill", &[json!("forced-ps")]).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while said(&events, "forced-ps").iter().filter(|event| event["announce"] == true).count() < 1 && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
+    std::thread::sleep(Duration::from_millis(2500));
+    let told = said(&events, "forced-ps");
+    let announced: Vec<_> = told.iter().filter(|event| event["announce"] == true)
+        .map(|event| (event["state"].clone(), event["exitCode"].clone(), event["reason"].clone())).collect();
+    let snapshot = bench.dispatch("pty:snapshot", &[json!("forced-ps")]).unwrap();
+    end_tree(&pid_file);
+    bench.dispatch("pty:close", &[json!("forced-ps")]).unwrap();
+    let _ = fs::remove_dir_all(root);
+    assert_eq!(announced, [(json!("failed"), json!(1), json!("kill"))], "what was said of the PowerShell terminal: {:?}\nthen {:?}", told.iter().map(|event| format!("{}:{}:{:?}/{}", event["state"], event["exitCode"], event["reason"], event["announce"])).collect::<Vec<_>>(), snapshot);
+}
+
+/// Restarting a terminal starts what runs in it again. What ran is ended,
+/// and that end is not said to the page, as nothing is when the window
+/// closes. Where the shell stays, as PowerShell does, the command is typed
+/// again in the same terminal; the shell of a POSIX terminal on Windows
+/// goes with the program in its foreground, and the terminal is then created
+/// again, with the Agent session it resumed and without the replay of the
+/// history it was first opened with. A Shell at its prompt is not restarted.
+#[test]
+fn restarting_a_terminal_starts_what_runs_in_it_again() {
+    restart_case("pwsh", true);
+    // On Windows the shell of a POSIX terminal goes with the program in its
+    // foreground, so what runs in it is started again in a terminal created
+    // again. Elsewhere the shell stays, as PowerShell does.
+    restart_case("bash", !cfg!(windows));
+}
+
+fn restart_case(shell: &str, same_terminal: bool) {
+    let root = temp_dir(&format!("restart-{shell}"));
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let fixture = PathBuf::from(env!("CARGO_BIN_EXE_awb-program-status"));
+    // As the settings dialog writes the executor for each shell: PowerShell
+    // calls a quoted program with the call operator.
+    let cmd = if shell == "pwsh" { format!("& {}", ps_word(&fixture)) } else { shell_word(&fixture) };
+    let custom = json!([{ "id": "probe", "name": "Probe", "cmd": cmd, "args": "probe", "shell": shell }]);
+    let projects = json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }]);
+    // The helper path and the closing log are settings of the whole process,
+    // so what sets either runs one at a time with what reads the other.
+    let _env_lock = env_lock();
+    let _held = REPLY_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var("AWB_CONSOLE_REPLY_BIN", PathBuf::from(env!("CARGO_BIN_EXE_awb-console-reply")));
+    let (bench, events) = workbench(&root);
+    bench.dispatch("db:projects", &[projects.clone()]).unwrap();
+    bench.dispatch("db:custom", &[custom.clone()]).unwrap();
+    // Every state the page is told of the terminal. The birth in it tells one
+    // terminal from the one created in its place.
+    let states = || events.lock().unwrap().iter()
+        .filter(|event| event["payload"]["type"] == "state" && event["payload"]["id"] == "again")
+        .map(|event| event["payload"].clone())
+        .collect::<Vec<_>>();
+    let said = || states().iter().filter(|state| state["announce"] == true)
+        .map(|state| format!("{}:{}:{:?}", state["state"], state["exitCode"], state["reason"]))
+        .collect::<Vec<_>>();
+    // How often the terminal showed the stand-in starting: once each time the
+    // command was typed.
+    let starts = || events.lock().unwrap().iter()
+        .filter(|event| event["payload"]["id"] == "again" && event["payload"]["data"].as_str().unwrap_or("").contains("STATUS_PROBE_OK"))
+        .count();
+    let snapshot = |bench: &Workbench| bench.dispatch("pty:snapshot", &[json!("again")]).unwrap();
+    let wait = |bench: &Workbench, until: &dyn Fn() -> bool, what: &str| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while !until() && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
+        assert!(until(), "{what} in {shell}: {:?} {:?}", snapshot(bench), states().iter().map(|state| format!("{}:{:?}/{:?}", state["state"], state["announce"], state["reason"])).collect::<Vec<_>>());
+    };
+    let opened = bench.dispatch("pty:create", &[json!({ "id": "again", "projectId": "p", "kind": "probe", "shell": shell, "agentSessionId": "session-of-1" })]).unwrap();
+    wait(&bench, &|| starts() == 1, "the stand-in must start");
+    wait(&bench, &|| snapshot(&bench)["inputReady"] == true, "the terminal must reach its prompt");
+    let first = snapshot(&bench);
+    assert_eq!(first["agentSessionId"], json!("session-of-1"), "{first}");
+
+    // While it runs: what ran is started again, and that end is not said.
+    bench.dispatch("pty:write", &[json!("again"), json!("work\n"), json!(false)]).unwrap();
+    wait(&bench, &|| snapshot(&bench)["inputReady"] == false, "the stand-in must be working");
+    bench.dispatch("pty:restart", &[json!("again")]).unwrap();
+    wait(&bench, &|| starts() == 2 && snapshot(&bench)["inputReady"] == true, "what runs must be started again");
+    let restarted = snapshot(&bench);
+    assert_eq!(said().len(), 0, "the end of what ran is not said: {:?}", said());
+    assert_eq!((restarted["agentKind"].clone(), restarted["agentSessionId"].clone()), (json!("probe"), json!("session-of-1")), "{restarted}");
+    if same_terminal {
+        assert_eq!(restarted["born"], first["born"], "the terminal is the same one: {restarted}");
+    } else {
+        assert_ne!(restarted["born"], first["born"], "the shell went with what ran, so the terminal is created again: {restarted}");
+        assert!(!events.lock().unwrap().iter().any(|event| event["payload"]["id"] == "again" && event["payload"]["data"].as_str().unwrap_or("").contains("会话已恢复")), "the history is not replayed again");
+    }
+
+    // Once what ran has ended, the shell is still there and the command is
+    // typed again, as before. The end of what ran is said once.
+    bench.dispatch("pty:write", &[json!("again"), json!("exit 0\n"), json!(false)]).unwrap();
+    wait(&bench, &|| said().len() == 1, "the end of the process is said once");
+    let gone = snapshot(&bench);
+    assert_eq!(gone["state"], "exited", "{gone}");
+    bench.dispatch("pty:restart", &[json!("again")]).unwrap();
+    wait(&bench, &|| starts() == 3 && snapshot(&bench)["inputReady"] == true, "what ran once is started again");
+    let again = snapshot(&bench);
+    assert_eq!(said().len(), 1, "nothing more is said of what was started again: {:?}", said());
+    if same_terminal {
+        assert_eq!(again["born"], gone["born"], "the terminal is the same one: {again}");
+    } else {
+        assert_ne!(again["born"], gone["born"], "the shell went with what ran, so the terminal is created again: {again}");
+    }
+    assert_eq!((again["agentKind"].clone(), again["agentSessionId"].clone()), (json!("probe"), json!("session-of-1")), "{again}");
+
+    // Once the process of the terminal is gone: created again, with the
+    // session it resumed. The shell is ended from outside, as a terminal's
+    // process goes when it is gone while its tab is there. Where the shell
+    // went with what ran above, the terminal was created again there already.
+    if same_terminal {
+        let was = again["born"].clone();
+        let said_before = said().len();
+        let root = opened["rootPid"].as_u64().unwrap_or(0) as u32;
+        assert_ne!(root, 0, "{opened}");
+        let _ = std::process::Command::new("taskkill").args(["/F", "/T", "/PID", &root.to_string()]).output();
+        wait(&bench, &|| said().len() == said_before + 1, "the end of the shell is said once");
+        wait(&bench, &|| snapshot(&bench)["inputReady"] == false, "the shell must be gone");
+        bench.dispatch("pty:restart", &[json!("again")]).unwrap();
+        wait(&bench, &|| starts() == 4, "the terminal must be created again and its stand-in start");
+        wait(&bench, &|| snapshot(&bench)["inputReady"] == true, "the terminal created again must reach its prompt");
+        let created = snapshot(&bench);
+        assert_ne!(created["born"], was, "a terminal whose process is gone is created again: {created}");
+        assert_eq!(created["agentSessionId"], json!("session-of-1"), "the Agent session it resumed is resumed again: {created}");
+        assert!(!events.lock().unwrap().iter().any(|event| event["payload"]["id"] == "again" && event["payload"]["data"].as_str().unwrap_or("").contains("会话已恢复")), "the history is not replayed again");
+    }
+
+    // A Shell at its prompt is not restarted.
+    bench.dispatch("pty:create", &[json!({ "id": "plain", "projectId": "p", "kind": "shell", "shell": shell })]).unwrap();
+    let shell_snapshot = |bench: &Workbench| bench.dispatch("pty:snapshot", &[json!("plain")]).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while shell_snapshot(&bench)["inputReady"] != true && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
+    let shell_before = shell_snapshot(&bench);
+    bench.dispatch("pty:restart", &[json!("plain")]).unwrap();
+    std::thread::sleep(Duration::from_millis(600));
+    assert_eq!(shell_snapshot(&bench)["born"], shell_before["born"], "a Shell at its prompt is the same terminal");
+
+    // A Shell at its prompt is not restarted.
+    bench.dispatch("pty:create", &[json!({ "id": "plain", "projectId": "p", "kind": "shell", "shell": shell })]).unwrap();
+    let shell_snapshot = |bench: &Workbench| bench.dispatch("pty:snapshot", &[json!("plain")]).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while shell_snapshot(&bench)["inputReady"] != true && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
+    let shell_before = shell_snapshot(&bench);
+    bench.dispatch("pty:restart", &[json!("plain")]).unwrap();
+    std::thread::sleep(Duration::from_millis(600));
+    assert_eq!(shell_snapshot(&bench)["born"], shell_before["born"], "a Shell at its prompt is the same terminal");
+    std::env::remove_var("AWB_CONSOLE_REPLY_BIN");
+    for id in ["again", "plain"] { bench.dispatch("pty:close", &[json!(id)]).unwrap(); }
+    let _ = fs::remove_dir_all(root);
+}
+
+/// One word for a path, quoted the way PowerShell reads it.
+fn ps_word(path: &Path) -> String {
+    pello_core::ssh::ps_quote(&path.display().to_string())
+}
+
 
 /// One shell word for a path, quoted the way POSIX shells read it.
 fn shell_word(path: &Path) -> String {

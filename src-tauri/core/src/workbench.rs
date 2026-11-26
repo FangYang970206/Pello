@@ -203,9 +203,12 @@ impl Workbench {
             "terminal:failure" => Ok(self.terminal_failure(str_arg(args, 0))),
             "terminal:hook" => Ok(self.terminal_hook(str_arg(args, 0))),
             "pty:write" => { let bytes = pty_bytes(str_arg(args, 1), args.get(2).and_then(|value| value.as_bool()).unwrap_or(false)); self.pty.write(str_arg(args, 0), &bytes, &self.emit); Ok(Value::Null) }
+            "pty:shift-enter" => { self.pty.shift_enter(str_arg(args, 0), &self.emit); Ok(Value::Null) }
             "pty:resize" => { self.pty.resize(str_arg(args, 0), number_arg(args, 1) as u16, number_arg(args, 2) as u16); Ok(Value::Null) }
             "pty:interrupt" => Ok(json!(self.pty.interrupt(str_arg(args, 0), &self.emit))),
-            "pty:kill" | "pty:close" => { self.pty.close(str_arg(args, 0)); Ok(Value::Null) }
+            // Ending what runs keeps the terminal; closing ends the terminal.
+            "pty:kill" => { if !self.closing.load(Ordering::SeqCst) { self.pty.force_kill(str_arg(args, 0), &self.emit); } Ok(Value::Null) }
+            "pty:close" => { self.pty.close(str_arg(args, 0)); Ok(Value::Null) }
             "pty:restart" => self.pty_restart(str_arg(args, 0), &language),
             "terminal:history" => Ok(json!(pty::load_history(&self.paths.data, str_arg(args, 0)))),
             "terminal:history-save" => pty::save_history(&self.paths.data, str_arg(args, 0), str_arg(args, 1)).map(|_| Value::Null),
@@ -761,10 +764,19 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
 }
 
     fn pty_restart(&self, id: &str, language: &str) -> Result<Value, String> {
+        // While the terminal's process is there, what runs in it is started
+        // again in the same terminal. Only a terminal whose process is gone
+        // is created again, with the Agent session it resumed.
+        let respawn = {
+            let session = self.pty.agent_session_of(id);
+            match self.pty.restart(id, &self.emit) {
+                crate::pty::Restart::Retyped | crate::pty::Restart::Nothing => return Ok(Value::Null),
+                crate::pty::Restart::Respawn => session,
+            }
+        };
         let Some((cwd, kind, shell, command)) = self.pty.launch_meta(id) else { return Ok(Value::Null) };
         self.pty.close(id);
-        let restore = self.db.lock().expect("db")["settings"]["restore"] != false;
-        self.pty.create(&self.paths.data, id, &cwd, &kind, &shell, &command, None, restore, language, self.emit.clone()).map(|_| Value::Null)
+        self.pty.create(&self.paths.data, id, &cwd, &kind, &shell, &command, respawn.as_deref(), false, language, self.emit.clone()).map(|_| Value::Null)
     }
 
     fn test_exec(&self, request: Value, language: &str) -> Result<Value, String> {

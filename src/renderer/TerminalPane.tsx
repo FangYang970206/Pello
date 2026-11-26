@@ -81,7 +81,19 @@ export function TerminalPane({
       host.dataset.renderer = 'dom'
     }
     term.attachCustomKeyEventHandler((ev) => {
-      if (ev.type !== 'keydown' || !ev.ctrlKey || ev.altKey || ev.metaKey) return true
+      if (ev.type !== 'keydown' || ev.altKey || ev.metaKey) return true
+      if (ev.key === 'Enter' && ev.shiftKey && !ev.ctrlKey) {
+        if (ev.isComposing) return false
+        if (ev.keyCode === 229) return true
+        ev.preventDefault()
+        if (!term.options.disableStdin) {
+          if (term.options.scrollOnUserInput) term.scrollToBottom()
+          term.clearSelection()
+          window.awb.ptyShiftEnter(id)
+        }
+        return false
+      }
+      if (!ev.ctrlKey) return true
       const key = ev.key.toLowerCase()
       if (key === 'c' && !ev.shiftKey) {
         if (term.hasSelection()) {
@@ -91,11 +103,14 @@ export function TerminalPane({
         interruptRef.current(id)
         return false
       }
-      if ((key === 'v' && !ev.shiftKey) || (key === 'v' && ev.shiftKey)) {
+      if (key === 'v') {
+        // Returning false only bypasses xterm's key handling. Cancel the
+        // browser paste too, or both paths forward the clipboard to the PTY.
+        ev.preventDefault()
         void navigator.clipboard
           .readText()
           .then((text) => {
-            if (text) window.awb.ptyWrite(id, text)
+            if (termRef.current === term && text) term.paste(text)
           })
           .catch(() => undefined)
         return false
