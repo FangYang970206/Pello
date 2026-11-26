@@ -16,6 +16,7 @@ const EN: &[(&str, &str)] = &[
     ("不能通过符号链接删除项目文件", "Cannot delete project files through symbolic links"),
     ("文件类型已更改，请刷新目录", "File type has changed. Refresh the directory."),
     ("文件类型已更改或路径包含符号链接", "File type has changed or the path contains a symbolic link"),
+    ("请先填写命令。", "Enter a command first."),
     ("请先读取文件再保存", "Read the file before saving"),
     ("文件正在进行其他写入操作", "Another write operation is using this file"),
     ("文件超过 2 MB，无法在内置编辑器中保存", "File exceeds 2 MB and cannot be saved in the built-in editor"),

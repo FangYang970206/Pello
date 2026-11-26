@@ -26,9 +26,9 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 type Emit = Arc<dyn Fn(Value) + Send + Sync>;
 
@@ -197,14 +197,29 @@ impl Workbench {
             "pty:feed" => { self.pty.feed(str_arg(args, 0), str_arg(args, 1), &self.emit); Ok(Value::Null) }
             "terminal:failure" => Ok(self.terminal_failure(str_arg(args, 0))),
             "terminal:hook" => Ok(self.terminal_hook(str_arg(args, 0))),
+            // While the workbench is closing, nothing more is asked of a
+            // terminal: what is written, resized or ended is ignored, and an
+            // interrupt is answered as the signal the Electron build answers.
+            "pty:write" if self.closing.load(Ordering::SeqCst) => Ok(Value::Null),
             "pty:write" => { let bytes = pty_bytes(str_arg(args, 1), args.get(2).and_then(|value| value.as_bool()).unwrap_or(false)); self.pty.write(str_arg(args, 0), &bytes, &self.emit); Ok(Value::Null) }
-            "pty:shift-enter" => { self.pty.shift_enter(str_arg(args, 0), &self.emit); Ok(Value::Null) }
-            "pty:resize" => { self.pty.resize(str_arg(args, 0), number_arg(args, 1) as u16, number_arg(args, 2) as u16); Ok(Value::Null) }
-            "pty:interrupt" => Ok(json!(self.pty.interrupt(str_arg(args, 0), &self.emit))),
+            "pty:shift-enter" => { if !self.closing.load(Ordering::SeqCst) { self.pty.shift_enter(str_arg(args, 0), &self.emit); } Ok(Value::Null) }
+            "pty:resize" => { if !self.closing.load(Ordering::SeqCst) { self.pty.resize(str_arg(args, 0), number_arg(args, 1) as u16, number_arg(args, 2) as u16); } Ok(Value::Null) }
+            "pty:interrupt" => {
+                if self.closing.load(Ordering::SeqCst) { return Ok(json!("signal")) }
+                Ok(json!(self.pty.interrupt(str_arg(args, 0), &self.emit)))
+            }
             // Ending what runs keeps the terminal; closing ends the terminal.
             "pty:kill" => { if !self.closing.load(Ordering::SeqCst) { self.pty.force_kill(str_arg(args, 0), &self.emit); } Ok(Value::Null) }
-            "pty:close" => { self.pty.close(str_arg(args, 0)); Ok(Value::Null) }
-            "pty:restart" => self.pty_restart(str_arg(args, 0), &language),
+            // Closing one terminal while the workbench closes closes them
+            // all; otherwise it closes that one and deletes its history, as
+            // the tab is closed for good.
+            "pty:close" => {
+                if self.closing.load(Ordering::SeqCst) { self.pty.close_all(); return Ok(Value::Null) }
+                let id = str_arg(args, 0);
+                self.pty.close(&id);
+                pty::delete_history(&self.paths.data, &id);
+                Ok(Value::Null)
+            }            "pty:restart" => self.pty_restart(str_arg(args, 0), &language),
             "terminal:history" => Ok(json!(pty::load_history(&self.paths.data, str_arg(args, 0)))),
             "terminal:history-save" => pty::save_history(&self.paths.data, str_arg(args, 0), str_arg(args, 1)).map(|_| Value::Null),
             "terminal:export" => self.export_terminal(str_arg(args, 0), args.get(1).and_then(|value| value.as_str()).unwrap_or(""), &language),
@@ -729,7 +744,7 @@ impl Workbench {
     let session = self.resolve_legacy(id, kind, project["path"].as_str().unwrap_or(""), requested, false, language)?;
     let (command, session) = self.resume_launch(id, kind, shell, session.as_deref());
     let restore = self.db.lock().expect("db")["settings"]["restore"] != false;
-    let mut info = self.pty.create(&self.paths.data, id, Path::new(project["path"].as_str().unwrap_or("")), kind, shell, &command, session.as_deref(), restore, language, self.emit.clone())?;
+    let mut info = self.pty.create(&self.paths.data, id, Path::new(project["path"].as_str().unwrap_or("")), kind, shell, &command, session.as_deref(), restore, language, self.emit.clone(), &[])?;
     info.as_object_mut().expect("session").remove("type");
     if info.get("launchCommand").and_then(|value| value.as_str()).unwrap_or("").is_empty() {
         info["launchCommand"] = json!(command);
@@ -761,6 +776,9 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
 }
 
     fn pty_restart(&self, id: &str, language: &str) -> Result<Value, String> {
+        if self.closing.load(Ordering::SeqCst) {
+            return Err(translate(language, "工作台正在关闭", &[] as &[String]));
+        }
         // While the terminal's process is there, what runs in it is started
         // again in the same terminal. Only a terminal whose process is gone
         // is created again, with the Agent session it resumed.
@@ -773,28 +791,84 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
         };
         let Some((cwd, kind, shell, command)) = self.pty.launch_meta(id) else { return Ok(Value::Null) };
         self.pty.close(id);
-        self.pty.create(&self.paths.data, id, &cwd, &kind, &shell, &command, respawn.as_deref(), false, language, self.emit.clone()).map(|_| Value::Null)
+        self.pty.create(&self.paths.data, id, &cwd, &kind, &shell, &command, respawn.as_deref(), false, language, self.emit.clone(), &[]).map(|_| Value::Null)
     }
 
-    fn test_exec(&self, request: Value, language: &str) -> Result<Value, String> {
+/// What testing an executor comes to: the last of what its command
+/// showed, the code it left with, and whether it was still running when
+/// the test stopped watching it.
+    pub fn test_exec(&self, request: Value, language: &str) -> Result<Value, String> {
+        if self.closing.load(Ordering::SeqCst) {
+            return Err(translate(language, "工作台正在关闭", &[] as &[String]));
+        }
+        // The command and its arguments as one line, as a terminal takes them.
         let cmd = request["cmd"].as_str().unwrap_or("");
         let args = request["args"].as_str().unwrap_or("");
-        let cwd = request["cwd"].as_str().filter(|cwd| !cwd.is_empty());
-        let mut command = Command::new("bash");
-        command.arg("-lc").arg(format!("{cmd} {args}"));
-        if let Some(cwd) = cwd { command.current_dir(cwd); }
-        if let Some(env) = request["env"].as_array() {
-            for item in env {
-                if let (Some(key), Some(value)) = (item["k"].as_str(), item["v"].as_str()) {
-                    if !key.is_empty() { command.env(key, value); }
-                }
+        let command = [cmd, args].iter().filter(|part| !part.is_empty()).copied().collect::<Vec<_>>().join(" ");
+        if command.trim().is_empty() { return Ok(json!({ "text": translate(language, "请先填写命令。", &[] as &[String]), "code": Value::Null })) }
+        let host_id = request["hostId"].as_str().filter(|id| !id.is_empty()).unwrap_or("local");
+        let local = host_id == "local";
+        // A machine that is not configured any more, or one that is not
+        // connected, cannot be tested on: said the same of both, as the
+        // Electron build says it.
+        let disconnected = || translate(language, "这台机器未连接", &[] as &[String]);
+        let host = match self.optional_host(host_id) {
+            Ok(host) => host,
+            Err(_) => return Err(disconnected()),
+        };
+        if !local && host.as_ref().is_none_or(|host| host["on"] == false) { return Err(disconnected()) }
+        let cwd = request["cwd"].as_str().unwrap_or("");
+        let cwd = if local {
+            if !cwd.is_empty() && Path::new(cwd).is_dir() { PathBuf::from(cwd) } else { std::env::current_dir().map_err(|error| error.to_string())? }
+        } else {
+            if cwd.is_empty() { PathBuf::from(if host.as_ref().is_some_and(|host| host["platform"] == "windows") { "C:\\" } else { "/" }) } else { PathBuf::from(cwd) }
+        };
+        // Bash is taken as Git Bash on Windows, as a terminal takes it; the
+        // other shells are those the host offers.
+        let preferred = request["shell"].as_str().unwrap_or("bash");
+        let shell = if local && cfg!(windows) && preferred == "bash" { "bash" } else { shells::shell_for_host(host.as_ref().map_or(if cfg!(windows) { "windows" } else { "linux" }, |host| host["platform"].as_str().unwrap_or("linux")), preferred) };
+        // PowerShell says a command that wrote an error succeeded: the test
+        // is to fail as a terminal would show it.
+        let command = if shell == "pwsh" { format!("{command}; if (-not $?) {{ $global:LASTEXITCODE = 1 }}") } else { command };
+        let empty = Vec::new();
+        let env: Vec<(String, String)> = request["env"].as_array().unwrap_or(&empty).iter()
+            .filter_map(|item| Some((item["k"].as_str()?.to_string(), item["v"].as_str().unwrap_or("").to_string())))
+            .filter(|(key, _)| !key.is_empty()).collect();
+        let id = format!("executor-test-{}", random_id());
+        let watched = id.clone();
+        let collected = Arc::new(Mutex::new(String::new()));
+        let sink = collected.clone();
+        // The session's output is kept, its last 12 000 characters, as the
+        // page is told nothing of it: it is not a terminal of the workbench.
+        let emit: Emit = Arc::new(move |event: Value| {
+            if event["channel"] == "pty:event" && event["payload"]["type"] == "data" && event["payload"]["id"] == watched {
+                let mut kept = sink.lock().expect("test output");
+                kept.push_str(event["payload"]["data"].as_str().unwrap_or(""));
+                let over = kept.chars().count().saturating_sub(12_000);
+                if over > 0 { *kept = kept.chars().skip(over).collect(); }
             }
-        }
-        let _ = language;
-        match command.output() {
-            Ok(output) => Ok(json!({ "text": format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)), "code": output.status.code() })),
-            Err(error) => Err(error.to_string()),
-        }
+        });
+        let info = if local {
+            self.pty.create(&self.paths.data, &id, &cwd, TEST_KIND, shell, &command, None, false, language, emit.clone(), &env)?
+        } else {
+            self.pty.create_remote(&self.paths.data, &id, &cwd.display().to_string(), TEST_KIND, shell, &command, None, false, &host.expect("a remote host"), language, emit.clone())?
+        };
+        let _ = info;
+        let deadline = Instant::now() + TEST_WATCH;
+        let code = loop {
+            match self.pty.snapshot_of(&id).and_then(|snapshot| snapshot["state"].as_str().and_then(|state| (state == "exited" || state == "failed").then(|| snapshot["exitCode"].as_i64()))) {
+                Some(code) => break code,
+                None => {}
+            }
+            if Instant::now() >= deadline { break None }
+            std::thread::sleep(Duration::from_millis(40));
+        };
+        let running = code.is_none();
+        self.pty.close(&id);
+        let text = collected.lock().expect("test output").clone();
+        let mut result = json!({ "text": text, "code": code });
+        if running { result["running"] = json!(true); }
+        Ok(result)
     }
 
     fn content_start(&self, args: &[Value], language: &str) -> Result<Value, String> {
@@ -1365,6 +1439,15 @@ fn session_ids(db: &Value) -> Vec<String> {
     }
     ids
 }
+
+/// The kind of the terminal made to test an executor: not a Shell and none
+/// of the Agents, known by its name wherever a terminal is told apart.
+const TEST_KIND: &str = "__executor_test__";
+
+/// How long an executor's startup is watched before the test ends with the
+/// command still running: as long as the Electron build watches it.
+const TEST_WATCH: Duration = Duration::from_millis(8000);
+
 
 fn agent_command(kind: &str, db: &Value) -> String {
     const PRESETS: &[(&str, &str)] = &[("claude", "claude"), ("codex", "codex"), ("opencode", "opencode"), ("pi", "pi"), ("omp", "omp")];

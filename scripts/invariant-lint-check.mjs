@@ -149,6 +149,17 @@ const cases = [
   ['AWB078', 'src-tauri/src/lib.rs', 'if edit::is_role(&edit) { edit::run(window, &edit); return Value::Null }', ''],
   ['AWB078', 'src-tauri/src/edit.rs', String.raw`"pasteAndMatchStyle" => Some((b'V', true))`, '"pasteAndMatchStyle" => None'],
   ['AWB078', 'src-tauri/src/edit.rs', 'Input.dispatchKeyEvent', 'Input.insertText'],
+  ['AWB079', 'src-tauri/core/src/workbench.rs', 'const TEST_WATCH: Duration = Duration::from_millis(8000);', 'const TEST_WATCH: Duration = Duration::from_millis(2500);'],
+  ['AWB079', 'src-tauri/core/src/workbench.rs', 'translate(language, "请先填写命令。", &[] as &[String])', '"请先填写命令。".to_string()'],
+  ['AWB079', 'src-tauri/core/src/workbench.rs', 'if shell == "pwsh" { format!("{command}; if (-not $?) {{ $global:LASTEXITCODE = 1 }}") }', 'command.to_string()'],
+  ['AWB079', 'src-tauri/core/src/workbench.rs', 'if running { result["running"] = json!(true); }', ''],
+  ['AWB079', 'src-tauri/core/src/workbench.rs', '"pty:write" if self.closing.load(Ordering::SeqCst) => Ok(Value::Null),', ''],
+  ['AWB079', 'src-tauri/core/src/workbench.rs', 'if self.closing.load(Ordering::SeqCst) { return Ok(json!("signal")) }', ''],
+  ['AWB079', 'src-tauri/core/src/workbench.rs', 'pty::delete_history(&self.paths.data, &id);', ''],
+  ['AWB079', 'src-tauri/core/src/pty.rs', 'for (key, value) in extra { builder.env(key, value); }', ''],
+  ['AWB079', 'src-tauri/core/src/pty.rs', 'if !chunk.is_empty() && recorded_for_restore && !closing { let _ = append_ansi(&data, id, chunk); }', 'if !chunk.is_empty() { let _ = append_ansi(&data, id, chunk); }'],
+  ['AWB079', 'package.json', 'node scripts/executor-test-check.mjs && ', ''],
+  ['AWB079', 'src-tauri/core/src/i18n.rs', '("请先填写命令。", "Enter a command first."),', ''],
 ]
 for (const [id, file, before, after] of cases) {
   const mutated = new Map(files)

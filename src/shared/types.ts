@@ -262,6 +262,8 @@ export interface TestExecRequest {
   shell: 'pwsh' | 'cmd' | 'bash'
   env: EnvVar[]
   cwd?: string
+  /** The machine the command is tested on; this one when left out. */
+  hostId?: string
 }
 
 export interface TestExecResult {

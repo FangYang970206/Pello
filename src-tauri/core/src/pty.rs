@@ -174,8 +174,9 @@ struct Session {
 impl Manager {
     pub fn new() -> Self { Self { sessions: Mutex::new(HashMap::new()) } }
 
-    pub fn create(&self, data: &Path, id: &str, cwd: &Path, kind: &str, shell: &str, command: &str, agent_session: Option<&str>, restore: bool, language: &str, emit: Emit) -> Result<Value, String> {
-        if !cwd.is_dir() { return Err(translate(language, "目录不存在", &[] as &[String])) }
+    /// A terminal on this machine. `extra` is environment of the executor
+    /// that runs in it, as the settings dialog gives one.
+    pub fn create(&self, data: &Path, id: &str, cwd: &Path, kind: &str, shell: &str, command: &str, agent_session: Option<&str>, restore: bool, language: &str, emit: Emit, extra: &[(String, String)]) -> Result<Value, String> {        if !cwd.is_dir() { return Err(translate(language, "目录不存在", &[] as &[String])) }
         if kind != "shell" && agent_session.unwrap_or("").is_empty() && !load_history(data, id).is_empty() {
             return Err(translate(language, "无法唯一定位旧 Agent 对话，原终端历史已保留；未创建空白对话", &[] as &[String]));
         }
@@ -202,6 +203,7 @@ impl Manager {
         builder.env("COLORTERM", "truecolor");
         builder.env("PI_PROGRAM_STATUS", "1");
         if cfg!(windows) { builder.env("PI_HARDWARE_CURSOR", "1"); }
+        for (key, value) in extra { builder.env(key, value); }
         builder.cwd(cwd);
         let child = pair.slave.spawn_command(builder).map_err(|error| error.to_string())?;
         let root_pid = child.process_id().unwrap_or(0);
@@ -704,7 +706,7 @@ fn handle_chunk(id: &str, live: &Arc<Mutex<Live>>, writer: &Arc<Mutex<Box<dyn Wr
     apply_reports(&mut guard, &activity.reports);
     guard.pending.push_str(&activity.text);
     let (visible, prompts) = drain_prompts(&mut guard.pending);
-    let _recorded_for_restore = guard.restore;
+    let recorded_for_restore = guard.restore;
     let data = guard.data.clone();
     // The output of a terminal being closed is kept for its history, as the
     // Electron build keeps it, but the page is done with the terminal and is
@@ -725,7 +727,12 @@ fn handle_chunk(id: &str, live: &Arc<Mutex<Live>>, writer: &Arc<Mutex<Box<dyn Wr
         }
     }
     drop(guard);
-    if !chunk.is_empty() { let _ = append_ansi(&data, id, chunk); }
+    // The complete record is kept as the history is: for a terminal whose
+    // output is restored, and for no other, so that a terminal that keeps
+    // none, as one made to test an executor, leaves nothing behind. A
+    // terminal being closed is recorded no further: the last of what it
+    // showed is not written after its history is deleted.
+    if !chunk.is_empty() && recorded_for_restore && !closing { let _ = append_ansi(&data, id, chunk); }
     if !visible.is_empty() {
         emit(json!({ "channel": "pty:event", "payload": { "type": "data", "id": id, "data": visible } }));
     }
@@ -1092,6 +1099,16 @@ fn append_ansi(data: &Path, id: &str, text: &str) -> Result<(), String> {
     let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(|error| error.to_string())?;
     file.write_all(text.as_bytes()).map_err(|error| error.to_string())?;
     Ok(())
+}
+
+/// The history of a terminal closed for good: what its page kept of it
+/// and its complete record, which may never have been written.
+pub fn delete_history(data: &Path, id: &str) {
+    let directory = data.join("terminal-history");
+    let name = history_name(id);
+    for file in [format!("{name}.log"), format!("{name}.ansi"), format!("{name}.log.tmp")] {
+        let _ = std::fs::remove_file(directory.join(file));
+    }
 }
 
 pub fn prune_history(data: &Path, ids: &[String]) {

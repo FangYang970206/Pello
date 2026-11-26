@@ -344,6 +344,10 @@ fn windows_powershell_terminal_reaches_its_prompt() {
     // then says the shell could not start and ends at once. The Electron build
     // resolves the shell without that form, and PowerShell is what a default
     // terminal gets on Windows.
+    // A terminal is closed here, and what a closing writes to the logs of
+    // the process is the whole process's: tests that close terminals run one
+    // at a time, so that none reads another's closing.
+    let _lock = env_lock();
     if !cfg!(windows) { return }
     let root = temp_dir("pty-pwsh");
     let project = root.join("project");
@@ -386,6 +390,10 @@ fn windows_powershell_terminal_reaches_its_prompt() {
 #[test]
 #[cfg(windows)]
 fn windows_powershell_terminal_runs_the_executor_command() {
+    // A terminal is closed here, and what a closing writes to the logs of
+    // the process is the whole process's: tests that close terminals run one
+    // at a time, so that none reads another's closing.
+    let _lock = env_lock();
     let root = temp_dir("pty-pwsh-executor");
     let project = root.join("project");
     fs::create_dir_all(&project).unwrap();
@@ -421,8 +429,179 @@ fn windows_powershell_terminal_runs_the_executor_command() {
     assert!(!pids.is_empty(), "the executor command did not run in the PowerShell terminal:\n{output}");
 }
 
+/// Testing an executor runs its command as a terminal does, in the shell it
+/// is written for: Git Bash where it says bash, PowerShell where it says pwsh.
+/// What comes back is the last of what the command showed and its exit code,
+/// so a command that is not there fails the test rather than passing it with
+/// the output of another shell, and an empty command is said to be empty.
+#[test]
+fn testing_an_executor_runs_its_command_in_the_shell_it_is_written_for() {
+    // Terminals are closed here, and which logs a closing writes is the whole
+    // process's: tests that close terminals run one at a time.
+    let _lock = env_lock();
+    let root = temp_dir("exec-test");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    // A machine that is configured but not connected, as one is after its
+    // connection was lost.
+    fs::create_dir_all(root.join("data")).unwrap();
+    fs::write(root.join("data").join("workbench.json"), json!({ "hosts": [{ "id": "local", "name": "本机", "on": true }, { "id": "off", "name": "Off", "addr": "127.0.0.1", "user": "u", "port": 1, "auth": "key", "platform": "linux", "os": "Linux", "on": false }] }).to_string()).unwrap();
+    let (bench, events) = workbench(&root);
+    let test = |shell: &str, cmd: &str, args: &str| {
+        bench.dispatch("exec:test", &[json!({ "cmd": cmd, "args": args, "shell": shell, "env": [], "cwd": project.display().to_string() })]).unwrap()
+    };
+    // Bash: Git Bash on Windows, found as a terminal finds it.
+    let bash = test("bash", "printf", "'PELLO_EXEC_TEST\n'");
+    assert_eq!(bash["code"], 0, "bash: {bash}");
+    assert!(bash["text"].as_str().unwrap_or("").contains("PELLO_EXEC_TEST"), "bash: {bash}");
+    // PowerShell, with an environment variable of the executor's own.
+    let pwsh = bench.dispatch("exec:test", &[json!({ "cmd": "Write-Output", "args": "\"pello $env:PELLO_TEST_VAR\"", "shell": "pwsh", "env": [{ "k": "PELLO_TEST_VAR", "v": "from-env" }], "cwd": project.display().to_string() })]).unwrap();
+    assert_eq!(pwsh["code"], 0, "pwsh: {pwsh}");
+    assert!(pwsh["text"].as_str().unwrap_or("").contains("pello from-env"), "pwsh: {pwsh}");
+    // A command that is not there does not pass the test.
+    let missing = test("pwsh", "pello_nonexistent_custom_agent_42", "");
+    assert_ne!(missing["code"], 0, "a command that is not there must fail the test: {missing}");
+    let missing_bash = test("bash", "pello_nonexistent_custom_agent_42", "");
+    assert_ne!(missing_bash["code"], 0, "a command that is not there must fail the test in bash too: {missing_bash}");
+    // No command is said to be empty.
+    let empty = test("pwsh", "   ", "");
+    assert_eq!(empty["code"], serde_json::Value::Null, "an empty command has no exit code: {empty}");
+    assert!(empty["text"].as_str().unwrap_or("").contains("请先填写命令"), "the empty command is said so: {empty}");
+    // A directory that is not there falls back to where the workbench runs.
+    let nowhere = bench.dispatch("exec:test", &[json!({ "cmd": "Write-Output", "args": "\"anywhere\"", "shell": "pwsh", "env": [], "cwd": root.join("nowhere").display().to_string() })]).unwrap();
+    assert_eq!(nowhere["code"], 0, "a directory that is not there falls back to where the workbench runs: {nowhere}");
+    // A host that is not there, or not connected, cannot be tested on.
+    let no_host = bench.dispatch("exec:test", &[json!({ "cmd": "Write-Output", "args": "\"x\"", "shell": "pwsh", "env": [], "hostId": "ghost" })]);
+    assert_eq!(no_host.as_ref().err().map(String::as_str), Some("这台机器未连接"), "a machine that is not configured is said to be not connected");
+    let off = bench.dispatch("exec:test", &[json!({ "cmd": "Write-Output", "args": "\"x\"", "shell": "pwsh", "env": [], "hostId": "off" })]);
+    assert_eq!(off.as_ref().err().map(String::as_str), Some("这台机器未连接"), "a machine that is not connected is said so");
+    // Said in English when the workbench is.
+    bench.dispatch("db:settings", &[json!({ "language": "en" })]).unwrap();
+    let said = bench.dispatch("exec:test", &[json!({ "cmd": "Write-Output", "args": "\"x\"", "shell": "pwsh", "env": [], "hostId": "ghost" })]);
+    assert_eq!(said.as_ref().err().map(String::as_str), Some("This machine is disconnected"), "said in the workbench's language: {said:?}");
+    let empty = bench.dispatch("exec:test", &[json!({ "cmd": " ", "args": "", "shell": "pwsh", "env": [] })]).unwrap();
+    assert_eq!(empty["text"], "Enter a command first.", "said in the workbench's language");
+    bench.dispatch("db:settings", &[json!({ "language": "zh-CN" })]).unwrap();
+    // The page is told nothing of a terminal that tests an executor, and the
+    // test leaves no history behind.
+    let told = events.lock().unwrap().iter().filter(|event| event["channel"] == "pty:event").count();
+    assert_eq!(told, 0, "the page is told nothing of a terminal that tests an executor");
+    let history = fs::read_dir(root.join("data").join("terminal-history")).map(|entries| entries.count()).unwrap_or(0);
+    assert_eq!(history, 0, "a terminal that tests an executor leaves no history behind");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A command that is still running when the test stops watching it is said
+/// to be running, with no exit code, and the terminal made to test it is
+/// closed: what the command started is ended with it.
+#[test]
+fn testing_an_executor_that_keeps_running_says_so_and_ends_it() {
+    // Terminals are closed here, and which logs a closing writes is the whole
+    // process's: tests that close terminals run one at a time.
+    let _lock = env_lock();
+    let root = temp_dir("exec-test-running");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let (bench, _events) = workbench(&root);
+    let started = std::time::Instant::now();
+    let result = bench.dispatch("exec:test", &[json!({ "cmd": "Start-Sleep", "args": "60", "shell": "pwsh", "env": [], "cwd": project.display().to_string() })]).unwrap();
+    let took = started.elapsed();
+    assert_eq!(result["code"], serde_json::Value::Null, "a command still running has no exit code: {result}");
+    assert_eq!(result["running"], true, "a command still running is said to be: {result}");
+    // Watched for as long as the Electron build watches, give or take the
+    // time the shell takes to start.
+    assert!(took >= Duration::from_millis(7500) && took < Duration::from_secs(14), "watched for {took:?}");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// Closing a terminal deletes its history, as the Electron build does when
+/// the tab is closed for good: what was shown is not brought back for a
+/// terminal that no longer exists, and neither is its complete record. The
+/// complete record is kept for a terminal whose output is restored, and for
+/// no other.
+#[test]
+fn closing_a_terminal_deletes_its_history() {
+    // Terminals are closed here, and which logs a closing writes is the whole
+    // process's: tests that close terminals run one at a time.
+    let _lock = env_lock();
+    let root = temp_dir("pty-close-history");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let (bench, _events) = workbench(&root);
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    let history = root.join("data").join("terminal-history");
+    let files = |id: &str| [format!("{}.log", pello_core::pty::history_name(id)), format!("{}.ansi", pello_core::pty::history_name(id))].map(|name| history.join(name).is_file());
+    // A terminal whose output is restored keeps its complete record.
+    bench.dispatch("db:settings", &[json!({ "restore": true })]).unwrap();
+    let _ = bench.dispatch("pty:create", &[json!({ "id": "restored", "projectId": "p", "kind": "shell", "shell": "pwsh" })]).unwrap();
+    bench.dispatch("pty:feed", &[json!("restored"), json!("RESTORED OUTPUT")]).unwrap();
+    bench.dispatch("terminal:history-save", &[json!("restored"), json!("RESTORED HISTORY\r\n")]).unwrap();
+    assert_eq!(files("restored"), [true, true], "a terminal whose output is restored keeps its history and its complete record");
+    // A terminal whose output is not restored keeps no complete record.
+    bench.dispatch("db:settings", &[json!({ "restore": false })]).unwrap();
+    let _ = bench.dispatch("pty:create", &[json!({ "id": "plain", "projectId": "p", "kind": "shell", "shell": "pwsh" })]).unwrap();
+    bench.dispatch("pty:feed", &[json!("plain"), json!("PLAIN OUTPUT")]).unwrap();
+    assert_eq!(files("plain"), [false, false], "a terminal whose output is not restored keeps no complete record");
+    // Closing either deletes what there is.
+    bench.dispatch("pty:close", &[json!("restored")]).unwrap();
+    bench.dispatch("pty:close", &[json!("plain")]).unwrap();
+    assert_eq!(files("restored"), [false, false], "closing a terminal deletes its history");
+    assert_eq!(files("plain"), [false, false], "closing a terminal that kept nothing leaves nothing");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// While the workbench is closing, nothing more is asked of a terminal: what
+/// is written, resized or started again is ignored, an interrupt is answered
+/// as a signal, and closing one terminal closes them all.
+#[test]
+fn a_closing_workbench_ignores_what_is_asked_of_a_terminal() {
+    // Terminals are closed here, and which logs a closing writes is the whole
+    // process's: tests that close terminals run one at a time.
+    let _lock = env_lock();
+    let root = temp_dir("pty-closing");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let (bench, events) = workbench(&root);
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    let _ = bench.dispatch("pty:create", &[json!({ "id": "closing", "projectId": "p", "kind": "shell", "shell": "pwsh" })]).unwrap();
+    // The terminal is at its prompt first, so that a line written to it
+    // would be a command, and the terminal would say it is running.
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while std::time::Instant::now() < deadline {
+        if bench.dispatch("pty:snapshot", &[json!("closing")]).unwrap()["inputReady"] == true { break }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let before = bench.dispatch("pty:snapshot", &[json!("closing")]).unwrap();
+    assert_eq!(before["state"], "idle", "the terminal is at its prompt: {before}");
+    // The prompt's own output is all in by now, so that what is counted
+    // next is only what the closing would be told.
+    std::thread::sleep(Duration::from_millis(500));
+    let seen = events.lock().unwrap().iter().filter(|event| event["channel"] == "pty:event" && event["payload"]["id"] == "closing").count();
+    bench.begin_shutdown();
+    for channel in ["pty:write", "pty:shift-enter", "pty:resize"] {
+        assert!(bench.dispatch(channel, &[json!("closing"), json!("echo ignored\r"), json!(80), json!(24)]).is_ok(), "{channel} is ignored, not refused");
+    }
+    // A line written to a terminal at its prompt is a command: the terminal
+    // would say that it is running.
+    std::thread::sleep(Duration::from_millis(400));
+    let after = bench.dispatch("pty:snapshot", &[json!("closing")]).unwrap();
+    assert_eq!(after["state"], "idle", "nothing written while closing reaches the terminal: {after}");
+    let told = events.lock().unwrap().iter().filter(|event| event["channel"] == "pty:event" && event["payload"]["id"] == "closing").count();
+    assert_eq!(told, seen, "the page is told nothing more of a terminal the workbench is closing");
+    let interrupt = bench.dispatch("pty:interrupt", &[json!("closing")]).unwrap();
+    assert_eq!(interrupt, "signal", "an interrupt is answered as a signal while closing: {interrupt}");
+    let restart = bench.dispatch("pty:restart", &[json!("closing")]);
+    assert_eq!(restart.as_ref().err().map(String::as_str), Some("工作台正在关闭"), "a terminal is not started again while closing: {restart:?}");
+    bench.dispatch("pty:close", &[json!("closing")]).unwrap();
+    let _ = fs::remove_dir_all(root);
+}
+
 #[test]
 fn local_shell_reports_prompt_idle_without_touching_user_shell_config() {
+    // A terminal is closed here, and what a closing writes to the logs of
+    // the process is the whole process's: tests that close terminals run one
+    // at a time, so that none reads another's closing.
+    let _lock = env_lock();
     let root = temp_dir("pty");
     let project = root.join("project");
     fs::create_dir_all(&project).unwrap();
@@ -677,6 +856,10 @@ fn ssh_password_connects_to_a_server_with_an_rsa_host_key() {
 
 #[test]
 fn ssh_password_pins_host_key_and_serves_remote_files() {
+    // A terminal is closed here, and what a closing writes to the logs of
+    // the process is the whole process's: tests that close terminals run one
+    // at a time, so that none reads another's closing.
+    let _lock = env_lock();
     let password = "s3cret-pass";
     let fixture = pello_core::ssh::start_fixture(password).expect("ssh fixture");
     let root = temp_dir("ssh");
@@ -1346,6 +1529,10 @@ fn windows_remote_script_translates_errors_and_keeps_the_command() {
 
 #[test]
 fn terminal_panes_rename_restore_and_run_state() {
+    // A terminal is closed here, and what a closing writes to the logs of
+    // the process is the whole process's: tests that close terminals run one
+    // at a time, so that none reads another's closing.
+    let _lock = env_lock();
     let root = temp_dir("terms");
     let project = root.join("project");
     fs::create_dir_all(&project).unwrap();
@@ -3271,6 +3458,10 @@ fn the_folder_dialog_is_the_system_one_for_a_local_project_and_the_page_picker_f
 
 #[test]
 fn a_split_is_the_pages_and_claude_gets_settings() {
+    // A terminal is closed here, and what a closing writes to the logs of
+    // the process is the whole process's: tests that close terminals run one
+    // at a time, so that none reads another's closing.
+    let _lock = env_lock();
     let root = temp_dir("split-settings");
     let project = root.join("project");
     fs::create_dir_all(&project).unwrap();

@@ -119,7 +119,7 @@ export interface WorkbenchApi {
   saveTerminalHistory(id: string, text: string): void
   onFlushTerminalHistory(cb: () => Promise<void>): () => void
   onPty(cb: (event: PtyEvent) => void): () => void
-  testExec(req: TestExecRequest): Promise<{ text: string; code: number | null }>
+  testExec(req: TestExecRequest): Promise<{ text: string; code: number | null; running?: boolean }>
   testHost(host: Host): Promise<HostTest>
   winMin(): Promise<void>
   winMax(): Promise<void>

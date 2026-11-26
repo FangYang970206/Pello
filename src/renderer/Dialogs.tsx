@@ -672,7 +672,7 @@ export function ExecDialog({
               try {
                 const result = await window.awb.testExec({ cmd: draft.cmd, args: draft.args, shell: draft.shell, env: draft.env, cwd })
                 const envLine = draft.env.filter((item) => item.k).map((item) => `${item.k}=${item.secret ? '********' : item.v}`).join('  ')
-                const text = [envLine ? `env: ${envLine}` : '', result.text, result.code === null ? t("[测试结束 · 已中断]") : t("[测试结束 · 退出码 {{0}}]", result.code)].filter(Boolean).join('\n')
+                const text = [envLine ? `env: ${envLine}` : '', result.text, result.running ? t("[启动观察结束 · 进程仍在运行，已停止测试；未验证服务连接]") : result.code === null ? t("[测试结束 · 已中断]") : t("[测试结束 · 退出码 {{0}}]", result.code)].filter(Boolean).join('\n')
                 setOutput(text)
               } catch (err) {
                 setOutput(err instanceof Error ? err.message : t("测试失败"))
