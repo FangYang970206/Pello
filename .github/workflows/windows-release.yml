@@ -81,8 +81,14 @@ jobs:
       - run: npm ci
       - name: Install Electron for behavioral checks
         run: |
-          node node_modules/electron/install.js
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Electron 33's extract-zip can exit early on current Node versions.
+          $archive = node -e "const { version } = require('electron/package.json'); require('@electron/get').downloadArtifact({ version, artifactName: 'electron', platform: 'win32', arch: 'x64', checksums: require('electron/checksums.json') }).then(console.log, error => { console.error(error); process.exitCode = 1 })"
+          if ($LASTEXITCODE -ne 0 -or !$archive) { throw 'Electron download failed.' }
+          $name = Split-Path -Leaf $archive
+          $checksum = node -p "require('electron/checksums.json')[process.argv[1]]" $name
+          if ($LASTEXITCODE -ne 0 -or (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ine $checksum) { throw 'Invalid Electron archive checksum.' }
+          Expand-Archive -LiteralPath $archive -DestinationPath node_modules/electron/dist -Force
+          Set-Content -LiteralPath node_modules/electron/path.txt -Value 'electron.exe' -NoNewline -Encoding ascii
           node -e "require('node:fs').accessSync(require('electron'))"
       - uses: actions/download-artifact@v8
         with:

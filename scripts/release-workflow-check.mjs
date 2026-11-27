@@ -18,11 +18,12 @@ assert.ok(list('performanceIsolated').includes('document-performance-check'))
 assert.deepEqual(list('installation'), checkSuites.installation)
 assert.equal(workflow.on.workflow_dispatch.inputs.draft.default, false)
 const validationSteps = workflow.jobs.validate.steps
-const installElectron = validationSteps.findIndex((step) => step.run?.includes('node node_modules/electron/install.js'))
+const installElectron = validationSteps.findIndex((step) => step.name === 'Install Electron for behavioral checks')
 const installDependencies = validationSteps.findIndex((step) => step.run === 'npm ci')
 const runChecksStep = validationSteps.findIndex((step) => step.name === 'Run checks')
 assert.ok(installDependencies >= 0 && installElectron > installDependencies && installElectron < runChecksStep,
   'The Electron runtime must be available on every behavior runner')
+assert.match(validationSteps[installElectron].run, /Expand-Archive.*node_modules\/electron\/dist/)
 
 const logsRoot = mkdtempSync(path.join(os.tmpdir(), 'pello-check-runner-'))
 try {
