@@ -109,7 +109,7 @@ export interface WorkbenchApi {
   treeMenu(projectId: string, rel: string, directory: boolean): Promise<string | null>
   treeAction(projectId: string, rel: string, directory: boolean, action: string): Promise<void>
   treeReference(projectId: string, rel: string, kind: string, shell: ShellKind): Promise<string>
-  documentMenu(options: { markdown: boolean; visual: boolean; undo: boolean; redo: boolean; editable: boolean; layout?: PaneLayoutOptions }): Promise<string | null>
+  documentMenu(options: { markdown: boolean; visual: boolean; undo: boolean; redo: boolean; editable: boolean; json?: boolean; layout?: PaneLayoutOptions }): Promise<string | null>
   documentLink(projectId: string, source: string, href: string): Promise<{ path: string; anchor?: string } | null>
   paneMenu(options: PaneLayoutOptions & { terminal: boolean; reconnect?: boolean }): Promise<string | null>
   onPreviewCommand(cb: (url: string, command: 'source' | 'reload') => void): () => void

@@ -6,6 +6,7 @@ import { NameEditor } from './ProjectSidebar'
 import { terminalStatus } from './terminal-state'
 import type { Tab } from './Workspace'
 import { useAnchoredMenu } from './useAnchoredMenu'
+import { FileIcon } from './FileIcon'
 
 export function WorkspaceTabs({ groupId, index, tabs, activeId, focused, style, agents, installed, rightOpen, onToggleRight, onSelect, onClose, onPaneMenu, onRenameTerm, onNewTerm, renaming, setRenaming, onMoveTab }: {
   groupId: string; index: number; tabs: Tab[]; activeId: string; focused: boolean; style: CSSProperties
@@ -168,7 +169,7 @@ export function WorkspaceTabs({ groupId, index, tabs, activeId, focused, style, 
                   onClick={() => onSelect(tab.id)}
                   onKeyDown={(event) => { if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) { event.preventDefault(); void onPaneMenu(tab.id) } }}
                 >
-                  <Icon name="file" className="s" />
+                  <FileIcon path={tab.path} />
                   <span className="lbl" title={tab.path}>{label}</span>
                   {tab.dirty ? <span className="dot unsaved" role="img" aria-label={t("有未保存的更改")} /> : null}
                 </button>
@@ -211,7 +212,7 @@ export function WorkspaceTabs({ groupId, index, tabs, activeId, focused, style, 
                 onClick={() => { onSelect(tab.id); setMenu(false) }}>
                 <span style={{ width: 14, flex: 'none', color: 'var(--muted)' }}>{tab.id === activeId ? '✓' : ''}</span>
                 <span className="nm grow">{label}</span>
-                {tab.type === 'term' ? <span className={`dot terminal-status ${terminalStatus(tab).color}${terminalStatus(tab).spinning ? ' spinning' : ''}`} role="img" aria-label={terminalStatus(tab).label} /> : null}
+                {tab.type === 'term' ? <span className={`dot terminal-status ${terminalStatus(tab).color}${terminalStatus(tab).spinning ? ' spinning' : ''}`} role="img" aria-label={terminalStatus(tab).label} /> : <FileIcon path={tab.path} />}
               </button>
             })}
           </div>

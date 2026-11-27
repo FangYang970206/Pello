@@ -39,11 +39,14 @@ let app, daemon
 try {
   wsl('python3', '-c', `import os,pathlib,subprocess,sys,pwd
 p=pathlib.Path(sys.argv[1]); u=pwd.getpwnam(sys.argv[2]); os.chmod(p,0o755)
-for name in ['A','B']:
+for name in ['A','B','C']:
  folder=p/name; folder.mkdir(); (folder/'shared.txt').write_text(name+' original\\n')
  subprocess.run(['git','init','-q',str(folder)],check=True)
  subprocess.run(['git','-C',str(folder),'add','.'],check=True)
  subprocess.run(['git','-C',str(folder),'-c','user.name=Fixture','-c','user.email=f@example.invalid','commit','-qm','initial'],check=True)
+(p/'C'/'changed-in-C.txt').write_text('C change\\n')
+(p/'C'/'codex').write_text('#!/bin/bash\\nprintf cwd-check-running\\nsleep 3\\n')
+os.chmod(p/'C'/'codex',0o755)
 for folder,dirs,files in os.walk(p/'B'):
  os.chown(folder,u.pw_uid,u.pw_gid)
  for name in files: os.chown(os.path.join(folder,name),u.pw_uid,u.pw_gid)
@@ -79,6 +82,18 @@ subprocess.run(['ssh-keygen','-q','-t','ed25519','-N','','-f',str(p/'host-key')]
   await initialEditor.press('Control+End'); await initialEditor.press('A')
   const originalFileTab = await page.locator('[data-type=file][data-a=pane]:not([hidden])').getAttribute('data-id')
   await page.locator(`[data-a=tab][data-id="${terminal}"]`).click()
+  await page.evaluate(({ terminal, root }) => window.awb.ptyWrite(terminal, `cd -- '${root}/C'\r`), { terminal, root })
+  await page.waitForFunction((root) => window.__contexts.at(-1)?.context?.cwd === root + '/C', root)
+  await page.evaluate((terminal) => window.awb.ptyWrite(terminal, './codex\r'), terminal)
+  await page.waitForFunction(() => window.__contexts.at(-1)?.agentKind === 'codex')
+  await page.getByLabel('搜索文件', { exact: true }).fill('changed-in-C')
+  await page.locator('[data-a=search-file][data-id="changed-in-C.txt"]').waitFor()
+  await page.click('[data-a=rmode][data-id=changes]')
+  await page.locator('[data-a=diff][data-id="changed-in-C.txt"]').waitFor()
+  await page.waitForFunction(() => window.__contexts.at(-1)?.inputReady)
+  await page.evaluate(({ terminal, root }) => window.awb.ptyWrite(terminal, `cd -- '${root}/A'\r`), { terminal, root })
+  await page.waitForFunction(() => window.__contexts.at(-1)?.context === null)
+  await page.locator('[data-a=diff][data-id="changed-in-C.txt"]').waitFor({ state: 'detached' })
   const native = `ssh -i ${root}/client-key -p ${port} -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${root}/known_hosts ${user}@127.0.0.1`
   await page.evaluate(({ terminal, native }) => window.awb.ptyWrite(terminal, native + '\r'), { terminal, native })
   try { await page.waitForFunction((user) => window.__contexts.some((event) => event.context?.user === user), user, { timeout: 20000 }) }

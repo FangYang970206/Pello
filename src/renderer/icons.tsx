@@ -1,3 +1,5 @@
+export const CHEVRON_PATH = 'M9 6l6 6-6 6'
+
 const PATHS = {
   list: 'M8 6h13M8 12h13M8 18h13M3 6h1M3 12h1M3 18h1',
   tree: 'M4 3v13a2 2 0 0 0 2 2h3M4 8h5M10 5h10v6H10zM10 15h10v6H10z',
@@ -21,7 +23,7 @@ const PATHS = {
   server: 'M4 4h16v6H4zM4 14h16v6H4zM8 7h.01M8 17h.01',
   branch: 'M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a9 9 0 0 1-9 9',
   file: 'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5',
-  chev: 'M9 6l6 6-6 6',
+  chev: CHEVRON_PATH,
   x: 'M18 6L6 18M6 6l12 12',
   minus: 'M5 12h14',
   square: 'M6 6h12v12H6z',

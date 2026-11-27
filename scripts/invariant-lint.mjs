@@ -380,12 +380,20 @@ export function checkInvariants(files) {
   require(moveHandler.includes('await guardReplacement(') && moveHandler.includes('answer.response !== 1') && moveHandler.includes('replaceTreeMove(target, source, next.path, fromVersion, toVersion)') &&
     rightPanel.includes('validMove(destination)') && groupTabs.includes('onMoveTab(id, tabs[index]?.id)') && scripts.check?.includes('scripts/drag-move-check.mjs'),
     'AWB106', mainFile, '文件移动冲突须确认并按版本发布，标签拖放须按插入位置排序，保留原生拖放回归')
-  require(workspaceText.includes('html && opened') && files.get('src/renderer/App.tsx')?.includes('force ? undefined : previous.fileStamp') &&
+  require(workspaceText.includes('retain && opened') && /html\?\|json\|ya\?ml/.test(workspaceText) && files.get('src/renderer/App.tsx')?.includes('force ? undefined : previous.fileStamp') &&
     files.get('src/main/git.ts')?.includes('bytes.length > MAX_DOCUMENT_BYTES') && files.get('src/main/preview.ts')?.includes('Buffer.byteLength(draft) > MAX_DOCUMENT_BYTES') &&
     scripts.check?.includes('scripts/file-tab-refresh-check.mjs'),
     'AWB107', workspaceFile, '保留 HTML 预览实例，按磁盘版本刷新，文本保存与 HTML 草稿沿用同一上限并保留回归')
-  require(called(named(pty, 'flushInput'), 'setTimeout').length && called(named(pty, 'flushInput'), 'charCodeAt').length && scripts.check?.includes('scripts/terminal-paste-size-check.mjs'),
+  require(called(named(pty, 'flushInput'), 'setTimeout').length && called(named(pty, 'flushInput'), 'charCodeAt').length &&
+    files.get('src/main/pty.ts')?.includes('useConptyDll: true') && scripts.check?.includes('scripts/terminal-paste-size-check.mjs'),
     'AWB108', 'src/main/pty.ts', '大文本粘贴分批转发，避免拆分 Unicode 字符并保留真实 PTY 回归')
+  require(files.get('src/renderer/StructuredSource.tsx')?.includes('preparePlaceholder:') &&
+    sidebarCss.includes('.cm-foldGutter .cm-gutterElement { position: relative; min-width: 24px; }') &&
+    sidebarCss.includes('.cm-gutters:not(:hover) .structured-fold-toggle[data-expanded="true"]') &&
+    /\.structured-fold-preview\s*\{[^}]*vertical-align:\s*baseline\b/.test(sidebarCss) &&
+    files.get('src/renderer/FilePane.tsx')?.includes('transformJson(document.draft') &&
+    files.get('src/renderer/structured-source.ts')?.includes('JSON.parse(text)') && scripts.check?.includes('scripts/structured-source-check.mjs'),
+    'AWB110', 'src/renderer/StructuredSource.tsx', '结构化源码保留独立折叠列和内容摘要，JSON 源码变换验证语法并走草稿')
   return errors
 }
 

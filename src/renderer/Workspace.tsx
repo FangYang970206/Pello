@@ -36,10 +36,10 @@ export type Tab = TermTab | DiffTab | FileTab
 export const fileTarget = (tab: Tab): string => tab.type !== 'term' && tab.targetId || tab.projectId
 
 function RetainedFilePane({ visible, ...props }: ComponentProps<typeof FilePane> & { visible: boolean }) {
-  const html = /\.html?$/i.test(props.path)
+  const retain = /\.(html?|json|ya?ml)$/i.test(props.path)
   const [opened, setOpened] = useState(visible)
-  useEffect(() => { if (visible && html) setOpened(true) }, [visible, html])
-  return visible || (html && opened) ? <FilePane {...props} visible={visible} /> : null
+  useEffect(() => { if (visible && retain) setOpened(true) }, [visible, retain])
+  return visible || (retain && opened) ? <FilePane {...props} visible={visible} /> : null
 }
 
 export function Workspace({
@@ -80,6 +80,7 @@ export function Workspace({
   onHistoryFile,
   onComposeFile,
   onPreviewHtml,
+  changeTarget,
   untracked
 }: {
   project: Project | null
@@ -113,12 +114,13 @@ export function Workspace({
   onDmode: (id: string, mode: 'unified' | 'split') => void
   onDiscard: (id: string) => void
   onAppKey: (key: string) => void
-  onEditFile: (id: string, text: string) => void
+  onEditFile: (id: string, text: string, separateHistory?: boolean) => void
   onSaveFile: (id: string) => void
   onReloadFile: (id: string) => void
   onHistoryFile: (id: string, redo: boolean) => void
   onComposeFile: (id: string, composing: boolean) => void
   onPreviewHtml: (id: string) => void
+  changeTarget?: string
   untracked: Record<string, boolean>
 }) {
   const [renaming, setRenaming] = useState<string | null>(null)
@@ -259,11 +261,11 @@ export function Workspace({
                   >
 
                     {tab.type === 'term' ? <TerminalPane id={tab.id} groupId={tile?.id} fontSize={fontSize} fontFamily={fontFamily} theme={theme} shell={tab.shell} visible={workspaceVisible && visible} focused={workspaceVisible && focus} onInterrupt={onInterrupt} onAppKey={onAppKey} />
-                      : visible && tab.type === 'diff' ? <DiffPane diff={diffs[key] || null} mode={diffModes[tab.id] || defaultDiffMode} onMode={(mode) => onDmode(tab.id, mode)} onDiscard={() => onDiscard(tab.id)} untracked={!!untracked[tab.path]}
+                      : visible && tab.type === 'diff' ? <DiffPane diff={diffs[key] || null} mode={diffModes[tab.id] || defaultDiffMode} onMode={(mode) => onDmode(tab.id, mode)} onDiscard={() => onDiscard(tab.id)} untracked={fileTarget(tab) === changeTarget ? !!untracked[tab.path] : tab.untracked}
                         document={documents[key] || null} baseline={baselines[key]?.draft} onBaseline={(text) => onBaseline(tab.id, text)} onBaselineHistory={(redo) => onBaselineHistory(tab.id, redo)}
                         onEdit={(text) => onEditFile(tab.id, text)} onSave={() => onSaveFile(tab.id)} onReload={() => onReloadFile(tab.id)} onCompose={(value) => onComposeFile(tab.id, value)} onHistory={(redo) => onHistoryFile(tab.id, redo)} />
                       : tab.type === 'file' ? <RetainedFilePane visible={visible} path={tab.path} anchor={tab.anchor} location={tab.location} onNavigate={(path, anchor) => onNavigateFile(path, anchor, fileTarget(tab))} document={documents[key] || null}
-                        onEdit={(text) => onEditFile(tab.id, text)} onSave={() => onSaveFile(tab.id)} onReload={() => onReloadFile(tab.id)} onHistory={(redo) => onHistoryFile(tab.id, redo)} onCompose={(value) => onComposeFile(tab.id, value)} onPreviewHtml={() => onPreviewHtml(tab.id)}
+                        onEdit={(text, separateHistory) => onEditFile(tab.id, text, separateHistory)} onSave={() => onSaveFile(tab.id)} onReload={() => onReloadFile(tab.id)} onHistory={(redo) => onHistoryFile(tab.id, redo)} onCompose={(value) => onComposeFile(tab.id, value)} onPreviewHtml={() => onPreviewHtml(tab.id)}
                         rightOpen={rightOpen} onToggleRight={onToggleRight} layout={tile ? layoutOptions(tab.id) : { horizontal: false, vertical: false, merge: false }} onLayout={(command) => void layoutCommand(tab.id, command)} /> : null}
                   </div>
                 )

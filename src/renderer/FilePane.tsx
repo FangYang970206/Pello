@@ -10,6 +10,8 @@ import type { SearchAdapter } from './search-types'
 import type { PaneLayoutOptions } from '../shared/api'
 import type { SearchLocation } from '../shared/types'
 import { textMatches } from '../shared/search'
+import { StructuredSource } from './StructuredSource'
+import { structuredLanguage, transformJson } from './structured-source'
 
 const MarkdownEditor = lazy(() => import('./MarkdownEditor'))
 const MediaPreview = lazy(() => import('./MediaPreview'))
@@ -22,7 +24,7 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
   onNavigate: (path: string, anchor?: string) => void
   document: DocumentDraft | null
   rightOpen: boolean
-  onEdit: (text: string) => void
+  onEdit: (text: string, separateHistory?: boolean) => void
   onSave: () => void
   onReload: () => void
   onHistory: (redo: boolean) => void
@@ -36,6 +38,7 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
   const highlight = useRef<HTMLPreElement>(null)
   const format = useRef<((command: string) => void) | null>(null)
   const [visualMode, setVisual] = useState<boolean>()
+  const [invalidJson, setInvalidJson] = useState<string | null>(null)
   const [preview, setPreview] = useState<{ url?: string; error?: string; content?: string; replacementId?: string }>({})
   const markdown = /\.(md|markdown|mdown)$/i.test(path)
   const html = /\.html?$/i.test(path)
@@ -44,6 +47,10 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
   const plainSource = (document?.draft.length || 0) > 300_000
   const showingSource = !((html || markdown) && visual) && !media
   const readonly = !document || !!media || document.binary || document.missing || document.tooBig
+  const structured = structuredLanguage(path)
+  const structuredSearch = useRef<SearchAdapter | null>(null)
+  const current = useRef({ visible, readonly, document, onEdit })
+  current.current = { visible, readonly, document, onEdit }
   const projectId = document?.projectId
   const { ref: content, zoom, changeZoom } = useContentZoom()
   const frame = useRef<HTMLIFrameElement>(null)
@@ -52,11 +59,11 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
   // Labels depend only on line count. Keep every label in one text node so
   // editing and saving do not reconcile or lay out tens of thousands of divs.
   const lineCount = useMemo(() => {
-    if (!showingSource || !document) return 0
+    if (!showingSource || structured || !document) return 0
     let count = 1
     for (let offset = document.draft.indexOf('\n'); offset >= 0; offset = document.draft.indexOf('\n', offset + 1)) count++
     return count
-  }, [showingSource, document?.draft])
+  }, [showingSource, structured, document?.draft])
   const lineNumbers = useMemo(() => Array.from({ length: lineCount }, (_, index) => String(index + 1)).join('\n'), [lineCount])
   const richSearch = useRef<SearchAdapter | null>(null)
   const [renderedText, setRenderedText] = useState('')
@@ -68,11 +75,12 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
     save: onSave,
     replace: !readonly && (!(markdown || html) || !visual) && !document?.replacing ? onEdit : undefined,
     replaceRanges: !readonly && markdown && visual && !document?.replacing ? (matches, value) => richSearch.current?.replace?.(matches, value) : undefined,
-    focus: () => { if (markdown && visual) richSearch.current?.focus(); else if (html && visual) frame.current?.focus(); else source.current?.focus() },
+    focus: () => { if (markdown && visual) richSearch.current?.focus(); else if (html && visual) frame.current?.focus(); else if (structured) structuredSearch.current?.focus(); else source.current?.focus() },
     reveal: (match, matches, index) => {
       if (!visible) return
       if (markdown && visual) { richSearch.current?.reveal(match, matches, index); return }
       if (html && visual) { frame.current?.contentWindow?.postMessage({ type: 'pello-preview-search', matches, current: match, open: search.open }, '*'); return }
+      if (structured) { structuredSearch.current?.reveal(match, matches, index); return }
       clearSearchHighlights(content.current)
       if (highlight.current) highlightMatches(highlight.current, matches, index)
       if (!match || !source.current) return
@@ -94,7 +102,7 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
     // Use the existing draft and editor; switching mode never writes the file.
     if ((markdown || html) && visual) { setVisual(false); return }
     const field = source.current
-    if (!field || !document) return
+    if ((!field && !structuredSearch.current) || !document) return
     located.current = location.id
     const lines = document.draft.split('\n')
     const expected = lines.slice(0, location.line - 1).reduce((total, line) => total + line.length + 1, 0) + location.column - 1
@@ -102,6 +110,7 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
     const match = location.query ? matches.reduce<(typeof matches)[number] | null>((best, value) => !best || Math.abs(value.from - expected) < Math.abs(best.from - expected) ? value : best, null) : { from: Math.min(expected, document.draft.length), to: Math.min(expected, document.draft.length) }
     setLocationError(match ? '' : t("搜索结果已变化，请重新搜索"))
     if (!match) return
+    if (!field) { structuredSearch.current?.focus(); structuredSearch.current?.reveal(match, [match], 0); return }
     field.focus({ preventScroll: true })
     field.setSelectionRange(match.from, match.to)
     if (highlight.current) {
@@ -154,17 +163,28 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
   }, [html, visual, projectId, path, readonly, document?.version, document?.text, document?.draft, document?.replacing, document?.replacementId, document?.assetToken])
   async function contextMenu() {
     const command = await window.awb.documentMenu({ markdown, visual: (markdown || html) && visual,
-      undo: !!document?.past?.length, redo: !!document?.future?.length, editable: !readonly, layout })
+      undo: !!document?.past?.length, redo: !!document?.future?.length, editable: !readonly && !document?.replacing, json: structured === 'json', layout })
     if (command === 'mode') { setPreview({}); setVisual(!visual) }
     else if (command === 'save') onSave()
     else if (command === 'reload') onReload()
     else if (command === 'panel') onToggleRight()
     else if (command === 'undo' || command === 'redo') onHistory(command === 'redo')
+    else if (command === 'json-format' || command === 'json-compact') {
+      const { visible, readonly, document, onEdit } = current.current
+      if (!visible || readonly || !document || document.replacing) return
+      let next: string
+      try { next = transformJson(document.draft, command === 'json-format') }
+      catch { setInvalidJson(document.draft); structuredSearch.current?.focus(); return }
+      onEdit(next, true)
+      setInvalidJson(null)
+      structuredSearch.current?.focus()
+    }
     else if (command?.startsWith('split-') || command === 'merge') onLayout(command)
     else if (command) format.current?.(command)
   }
   return <>
     {locationError ? <div className="file-error" role="status">{locationError}</div> : null}
+    {invalidJson !== null && invalidJson === document?.draft ? <div className="file-error" role="alert">{t("JSON 无效，请修正语法后重试。")}</div> : null}
     {document?.error ? <div className="file-error" role="alert">{document.error}</div> : null}
     <div className="file-content editor-surface" tabIndex={-1} ref={content} style={{ '--content-zoom': zoom } as React.CSSProperties}
       onContextMenu={(event) => { event.preventDefault(); void contextMenu() }}
@@ -189,7 +209,7 @@ export function FilePane({ path, anchor, location, onNavigate, document, onEdit,
           <div className="html-preview-viewport"><iframe ref={frame} key={preview.url} className="html-preview" title={t("HTML 预览")} sandbox="allow-scripts" src={`${preview.url}${preview.url.includes('?') ? '&' : '?'}workbenchWheel=1&workbenchView=${encodeURIComponent(viewId)}`} onLoad={() => frame.current?.contentWindow?.postMessage({ type: 'pello-preview-search', matches: search.open ? search.matches : [], current: search.open ? search.matches[search.active] : null, open: search.open }, '*')} style={{ zoom, width: `${100 / zoom}%`, height: `${100 / zoom}%` }} /></div> : null
         : markdown && visual ? <Suspense fallback={null}>
           <MarkdownEditor value={document.draft} projectId={document.projectId} path={path} anchor={anchor} onNavigate={onNavigate} onChange={onEdit} formatRef={format} searchRef={richSearch} onSearchText={setRenderedText} />
-        </Suspense> : <div className="file-editor">
+        </Suspense> : structured ? <StructuredSource language={structured} value={document.draft} onEdit={onEdit} searchRef={structuredSearch} visible={visible} /> : <div className="file-editor">
           <div className="editor-gutter" ref={gutter} aria-hidden="true">{lineNumbers}</div>
           <div className={`source-editor${plainSource && !search.open && !location ? ' plain-source' : ''}`}>
           {!plainSource || search.open || location ? <pre ref={highlight} className="source-highlight" aria-hidden="true"><SourceHighlight value={document.draft} path={path} /></pre> : null}

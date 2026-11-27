@@ -4,10 +4,16 @@ import { checkInvariants, projectFiles } from './invariant-lint.mjs'
 const files = projectFiles()
 const cases = [
   ['AWB108', 'src/main/pty.ts', 'setTimeout(() => this.flushInput(proc), 0)', 'this.flushInput(proc)'],
+  ['AWB108', 'src/main/pty.ts', 'useConptyDll: true', 'useConptyDll: false'],
+  ['AWB110', 'src/renderer/StructuredSource.tsx', 'preparePlaceholder:', 'unused:'],
+  ['AWB110', 'src/renderer/styles/extra.css', '.cm-foldGutter .cm-gutterElement { position: relative; min-width: 24px; }', '.cm-foldGutter .cm-gutterElement { position: relative; min-width: 14px; }'],
+  ['AWB110', 'src/renderer/styles/extra.css', '.cm-gutters:not(:hover) .structured-fold-toggle[data-expanded="true"]', '.cm-gutters:not(:hover) .structured-fold-toggle[data-expanded="false"]'],
+  ['AWB110', 'src/renderer/styles/extra.css', 'vertical-align: baseline; border: 1px solid var(--line)', 'vertical-align: bottom; border: 1px solid var(--line)'],
+  ['AWB110', 'src/renderer/structured-source.ts', 'JSON.parse(text)', 'void text'],
   ['AWB109', 'src/main/executor-templates.ts', 'template.hostId !== hostId', 'false'],
   ['AWB109', 'src/main/resource-scopes.ts', 'JSON.stringify([context.host.id, identity])', 'JSON.stringify([identity])'],
   ['AWB109', 'src/main/remote-resources.ts', "guard?.()\n          stream.stdin.end('1\\n')", "stream.stdin.end('1\\n')"],
-  ['AWB107', 'src/renderer/Workspace.tsx', 'html && opened', 'false && opened'],
+  ['AWB107', 'src/renderer/Workspace.tsx', 'retain && opened', 'false && opened'],
   ['AWB107', 'src/renderer/App.tsx', 'force ? undefined : previous.fileStamp', 'undefined'],
   ['AWB106', 'src/main/index.ts', 'if (answer.response !== 1) return null', 'if (false) return null'],
   ['AWB106', 'src/renderer/WorkspaceTabs.tsx', 'onMoveTab(id, tabs[index]?.id)', 'onMoveTab(id)'],

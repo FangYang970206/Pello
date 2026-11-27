@@ -12,7 +12,7 @@ export const terminalTarget = (id: string): Context | undefined => contexts.get(
 export class TerminalContextTracker {
   private pending = ''
   private signature = ''
-  constructor(private token: string, private terminalId: string, private projectId: string, private host: Host) {}
+  constructor(private token: string, private terminalId: string, private projectId: string, private host: Host, private projectCwd: string) {}
   push(chunk: string): { text: string; context?: TerminalContext | null } {
     const marker = `\x1b]777;pello;context;${this.token};`
     this.pending += chunk
@@ -34,7 +34,7 @@ export class TerminalContextTracker {
         const value = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'))
         if (!Array.isArray(value.route) || value.route.length > 8 || typeof value.cwd !== 'string' || !value.cwd.startsWith('/') || /[\0\r\n]/.test(value.cwd) || typeof value.user !== 'string' || typeof value.hostname !== 'string') continue
         if (!value.route.every((hop: TerminalRoute) => hop && /^\/tmp\/pello-ssh\.[A-Za-z0-9]+\/master$/.test(hop.socket) && typeof hop.destination === 'string' && !!hop.destination && !hop.destination.startsWith('-') && !/[\0\r\n]/.test(hop.destination))) continue
-        const signature = value.route.length ? JSON.stringify([value.route, value.cwd]) : ''
+        const signature = value.route.length || value.cwd !== this.projectCwd ? JSON.stringify([value.route, value.cwd]) : ''
         if (signature === this.signature) continue
         this.signature = signature
         for (const [id, item] of contexts) {
@@ -55,7 +55,7 @@ export class TerminalContextTracker {
   dispose(): void {
     for (const [id, value] of contexts) if (value.terminalId === this.terminalId) {
       contexts.delete(id)
-      notifyRouteClosed(value.host.id, value.route)
+      if (value.route.length) notifyRouteClosed(value.host.id, value.route)
     }
   }
 }

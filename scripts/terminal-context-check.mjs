@@ -2,9 +2,17 @@ import assert from 'node:assert/strict'
 import { loadTypeScript } from './fixtures/load-ts.mjs'
 
 const { TerminalContextTracker, terminalTarget } = await loadTypeScript(new URL('../src/main/terminal-context.ts', import.meta.url))
-const tracker = new TerminalContextTracker('session-token', 'term', 'project', { id: 'A' })
+const tracker = new TerminalContextTracker('session-token', 'term', 'project', { id: 'A' }, '/project')
 const hop = { socket: '/tmp/pello-ssh.abcdefgh/master', destination: 'user@B' }
 const report = (route, cwd = '/project', token = 'session-token') => `\x1b]777;pello;context;${token};${Buffer.from(JSON.stringify({ route, cwd, user: '用户 B', hostname: 'B' })).toString('base64')}\x07`
+const direct = new TerminalContextTracker('session-token', 'direct', 'project', { id: 'A' }, '/project')
+assert.equal(direct.push(report([])).context, undefined, 'The configured directory reuses the project target')
+const sibling = direct.push(report([], '/sibling')).context
+assert.equal(sibling?.cwd, '/sibling', 'A directory change on the configured SSH machine updates the file and Git target')
+assert.deepEqual(terminalTarget(sibling.id).route, [])
+assert.equal(direct.push(report([])).context, null, 'Returning to the configured directory restores the project target')
+assert.equal(terminalTarget(sibling.id).cwd, '/sibling', 'Files opened before the directory change keep their original target')
+direct.dispose()
 const message = report([hop], '/project/中文')
 let context, output = ''
 for (const char of 'before' + message + 'after') {

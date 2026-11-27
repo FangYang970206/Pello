@@ -9,6 +9,7 @@ import { UploadStatus, transferNeedsAttention } from './UploadStatus'
 import { ContentSearchResults } from './ContentSearchResults'
 import { VirtualFileRows } from './VirtualFileRows'
 import { GitChangeRows } from './GitChangeRows'
+import { FileIcon } from './FileIcon'
 
 const NO_COLLAPSED_CHANGES: ReadonlySet<string> = new Set()
 
@@ -431,7 +432,7 @@ export function RightPanel({
           onKeyDown={(event) => { menuKey(event, node.path, false); if (event.key === 'F2') { event.preventDefault(); selectNode(node); setRenaming({ projectId: project.id, path: node.path, dir: false }) } }}
           title={node.path}
         >
-          <Icon name="file" className="s" />
+          <FileIcon path={node.path} />
           <span className="nm grow" style={change ? { color: change.st === 'A' ? 'var(--green)' : change.st === 'D' ? 'var(--red)' : 'var(--amber)' } : undefined}>
             {node.name}
           </span>
@@ -533,7 +534,7 @@ export function RightPanel({
             <VirtualFileRows key={`${project.id}:${query}`} items={search.items} render={(node) => <button {...dragEntry(node.path, false)} className="row" data-a="search-file" onContextMenu={(event) => { event.preventDefault(); void treeMenu(node.path, false) }} onKeyDown={(event) => menuKey(event, node.path, false)} data-id={node.path} key={node.path} title={node.path} onClick={() => {
               selectNode(node)
               onOpenFile(node.path)
-            }}><Icon name="file" className="s" /><span className="nm">{node.path}</span></button>} />
+            }}><FileIcon path={node.path} /><span className="nm">{node.path}</span></button>} />
             {search.loading ? <p role="status" className="repository-help">{t("正在搜索…")}</p> : null}
             {search.error ? <p role="alert" className="repository-help bad">{search.error}</p> : null}
             {!search.loading && !search.error && !search.items.length ? <p className="repository-help">{t("没有匹配的文件")}</p> : null}

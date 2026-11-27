@@ -166,6 +166,28 @@ kbd {
   .custom-executor-form .two { grid-template-columns: minmax(0, 1fr); }
 }
 .file-editor { font-size: calc(var(--editor-size,14px) * var(--content-zoom,1)); }
+.file-type-icon { width: 14px; height: 14px; flex: none; object-fit: contain; }
+.structured-source { container-type: inline-size; }
+.structured-source > .cm-editor { width: 100%; height: 100%; font: inherit; color: var(--text); }
+.structured-source .cm-editor.cm-focused { outline: none; }
+.structured-source .cm-scroller, .structured-source .cm-content { font: inherit; }
+.structured-source .cm-content { padding-block: 8px 24px; }
+.structured-source .cm-gutters { background: var(--panel); color: var(--faint); border-color: var(--line); }
+.structured-source .cm-line { padding-inline: 12px; }
+.structured-source .cm-cursor { border-color: var(--text); }
+.structured-source .cm-editor .cm-selectionBackground,
+.structured-source .cm-editor.cm-focused .cm-selectionBackground { background: var(--accent-soft); }
+.structured-source .cm-foldGutter .cm-gutterElement { position: relative; min-width: 24px; }
+.structured-fold-toggle { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); cursor: pointer; }
+.structured-fold-toggle:hover { color: var(--text); }
+.structured-fold-toggle[data-expanded="true"] svg { transform: rotate(90deg); }
+@media (hover: hover) {
+  .structured-source .cm-gutters:not(:hover) .structured-fold-toggle[data-expanded="true"] svg { visibility: hidden; }
+}
+.structured-fold-preview { display: inline-block; margin-inline: 3px; padding: 0 5px; max-width: min(32ch, 44cqi); overflow: visible; vertical-align: baseline; border: 1px solid var(--line); border-radius: 4px; background: var(--elev); color: var(--text); font: inherit; line-height: 1.2; cursor: pointer; }
+.structured-fold-preview-text { display: block; overflow: clip; text-overflow: ellipsis; white-space: pre; }
+.structured-fold-preview:hover { background: var(--hover); }
+.structured-fold-preview:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .html-preview-viewport { flex: 1; min-height: 0; overflow: hidden; }
 .html-preview-viewport .html-preview { display: block; max-width: none; }
 .source-editor{flex:1;position:relative;min-width:0;min-height:0;overflow:hidden}

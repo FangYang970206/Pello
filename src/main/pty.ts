@@ -314,7 +314,7 @@ class Session {
     this.env = this.localEnvironment(host.id === 'local' ? env : [])
     const sessionConfig = launchConfig.session
     this.contextTracker?.dispose()
-    this.contextTracker = host.id !== 'local' && host.platform === 'linux' ? new TerminalContextTracker(this.contextToken, this.id, this.projectId, host) : undefined
+    this.contextTracker = host.id !== 'local' && host.platform === 'linux' ? new TerminalContextTracker(this.contextToken, this.id, this.projectId, host, this.cwd.replace(/\/+$/, '') || '/') : undefined
     this.context = null
     const files = shellFiles()
     this.phase = 'starting'
@@ -326,6 +326,9 @@ class Session {
     this.nativeStatus = false
     this.shellInput = ''
     this.statusAbort = new AbortController()
+    // The system ConPTY can spend seconds decoding a large paste. Use the
+    // OpenConsole backend bundled with node-pty for Windows console processes.
+    const windowsPtyOptions = process.platform === 'win32' ? { useConptyDll: true } : {}
     if (!this.agentSessionId && host && host.id !== 'local' && ['claude', 'codex', 'opencode', 'pi', 'omp'].includes(this.kind) && loadTerminalHistory(this.id)) {
       throw new Error(t("旧远程 Agent 会话缺少原生 ID，原终端历史已保留；未创建空白对话"))
     }
@@ -395,7 +398,8 @@ class Session {
         cols: 80,
         rows: 24,
         cwd: this.cwd,
-        env: this.env
+        env: this.env,
+        ...windowsPtyOptions
       })
     } else {
       this.shell = shellForHost(host.platform, this.shell)
@@ -406,7 +410,8 @@ class Session {
         cols: 80,
         rows: 24,
         cwd: process.cwd(),
-        env: this.env
+        env: this.env,
+        ...windowsPtyOptions
       })
     }
     if (this.disposed) { proc.kill(); return }

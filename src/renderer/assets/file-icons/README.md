@@ -1,0 +1,1 @@
+File type artwork from [Material Icon Theme](https://github.com/material-extensions/vscode-material-icon-theme/tree/3bf5135d7cb7c41ffcd1c60c5f6afdb6c6e6cc41/icons), distributed under the included MIT license.

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { t } from '../shared/i18n'
 import type { ContentSearchBatch, SearchLocation } from '../shared/types'
 import { Icon } from './icons'
+import { FileIcon } from './FileIcon'
 
 export function ContentSearchResults({ projectId, query, sensitive, regex, whole, onOpen }: {
   projectId: string; query: string; sensitive: boolean; regex: boolean; whole: boolean; onOpen: (path: string, location: SearchLocation) => void
@@ -49,7 +50,7 @@ export function ContentSearchResults({ projectId, query, sensitive, regex, whole
     {current && state.errors ? <p role="alert" className="repository-help bad">{t("{{0}} 个文件或目录无法读取，可重新搜索", state.errors)}</p> : null}
     {current && !loading && !state.error && !state.stopped && !count ? <p className="repository-help">{t("没有匹配的内容")}</p> : null}
     {items.map((file) => <details className="content-search-file" key={file.path} open>
-      <summary title={file.path}><Icon name="file" className="s" /><span className="nm">{file.path}</span></summary>
+      <summary title={file.path}><FileIcon path={file.path} /><span className="nm">{file.path}</span></summary>
       {file.matches.map((match) => <button key={`${match.line}:${match.column}`} className="content-search-hit" data-a="content-hit" data-id={file.path} data-line={match.line} data-column={match.column}
         title={`${file.path}\n${match.before}${match.match}${match.after}`}
         aria-label={t("{{0}}，第 {{1}} 行，第 {{2}} 列", file.path, match.line, match.column)}

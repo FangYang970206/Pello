@@ -39,7 +39,8 @@
     "check:upgrade:deep": "node scripts/update-upgrade-check.mjs --target=0.1.14 && node scripts/update-upgrade-check.mjs --target=0.1.15",
     "check:media:ssh-linux": "node scripts/linux-media-check.mjs",
     "check:remote-open": "node scripts/remote-read-check.mjs && node scripts/remote-open-check.mjs && node scripts/remote-open-check.mjs --linux",
-    "check:source-gutter": "node scripts/source-gutter-check.mjs"
+    "check:source-gutter": "node scripts/source-gutter-check.mjs",
+    "check:terminal:omp-paste": "node scripts/terminal-omp-paste-check.mjs"
   },
   "dependencies": {
     "electron-updater": "6.8.12",
@@ -53,9 +54,12 @@
   },
   "devDependencies": {
     "@codemirror/commands": "^6.11.1",
+    "@codemirror/lang-json": "^6.0.2",
+    "@codemirror/lang-yaml": "^6.1.3",
     "@codemirror/language": "^6.13.1",
     "@codemirror/language-data": "^6.5.2",
     "@codemirror/merge": "^6.12.3",
+    "@codemirror/state": "^6.7.6",
     "@codemirror/view": "^6.43.15",
     "@electron/rebuild": "^3.7.2",
     "@eslint/js": "^10.0.1",

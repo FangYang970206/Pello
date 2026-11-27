@@ -72,6 +72,7 @@
     "remote-read-check",
     "sidebar-check",
     "editor-check",
+    "structured-source-check",
     "source-gutter-check",
     "design-check",
     "appearance-check",

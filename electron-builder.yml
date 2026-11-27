@@ -27,6 +27,7 @@ extraResources:
 # source maps, type declarations and native debug symbols.
 files:
   - out/**/*
+  - src/renderer/assets/file-icons/LICENSE.txt
   - package.json
   - node_modules/node-pty/package.json
   - node_modules/node-pty/lib/**/*

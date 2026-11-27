@@ -938,10 +938,10 @@ function registerIpc(): void {
     const action = (label: string, id: string, enabled: boolean): MenuItemConstructorOptions => ({ id, label, enabled, click: () => resolve(id) })
     return [action(t("向左分栏"), 'split-left', options.horizontal), action(t("向右分栏"), 'split-right', options.horizontal), action(t("向上分栏"), 'split-up', options.vertical), action(t("向下分栏"), 'split-down', options.vertical), { type: 'separator' }, action(t("撤销分栏（合并）"), 'merge', options.merge)]
   }
-  ipcMain.handle('file:menu', (_e, options: { markdown: boolean; visual: boolean; undo: boolean; redo: boolean; editable: boolean; layout?: PaneLayoutOptions }) => new Promise<string | null>((resolve) => {
+  ipcMain.handle('file:menu', (_e, options: { markdown: boolean; visual: boolean; undo: boolean; redo: boolean; editable: boolean; json?: boolean; layout?: PaneLayoutOptions }) => new Promise<string | null>((resolve) => {
     const action = (label: string, id: string, enabled = true): MenuItemConstructorOptions => ({ id, label, enabled, click: () => resolve(id) })
     const template: MenuItemConstructorOptions[] = [
-      action(options.visual ? t("源码模式") : t("渲染模式"), 'mode'), { type: 'separator' },
+      ...(options.json ? [] : [action(options.visual ? t("源码模式") : t("渲染模式"), 'mode'), { type: 'separator' as const }]),
       action(t("撤销"), 'undo', options.undo), action(t("重做"), 'redo', options.redo),
       { type: 'separator' }, { role: 'cut', label: t("剪切"), enabled: options.editable }, { role: 'copy', label: t("复制") },
       { role: 'paste', label: t("粘贴"), enabled: options.editable }, { role: 'pasteAndMatchStyle', label: t("粘贴为纯文本"), enabled: options.editable },
@@ -950,6 +950,7 @@ function registerIpc(): void {
     if (options.markdown && options.visual && options.editable) template.push({ type: 'separator' },
       { label: t("格式"), submenu: [action(t("加粗"), 'bold'), action(t("斜体"), 'italic'), action(t("行内代码"), 'code')] },
       { label: t("段落"), submenu: [action(t("一级标题"), 'heading'), action(t("引用"), 'quote'), action(t("无序列表"), 'bullet'), action(t("有序列表"), 'ordered'), action(t("代码块"), 'codeblock'), action(t("插入表格"), 'table')] })
+    if (options.json && options.editable) template.push({ type: 'separator' }, action(t("格式化 JSON"), 'json-format'), action(t("压缩 JSON"), 'json-compact'))
     template.push({ type: 'separator' }, action(t("保存"), 'save', options.editable), action(t("重新读取"), 'reload'), action(t("切换文件面板"), 'panel'))
     if (options.layout) template.push({ type: 'separator' }, ...layoutMenuItems(options.layout, resolve))
     Menu.buildFromTemplate(template).popup({ window: win!, callback: () => resolve(null) })

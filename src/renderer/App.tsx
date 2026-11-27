@@ -314,7 +314,9 @@ export function App() {
   const active = projectTabs.find((tab) => tab.id === activeMap[project?.id || '']) ?? projectTabs[0]
   const panelTerminal = active?.type === 'term' ? active : projectTabs.find((tab): tab is TermTab => tab.type === 'term' && tab.id === lastTerminal.current[projectId || '']) || projectTabs.find((tab): tab is TermTab => tab.type === 'term')
   const terminalContext = panelTerminal?.context
-  const panelProject = project && terminalContext ? { ...project, id: terminalContext.id, path: terminalContext.cwd } : project
+  const panelProject = project && terminalContext ? { ...project, id: terminalContext.id, path: terminalContext.cwd, branch: '' } : project
+  const panelTarget = useRef(panelProject?.id)
+  panelTarget.current = panelProject?.id
   const agents: AgentInfo[] = db
     ? [...PRESETS.map((item) => resolveAgent(item.id, db.custom, installed)), ...db.custom.map((item) => resolveAgent(item.id, db.custom, installed)), SHELL_AGENT]
     : []
@@ -581,7 +583,7 @@ export function App() {
     return () => {
       stop = true
     }
-  }, [projectId, openDiffPaths, untrackedPaths, gitTick])
+  }, [projectId, panelProject?.id, openDiffPaths, untrackedPaths, gitTick])
 
   const openDocumentPaths = JSON.stringify(tabs.filter((tab): tab is FileTab | DiffTab => tab.projectId === projectId && tab.type !== 'term').map((tab) => ({ path: tab.path, target: fileTarget(tab) })))
   const documentReads = useRef(new Map<string, Promise<import('../shared/types').FileContent>>())
@@ -637,7 +639,11 @@ export function App() {
     setTabs((list) => list.map((item) => item.type !== 'term' && fileTarget(item) === fileTarget(tab) && item.path === tab.path ? { ...item, dirty: isDirty(next) } : item))
   }
 
-  function editFile(id: string, draft: string) { updateFileDraft(id, (doc) => recordChange(doc, draft)) }
+  function editFile(id: string, draft: string, separateHistory = false) {
+    updateFileDraft(id, (doc) => separateHistory && doc.draft !== draft
+      ? { ...recordChange({ ...doc, editAt: 0 }, draft), editAt: 0 }
+      : recordChange(doc, draft))
+  }
   function historyFile(id: string, redo: boolean) { updateFileDraft(id, (doc) => undoDocument(doc, redo)) }
   function composeFile(id: string, composing: boolean) { updateFileDraft(id, (doc) => ({ ...doc, composing })) }
 
@@ -1002,7 +1008,7 @@ export function App() {
         const key = documentKey(fileTarget(tab), rel)
         const previous = documentsRef.current[key]
         void window.awb
-          .gitDiscard(fileTarget(tab), rel, !!git?.untracked[rel])
+          .gitDiscard(fileTarget(tab), rel, untracked)
           .then(async () => {
             const file = await window.awb.gitRead(fileTarget(tab), rel)
             const latest = documentsRef.current[key]
@@ -1505,6 +1511,7 @@ export function App() {
                   onHistoryFile={historyFile}
                   onComposeFile={composeFile}
                   onPreviewHtml={(id) => void previewHtml(id)}
+                  changeTarget={panelProject?.id}
                   untracked={git?.untracked || {}}
                 />
                 {withRight && project && host ? (
@@ -1516,7 +1523,7 @@ export function App() {
                     files={git?.files || []}
                     loaded={!!git}
                     isRepo={!!git?.isRepo}
-                    branch={git?.branch || project.branch}
+                    branch={git?.branch || panelProject!.branch}
                     repositories={git?.repositories}
                     errors={git?.errors}
                     tree={treeProjectId === panelProject?.id ? tree : []}
@@ -1536,7 +1543,7 @@ export function App() {
                     width={rightWidth}
                     placement={db?.settings.panelSide}
                     onResize={resizeRight}
-                    activePath={active && active.type !== 'term' ? active.path : undefined}
+                    activePath={active && active.type !== 'term' && fileTarget(active) === panelProject?.id ? active.path : undefined}
                     onMode={setRmode}
                     onToggleDir={(dir) => void toggleDirectory(dir)}
                     onOpenDiff={openDiff}
@@ -1552,7 +1559,7 @@ export function App() {
                     transfers={Object.values(transferStates).filter((item) => item.projectId === panelProject?.id)}
                     onDismissTransfer={dismissTransfer}
                     onCollapse={() => setRight(false)}
-                    onRescan={async () => { const id = panelProject!.id; try { const panel = await window.awb.gitStatus(id, true); if (projectIdRef.current === project.id) setGit(panel) } catch { toast(t("无法重新扫描仓库，请检查连接和目录权限"), true) } }}
+                    onRescan={async () => { const id = panelProject!.id; try { const panel = await window.awb.gitStatus(id, true); if (panelTarget.current === id) setGit(panel) } catch { if (panelTarget.current === id) toast(t("无法重新扫描仓库，请检查连接和目录权限"), true) } }}
                   />
                 ) : null}
               </div>
