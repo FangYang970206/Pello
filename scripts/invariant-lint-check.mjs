@@ -243,6 +243,30 @@ const cases = [
   // is told apart from the other one that guards the resource home by the
   // Skill folder it makes.
   ['AWB087', 'src-tauri/core/tests/behavior.rs', 'fs::create_dir_all(home.join(".claude").join("skills").join("one")).unwrap();\r\n    let _home = var_guard("HOME", home.to_str().unwrap());\r\n    let _resource = var_guard("AWB_RESOURCE_HOME", home.to_str().unwrap());', 'fs::create_dir_all(home.join(".claude").join("skills").join("one")).unwrap();\r\n    let _home = var_guard("HOME", home.to_str().unwrap());\r\n    let _elsewhere = var_guard("AWB_ELSEWHERE", home.to_str().unwrap());'],
+  // A resource path taken as absolute without the control-character check
+  // lets a path with a newline or a byte order mark into a configuration
+  // file. Each mutation below breaks one clause of one rule and no other.
+  ['AWB088', 'src-tauri/core/src/templates.rs', 'if has_control(input) || !absolute || forbidden {', 'if !absolute || forbidden {'],
+  ['AWB088', 'src-tauri/core/src/templates.rs', "after_drive.contains(['<', '>', '\"', '|', '?', '*'])", "after_drive.contains(['<', '>', '|', '?', '*'])"],
+  // Secrets replaced shortest first leave a longer secret's remains showing
+  // where the shorter one lies inside it.
+  ['AWB088', 'src-tauri/core/src/templates.rs', 'secrets.sort_by_key(|value| std::cmp::Reverse(value.chars().count()));', ''],
+  ['AWB088', 'src-tauri/core/src/templates.rs', 'filter(|row| row["secret"] == true)', 'filter(|row| row["secret"] == true || row["k"].starts_with("PELLO_"))'],
+  ['AWB088', 'src-tauri/core/src/templates.rs', '"claude" | "pi" | "omp" => format == "standard" && adapter == executor_id,', '"claude" | "pi" | "omp" => format == "standard",'],
+  ['AWB088', 'src-tauri/core/src/templates.rs', 'check_compatibility(&template, executor_id, language)?;', ''],
+  // A template lent across machines, or before the binding is replaced.
+  ['AWB088', 'src-tauri/core/src/templates.rs', 'if text(&template, "hostId") != host_id { return Err(t(language, "模板必须属于所选机器")); }', ''],
+  ['AWB088', 'src-tauri/core/src/templates.rs', 'if !first_time { return false; }', ''],
+  ['AWB088', 'src-tauri/core/src/templates.rs', 'object.remove("resources");', ''],
+  // A save that changes memory before the disk leaves the two apart when the
+  // write fails; a terminal made again without its environment loses the
+  // template's; a test that shows secrets or the dialog's environment.
+  ['AWB088', 'src-tauri/core/src/workbench.rs', '"templates:save", "templates:bind", "templates:delete"]', '"templates:save", "templates:delete"]'],
+  ['AWB088', 'src-tauri/core/src/workbench.rs', 'store::save_database(&self.database_path(), &next)?;\n        *self.db.lock().expect("db") = next.clone();', '*self.db.lock().expect("db") = next.clone();\n        store::save_database(&self.database_path(), &next)?;'],
+  ['AWB088', 'src-tauri/core/src/workbench.rs', 'self.emit.clone(), &env).map(|_| Value::Null)', 'self.emit.clone(), &[]).map(|_| Value::Null)'],
+  ['AWB088', 'src-tauri/core/src/workbench.rs', 'let text = templates::redact_output(&collected.lock().expect("test output"), &rows);', 'let text = collected.lock().expect("test output").clone();'],
+  ['AWB088', 'src-tauri/core/src/workbench.rs', '.map(|template| template["env"].as_array().cloned().unwrap_or_default()).unwrap_or_else(|| request["env"].as_array().cloned().unwrap_or_default())', '.map(|template| [template["env"].as_array().cloned().unwrap_or_default(), request["env"].as_array().cloned().unwrap_or_default()].concat()).unwrap_or_default()'],
+  ['AWB088', 'src-tauri/core/src/workbench.rs', 'templates::prune(&mut next);\n        for binding in bindings.as_array().cloned().unwrap_or_default() {', 'for binding in bindings.as_array().cloned().unwrap_or_default() {'],
 ]
 cases.forEach(([id, file, before, after], index) => {
   const mutated = new Map(files)

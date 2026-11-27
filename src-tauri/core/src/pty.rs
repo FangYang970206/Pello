@@ -124,6 +124,10 @@ struct Live {
     native_working: bool,
     pending: String,
     program: ProgramStatus,
+    /// The environment the executor is given, as the terminal was created
+    /// with it: what is started again is given the same, whatever the
+    /// template lent to the executor says since.
+    env: Vec<(String, String)>,
     /// The process that owns the terminal's console; a reply goes to it.
     root_pid: u32,
     /// Whether the terminal runs on this machine: a native Codex there reads
@@ -216,7 +220,7 @@ impl Manager {
         let resize_master = master.clone();
         let stop: Box<dyn FnOnce() + Send> = Box::new(move || { let _ = killer.kill(); });
         let resize: Box<dyn Fn(u16, u16) + Send + Sync> = Box::new(move |cols, rows| { let _ = resize_master.lock().expect("master").resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }); });
-        self.start_session(data, id, cwd, kind, &shell_id, command, agent_session, restore, language, emit, reader, writer, stop, resize, root_pid, true, Some(child))
+        self.start_session(data, id, cwd, kind, &shell_id, command, agent_session, restore, language, emit, reader, writer, stop, resize, root_pid, true, Some(child), extra)
     }
     pub fn create_remote(&self, data: &Path, id: &str, cwd: &str, kind: &str, shell: &str, command: &str, agent_session: Option<&str>, restore: bool, host: &Value, language: &str, emit: Emit) -> Result<Value, String> {
         if kind != "shell" && agent_session.unwrap_or("").is_empty() && !load_history(data, id).is_empty() {
@@ -224,10 +228,10 @@ impl Manager {
         }
         let shell_id = shells::shell_for_host(host["platform"].as_str().unwrap_or("linux"), shell);
         let remote = ssh::open_shell(data, host, cwd, language)?;
-        self.start_session(data, id, Path::new(cwd), kind, shell_id, command, agent_session, restore, language, emit, remote.output, remote.input, remote.stop, Box::new(|_, _| {}), 0, false, None)
+        self.start_session(data, id, Path::new(cwd), kind, shell_id, command, agent_session, restore, language, emit, remote.output, remote.input, remote.stop, Box::new(|_, _| {}), 0, false, None, &[])
     }
 
-    fn start_session(&self, data: &Path, id: &str, cwd: &Path, kind: &str, shell: &str, command: &str, agent_session: Option<&str>, restore: bool, language: &str, emit: Emit, reader: Box<dyn Read + Send>, writer: Box<dyn Write + Send>, stop: Box<dyn FnOnce() + Send>, resize: Box<dyn Fn(u16, u16) + Send + Sync>, root_pid: u32, local: bool, child: Option<Box<dyn portable_pty::Child + Send + Sync>>) -> Result<Value, String> {
+    fn start_session(&self, data: &Path, id: &str, cwd: &Path, kind: &str, shell: &str, command: &str, agent_session: Option<&str>, restore: bool, language: &str, emit: Emit, reader: Box<dyn Read + Send>, writer: Box<dyn Write + Send>, stop: Box<dyn FnOnce() + Send>, resize: Box<dyn Fn(u16, u16) + Send + Sync>, root_pid: u32, local: bool, child: Option<Box<dyn portable_pty::Child + Send + Sync>>, env: &[(String, String)]) -> Result<Value, String> {
         let history = if restore { load_history(data, id) } else { String::new() };
         let replay = if restore { restore_history_text(&history, language) } else { String::new() };
         let (hook_stop, listener, hook_token) = start_hook();
@@ -253,6 +257,7 @@ impl Manager {
             native_working: false,
             pending: String::new(),
             program: ProgramStatus { pending: String::new() },
+            env: env.to_vec(),
             root_pid,
             local,
             announced: false,
@@ -327,10 +332,10 @@ impl Manager {
         self.sessions.lock().expect("pty").get(id).map(|session| session.writer.clone()).expect("session")
     }
 
-    pub fn launch_meta(&self, id: &str) -> Option<(PathBuf, String, String, String)> {
+    pub fn launch_meta(&self, id: &str) -> Option<(PathBuf, String, String, String, Vec<(String, String)>)> {
         let sessions = self.sessions.lock().expect("pty");
         let live = sessions.get(id)?.live.lock().expect("pty live");
-        Some((live.cwd.clone(), live.kind.clone(), live.shell.clone(), live.command.clone()))
+        Some((live.cwd.clone(), live.kind.clone(), live.shell.clone(), live.command.clone(), live.env.clone()))
     }
 
     pub fn hook(&self, id: &str) -> Option<(u16, String)> {

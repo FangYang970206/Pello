@@ -18,6 +18,7 @@ pub mod shell;
 pub mod ssh;
 pub mod store;
 pub mod sys;
+pub mod templates;
 pub mod temporary;
 pub mod updates;
 pub mod upload;

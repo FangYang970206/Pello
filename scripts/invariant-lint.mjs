@@ -15,7 +15,7 @@ export function projectFiles() {
     }
   }
   read('src')
-  for (const rel of ['package.json', 'AGENTS.md', 'electron-builder.yml', 'electron.vite.config.ts', 'assets/installer.nsh', 'src/renderer/index.html', 'src-tauri/core/src/menu.rs', 'src-tauri/core/src/workbench.rs', 'src-tauri/core/src/pty.rs', 'src-tauri/core/src/i18n.rs', 'src-tauri/core/src/shell.rs', 'src-tauri/core/src/files.rs', 'src-tauri/core/src/git.rs', 'src-tauri/core/src/preview.rs', 'src-tauri/core/src/resources.rs', 'src-tauri/core/src/shells.rs', 'src-tauri/src/lib.rs', 'src-tauri/src/edit.rs', 'src-tauri/core/tests/behavior.rs']) files.set(rel, fs.readFileSync(path.join(root, rel), 'utf8'))
+  for (const rel of ['package.json', 'AGENTS.md', 'electron-builder.yml', 'electron.vite.config.ts', 'assets/installer.nsh', 'src/renderer/index.html', 'src-tauri/core/src/menu.rs', 'src-tauri/core/src/workbench.rs', 'src-tauri/core/src/pty.rs', 'src-tauri/core/src/i18n.rs', 'src-tauri/core/src/shell.rs', 'src-tauri/core/src/files.rs', 'src-tauri/core/src/git.rs', 'src-tauri/core/src/preview.rs', 'src-tauri/core/src/resources.rs', 'src-tauri/core/src/templates.rs', 'src-tauri/core/src/shells.rs', 'src-tauri/src/lib.rs', 'src-tauri/src/edit.rs', 'src-tauri/core/tests/behavior.rs']) files.set(rel, fs.readFileSync(path.join(root, rel), 'utf8'))
   return files
 }
 
@@ -399,6 +399,51 @@ export function checkInvariants(files) {
     .map(([, , name]) => name)
   require(liveCases.length === 0,
     'AWB087', 'src-tauri/core/tests/behavior.rs', `行为用例把内置 Agent 用于资源通道时必须隔离 AWB_RESOURCE_HOME，否则会读写用户主目录里的真实配置：${liveCases.join('、')}`)
+  // A template is lent to an executor on one machine. The Electron build
+  // keeps the environment a terminal was created with on the terminal itself
+  // (`terminalOptions.env`), so that one started again has it whatever the
+  // template says since; hides every value marked secret from what testing an
+  // executor shows, the longest first; and refuses a path that is not
+  // absolute as its machine spells it, a loan across machines, and a format
+  // an executor's native one does not take.
+  const templates = files.get('src-tauri/core/src/templates.rs') || ''
+  const templatesPath = /pub fn resource_path\(input: &str, windows: bool, language: &str\) -> Result<String, String> \{[\s\S]*?\r?\n\}/.exec(templates)?.[0] || ''
+  const templatesRedact = /pub fn redact_output\(text: &str, env: &\[Value\]\) -> String \{[\s\S]*?\r?\n\}/.exec(templates)?.[0] || ''
+  const templatesCompatible = /pub fn template_compatible\(template: &Value, executor_id: &str\) -> bool \{[\s\S]*?\r?\n\}/.exec(templates)?.[0] || ''
+  const templatesBind = /pub fn bind\(db: &mut Value, scope: &Value, template_id: &str, language: &str\) -> Result<\(\), String> \{[\s\S]*?\r?\n\}/.exec(templates)?.[0] || ''
+  const templatesSession = /pub fn validate_custom_session\(config: Option<&Value>, language: &str\) -> Result<\(\), String> \{[\s\S]*?\r?\n\}/.exec(templates)?.[0] || ''
+  const templatesMigrate = /pub fn migrate\(db: &mut Value, old_targets: &Value, language: &str\) \{[\s\S]*?\r?\n\}/.exec(templates)?.[0] || ''
+  require(templatesPath.includes('if has_control(input) || !absolute || forbidden {') && templatesPath.includes("(bytes[2] == b'\\\\' || bytes[2] == b'/')") && templatesPath.includes("after_drive.contains(['<', '>', '\"', '|', '?', '*'])") && templatesPath.includes('Ok(normalize(input, windows))') && !templatesPath.includes("trim_end_matches(['\\\\', '/'])") && !/\.replace\([^)]*norm/.test(templatesPath),
+    'AWB088', 'src-tauri/core/src/templates.rs', '资源路径按机器平台判绝对：控制字符、盘符后 <>:"|?* 一律拒绝，结尾分隔符保留，不能用 std::path 归一化替代')
+  require(templatesRedact.includes('filter(|row| row["secret"] == true)') && templatesRedact.includes('.filter(|value| !value.is_empty())') && templatesRedact.includes('secrets.sort_by_key(|value| std::cmp::Reverse(value.chars().count()))') && templatesRedact.includes('out = out.replace(secret, "••••")') && templatesRedact.indexOf('secrets.sort_by_key') < templatesRedact.indexOf('for secret in secrets'),
+    'AWB088', 'src-tauri/core/src/templates.rs', '测试执行器的输出必须把标记为 secret 的非空值按长度降序替换成 ••••，长密钥先替换，否则短密钥会残留在长密钥的替换结果里')
+  require(templatesCompatible.includes('"codex" => format == "codex" && adapter == "codex"') && templatesCompatible.includes('"opencode" => format == "opencode" && adapter == "opencode"') && templatesCompatible.includes('"claude" | "pi" | "omp" => format == "standard" && adapter == executor_id') && templatesCompatible.includes('_ => true'),
+    'AWB088', 'src-tauri/core/src/templates.rs', '模板与执行器的兼容表：codex/opencode 各取同名的 format 与 adapter，claude/pi/omp 取 standard 加同名 adapter，自定义执行器全兼容')
+  require(templatesBind.includes('machine(db, host_id, false, language)?') && templatesBind.includes('"执行器不存在"') && templatesBind.includes('if text(&template, "hostId") != host_id { return Err(t(language, "模板必须属于所选机器")); }') && templatesBind.includes('check_compatibility(&template, executor_id, language)?') && templatesBind.indexOf('check_compatibility') < templatesBind.indexOf('db["templateBindings"] = Value::Array(kept)'),
+    'AWB088', 'src-tauri/core/src/templates.rs', '绑定模板必须先校验机器存在、执行器存在、模板属于该机器且与执行器格式兼容，全部通过后才替换绑定')
+  require(templatesSession.includes('"startArgs"') && templatesSession.includes('"resumeArgs"') && templatesSession.includes('{sessionId}') && templatesSession.includes('新建和恢复参数都必须包含 {sessionId}'),
+    'AWB088', 'src-tauri/core/src/templates.rs', '自定义执行器的 startArgs 与 resumeArgs 都必须包含 {sessionId}')
+  require(templatesMigrate.includes('if executor_template(db, "local", &id).is_some() { continue; }') && templatesMigrate.includes('if let Some(own) = executor.get("resources").and_then(|value| value.as_object()) { for (key, value) in own { old[key] = value.clone(); } }') && templatesMigrate.indexOf('old_targets.get(&id)') < templatesMigrate.indexOf('executor.get("resources")') && templatesMigrate.includes('object.remove("resources")') && templatesMigrate.includes('let _ = bind(db, &json!({ "hostId": "local", "executorId": id }), &template_id, "zh-CN");'),
+    'AWB088', 'src-tauri/core/src/templates.rs', '迁移旧资源路径：已借到模板的执行器跳过，执行器自身 resources 覆盖旧 targets 文件，迁出的模板借回原执行器并删除旧 resources 字段')
+  const templatesAdopt = /pub fn adopt\(db: &mut Value, raw: Option<&Value>, old_targets: &Value, language: &str\) -> bool \{[\s\S]*?\r?\n\}/.exec(templates)?.[0] || ''
+  require(templatesAdopt.includes('let first_time = raw.and_then(|raw| raw.get("templates")).is_none_or(|value| !value.is_array());') && templatesAdopt.includes('if !first_time { return false; }') && templatesAdopt.indexOf('if !first_time { return false; }') < templatesAdopt.indexOf('migrate(db, old_targets, language);') && templatesAdopt.includes('item.get("id").is_some_and(|value| value.is_string()) && item.get("name").is_some_and(|value| value.is_string()) && item["env"].is_array()'),
+    'AWB088', 'src-tauri/core/src/templates.rs', '旧路径只在数据库尚无 templates 数组时迁移一次，已有 templates 的库原样保留；模板须有字符串 id、name 与数组 env，绑定须有字符串 executorId')
+  const workbench = files.get('src-tauri/core/src/workbench.rs') || ''
+  const workbenchSaved = /pub const SAVED_CHANNELS: \[&'static str; \d+\] = \[([^\]]*)\]/.exec(workbench)?.[1] || ''
+  const workbenchReplace = /fn replace\(&self, next: Value\) -> Result<Value, String> \{[\s\S]*?\r?\n\x20{4}\}/.exec(workbench)?.[0] || ''
+  const workbenchTest = /pub fn test_exec\(&self, request: Value, language: &str\) -> Result<Value, String> \{[\s\S]*?\r?\n\x20{4}\}\r?\n/.exec(workbench)?.[0] || ''
+  const workbenchRestart = /fn pty_restart\(&self, id: &str, language: &str\) -> Result<Value, String> \{[\s\S]*?\r?\n\x20{4}\}/.exec(workbench)?.[0] || ''
+  const workbenchCustom = /fn save_custom\(&self, custom: Value, bindings: Value, language: &str\) -> Result<Value, String> \{[\s\S]*?\r?\n\x20{4}\}/.exec(workbench)?.[0] || ''
+  require(['templates:save', 'templates:bind', 'templates:delete', 'db:custom'].every((channel) => workbenchSaved.includes(`"${channel}"`)) && !workbenchSaved.includes('"db:hosts"') && workbenchSaved.split(',').length === Number(/SAVED_CHANNELS: \[&'static str; (\d+)\]/.exec(workbench)?.[1]),
+    'AWB088', 'src-tauri/core/src/workbench.rs', 'SAVED_CHANNELS 必须包含 templates:save/bind/delete 与 db:custom，不含 db:hosts（Electron 的 db:hosts 不走 mutate 的保存顺序），且长度与元素数一致')
+  require(workbenchReplace.indexOf('store::save_database(&self.database_path(), &next)?') < workbenchReplace.indexOf('*self.db.lock().expect("db") = next.clone()') && workbenchReplace.includes('Ok(next)'),
+    'AWB088', 'src-tauri/core/src/workbench.rs', 'replace 必须先写盘再换内存：写失败时内存数据库保持原样，不能先改内存再回滚')
+  require(workbenchTest.includes('templates::executor_template(&self.db.lock().expect("db"), host_id, executor_id).map(|template| template["env"].as_array().cloned().unwrap_or_default()).unwrap_or_else(|| request["env"].as_array().cloned().unwrap_or_default()),') && !/template\["env"\][^;]*request\["env"\][^;]*\)[^;]*\.map\(/.test(workbenchTest) && !/\[\s*template\["env"\]/.test(workbenchTest) && workbenchTest.includes('templates::redact_output(&collected.lock().expect("test output"), &rows)') && workbenchTest.indexOf('let rows: Vec<Value>') < workbenchTest.indexOf('templates::redact_output'),
+    'AWB088', 'src-tauri/core/src/workbench.rs', 'exec:test 有模板时用模板 env（整体替换而非合并对话框 env），输出必须经 redact_output 脱敏后再返回')
+  require(workbenchRestart.includes('launch_meta(id)') && workbenchRestart.includes('self.emit.clone(), &env)') && !workbenchRestart.includes('self.emit.clone(), &[])'),
+    'AWB088', 'src-tauri/core/src/workbench.rs', 'pty:restart 重建终端必须把 launch_meta 返回的创建时环境传回 create，不能传空切片：重建后的自定义执行器会丢失模板环境')
+  require(workbenchCustom.includes('templates::machine(&next, "local", false, language)?') && workbenchCustom.includes('templates::validate_custom_session(executor.get("session"), language)?') && workbenchCustom.includes('templates::prune(&mut next)') && workbenchCustom.includes('translate(language, "执行器不存在"') && workbenchCustom.indexOf('templates::prune(&mut next)') < workbenchCustom.indexOf('templates::bind(&mut next'),
+    'AWB088', 'src-tauri/core/src/workbench.rs', 'db:custom 保存：先校验本机资源路径与会话参数，再修剪失效绑定，再逐条绑定（执行器不在本次保存列表内则拒绝）')
   return errors
 }
 

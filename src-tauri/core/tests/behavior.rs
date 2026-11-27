@@ -5988,3 +5988,378 @@ fn the_configuration_opencode_is_told_to_use_is_the_one_used() {
     let _ = fs::remove_dir_all(root);
     drop(lock);
 }
+
+/// A database written before there were templates has each custom
+/// executor's own paths turned into one template and lent back to it, once:
+/// the executor's own paths win over the old targets file, its environment
+/// and session arguments come along, and one that cannot be a template
+/// keeps what it had. A database that already has templates is left alone.
+#[test]
+fn old_resource_paths_become_templates_once() {
+    let root = temp_dir("templates-migrate");
+    let data = root.join("data");
+    fs::create_dir_all(&data).unwrap();
+    let windows = cfg!(windows);
+    let path = |parts: &[&str]| {
+        let text = parts.join(if windows { "\\" } else { "/" });
+        if windows { format!("C:\\{text}") } else { text }
+    };
+    let own = json!({ "format": "standard", "skillPath": path(&["legacy-skills"]), "mcpPath": path(&["current.json"]) });
+    let env = json!([{ "k": "PELLO_VALUE", "v": "legacy-value", "secret": false }]);
+    let session = json!({ "startArgs": "--start {sessionId}", "resumeArgs": "--resume {sessionId}" });
+    let legacy = json!({ "id": "legacy", "name": "Legacy executor", "cmd": "node", "args": "--version", "shell": "pwsh", "env": env, "session": session, "letter": "L", "color": "#7fb2ff", "resources": own, "hosts": { "fixture": { "cmd": "printf", "args": "'.'", "shell": "bash" } } });
+    let old_targets = json!({ "legacy": { "mcpPath": path(&["old.json"]), "skillPath": path(&["old-skills"]), "format": "codex" } });
+    fs::write(data.join("workbench.json"), json!({ "custom": [legacy], "hosts": [{ "id": "local", "name": "本机", "on": true }, { "id": "fixture", "name": "Offline", "addr": "127.0.0.1", "user": "u", "port": 1, "auth": "key", "platform": "linux", "os": "Linux", "on": false }], "settings": { "autoCheckUpdates": false } }).to_string()).unwrap();
+    fs::write(data.join("resource-targets.json"), old_targets.to_string()).unwrap();
+    let (bench, _) = workbench(&root);
+    let db = |bench: &Workbench| bench.dispatch("db:get", &[]).unwrap()["db"].clone();
+    let after = db(&bench);
+    let templates = after["templates"].as_array().expect("templates");
+    assert_eq!(templates.len(), 1, "one template per custom executor with paths: {after}");
+    let migrated = &templates[0];
+    assert!(migrated["id"].as_str().is_some_and(|id| !id.is_empty()));
+    assert_eq!(migrated["mcpPath"], own["mcpPath"]);
+    assert_eq!(migrated["skillPath"], own["skillPath"]);
+    assert_eq!(migrated["format"], "standard");
+    assert_eq!(migrated["skillAdapter"], "portable");
+    assert_eq!(migrated["hostId"], "local");
+    assert_eq!(migrated["name"], "Legacy executor");
+    assert_eq!(migrated["env"], env);
+    assert_eq!(migrated["session"], session);
+    assert_eq!(after["templateBindings"], json!([{ "hostId": "local", "executorId": "legacy", "templateId": migrated["id"] }]));
+    assert_eq!(after["custom"][0]["hosts"]["fixture"], legacy["hosts"]["fixture"]);
+    assert_eq!(after["custom"][0]["env"], env);
+    assert!(after["custom"][0].get("resources").is_none(), "the old field is dropped: {}", after["custom"][0]);
+    let written: serde_json::Value = serde_json::from_str(&fs::read_to_string(data.join("workbench.json")).unwrap()).unwrap();
+    assert_eq!(written["templates"][0]["id"], migrated["id"]);
+    // Opening the same data again makes no second template.
+    drop(bench);
+    let (again, _) = workbench(&root);
+    let twice = db(&again);
+    assert_eq!(twice["templates"].as_array().unwrap().len(), 1);
+    assert_eq!(twice["templateBindings"].as_array().unwrap().len(), 1);
+}
+
+/// A custom executor whose paths cannot be a template keeps them, one that
+/// is lent a template already is left as it is, and one without any path
+/// gets none.
+#[test]
+fn a_custom_executor_that_cannot_be_given_a_template_keeps_what_it_had() {
+    let root = temp_dir("templates-migrate-kept");
+    let data = root.join("data");
+    fs::create_dir_all(&data).unwrap();
+    let custom = vec![
+        json!({ "id": "bad", "name": "Bad", "cmd": "x", "resources": { "mcpPath": "relative.json", "skillPath": "", "format": "standard" } }),
+        json!({ "id": "none", "name": "None", "cmd": "x" }),
+        json!({ "id": "bound", "name": "Bound", "cmd": "x", "resources": { "mcpPath": if cfg!(windows) { "C:\\bound.json" } else { "/bound.json" }, "format": "standard" } })
+    ];
+    fs::write(data.join("workbench.json"), json!({ "custom": custom, "templates": [{ "id": "kept", "hostId": "local", "name": "Kept", "mcpPath": "", "skillPath": "", "format": "standard", "skillAdapter": "portable", "env": [] }], "templateBindings": [{ "hostId": "local", "executorId": "bound", "templateId": "kept" }] }).to_string()).unwrap();
+    let (bench, _) = workbench(&root);
+    let after = bench.dispatch("db:get", &[]).unwrap()["db"].clone();
+    assert_eq!(after["templates"].as_array().unwrap().len(), 1, "a database with templates is not migrated: {after}");
+    assert_eq!(after["templateBindings"], json!([{ "hostId": "local", "executorId": "bound", "templateId": "kept" }]));
+    assert!(after["custom"][0].get("resources").is_some());
+}
+
+/// A template is put with the name as it was drawn, its paths as its machine
+/// spells them and only the environment a process can be given; it cannot
+/// repeat a name on its machine, change machine, or stop fitting the
+/// executors it is lent to.
+#[test]
+fn a_template_is_put_as_its_machine_takes_it_and_refuses_what_does_not_fit() {
+    let root = temp_dir("templates-put");
+    // A second machine, known but not connected, as a template cannot be
+    // lent across the two.
+    fs::create_dir_all(root.join("data")).unwrap();
+    fs::write(root.join("data").join("workbench.json"), json!({ "hosts": [{ "id": "local", "name": "本机", "on": true }, { "id": "fixture", "name": "Offline", "addr": "127.0.0.1", "user": "u", "port": 1, "auth": "key", "platform": "linux", "os": "Linux", "on": false }] }).to_string()).unwrap();
+    let (bench, _) = workbench(&root);
+    // Each call returns the whole database, as the Electron build does; the
+    // template is taken from it by name.
+    let save = |template: serde_json::Value| bench.dispatch("templates:save", &[template]);
+    let put = |template: serde_json::Value| {
+        let db = save(template.clone()).unwrap_or_else(|error| panic!("{error}"));
+        db["templates"].as_array().unwrap().iter().find(|item| item["name"] == template["name"].as_str().unwrap_or("").trim()).cloned().expect("the template saved")
+    };
+    let base = |name: &str| json!({ "id": "", "hostId": "local", "name": name, "mcpPath": "", "skillPath": "", "format": "standard", "skillAdapter": "claude", "env": [] });
+    let path = |parts: &[&str]| if cfg!(windows) { parts.join("\\") } else { parts.join("/") };
+    let first = put(json!({ "id": "", "hostId": "local", "name": "  Team  ", "mcpPath": path(&[if cfg!(windows) { "C:\\t" } else { "/t" }, "shared.jsonc"]), "skillPath": path(&[if cfg!(windows) { "C:\\t" } else { "/t" }, "shared-skills"]), "format": "standard", "skillAdapter": "claude", "env": [{ "k": "PELLO_PROBE", "v": "1", "secret": true }, { "k": "EXTRA", "v": "x", "secret": false, "note": "dropped" }], "session": { "startArgs": "--start {sessionId}", "resumeArgs": "--resume {sessionId}", "spare": "dropped" } }));
+    assert_eq!(first["name"], "Team");
+    assert_eq!(first["skillAdapter"], "claude");
+    assert!(first["id"].as_str().is_some_and(|id| !id.is_empty()));
+    assert_eq!(first["env"], json!([{ "k": "PELLO_PROBE", "v": "1", "secret": true }, { "k": "EXTRA", "v": "x", "secret": false }]));
+    assert_eq!(first["session"], json!({ "startArgs": "--start {sessionId}", "resumeArgs": "--resume {sessionId}" }));
+    assert!(first.get("skillConfigPath").is_none(), "an empty optional path is not kept: {first}");
+    let id = first["id"].as_str().unwrap().to_string();
+    // A path is normalized as the machine spells it, and kept only when it
+    // is absolute.
+    let normalized = put(json!({ "id": "", "hostId": "local", "name": "Norm", "mcpPath": if cfg!(windows) { "c:\\t\\..\\u\\m.json" } else { "/t/../u/m.json" }, "skillPath": "", "skillConfigPath": if cfg!(windows) { "C:\\t\\cfg\\" } else { "/t/cfg/" }, "format": "standard", "env": [] }));
+    assert_eq!(normalized["mcpPath"], if cfg!(windows) { "c:\\u\\m.json" } else { "/u/m.json" });
+    assert_eq!(normalized["skillConfigPath"], if cfg!(windows) { "C:\\t\\cfg\\" } else { "/t/cfg/" });
+    assert_eq!(normalized["skillAdapter"], "portable");
+    // Each refusal says why, in the language selected.
+    let refused = |template: serde_json::Value, said: &str| {
+        let error = save(template).err().unwrap_or_default();
+        assert!(error.contains(said), "expected {said:?}, got {error:?}");
+    };
+    refused(base("Team"), "这台机器已有同名模板");
+    refused(json!({ "id": "", "hostId": "ghost", "name": "X", "mcpPath": "", "skillPath": "", "format": "standard", "env": [] }), "机器不存在");
+    refused(json!({ "id": "ghost", "hostId": "local", "name": "X", "mcpPath": "", "skillPath": "", "format": "standard", "env": [] }), "模板不存在");
+    refused(base(&"x".repeat(81)), "请输入 1 到 80 字符的模板名称");
+    refused(base("   "), "请输入 1 到 80 字符的模板名称");
+    refused(json!({ "id": "", "hostId": "local", "name": "Rel", "mcpPath": "relative.json", "skillPath": "", "format": "standard", "env": [] }), "资源目录和配置文件必须使用绝对路径");
+    refused(json!({ "id": "", "hostId": "local", "name": "Ctl", "mcpPath": if cfg!(windows) { "C:\\a\u{1}b" } else { "/a\u{1}b" }, "skillPath": "", "format": "standard", "env": [] }), "资源目录和配置文件必须使用绝对路径");
+    refused(json!({ "id": "", "hostId": "local", "name": "F", "mcpPath": "", "skillPath": "", "format": "other", "env": [] }), "请选择支持的资源格式");
+    refused(json!({ "id": "", "hostId": "local", "name": "A", "mcpPath": "", "skillPath": "", "format": "standard", "skillAdapter": "other", "env": [] }), "请选择支持的资源格式");
+    refused(json!({ "id": "", "hostId": "local", "name": "S", "mcpPath": "", "skillPath": "", "format": "standard", "env": [], "session": { "startArgs": "--start", "resumeArgs": "--resume {sessionId}" } }), "新建和恢复参数都必须包含 {sessionId}");
+    refused(json!({ "id": "", "hostId": "local", "name": "E", "mcpPath": "", "skillPath": "", "format": "standard", "env": [{ "k": "1BAD", "v": "x", "secret": false }] }), "请输入有效的环境变量名称和值");
+    refused(json!({ "id": "", "hostId": "local", "name": "E", "mcpPath": "", "skillPath": "", "format": "standard", "env": [{ "k": "OK", "v": "a\nb", "secret": false }] }), "请输入有效的环境变量名称和值");
+    refused(json!({ "id": "", "hostId": "local", "name": "E", "mcpPath": "", "skillPath": "", "format": "standard", "env": [{ "k": "OK", "v": "x", "secret": "yes" }] }), "请输入有效的环境变量名称和值");
+    refused(json!({ "id": "", "hostId": "local", "name": "E", "mcpPath": "", "skillPath": "", "format": "standard", "env": "x" }), "请输入有效的环境变量名称和值");
+    // Lending the template to Claude Code makes a later edit that no longer
+    // fits it refused; a rename keeps its id and its bindings.
+    bench.dispatch("templates:bind", &[json!({ "hostId": "local", "executorId": "claude" }), json!(id)]).unwrap();
+    refused(json!({ "id": id, "hostId": "local", "name": "Team", "mcpPath": "", "skillPath": "", "format": "standard", "skillAdapter": "portable", "env": [] }), "模板与 Claude Code 的原生格式不兼容");
+    refused(json!({ "id": id, "hostId": "fixture", "name": "Team", "mcpPath": "", "skillPath": "", "format": "standard", "skillAdapter": "claude", "env": [] }), "模板必须属于所选机器");
+    let renamed = put(json!({ "id": id, "hostId": "local", "name": "Renamed", "mcpPath": "", "skillPath": "", "format": "standard", "skillAdapter": "claude", "env": [] }));
+    assert_eq!(renamed["id"].as_str().unwrap(), id);
+    let after = bench.dispatch("db:get", &[]).unwrap()["db"].clone();
+    assert_eq!(after["templateBindings"], json!([{ "hostId": "local", "executorId": "claude", "templateId": id }]));
+    // The refusal is said in English when that language is selected.
+    let mut english_settings = after["settings"].clone();
+    english_settings["language"] = json!("en");
+    bench.dispatch("db:settings", &[english_settings]).unwrap();
+    let error = save(base("Renamed")).err().unwrap_or_default();
+    assert!(error.contains("A template with this name already exists on this machine"), "in English: {error:?}");
+}
+
+/// A template is lent to an executor on one machine: never across machines,
+/// never to an executor that is not there, never to a built-in one whose
+/// native format it does not speak. Lending another takes the first back,
+/// and an empty id takes it back alone.
+#[test]
+fn a_template_is_lent_to_an_executor_on_one_machine_and_only_where_it_fits() {
+    let root = temp_dir("templates-bind");
+    fs::create_dir_all(root.join("data")).unwrap();
+    fs::write(root.join("data").join("workbench.json"), json!({ "custom": [{ "id": "legacy", "name": "Legacy", "cmd": "node", "args": "--version", "shell": "pwsh" }], "hosts": [{ "id": "local", "name": "本机", "on": true }, { "id": "fixture", "name": "Offline", "addr": "127.0.0.1", "user": "u", "port": 1, "auth": "key", "platform": "linux", "os": "Linux", "on": false }] }).to_string()).unwrap();
+    let (bench, _) = workbench(&root);
+    let db = |bench: &Workbench| bench.dispatch("db:get", &[]).unwrap()["db"].clone();
+    let put = |name: &str, format: &str, adapter: &str| {
+        let db = bench.dispatch("templates:save", &[json!({ "id": "", "hostId": "local", "name": name, "mcpPath": "", "skillPath": "", "format": format, "skillAdapter": adapter, "env": [] })]).unwrap_or_else(|error| panic!("{error}"));
+        db["templates"].as_array().unwrap().iter().find(|item| item["name"] == name).expect("saved").clone()
+    };
+    let claude = put("For Claude", "standard", "claude");
+    let codex = put("For Codex", "codex", "codex");
+    let bind = |scope: serde_json::Value, template_id: &str| bench.dispatch("templates:bind", &[scope, json!(template_id)]);
+    let refused = |scope: serde_json::Value, template_id: &str, said: &str| {
+        let error = bind(scope, template_id).err().unwrap_or_default();
+        assert!(error.contains(said), "expected {said:?}, got {error:?}");
+    };
+    // Built-in executors take only the template that speaks their format.
+    refused(json!({ "hostId": "local", "executorId": "codex" }), claude["id"].as_str().unwrap(), "模板与 Codex CLI 的原生格式不兼容");
+    refused(json!({ "hostId": "local", "executorId": "pi" }), claude["id"].as_str().unwrap(), "模板与 Pi 的原生格式不兼容");
+    refused(json!({ "hostId": "local", "executorId": "opencode" }), codex["id"].as_str().unwrap(), "模板与 OpenCode 的原生格式不兼容");
+    // A machine that is not there, an executor that is not there, and a
+    // template of another machine.
+    refused(json!({ "hostId": "ghost", "executorId": "claude" }), claude["id"].as_str().unwrap(), "机器不存在");
+    refused(json!({ "hostId": "local", "executorId": "nobody" }), claude["id"].as_str().unwrap(), "执行器不存在");
+    refused(json!({ "hostId": "fixture", "executorId": "claude" }), claude["id"].as_str().unwrap(), "模板必须属于所选机器");
+    refused(json!({ "hostId": "local", "executorId": "claude" }), "no-such-template", "模板必须属于所选机器");
+    // A custom executor takes any template.
+    bind(json!({ "hostId": "local", "executorId": "claude" }), claude["id"].as_str().unwrap()).unwrap();
+    bind(json!({ "hostId": "local", "executorId": "legacy" }), claude["id"].as_str().unwrap()).unwrap();
+    bind(json!({ "hostId": "fixture", "executorId": "legacy" }), codex["id"].as_str().unwrap()).unwrap_err();
+    let lent = db(&bench);
+    assert_eq!(lent["templateBindings"].as_array().unwrap().len(), 2, "{lent}");
+    // Lending another takes the first back on that machine alone.
+    bind(json!({ "hostId": "local", "executorId": "legacy" }), codex["id"].as_str().unwrap()).unwrap();
+    let swapped = db(&bench);
+    let bindings = swapped["templateBindings"].as_array().unwrap();
+    assert_eq!(bindings.len(), 2, "{swapped}");
+    assert!(bindings.iter().any(|row| row["executorId"] == "legacy" && row["templateId"] == codex["id"]));
+    assert!(bindings.iter().any(|row| row["executorId"] == "claude" && row["templateId"] == claude["id"]));
+    // An empty id takes the loan back and adds nothing.
+    bind(json!({ "hostId": "local", "executorId": "legacy" }), "").unwrap();
+    assert_eq!(db(&bench)["templateBindings"].as_array().unwrap().len(), 1);
+    // Deleting a template takes back every loan of it.
+    bench.dispatch("templates:delete", &[claude["id"].clone()]).unwrap();
+    let deleted = db(&bench);
+    assert_eq!(deleted["templates"].as_array().unwrap().len(), 1);
+    assert_eq!(deleted["templateBindings"], json!([]));
+    assert!(bench.dispatch("templates:delete", &[json!("no-such-template")]).is_err());
+    // What was written is what is read again.
+    drop(bench);
+    let (again, _) = workbench(&root);
+    assert_eq!(db(&again)["templates"][0]["id"], codex["id"]);
+    assert_eq!(db(&again)["templateBindings"], json!([]));
+}
+
+/// Saving the executors may lend templates with it: the loan is refused for
+/// an executor that is not among those saved, and executors that are gone
+/// take their loans with them. A loan that cannot be made leaves the
+/// executors as they were.
+#[test]
+fn saving_the_executors_lends_templates_and_takes_back_the_loans_of_those_gone() {
+    let root = temp_dir("templates-save-custom");
+    let (bench, _) = workbench(&root);
+    let db = |bench: &Workbench| bench.dispatch("db:get", &[]).unwrap()["db"].clone();
+    let executor = |id: &str, name: &str| json!({ "id": id, "name": name, "cmd": "node", "args": "--version", "shell": "pwsh" });
+    let template = bench.dispatch("templates:save", &[json!({ "id": "", "hostId": "local", "name": "Team", "mcpPath": "", "skillPath": "", "format": "standard", "skillAdapter": "claude", "env": [] })]).unwrap();
+    let id = template["templates"][0]["id"].as_str().unwrap().to_string();
+    // A custom executor's loan comes with the executors as they are saved, as
+    // the dialog of the one being edited sends it; a built-in one's is made
+    // on its own.
+    bench.dispatch("db:custom", &[json!([executor("legacy", "Legacy"), executor("other", "Other")]), json!([{ "hostId": "local", "executorId": "legacy", "templateId": id }])]).unwrap();
+    bench.dispatch("templates:bind", &[json!({ "hostId": "local", "executorId": "claude" }), json!(id)]).unwrap();
+    let saved = db(&bench);
+    assert_eq!(saved["templateBindings"].as_array().unwrap().len(), 2, "{saved}");
+    // The executors saved do not include a built-in one, so a loan to one of
+    // those is refused there, as is one to an executor this save drops; and
+    // nothing changes.
+    let error = bench.dispatch("db:custom", &[json!([executor("other", "Other")]), json!([{ "hostId": "local", "executorId": "other", "templateId": id }, { "hostId": "local", "executorId": "legacy", "templateId": id }])]).err().unwrap_or_default();
+    assert!(error.contains("执行器不存在"), "{error}");
+    assert!(bench.dispatch("db:custom", &[json!([executor("other", "Other")]), json!([{ "hostId": "local", "executorId": "claude", "templateId": id }])]).unwrap_err().contains("执行器不存在"));
+    assert_eq!(db(&bench)["custom"].as_array().unwrap().len(), 2);
+    assert_eq!(db(&bench)["templateBindings"].as_array().unwrap().len(), 2);
+    // An executor's own session arguments must name the session.
+    let mut bad = executor("legacy", "Legacy");
+    bad["session"] = json!({ "startArgs": "--start", "resumeArgs": "--resume {sessionId}" });
+    assert!(bench.dispatch("db:custom", &[json!([bad])]).unwrap_err().contains("{sessionId}"));
+    // Without bindings the executors are saved as drawn, and those gone take
+    // their loans with them; a built-in executor's loan stays, for it is
+    // still there to hold it.
+    bench.dispatch("db:custom", &[json!([executor("other", "Other")])]).unwrap();
+    let pruned = db(&bench);
+    assert_eq!(pruned["templateBindings"], json!([{ "hostId": "local", "executorId": "claude", "templateId": id }]));
+    assert_eq!(pruned["templates"].as_array().unwrap().len(), 1);
+    // A write that cannot be made leaves everything as it was.
+    fs::create_dir_all(root.join("data").join("workbench.json.tmp")).unwrap();
+    let refused = bench.dispatch("templates:delete", &[json!(id)]).err().unwrap_or_default();
+    fs::remove_dir(root.join("data").join("workbench.json.tmp")).unwrap();
+    assert!(!refused.is_empty(), "a save over a directory in place of the temporary file is refused");
+    assert_eq!(db(&bench)["templates"].as_array().unwrap().len(), 1, "nothing changed in memory");
+    assert_eq!(db(&bench)["templateBindings"].as_array().unwrap().len(), 1);
+    bench.dispatch("templates:delete", &[json!(id)]).unwrap();
+    assert_eq!(db(&bench)["templates"], json!([]));
+}
+
+/// Testing a custom executor with a template lent to it runs it with the
+/// template's environment in place of the dialog's, and shows every value
+/// marked secret as dots; without a template the dialog's environment is taken.
+#[test]
+fn testing_an_executor_with_a_template_runs_it_with_the_templates_environment_and_hides_secrets() {
+    // Terminals are closed here: tests that close terminals run one at a time.
+    let _lock = env_lock();
+    let root = temp_dir("templates-exec-test");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::create_dir_all(root.join("data")).unwrap();
+    fs::write(root.join("data").join("workbench.json"), json!({ "custom": [{ "id": "legacy", "name": "Legacy executor", "cmd": "node", "args": "--version", "shell": "pwsh" }] }).to_string()).unwrap();
+    let (bench, _) = workbench(&root);
+    let shell = if cfg!(windows) { "pwsh" } else { "bash" };
+    let show = |key: &str| if cfg!(windows) { format!("\"pello $env:{key}\"") } else { format!("\"%s\\n\" \"${key}\"") };
+    // PowerShell takes its arguments apart at a space, as a terminal does
+    // with the line it is given; bash takes a semicolon.
+    let show_all = |keys: &[&str]| if cfg!(windows) { format!("{}; {}", show(keys[0]), show(keys[1])) } else { format!("{}; printf {}", show(keys[0]), show(keys[1])) };
+    let command = if cfg!(windows) { "Write-Output" } else { "printf" };
+    let run = |request: serde_json::Value| bench.dispatch("exec:test", &[request]).unwrap_or_else(|error| panic!("{error}"));
+    // Without a template the dialog's own environment is taken.
+    let own = run(json!({ "executorId": "legacy", "hostId": "local", "cmd": command, "args": show("PELLO_OWN"), "shell": shell, "env": [{ "k": "PELLO_OWN", "v": "own-value", "secret": false }], "cwd": project.display().to_string() }));
+    assert_eq!(own["code"], 0, "{own}");
+    assert!(own["text"].as_str().unwrap_or("").contains("own-value"), "{own}");
+    // With one, the template's environment comes in place of the dialog's.
+    let saved = bench.dispatch("templates:save", &[json!({ "id": "", "hostId": "local", "name": "Team", "mcpPath": "", "skillPath": "", "format": "standard", "skillAdapter": "portable", "env": [{ "k": "PELLO_TEMPLATE_PROBE", "v": "secret-fixture-value", "secret": true }, { "k": "PELLO_INNER", "v": "fixture", "secret": true }, { "k": "PELLO_PLAIN", "v": "plain-value", "secret": false }] })]).unwrap();
+    let id = saved["templates"][0]["id"].as_str().unwrap().to_string();
+    bench.dispatch("templates:bind", &[json!({ "hostId": "local", "executorId": "legacy" }), json!(id)]).unwrap();
+    // In PowerShell the second statement is `Write-Output "pello …"` on its
+    // own; in bash it needs the command in front of it again.
+    let second = if cfg!(windows) { "" } else { "printf " };
+    let both = show_all(&["PELLO_TEMPLATE_PROBE", "PELLO_PLAIN"]).replacen("; ", &format!("; {second}"), 1);
+    let test = run(json!({ "executorId": "legacy", "hostId": "local", "cmd": command, "args": both, "shell": shell, "env": [{ "k": "PELLO_OWN", "v": "own-value", "secret": false }], "cwd": project.display().to_string() }));
+    assert_eq!(test["code"], 0, "{test}");
+    let text = test["text"].as_str().unwrap_or("");
+    assert!(text.contains("••••"), "a secret is dots: {test}");
+    assert!(!text.contains("secret-fixture-value"), "the secret is not shown: {test}");
+    // The shorter secret lies inside the longer one: the longer goes first,
+    // so neither is left showing.
+    assert!(!text.contains("fixture"), "a secret inside a secret is gone whole: {test}");
+    assert!(text.contains("plain-value"), "a value that is not secret is shown: {test}");
+    assert!(!text.contains("own-value"), "the dialog's environment is not the one taken: {test}");
+    // A secret of the dialog's own is hidden too when no template is lent.
+    let hidden = run(json!({ "cmd": command, "args": show("PELLO_SECRET"), "shell": shell, "env": [{ "k": "PELLO_SECRET", "v": "dialog-secret-42", "secret": true }], "cwd": project.display().to_string() }));
+    assert!(hidden["text"].as_str().unwrap_or("").contains("••••") && !hidden["text"].as_str().unwrap_or("").contains("dialog-secret-42"), "{hidden}");
+}
+
+/// A custom executor's terminal is given the environment of the template lent
+/// to it on its machine, with the session arguments of the template; a
+/// terminal started again is given the environment it was created with, as
+/// the template was then.
+#[test]
+fn a_custom_executors_terminal_takes_the_templates_environment_and_keeps_it_when_started_again() {
+    // Terminals are closed here: tests that close terminals run one at a time.
+    let _lock = env_lock();
+    let root = temp_dir("templates-terminal");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::create_dir_all(root.join("data")).unwrap();
+    // The executor writes the value and returns to the shell's prompt; the
+    // session arguments of the template follow the command on the line.
+    let (shell, command, args) = if cfg!(windows) { ("pwsh", "Write-Output", "\"pello $env:PELLO_TEMPLATE_PROBE\"") } else { ("bash", "printf", "'pello %s\\n' \"$PELLO_TEMPLATE_PROBE\"") };
+    let custom = json!([{ "id": "legacy", "name": "Legacy executor", "cmd": command, "args": args, "shell": shell }]);
+    fs::write(root.join("data").join("workbench.json"), json!({ "custom": custom, "settings": { "restore": false } }).to_string()).unwrap();
+    let (bench, events) = workbench(&root);
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "local", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    let template = json!({ "id": "", "hostId": "local", "name": "Team", "mcpPath": "", "skillPath": "", "format": "standard", "skillAdapter": "portable", "env": [{ "k": "PELLO_TEMPLATE_PROBE", "v": "from-template", "secret": false }], "session": { "startArgs": "--resume {sessionId}", "resumeArgs": "--resume {sessionId}" } });
+    let saved = bench.dispatch("templates:save", &[template.clone()]).unwrap();
+    let id = saved["templates"][0]["id"].as_str().unwrap().to_string();
+    bench.dispatch("templates:bind", &[json!({ "hostId": "local", "executorId": "legacy" }), json!(id)]).unwrap();
+    let launch = bench.dispatch("pty:create", &[json!({ "id": "term", "projectId": "p", "kind": "legacy", "shell": "bash" })]).unwrap();
+    let line = launch["launchCommand"].as_str().unwrap_or("");
+    assert!(line.contains(command), "the executor's command is kept: {launch}");
+    assert!(line.contains("--resume ") && !line.contains("{sessionId}"), "the session id is filled in: {launch}");
+    // What the terminal shows is read once, each event as it comes, until
+    // the terminal next says it ended: with input taken again when what ran
+    // in it is back at the prompt, with none when the shell itself is gone.
+    // A batch may hold both the last of the output and what follows it, so
+    // it is the end that is waited for and not a word of the output.
+    let mut seen = 0;
+    let mut output = String::new();
+    let wait = |events: &Arc<Mutex<Vec<serde_json::Value>>>, seen: &mut usize, output: &mut String| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let mut last = String::new();
+        loop {
+            {
+                let list = events.lock().unwrap();
+                for event in list.iter().skip(*seen) {
+                    if event["channel"] != "pty:event" || event["payload"]["id"] != "term" { continue }
+                    output.push_str(event["payload"]["data"].as_str().unwrap_or(""));
+                    if matches!(event["payload"]["state"].as_str(), Some("exited" | "failed")) { last = if event["payload"]["inputReady"] == true { "prompt" } else { "gone" }.into(); }
+                }
+                *seen = list.len();
+            }
+            if !last.is_empty() || std::time::Instant::now() >= deadline { break }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        last
+    };
+    assert_eq!(wait(&events, &mut seen, &mut output), "prompt", "what ran is back at the prompt, and the terminal takes input again:\n{output}");
+    assert!(output.contains("from-template"), "the environment is the template's:\n{output}");
+    // The shell is ended from the keyboard, with a carriage return: Windows
+    // PowerShell takes a bare line feed for a line break inside a command
+    // and waits at `>>`. Waited for until it is gone, so that the restart
+    // makes the terminal again: that is the path that gives a terminal its
+    // environment a second time.
+    bench.dispatch("pty:write", &[json!("term"), json!("exit\r"), json!(false)]).unwrap();
+    assert_eq!(wait(&events, &mut seen, &mut output), "gone", "the shell ended:\n{output}");
+    // The template changes; a terminal started again has the environment it
+    // was created with, not the one of now.
+    let mut changed = template.clone();
+    changed["id"] = json!(id);
+    changed["env"] = json!([{ "k": "PELLO_TEMPLATE_PROBE", "v": "changed-later", "secret": false }]);
+    bench.dispatch("templates:save", &[changed]).unwrap();
+    bench.dispatch("pty:restart", &[json!("term")]).unwrap();
+    let before = output.len();
+    assert_eq!(wait(&events, &mut seen, &mut output), "prompt", "what ran is back at the prompt again:\n{}", &output[before..]);
+    assert!(output[before..].contains("from-template"), "a terminal started again keeps its environment:\n{}", &output[before..]);
+    assert!(!output[before..].contains("changed-later"), "the environment is the one the terminal was created with:\n{}", &output[before..]);
+    bench.dispatch("pty:close", &[json!("term")]).unwrap();
+}

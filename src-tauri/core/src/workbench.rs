@@ -20,6 +20,7 @@ use crate::shells::{self, installed_agents};
 use crate::ssh;
 use crate::store::{self, apply_saved_settings, host_color, public_host, PlatformInfo};
 use crate::temporary;
+use crate::templates;
 use crate::updates;
 use crate::upload;
 use crate::{random_id, uid};
@@ -94,7 +95,14 @@ impl Workbench {
         paths.prepare()?;
         let file = paths.data.join("workbench.json");
         let (mut db, rewrite) = store::load_database(&file, PlatformInfo::current());
-        if rewrite {
+        // Templates and their bindings are kept as they were written, and a
+        // database from before there were templates has each custom
+        // executor's own paths turned into one, once.
+        let raw = fs::read(&file).ok().and_then(|bytes| String::from_utf8(bytes).ok()).and_then(|text| serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}')).ok());
+        let old_targets = fs::read(paths.data.join("resource-targets.json")).ok()
+            .map(|bytes| String::from_utf8_lossy(&bytes).trim_start_matches('\u{feff}').to_string())
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok()).unwrap_or_else(|| json!({}));
+        if templates::adopt(&mut db, raw.as_ref(), &old_targets, "zh-CN") || rewrite {
             store::save_database(&file, &db)?;
         }
         let ids = session_ids(&db);
@@ -123,7 +131,9 @@ impl Workbench {
 
     /// The calls that pass the gate: each sends a whole section as the page
     /// drew it, so one written over a later one would carry changes back.
-    pub const SAVED_CHANNELS: [&'static str; 3] = ["db:settings", "db:projects", "db:custom"];
+    /// A save of the machines does not pass it: it tests connections first,
+    /// as the Electron build does outside its `mutate`.
+    pub const SAVED_CHANNELS: [&'static str; 6] = ["db:settings", "db:projects", "db:custom", "templates:save", "templates:bind", "templates:delete"];
 
     /// The window close handler calls this once. Later terminal creates fail
     /// while the existing sessions are still being closed.
@@ -176,8 +186,11 @@ impl Workbench {
             "shells:local" => Ok(Value::Array(shells::discover().into_iter().map(|shell| json!({ "id": shell.id, "label": shell.label, "path": shell.path.display().to_string() })).collect())),
             "db:settings" => self.save_settings(args.first().cloned().unwrap_or(json!({}))),
             "db:projects" => self.save_projects(args.first().cloned().unwrap_or(json!([]))),
-            "db:custom" => self.save_custom(args.first().cloned().unwrap_or(json!([]))),
+            "db:custom" => self.save_custom(args.first().cloned().unwrap_or(json!([])), args.get(1).cloned().unwrap_or(json!([])), &language),
             "db:hosts" => self.save_hosts(args.first().cloned().unwrap_or(json!([]))),
+            "templates:save" => self.save_template(args.first().cloned().unwrap_or(json!({})), &language),
+            "templates:bind" => self.bind_template(args.first().cloned().unwrap_or(json!({})), str_arg(args, 1), &language),
+            "templates:delete" => self.delete_template(str_arg(args, 0), &language),
             "db:sessions" => self.save_sessions(args),
             "db:branch" => self.save_branch(str_arg(args, 0), str_arg(args, 1)),
             "files:dirty" => { *self.dirty.lock().expect("dirty") = args.first().and_then(|value| value.as_bool()).unwrap_or(false); Ok(Value::Null) }
@@ -466,13 +479,53 @@ impl Workbench {
         self.persist()
     }
 
-    fn save_custom(&self, custom: Value) -> Result<Value, String> {
-        let language = self.language();
+    fn save_custom(&self, custom: Value, bindings: Value, language: &str) -> Result<Value, String> {
+        // Each executor's own paths and session arguments are taken as the
+        // settings dialog drew them, before anything of the database changes.
+        let mut next = self.db.lock().expect("db").clone();
+        next["custom"] = custom.clone();
+        let local = templates::machine(&next, "local", false, language)?.clone();
         for executor in custom.as_array().cloned().unwrap_or_default() {
-            validate_resources(&executor["resources"], &language)?;
+            if executor.get("resources").is_some_and(|value| !value.is_null()) {
+                templates::validate_resource_paths(&executor["resources"], local["platform"] == "windows", language)?;
+            }
+            templates::validate_custom_session(executor.get("session"), language)?;
         }
-        self.db.lock().expect("db")["custom"] = custom;
-        self.persist()
+        templates::prune(&mut next);
+        for binding in bindings.as_array().cloned().unwrap_or_default() {
+            let executor_id = binding["executorId"].as_str().unwrap_or("").to_string();
+            if !custom.as_array().is_some_and(|list| list.iter().any(|executor| executor["id"].as_str() == Some(executor_id.as_str()))) {
+                return Err(translate(language, "执行器不存在", &[] as &[String]));
+            }
+            templates::bind(&mut next, &binding, binding["templateId"].as_str().unwrap_or(""), language)?;
+        }
+        self.replace(next)
+    }
+
+    fn save_template(&self, template: Value, language: &str) -> Result<Value, String> {
+        let mut next = self.db.lock().expect("db").clone();
+        templates::put(&mut next, &template, language)?;
+        self.replace(next)
+    }
+
+    fn bind_template(&self, scope: Value, template_id: &str, language: &str) -> Result<Value, String> {
+        let mut next = self.db.lock().expect("db").clone();
+        templates::bind(&mut next, &scope, template_id, language)?;
+        self.replace(next)
+    }
+
+    fn delete_template(&self, id: &str, language: &str) -> Result<Value, String> {
+        let mut next = self.db.lock().expect("db").clone();
+        templates::delete(&mut next, id, language)?;
+        self.replace(next)
+    }
+
+    /// Writes a whole database as it would be, and only then makes it the
+    /// one in memory: a write that fails leaves nothing changed.
+    fn replace(&self, next: Value) -> Result<Value, String> {
+        store::save_database(&self.database_path(), &next)?;
+        *self.db.lock().expect("db") = next.clone();
+        Ok(next)
     }
 
     fn save_hosts(&self, hosts: Value) -> Result<Value, String> {
@@ -503,8 +556,20 @@ impl Workbench {
             clean["hasPassword"] = json!(ssh::has_password(&self.paths.data, &clean));
             next.push(clean);
         }
-        self.db.lock().expect("db")["hosts"] = Value::Array(next);
-        self.persist()
+        // Templates of a machine that is gone go with it, and so does every
+        // executor's launch on that machine.
+        let mut db = self.db.lock().expect("db").clone();
+        db["hosts"] = Value::Array(next);
+        templates::prune(&mut db);
+        let kept: Vec<String> = db["hosts"].as_array().map(|hosts| hosts.iter().filter_map(|host| host["id"].as_str().map(str::to_string)).collect()).unwrap_or_default();
+        if let Some(custom) = db["custom"].as_array_mut() {
+            for executor in custom {
+                if let Some(over) = executor["hosts"].as_object_mut() {
+                    over.retain(|id, _| kept.iter().any(|host| host == id));
+                }
+            }
+        }
+        self.replace(db)
     }
 
     fn save_sessions(&self, args: &[Value]) -> Result<Value, String> {
@@ -777,9 +842,9 @@ impl Workbench {
         let shell = request["shell"].as_str().unwrap_or("bash");
         let requested = request["agentSessionId"].as_str().filter(|value| !value.is_empty());
         let session = self.resolve_legacy(id, kind, project["path"].as_str().unwrap_or(""), requested, true, language)?;
-        let (command, session) = self.resume_launch(id, kind, shell, session.as_deref());
+        let (command, session, shell) = self.resume_launch(id, kind, shell, session.as_deref(), host["id"].as_str().unwrap_or("local"), language)?;
         let restore = self.db.lock().expect("db")["settings"]["restore"] != false;
-        let mut info = self.pty.create_remote(&self.paths.data, id, project["path"].as_str().unwrap_or(""), kind, shell, &command, session.as_deref(), restore, &host, language, self.emit.clone())?;
+        let mut info = self.pty.create_remote(&self.paths.data, id, project["path"].as_str().unwrap_or(""), kind, &shell, &command, session.as_deref(), restore, &host, language, self.emit.clone())?;
         info.as_object_mut().expect("session").remove("type");
         if info.get("launchCommand").and_then(|value| value.as_str()).unwrap_or("").is_empty() {
             info["launchCommand"] = json!(command);
@@ -790,9 +855,10 @@ impl Workbench {
     let shell = request["shell"].as_str().unwrap_or("bash");
     let requested = request["agentSessionId"].as_str().filter(|value| !value.is_empty());
     let session = self.resolve_legacy(id, kind, project["path"].as_str().unwrap_or(""), requested, false, language)?;
-    let (command, session) = self.resume_launch(id, kind, shell, session.as_deref());
+    let (command, session, shell) = self.resume_launch(id, kind, shell, session.as_deref(), "local", language)?;
     let restore = self.db.lock().expect("db")["settings"]["restore"] != false;
-    let mut info = self.pty.create(&self.paths.data, id, Path::new(project["path"].as_str().unwrap_or("")), kind, shell, &command, session.as_deref(), restore, language, self.emit.clone(), &[])?;
+    let env = self.launch_env("local", kind);
+    let mut info = self.pty.create(&self.paths.data, id, Path::new(project["path"].as_str().unwrap_or("")), kind, &shell, &command, session.as_deref(), restore, language, self.emit.clone(), &env)?;
     info.as_object_mut().expect("session").remove("type");
     if info.get("launchCommand").and_then(|value| value.as_str()).unwrap_or("").is_empty() {
         info["launchCommand"] = json!(command);
@@ -812,16 +878,37 @@ impl Workbench {
         }
     }
 
-fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&str>) -> (String, Option<String>) {
-    if kind == "shell" { return (String::new(), None); }
-    let base = agent_command(kind, &self.db.lock().expect("db"));
-    let directory = self.paths.data.join("agent-sessions").join(pty::history_name(id));
-    let launch = pty::resume_command(kind, &base, requested, &directory, shell);
-    if launch.0.contains("--session-dir") {
-        let _ = fs::create_dir_all(&directory);
+    /// The environment a terminal of an executor is given on a machine: the
+    /// template lent to it there, else nothing beyond the shell's own.
+    fn launch_env(&self, host_id: &str, kind: &str) -> Vec<(String, String)> {
+        let db = self.db.lock().expect("db").clone();
+        templates::executor_template(&db, host_id, kind).map(|template| template["env"].as_array().cloned().unwrap_or_default()).unwrap_or_default().iter()
+            .filter_map(|row| Some((row["k"].as_str()?.to_string(), row["v"].as_str().unwrap_or("").to_string())))
+            .filter(|(key, _)| !key.is_empty()).collect()
     }
-    launch
-}
+
+    /// What a terminal of an executor runs: a built-in executor's own
+    /// command, a custom one's as its machine overrides it and with the
+    /// session the template lent to it there names. Says the shell too, as a
+    /// machine may change it.
+    fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&str>, host_id: &str, language: &str) -> Result<(String, Option<String>, String), String> {
+        if kind == "shell" { return Ok((String::new(), None, shell.to_string())); }
+        let db = self.db.lock().expect("db").clone();
+        let Some(executor) = db["custom"].as_array().and_then(|list| list.iter().find(|item| item["id"] == kind)) else {
+            let base = agent_command(kind, &db);
+            let directory = self.paths.data.join("agent-sessions").join(pty::history_name(id));
+            let launch = pty::resume_command(kind, &base, requested, &directory, shell);
+            if launch.0.contains("--session-dir") {
+                let _ = fs::create_dir_all(&directory);
+            }
+            return Ok((launch.0, launch.1, shell.to_string()));
+        };
+        let config = templates::effective_executor(executor, host_id, templates::executor_template(&db, host_id, kind));
+        let effective_shell = config["shell"].as_str().filter(|value| !value.is_empty()).unwrap_or(shell).to_string();
+        let quote = |text: &str| if effective_shell == "pwsh" || effective_shell == "cmd" { ssh::ps_quote(text) } else { ssh::bash_quote(text) };
+        let launch = templates::custom_resume_command(&templates::command_line(&config), requested, config.get("session"), &quote, language)?;
+        Ok((launch.0, launch.1, effective_shell))
+    }
 
     fn pty_restart(&self, id: &str, language: &str) -> Result<Value, String> {
         if self.closing.load(Ordering::SeqCst) {
@@ -837,9 +924,12 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
                 crate::pty::Restart::Respawn => session,
             }
         };
-        let Some((cwd, kind, shell, command)) = self.pty.launch_meta(id) else { return Ok(Value::Null) };
+        let Some((cwd, kind, shell, command, env)) = self.pty.launch_meta(id) else { return Ok(Value::Null) };
         self.pty.close(id);
-        self.pty.create(&self.paths.data, id, &cwd, &kind, &shell, &command, respawn.as_deref(), false, language, self.emit.clone(), &[]).map(|_| Value::Null)
+        // The environment the terminal was created with is given again, as
+        // the Electron build keeps it with the terminal and not with the
+        // template as it reads since.
+        self.pty.create(&self.paths.data, id, &cwd, &kind, &shell, &command, respawn.as_deref(), false, language, self.emit.clone(), &env).map(|_| Value::Null)
     }
 
 /// What testing an executor comes to: the last of what its command
@@ -878,8 +968,14 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
         // PowerShell says a command that wrote an error succeeded: the test
         // is to fail as a terminal would show it.
         let command = if shell == "pwsh" { format!("{command}; if (-not $?) {{ $global:LASTEXITCODE = 1 }}") } else { command };
-        let empty = Vec::new();
-        let env: Vec<(String, String)> = request["env"].as_array().unwrap_or(&empty).iter()
+        // The environment of the template lent to the executor on that
+        // machine comes in place of the one the dialog shows; otherwise the
+        // dialog's own is taken.
+        let rows: Vec<Value> = match request["executorId"].as_str().filter(|id| !id.is_empty()) {
+            Some(executor_id) => templates::executor_template(&self.db.lock().expect("db"), host_id, executor_id).map(|template| template["env"].as_array().cloned().unwrap_or_default()).unwrap_or_else(|| request["env"].as_array().cloned().unwrap_or_default()),
+            None => request["env"].as_array().cloned().unwrap_or_default(),
+        };
+        let env: Vec<(String, String)> = rows.iter()
             .filter_map(|item| Some((item["k"].as_str()?.to_string(), item["v"].as_str().unwrap_or("").to_string())))
             .filter(|(key, _)| !key.is_empty()).collect();
         let id = format!("executor-test-{}", random_id());
@@ -913,7 +1009,7 @@ fn resume_launch(&self, id: &str, kind: &str, shell: &str, requested: Option<&st
         };
         let running = code.is_none();
         self.pty.close(&id);
-        let text = collected.lock().expect("test output").clone();
+        let text = templates::redact_output(&collected.lock().expect("test output"), &rows);
         let mut result = json!({ "text": text, "code": code });
         if running { result["running"] = json!(true); }
         Ok(result)
@@ -1581,23 +1677,6 @@ fn agent_command(kind: &str, db: &Value) -> String {
     db["custom"].as_array().and_then(|list| list.iter().find(|item| item["id"] == kind)).map(|item| {
         [item["cmd"].as_str().unwrap_or(""), item["args"].as_str().unwrap_or("")].into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" ")
     }).unwrap_or_default()
-}
-
-fn validate_resources(target: &Value, language: &str) -> Result<(), String> {
-    if target.is_null() || !target.is_object() { return Ok(()) }
-    for key in ["mcpPath", "skillPath", "skillConfigPath"] {
-        if let Some(value) = target.get(key).and_then(|value| value.as_str()) {
-            if !value.is_empty() && !Path::new(value).is_absolute() {
-                return Err(translate(language, "资源目录和配置文件必须使用绝对路径", &[] as &[String]));
-            }
-        }
-    }
-    let format = target["format"].as_str().unwrap_or("");
-    let adapter = target["skillAdapter"].as_str().unwrap_or("portable");
-    if !["standard", "codex", "opencode"].contains(&format) || !["portable", "claude", "codex", "opencode", "pi", "omp"].contains(&adapter) {
-        return Err(translate(language, "请选择支持的资源格式", &[] as &[String]));
-    }
-    Ok(())
 }
 
 

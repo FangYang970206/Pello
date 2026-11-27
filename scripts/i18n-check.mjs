@@ -73,12 +73,14 @@ for (const caller of callers.filter((caller) => caller.source !== null)) {
 // these helpers, each of which translates what it is given and nothing else:
 // a closure of the menu module, whose texts are the menu's; a helper that
 // translates and quotes what it is given for a remote script; a helper that
-// writes what it is given as a quoted string; and the two names a search
-// error goes by. A function that translates a variable is not one of them
-// until it is said here.
+// writes what it is given as a quoted string; the two names a search error
+// goes by; and the shorthand of the resource and template modules, each
+// called with a literal message only. A function that translates a variable
+// is not one of them until it is said here.
 const passesVariable = new Map([
   ['menu.rs', ['layout_menu_items', 'tree_menu', 'file_menu', 'preview_menu']],
   ['resources.rs', ['t']],
+  ['templates.rs', ['t']],
   ['search.rs', ['from_remote_output', 'next']],
   ['ssh.rs', ['ps_error']],
   ['upload.rs', ['quoted_message', 'windows_upload_library', 'windows_write_script']],
