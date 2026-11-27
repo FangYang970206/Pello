@@ -13,6 +13,80 @@ const MAX_CONFIG: u64 = 32 * 1024 * 1024;
 const MAX_SKILL_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_SKILL_FILES: usize = 10_000;
 
+/// The files an agent's resources are in, wherever they are. A name is a
+/// path as the machine that has the files writes it. This machine's own
+/// files are read as they are; another machine's through what it says of
+/// them, so that the same operation runs for both.
+pub trait ResourceFiles {
+    /// A file's whole text; nothing when it is not there.
+    fn read(&self, file: &str) -> Result<String, String>;
+    /// Whether the file is there.
+    fn exists(&self, file: &str) -> bool;
+    /// Replace a file's text once what it had is still what it has, and in
+    /// one step, so that nothing half-written is ever seen.
+    fn write(&mut self, file: &str, before: &str, next: &str) -> Result<(), String>;
+    /// Every Skill file under the roots, each once, however many links
+    /// lead to the same folder; what could not be looked into is said in
+    /// `errors`.
+    fn skills(&self, roots: &[String], errors: &mut Vec<String>) -> Vec<String>;
+    /// A Skill file under its other name, the disabled one or its own.
+    fn rename_skill(&self, root: &str, source: &str, dest: &str) -> Result<(), String>;
+}
+
+/// The files of this machine.
+pub struct LocalFiles { language: String }
+
+impl ResourceFiles for LocalFiles {
+    fn read(&self, file: &str) -> Result<String, String> {
+        read_text(Path::new(file), &self.language)
+    }
+
+    fn exists(&self, file: &str) -> bool {
+        Path::new(file).exists()
+    }
+
+    fn write(&mut self, file: &str, before: &str, next: &str) -> Result<(), String> {
+        atomic_text(Path::new(file), before, next, &self.language)
+    }
+
+    fn skills(&self, roots: &[String], errors: &mut Vec<String>) -> Vec<String> {
+        let mut seen: Vec<PathBuf> = Vec::new();
+        let mut found = Vec::new();
+        for root in roots { scan_skill_files(Path::new(root), &mut seen, &mut found, errors); }
+        found
+    }
+
+    fn rename_skill(&self, root: &str, source: &str, dest: &str) -> Result<(), String> {
+        rename_skill(Path::new(root), Path::new(source), Path::new(dest), &self.language)
+    }
+}
+
+/// The Skill files in a folder and, when it has none of its own, in the
+/// folders under it: a folder is one Skill when it has a Skill file, and
+/// otherwise holds Skills. A Skill is named by its own file, whether that
+/// or its disabled name is the one there is. A folder reached before is
+/// not looked into again, by where it really is.
+fn scan_skill_files(folder: &Path, seen: &mut Vec<PathBuf>, found: &mut Vec<String>, errors: &mut Vec<String>) {
+    let real = match crate::real_path(folder) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => { errors.push(format!("{}: {error}", folder.display())); return }
+    };
+    if seen.iter().any(|item| item == &real) { return }
+    seen.push(real);
+    let file = folder.join("SKILL.md");
+    let disabled = PathBuf::from(format!("{}.awb-disabled", file.display()));
+    if file.is_file() || disabled.is_file() { found.push(file.display().to_string()); return }
+    let entries = match fs::read_dir(folder) {
+        Ok(entries) => entries,
+        Err(error) => { errors.push(format!("{}: {error}", folder.display())); return }
+    };
+    for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else { continue };
+        if kind.is_dir() || kind.is_symlink() { scan_skill_files(&entry.path(), seen, found, errors); }
+    }
+}
+
 pub struct Resources {
     busy: AtomicBool,
 }
@@ -260,34 +334,47 @@ fn resolve(db: &Value, scope: &Value, language: &str) -> Result<(Target, Fingerp
 pub fn list(db: &Value, kind: &str, scope: &Value, page: usize, query: &str, language: &str) -> Result<Value, String> {
     let (target, _mark) = resolve(db, scope, language)?;
     let target = &target;
+    let files = LocalFiles { language: language.to_string() };
+    list_with(&files, &target, kind, page, query, language)
+}
+
+/// What the list shows, read through the files of the machine that has
+/// them.
+fn list_with(files: &dyn ResourceFiles, target: &Target, kind: &str, page: usize, query: &str, language: &str) -> Result<Value, String> {
     let mut items = Vec::new();
     let mut errors = Vec::new();
     if kind == "mcp" {
         if !target.mcp_path.is_empty() {
-            match mcp_items(target, language) {
+            match mcp_items(files, target, language) {
                 Ok(found) => items = found,
                 Err(error) => errors.push(format!("{}: {error}", target.mcp_path)),
             }
         }
     } else if kind == "skills" {
-        let mut seen = Vec::new();
-        for folder in skill_roots(target) {
-            scan_skills(&folder, target, &mut seen, &mut items, &mut errors, language)?;
+        for file in files.skills(&skill_roots(target).iter().map(|root| root.display().to_string()).collect::<Vec<_>>(), &mut errors) {
+            // Said of the Skill file itself, as the Electron build says it,
+            // and not of the folder it is in.
+            match skill_info(files, &file, language) {
+                Ok(info) => {
+                    let enabled = skill_enabled(files, target, &file, &info.name, language)?;
+                    items.push(json!({ "name": info.name, "description": info.description, "path": file, "enabled": enabled }));
+                }
+                Err(error) => errors.push(format!("{file}: {error}")),
+            }
         }
     }
     let query = query.to_lowercase();
     items.retain(|item| format!("{} {}", item["name"].as_str().unwrap_or(""), item["description"].as_str().unwrap_or("")).to_lowercase().contains(&query));
     items.sort_by(|a, b| a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or("")));
-    let total = items.len();
-    let pages = if total == 0 { 1 } else { total.div_ceil(12) };
+    let total = items.len();    let pages = if total == 0 { 1 } else { total.div_ceil(12) };
     let current = page.max(1).min(pages);
     let start = (current - 1) * 12;
     let slice = items.into_iter().skip(start).take(12).collect::<Vec<_>>();
     Ok(json!({ "items": slice, "total": total, "page": current, "pages": pages, "errors": errors }))
 }
 
-fn mcp_items(target: &Target, language: &str) -> Result<Vec<Value>, String> {
-    let text = read_text(Path::new(&target.mcp_path), language)?;
+fn mcp_items(files: &dyn ResourceFiles, target: &Target, language: &str) -> Result<Vec<Value>, String> {
+    let text = files.read(&target.mcp_path)?;
     let config = parse_config(target, &text, language)?;
     let (_active_key, map, v2) = mcp_root(target, &config, language)?;
     let mut items = Vec::new();
@@ -410,44 +497,16 @@ fn skill_roots(target: &Target) -> Vec<PathBuf> {
     unique
 }
 
-fn scan_skills(folder: &Path, target: &Target, seen: &mut Vec<PathBuf>, items: &mut Vec<Value>, errors: &mut Vec<String>, language: &str) -> Result<(), String> {
-    let real = match crate::real_path(folder) {
-        Ok(path) => path,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => { errors.push(format!("{}: {error}", folder.display())); return Ok(()); }
-    };
-    if seen.iter().any(|item| item == &real) { return Ok(()); }
-    seen.push(real);
-    let file = folder.join("SKILL.md");
-    let disabled = PathBuf::from(format!("{}.awb-disabled", file.display()));
-    let source = if file.is_file() { file.clone() } else if disabled.is_file() { disabled } else { PathBuf::new() };
-    if source.as_os_str().is_empty() {
-        let entries = match fs::read_dir(folder) {
-            Ok(entries) => entries,
-            Err(error) => { errors.push(format!("{}: {error}", folder.display())); return Ok(()); }
-        };
-        for entry in entries.flatten() {
-            let kind = entry.file_type();
-            if kind.as_ref().is_ok_and(|kind| kind.is_dir() || kind.is_symlink()) { scan_skills(&entry.path(), target, seen, items, errors, language)?; }
-        }
-        return Ok(());
-    }
-    match skill_info(&source, language) {
-        Ok(info) => {
-            let enabled = skill_enabled(target, &file, &info.name, language)?;
-            items.push(json!({ "name": info.name, "description": info.description, "path": file.display().to_string(), "enabled": enabled }));
-        }
-        // Said of the Skill file itself, as the Electron build says it, and
-        // not of the folder it is in.
-        Err(error) => errors.push(format!("{}: {error}", file.display())),
-    }
-    Ok(())
-}
-
 struct SkillInfo { name: String, description: String }
 
-fn skill_info(file: &Path, language: &str) -> Result<SkillInfo, String> {
-    let text = read_text(file, language)?.trim_start_matches('\u{feff}').to_string();
+/// A Skill file's text: by its own name when that is the one there is, else
+/// by its disabled name.
+fn skill_text(files: &dyn ResourceFiles, file: &str) -> Result<String, String> {
+    if files.exists(file) { files.read(file) } else { files.read(&format!("{file}.awb-disabled")) }
+}
+
+fn skill_info(files: &dyn ResourceFiles, file: &str, language: &str) -> Result<SkillInfo, String> {
+    let text = skill_text(files, file)?.trim_start_matches('\u{feff}').to_string();
     let rest = text.strip_prefix("---\r\n").or_else(|| text.strip_prefix("---\n")).ok_or_else(|| t(language, "SKILL.md 缺少 YAML 文档属性"))?;
     let end = rest.find("\r\n---").or_else(|| rest.find("\n---")).ok_or_else(|| t(language, "SKILL.md 缺少 YAML 文档属性"))?;
     let front = &rest[..end];
@@ -485,17 +544,18 @@ fn skill_name_ok(name: &str) -> bool {
     true
 }
 
-fn skill_enabled(target: &Target, file: &Path, name: &str, language: &str) -> Result<bool, String> {
-    let disabled = PathBuf::from(format!("{}.awb-disabled", file.display()));
-    if disabled.is_file() && !file.is_file() { return Ok(false); }
+fn skill_enabled(files: &dyn ResourceFiles, target: &Target, file: &str, name: &str, language: &str) -> Result<bool, String> {
+    let disabled = format!("{file}.awb-disabled");
+    if files.exists(&disabled) && !files.exists(file) { return Ok(false); }
     if target.skill_adapter.is_empty() || target.skill_adapter == "portable" { return Ok(true); }
     let settings = settings_file(target);
     if settings.as_os_str().is_empty() { return Ok(true); }
-    let raw = read_text(&settings, language)?;
+    let settings = settings.display().to_string();
+    let raw = files.read(&settings)?;
     match target.skill_adapter.as_str() {
         "codex" => {
             let entries = toml_skill_entries(&raw);
-            Ok(entries.into_iter().rev().find(|item| item.0 == file.display().to_string() || item.1.as_deref() == Some(name)).map(|item| item.2).unwrap_or(true))
+            Ok(entries.into_iter().rev().find(|item| item.0 == file || item.1.as_deref() == Some(name)).map(|item| item.2).unwrap_or(true))
         }
         "claude" => {
             let config = parse_json_text(&raw, language)?;
@@ -504,10 +564,10 @@ fn skill_enabled(target: &Target, file: &Path, name: &str, language: &str) -> Re
         "opencode" => opencode_skill_enabled(&raw, name, language),
         "pi" => {
             let config = parse_json_text(&raw, language)?;
-            let mark = format!("-{}", file.display());
+            let mark = format!("-{file}");
             Ok(!config.get("skills").and_then(|value| value.as_array()).is_some_and(|items| items.iter().any(|item| item.as_str() == Some(mark.as_str()))))
         }
-        "omp" => omp_skill_enabled(&raw, file, name, language),
+        "omp" => omp_skill_enabled(files, &raw, file, name, language),
         _ => Ok(true),
     }
 }
@@ -546,8 +606,8 @@ fn toml_skill_entries(text: &str) -> Vec<(String, Option<String>, bool)> {
     entries
 }
 
-fn toggle_codex_skill(settings: &Path, skill_path: &str, enabled: bool, language: &str) -> Result<(), String> {
-    let before = read_text(settings, language)?;
+fn toggle_codex_skill(files: &mut dyn ResourceFiles, settings: &str, skill_path: &str, enabled: bool, language: &str) -> Result<(), String> {
+    let before = files.read(settings)?;
     let entries = toml_skill_entries(&before);
     let index = entries.iter().enumerate().rev().find(|(_, (path, _, _))| path == skill_path).map(|(index, _)| index);
     let next = if let Some(index) = index {
@@ -561,7 +621,7 @@ fn toggle_codex_skill(settings: &Path, skill_path: &str, enabled: bool, language
         next.push_str(&format!("enabled = {enabled}\n"));
         next
     };
-    atomic_text(settings, &before, &next, language)
+    files.write(settings, &before, &next)
 }
 
 fn set_toml_skill_enabled(text: &str, index: usize, enabled: bool) -> Result<String, ()> {
@@ -610,8 +670,8 @@ fn with_mark(mark: char, next: &str) -> String {
     if mark == '\0' { next.to_string() } else { format!("{mark}{next}") }
 }
 
-fn toggle_opencode_skill(settings: &Path, name: &str, enabled: bool, language: &str) -> Result<(), String> {
-    let before = read_text(settings, language)?;
+fn toggle_opencode_skill(files: &mut dyn ResourceFiles, settings: &str, name: &str, enabled: bool, language: &str) -> Result<(), String> {
+    let before = files.read(settings)?;
     let (mark, source) = json_edit_source(&before);
     let config = parse_json_text(&source, language)?;
     let effect = if enabled { "allow" } else { "deny" };
@@ -631,7 +691,7 @@ fn toggle_opencode_skill(settings: &Path, name: &str, enabled: bool, language: &
     };
     let next = with_mark(mark, &next);
     parse_json_text(&next, language)?;
-    atomic_text(settings, &before, &next, language)
+    files.write(settings, &before, &next)
 }
 
 fn patch_permission_rule(text: &str, name: &str, effect: &str) -> Result<String, ()> {
@@ -678,8 +738,8 @@ fn array_elements(text: &str, open: usize) -> Result<Vec<(usize, usize)>, ()> {
     }
 }
 
-fn toggle_pi_skill(settings: &Path, skill_path: &str, enabled: bool, language: &str) -> Result<(), String> {
-    let before = read_text(settings, language)?;
+fn toggle_pi_skill(files: &mut dyn ResourceFiles, settings: &str, skill_path: &str, enabled: bool, language: &str) -> Result<(), String> {
+    let before = files.read(settings)?;
     let (order, source) = json_edit_source(&before);
     let config = parse_json_text(&source, language)?;
     let mark = format!("-{skill_path}");
@@ -690,13 +750,13 @@ fn toggle_pi_skill(settings: &Path, skill_path: &str, enabled: bool, language: &
     let next = upsert_json(&source, &["skills"], &raw).map_err(|_| t(language, "JSON 配置存在语法错误，请修复后重试"))?;
     let next = with_mark(order, &next);
     parse_json_text(&next, language)?;
-    atomic_text(settings, &before, &next, language)
+    files.write(settings, &before, &next)
 }
 
-fn toggle_omp_skill(settings: &Path, file: &Path, name: &str, enabled: bool, language: &str) -> Result<(), String> {
-    let before = read_text(settings, language)?;
+fn toggle_omp_skill(files: &mut dyn ResourceFiles, settings: &str, file: &str, name: &str, enabled: bool, language: &str) -> Result<(), String> {
+    let before = files.read(settings)?;
     let document = parse_yaml(&before).map_err(|_| t(language, "Oh My Pi YAML 配置存在语法错误"))?;
-    if enabled && omp_blocked(&document, file, name, language)? {
+    if enabled && omp_blocked(files, &document, file, name, language)? {
         return Err(t(language, "此 Skill 受 Oh My Pi 全局筛选或 SKILL.md 停用限制，请先修改对应设置"));
     }
     let mut entries = yaml_list(&document, &["disabledExtensions"]);
@@ -704,7 +764,7 @@ fn toggle_omp_skill(settings: &Path, file: &Path, name: &str, enabled: bool, lan
     entries.retain(|entry| entry != &mark);
     if !enabled { entries.push(mark); }
     let next = set_yaml_root_list(&before, "disabledExtensions", &entries);
-    atomic_text(settings, &before, &next, language)
+    files.write(settings, &before, &next)
 }
 
 fn opencode_skill_enabled(raw: &str, name: &str, language: &str) -> Result<bool, String> {
@@ -731,20 +791,20 @@ fn opencode_skill_enabled(raw: &str, name: &str, language: &str) -> Result<bool,
     Ok(enabled)
 }
 
-fn omp_skill_enabled(raw: &str, file: &Path, name: &str, language: &str) -> Result<bool, String> {
+fn omp_skill_enabled(files: &dyn ResourceFiles, raw: &str, file: &str, name: &str, language: &str) -> Result<bool, String> {
     let document = parse_yaml(raw).map_err(|_| t(language, "Oh My Pi YAML 配置存在语法错误"))?;
-    Ok(!omp_blocked(&document, file, name, language)? && !yaml_list(&document, &["disabledExtensions"]).iter().any(|entry| entry == &format!("skill:{name}")))
+    Ok(!omp_blocked(files, &document, file, name, language)? && !yaml_list(&document, &["disabledExtensions"]).iter().any(|entry| entry == &format!("skill:{name}")))
 }
 
-fn omp_blocked(document: &Yaml, file: &Path, name: &str, language: &str) -> Result<bool, String> {
+fn omp_blocked(files: &dyn ResourceFiles, document: &Yaml, file: &str, name: &str, language: &str) -> Result<bool, String> {
     let include = yaml_list(document, &["skills", "includeSkills"]);
     let ignored = yaml_list(document, &["skills", "ignoredSkills"]).iter().any(|pattern| wildcard_matches(pattern, name));
     let included = include.is_empty() || include.iter().any(|pattern| wildcard_matches(pattern, name));
-    Ok(!front_enabled(file, language)? || yaml_false(document, &["skills", "enabled"]) || ignored || !included)
+    Ok(!front_enabled(files, file, language)? || yaml_false(document, &["skills", "enabled"]) || ignored || !included)
 }
 
-fn front_enabled(file: &Path, language: &str) -> Result<bool, String> {
-    let text = read_text(file, language)?.trim_start_matches('\u{feff}').to_string();
+fn front_enabled(files: &dyn ResourceFiles, file: &str, _language: &str) -> Result<bool, String> {
+    let text = skill_text(files, file)?.trim_start_matches('\u{feff}').to_string();
     let Some(rest) = text.strip_prefix("---\n").or_else(|| text.strip_prefix("---\r\n")) else { return Ok(true); };
     let end = rest.find("\n---").unwrap_or(rest.len());
     for line in rest[..end].lines() {
@@ -900,38 +960,41 @@ fn set_yaml_root_list(text: &str, key: &str, values: &[String]) -> String {
 pub fn toggle(db: &Value, kind: &str, scope: &Value, item: &Value, enabled: Option<bool>, language: &str) -> Result<(), String> {
     let enabled = enabled.ok_or_else(|| t(language, "无效的开关状态"))?;
     let (target, mark) = resolve(db, scope, language)?;
-    let found = listed(db, kind, scope, item, language)?;
+    let mut files = LocalFiles { language: language.to_string() };
+    let found = listed(&files, &target, kind, item, language)?;
     // What was read is what is changed: a target changed in between is
     // refused, not written to as it was.
     mark.check(db, scope, language)?;
     if kind == "mcp" {
-        toggle_mcp(&target, &found, enabled, language)
+        toggle_mcp(&mut files, &target, &found, enabled, language)
     } else {
-        toggle_skill(&target, &found, enabled, language)
+        toggle_skill(&mut files, &target, &found, enabled, language)
     }
 }
 
-fn listed(db: &Value, kind: &str, scope: &Value, item: &Value, language: &str) -> Result<Value, String> {
-    let page = list(db, kind, scope, 1, "", language)?;
+/// The one entry of the list an operation is asked of, found by the name
+/// and the path it was listed under.
+fn listed(files: &dyn ResourceFiles, target: &Target, kind: &str, item: &Value, language: &str) -> Result<Value, String> {
+    let page = list_with(files, target, kind, 1, "", language)?;
     let name = item["name"].as_str().unwrap_or("");
     let path = item["path"].as_str().unwrap_or("");
     let mut all = page["items"].as_array().cloned().unwrap_or_default();
     if page["pages"].as_u64().unwrap_or(1) > 1 {
         for index in 2..=page["pages"].as_u64().unwrap_or(1) {
-            let next = list(db, kind, scope, index as usize, "", language)?;
+            let next = list_with(files, target, kind, index as usize, "", language)?;
             all.extend(next["items"].as_array().cloned().unwrap_or_default());
         }
     }
     all.into_iter().find(|entry| entry["name"] == name && entry["path"] == path).ok_or_else(|| t(language, "资源已改变或不属于当前 Agent，请刷新后重试"))
 }
 
-fn toggle_mcp(target: &Target, item: &Value, enabled: bool, language: &str) -> Result<(), String> {
-    let path = Path::new(&target.mcp_path);
-    let before = read_text(path, language)?;
+fn toggle_mcp(files: &mut dyn ResourceFiles, target: &Target, item: &Value, enabled: bool, language: &str) -> Result<(), String> {
+    let path = target.mcp_path.as_str();
+    let before = files.read(path)?;
     let name = item["name"].as_str().unwrap_or("");
     if target.format == "codex" {
         let next = set_toml_enabled(&before, name, enabled).map_err(|_| t(language, "MCP 配置已改变"))?;
-        return atomic_text(path, &before, &next, language);
+        return files.write(path, &before, &next);
     }
     let parks = target.id == "claude" || (target.format == "standard" && target.id != "pi" && target.id != "omp");
     // The mark, if the file starts with one, is put in front of the result.
@@ -949,7 +1012,7 @@ fn toggle_mcp(target: &Target, item: &Value, enabled: bool, language: &str) -> R
         parse_json_text(&moved, language)?;
         if moved.contains("\"enabled\"") && !rest.contains("\"enabled\"") { return Err(t(language, "MCP 配置已改变")); }
         let moved = with_mark(order, &moved);
-        return atomic_text(path, &before, &moved, language);
+        return files.write(path, &before, &moved);
     }
     let config = parse_json_text(&before, language)?;
     let (keys, _, v2) = mcp_root(target, &config, language)?;
@@ -960,36 +1023,36 @@ fn toggle_mcp(target: &Target, item: &Value, enabled: bool, language: &str) -> R
     let next = upsert_json(&rest, &path_keys, raw).map_err(|_| t(language, "JSON 配置存在语法错误，请修复后重试"))?;
     let next = with_mark(order, &next);
     parse_json_text(&next, language)?;
-    atomic_text(path, &before, &next, language)
+    files.write(path, &before, &next)
 }
 
-fn toggle_skill(target: &Target, item: &Value, enabled: bool, language: &str) -> Result<(), String> {
-    let file = PathBuf::from(item["path"].as_str().unwrap_or(""));
+fn toggle_skill(files: &mut dyn ResourceFiles, target: &Target, item: &Value, enabled: bool, language: &str) -> Result<(), String> {
+    let file = item["path"].as_str().unwrap_or("");
     let name = item["name"].as_str().unwrap_or("");
     let settings = settings_file(target);
     if !target.skill_adapter.is_empty() && target.skill_adapter != "portable" && settings.as_os_str().is_empty() {
         return Err(t(language, "请先在执行器高级属性中设置 Skill 配置文件或 MCP 配置文件"));
     }
+    let settings = settings.display().to_string();
     match target.skill_adapter.as_str() {
         "claude" => {
-            let before = read_text(&settings, language)?;
+            let before = files.read(&settings)?;
             let (order, source) = json_edit_source(&before);
             let next = upsert_json(&source, &["skillOverrides", name], if enabled { "\"on\"" } else { "\"off\"" }).map_err(|_| t(language, "JSON 配置存在语法错误，请修复后重试"))?;
             let next = with_mark(order, &next);
             parse_json_text(&next, language)?;
-            atomic_text(&settings, &before, &next, language)?;
-            return Ok(());
+            return files.write(&settings, &before, &next);
         }
-        "codex" => return toggle_codex_skill(&settings, &file.display().to_string(), enabled, language),
-        "opencode" => return toggle_opencode_skill(&settings, name, enabled, language),
-        "pi" => return toggle_pi_skill(&settings, &file.display().to_string(), enabled, language),
-        "omp" => return toggle_omp_skill(&settings, &file, name, enabled, language),
+        "codex" => return toggle_codex_skill(files, &settings, file, enabled, language),
+        "opencode" => return toggle_opencode_skill(files, &settings, name, enabled, language),
+        "pi" => return toggle_pi_skill(files, &settings, file, enabled, language),
+        "omp" => return toggle_omp_skill(files, &settings, file, name, enabled, language),
         _ => {}
     }
-    let source = if enabled { PathBuf::from(format!("{}.awb-disabled", file.display())) } else { file.clone() };
-    let dest = if enabled { file.clone() } else { PathBuf::from(format!("{}.awb-disabled", file.display())) };
-    if dest.exists() { return Err(t(language, "目标文件已存在，未覆盖")); }
-    rename_skill(Path::new(&target.skill_path), &source, &dest, language)
+    let source = if enabled { format!("{file}.awb-disabled") } else { file.to_string() };
+    let dest = if enabled { file.to_string() } else { format!("{file}.awb-disabled") };
+    if files.exists(&dest) { return Err(t(language, "目标文件已存在，未覆盖")); }
+    files.rename_skill(&target.skill_path, &source, &dest)
 }
 
 /// A Skill file given its other name, as the Electron build's `renameSkill`
@@ -1014,16 +1077,16 @@ fn rename_skill(root: &Path, source: &Path, dest: &Path, language: &str) -> Resu
 
 pub fn detail(db: &Value, kind: &str, scope: &Value, item: &Value, language: &str) -> Result<Value, String> {
     let (target, _mark) = resolve(db, scope, language)?;
-    let found = listed(db, kind, scope, item, language)?;
+    let files = LocalFiles { language: language.to_string() };
+    let found = listed(&files, &target, kind, item, language)?;
     if kind == "skills" {
-        let path = PathBuf::from(found["path"].as_str().unwrap_or(""));
-        let disabled = PathBuf::from(format!("{}.awb-disabled", path.display()));
-        let source = if path.is_file() { path } else { disabled };
+        let path = found["path"].as_str().unwrap_or("");
+        let source = if files.exists(path) { path.to_string() } else { format!("{path}.awb-disabled") };
         let mut detail = found;
-        detail["content"] = json!(read_text(&source, language)?);
+        detail["content"] = json!(files.read(&source)?);
         return Ok(detail);
     }
-    let text = read_text(Path::new(&target.mcp_path), language)?;
+    let text = files.read(&target.mcp_path)?;
     let config = parse_config(&target, &text, language)?;
     // `servers[item.name] || object(config.awbDisabledMcp || {})[item.name]`:
     // the active entry when it is true to JavaScript, else the parked one;
@@ -1111,7 +1174,7 @@ pub fn skill_directory(db: &Value, scope: &Value, item: &Value, removing: bool, 
     let mark = fingerprint(db, scope, language)?;
     if scope_of(scope).0 != "local" { return Err(t(language, "此操作仅适用于本机 Skill")) }
     let (target, _) = resolve(db, scope, language)?;
-    let found = listed(db, "skills", scope, item, language)?;
+    let found = listed(&LocalFiles { language: language.to_string() }, &target, "skills", item, language)?;
     mark.check(db, scope, language)?;
     let folder = Path::new(found["path"].as_str().unwrap_or("")).parent().ok_or_else(|| t(language, "Skill 路径不属于当前 Agent"))?.to_path_buf();
     let roots = skill_roots(&target);
@@ -1187,11 +1250,12 @@ fn write_mcp_entries(resources: &Resources, db: &Value, entries: &[Value], scope
             validate_mcp_config(&entry["config"], language)?;
         }
     }
-    distribute(resources, db, "mcp", entries, scopes, language, &mut |target, entry| {
+    distribute(resources, db, "mcp", entries, scopes, language, &mut |scoped, entry| {
         let config = entry.get("config").filter(|config| config.is_object());
         if config.is_none() || entry.get("error").is_some() { return Err(entry["error"].as_str().map(|error| error.to_string()).unwrap_or_else(|| t(language, "无效配置")).into()) }
         let enabled = entry["enabled"].as_bool().unwrap_or(false);
-        write_mcp(target, entry["name"].as_str().unwrap_or(""), config.expect("checked to be there"), enabled, language)
+        let Scoped { target, files, .. } = scoped;
+        write_mcp(files.as_mut(), target, entry["name"].as_str().unwrap_or(""), config.expect("checked to be there"), enabled, language)
     })
 }
 
@@ -1240,14 +1304,14 @@ fn validate_mcp_config(config: &Value, language: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn write_mcp(target: &Target, name: &str, config: &Value, enabled: bool, language: &str) -> Result<(), Refused> {
+fn write_mcp(files: &mut dyn ResourceFiles, target: &Target, name: &str, config: &Value, enabled: bool, language: &str) -> Result<(), Refused> {
     if target.mcp_path.is_empty() { return Err(t(language, "请先设置这个 Agent 的 MCP 配置路径").into()) }
-    let path = Path::new(&target.mcp_path);
-    let before = read_text(path, language)?;
+    let path = target.mcp_path.as_str();
+    let before = files.read(path).map_err(Refused::from)?;
     if target.format == "codex" {
         if toml_servers(&before, language)?.iter().any(|(existing, _)| existing == name) { return Err(Refused::duplicate(t(language, "已存在同名 MCP，保留原配置"))); }
         let next = format!("{before}{}", toml_table(name, config, enabled));
-        return atomic_text(path, &before, &next, language).map_err(Refused::from);
+        return files.write(path, &before, &next).map_err(Refused::from);
     }
     let parsed = parse_json_text(&before, language)?;
     let (keys, servers, v2) = mcp_root(target, &parsed, language)?;
@@ -1267,7 +1331,7 @@ fn write_mcp(target: &Target, name: &str, config: &Value, enabled: bool, languag
     let next = upsert_json(&source, &json_keys, &raw).map_err(|_| t(language, "JSON 配置存在语法错误，请修复后重试"))?;
     let next = with_mark(order, &next);
     parse_json_text(&next, language)?;
-    atomic_text(path, &before, &next, language).map_err(Refused::from)
+    files.write(path, &before, &next).map_err(Refused::from)
 }
 
 fn mcp_value(target: &Target, config: &Value, enabled: bool, v2: bool, parked: bool) -> Value {
@@ -1506,11 +1570,22 @@ impl From<String> for Refused {
 
 /// One executor's resources as a distribution uses them: what was found for
 /// it, and what it must still be when a write is about to happen.
-struct Scoped { target: Target, mark: Option<Fingerprint> }
+/// A scope as an operation has it: the executor's target, what it came to
+/// when it was resolved (asked of again before anything is written), and
+/// the files its resources are in.
+struct Scoped { target: Target, mark: Option<Fingerprint>, files: Box<dyn ResourceFiles> }
 
 impl std::ops::Deref for Scoped {
     type Target = Target;
     fn deref(&self) -> &Target { &self.target }
+}
+
+impl Scoped {
+    /// Whether the machine or the template of the scope is still what it
+    /// was when the scope was resolved.
+    fn check(&self, db: &Value, language: &str) -> Result<(), String> {
+        self.mark.as_ref().map(|mark| mark.check(db, &json!({ "hostId": self.target.host_id, "executorId": self.target.id }), language)).unwrap_or(Ok(()))
+    }
 }
 
 /// What every entry comes to on every scope. A scope that cannot be used
@@ -1518,7 +1593,7 @@ impl std::ops::Deref for Scoped {
 /// Two executors that share a configuration file have it written once, and
 /// the second is told what the first was, as the Electron build's distribute
 /// has it. The entries are given with a name and, where they have one, an id.
-fn distribute(resources: &Resources, db: &Value, kind: &str, entries: &[Value], scopes: &[Value], language: &str, run: &mut dyn FnMut(&Scoped, &Value) -> Result<(), Refused>) -> Result<Value, String> {
+fn distribute(resources: &Resources, db: &Value, kind: &str, entries: &[Value], scopes: &[Value], language: &str, run: &mut dyn FnMut(&mut Scoped, &Value) -> Result<(), Refused>) -> Result<Value, String> {
     if resources.busy.swap(true, Ordering::SeqCst) { return Err(t(language, "正在分发资源，请稍候")) }
     let result = (|| {
         if scopes.is_empty() { return Err(t(language, "请选择至少一个 Code Agent")) }
@@ -1554,9 +1629,9 @@ fn distribute(resources: &Resources, db: &Value, kind: &str, entries: &[Value], 
                 let canonical = local_canonical(Path::new(file)).map_err(Refused::from)?;
                 let identity = if cfg!(windows) { canonical.to_string_lossy().to_lowercase() } else { canonical.to_string_lossy().to_string() };
                 mark.check(db, &json!({ "hostId": host_id, "executorId": id }), language).map_err(Refused::from)?;
-                Ok((Scoped { target, mark: Some(mark) }, identity))
+                Ok((Scoped { target, mark: Some(mark), files: Box::new(LocalFiles { language: language.to_string() }) }, identity))
             })();
-            let (scoped, identity) = match found {
+            let (mut scoped, identity) = match found {
                 Ok(found) => found,
                 Err(refused) => {
                     for entry in entries { results.push(outcome(entry, &failed(&refused))); }
@@ -1569,7 +1644,7 @@ fn distribute(resources: &Resources, db: &Value, kind: &str, entries: &[Value], 
                 let result = match done {
                     Some(done) => Ok(done),
                     None => {
-                        let tried = scoped.mark.as_ref().expect("a scope that was found has its mark").check(db, &json!({ "hostId": host_id, "executorId": id }), language).map_err(Refused::from).and_then(|()| run(&scoped, entry));
+                        let tried = scoped.check(db, language).map_err(Refused::from).and_then(|()| run(&mut scoped, entry));
                         let value = match &tried {
                             Ok(()) => json!({ "ok": true }),
                             Err(refused) => failed(refused),
@@ -1856,9 +1931,9 @@ pub fn import_skills(resources: &Resources, db: &Value, source: &str, scopes: &[
         // already on one executor is kept and only that one is said to be
         // skipped, as the Electron build's installSkill has it.
         let entries = skills.iter().map(|skill| json!({ "name": skill.name, "folder": skill.folder, "relative": skill.relative })).collect::<Vec<_>>();
-        let found = distribute(resources, db, "skills", &entries, scopes, language, &mut |target, entry| {
+        let found = distribute(resources, db, "skills", &entries, scopes, language, &mut |scoped, entry| {
             let skill = skills.iter().find(|skill| skill.name == entry["name"].as_str().unwrap_or("")).expect("every entry is a found Skill");
-            install_skills(target, std::slice::from_ref(skill), language)
+            install_skills(&scoped.target, std::slice::from_ref(skill), language)
         })?;
         Ok(found)
     })();
@@ -1935,7 +2010,9 @@ fn stage_skills(source: &Path, language: &str) -> Result<(PathBuf, Vec<StagedSki
 fn discover_skills(folder: &Path, staging: &Path, skills: &mut Vec<StagedSkill>, language: &str) -> Result<(), String> {
     let file = folder.join("SKILL.md");
     if file.is_file() {
-        let info = skill_info(&file, language)?;
+        // A package is always on this machine: it is read from here before
+        // it is given to anyone.
+        let info = skill_info(&LocalFiles { language: language.to_string() }, &file.display().to_string(), language)?;
         let relative = folder.strip_prefix(staging).unwrap_or(Path::new(".")).display().to_string();
         skills.push(StagedSkill { folder: folder.to_path_buf(), name: info.name, description: info.description, relative: if relative.is_empty() { ".".into() } else { relative } });
     }

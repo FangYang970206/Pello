@@ -242,6 +242,16 @@ const cases = [
   // the user is told a server that failed to be written was only skipped.
   ['AWB086', 'src-tauri/core/src/resources.rs', 'json!({ "ok": false, "error": error.message, "skipped": error.duplicate })', 'json!({ "ok": false, "error": error.message, "skipped": true })'],
   ['AWB086', 'src-tauri/core/src/resources.rs', 'result["skipped"] = json!(outcome["skipped"].as_bool().unwrap_or(false));', 'result["skipped"] = json!(true);'],
+  // The files of the machine that has them stand between a resource
+  // operation and the configuration. The local ones must lead to the two
+  // functions above, or the strict decoding, the BOM and the check of the
+  // file's identity are stepped around.
+  ['AWB086', 'src-tauri/core/src/resources.rs', '        read_text(Path::new(file), &self.language)', '        fs::read_to_string(file).map_err(|error| error.to_string())'],
+  ['AWB086', 'src-tauri/core/src/resources.rs', '        atomic_text(Path::new(file), before, next, &self.language)', '        fs::write(file, next).map_err(|error| error.to_string())'],
+  ['AWB086', 'src-tauri/core/src/resources.rs', '        rename_skill(Path::new(root), Path::new(source), Path::new(dest), &self.language)', '        fs::rename(source, dest).map_err(|error| error.to_string())'],
+  // A Skill named as the list showed it, read through the files, not from
+  // the path given by the one who asked.
+  ['AWB086', 'src-tauri/core/src/resources.rs', 'fn skill_info(files: &dyn ResourceFiles, file: &str, language: &str) -> Result<SkillInfo, String> {', 'fn skill_info(files: &dyn ResourceFiles, file: &Path, language: &str) -> Result<SkillInfo, String> {'],
   // A scope read wrong; a machine not asked before the executor; a template
   // that does not come before the executor's own paths; a key said of a
   // target as an empty string.
@@ -264,6 +274,9 @@ const cases = [
   ['AWB089', 'src-tauri/core/src/resources.rs', 'if scopes.is_empty() { return Err(t(language, "请选择至少一个 Code Agent")) }', ''],
   ['AWB089', 'src-tauri/core/src/resources.rs', 'result["skipped"] = json!(outcome["skipped"].as_bool().unwrap_or(false));', 'result["skipped"] = json!(true);'],
   ['AWB089', 'src-tauri/core/src/resources.rs', 'resources.busy.store(false, Ordering::SeqCst);', ''],
+  // The files handed to an operation before the guard is asked again; a
+  // change made in between is written as if it had not been.
+  ['AWB089', 'src-tauri/core/src/resources.rs', 'scoped.check(db, language).map_err(Refused::from).and_then(|()| run(&mut scoped, entry));', 'run(&mut scoped, entry);'],
   // A Skill folder opened on another machine.
   ['AWB089', 'src-tauri/core/src/resources.rs', 'if scope_of(scope).0 != "local" { return Err(t(language, "此操作仅适用于本机 Skill")) }', ''],
   // The arguments of the Skill channels moved over by one; a target read for
