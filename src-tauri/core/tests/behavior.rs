@@ -209,6 +209,35 @@ fn fresh_database_defaults_to_chinese_light_theme_and_update_checks() {
 }
 
 #[test]
+fn the_about_page_is_told_the_version_the_author_in_its_language_and_where_the_workbench_is_published() {
+    let root = temp_dir("about");
+    let (bench, _) = workbench(&root);
+    // The version is the one the package is built as, the author is named in
+    // the language of the interface, and the homepage is the one place.
+    let meta = bench.dispatch("app:meta", &[]).unwrap();
+    assert_eq!(meta["version"], env!("CARGO_PKG_VERSION"), "{meta}");
+    assert_eq!(meta["author"], "方阳", "{meta}");
+    assert_eq!(meta["homepage"], "https://github.com/FangYang970206/Pello", "{meta}");
+    assert_eq!(meta["platform"], if cfg!(windows) { "win32" } else if cfg!(target_os = "macos") { "darwin" } else { std::env::consts::OS }, "{meta}");
+    // The capture flags the tour and the screenshots read are still told.
+    assert_eq!(meta["capture"], false, "{meta}");
+    assert!(meta.get("shots").is_some(), "{meta}");
+    // Settings are saved as a whole: the current ones with the language changed.
+    let mut settings = bench.dispatch("db:get", &[]).unwrap()["db"]["settings"].clone();
+    settings["language"] = json!("en");
+    bench.dispatch("db:settings", &[settings]).unwrap();
+    let english = bench.dispatch("app:meta", &[]).unwrap();
+    assert_eq!(english["author"], "FangYang", "{english}");
+    // The homepage that is opened is the one the page was told.
+    let open_log = root.join("open.log");
+    let _open_bin = var_guard("AWB_OPEN_BIN", "true");
+    let _open_log = var_guard("AWB_OPEN_LOG", open_log.to_str().unwrap());
+    assert!(bench.dispatch("app:homepage", &[]).unwrap().is_null());
+    assert_eq!(fs::read_to_string(&open_log).unwrap_or_default().lines().collect::<Vec<_>>(), ["https://github.com/FangYang970206/Pello"]);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn migration_publishes_one_copy_and_does_not_overwrite_or_follow_links() {
     let root = temp_dir("migrate");
     let legacy = root.join("legacy");

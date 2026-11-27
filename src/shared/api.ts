@@ -70,6 +70,7 @@ export interface WorkbenchApi {
   createTemporarySession(root?: string): Promise<{ database: Database; projectId: string }>
   checkPath(hostId: string, input: string): Promise<PathCheck>
   listDir(hostId: string, input: string): Promise<DirListing>
+  browseResources(hostId: string, input: string, files: boolean): Promise<DirListing>
   gitStatus(projectId: string, rescan?: boolean): Promise<GitPanel & { untracked: Record<string, boolean> }>
   gitDiff(projectId: string, rel: string, untracked: boolean): Promise<FileDiff>
   gitDiscard(projectId: string, rel: string, untracked: boolean): Promise<boolean>
@@ -132,7 +133,8 @@ export interface WorkbenchApi {
   winClose(): Promise<void>
   winResize(width: number, height: number): Promise<void>
   shot(name: string): Promise<boolean>
-  meta(): Promise<{ capture: boolean; platform: string; shots: boolean }>
+  meta(): Promise<{ version: string; author: string; homepage: string; capture: boolean; platform: string; shots: boolean }>
+  openHomepage(): Promise<void>
 }
 
 export type { GitFile }

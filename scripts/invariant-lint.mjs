@@ -524,6 +524,14 @@ export function checkInvariants(files) {
     'AWB090', 'src-tauri/core/src/resources.rs', '浏览：空输入是主机的家目录，其余按主机平台归一化为绝对路径')
   require(scopedBrowseRemote.includes('if files { result["files"] = json!(entries(listed.files)); }'),
     'AWB090', 'src-tauri/core/src/remote_resources.rs', '浏览：只在要求时带出文件')
+  // The About page is told where the workbench is published, and the link on
+  // it opens that very address: one constant is both, and the author is named
+  // in the language of the interface.
+  const homepage = /const HOMEPAGE: &str = "([^"]+)";/.exec(workbench)?.[0] || ''
+  require(homepage === 'const HOMEPAGE: &str = "https://github.com/FangYang970206/Pello";' && workbench.split(homepage).length === 2 && scopedDispatch.includes('"version": env!("CARGO_PKG_VERSION")') && scopedDispatch.includes('"author": if language == "en" { "FangYang" } else { "方阳" }') && scopedDispatch.includes('"homepage": HOMEPAGE') && scopedDispatch.includes('"app:homepage" => { shell::open_external(HOMEPAGE); Ok(Value::Null) }'),
+    'AWB091', 'src-tauri/core/src/workbench.rs', '关于页：版本、随界面语言的作者与唯一的主页地址；app:homepage 打开的就是告诉页面的那个地址')
+  require(/browseResources: \(hostId, input, files\) => call\('resources:browse', \[hostId, input, files\]\)/.test(scopedBridge) && /openHomepage: \(\) => call\('app:homepage'\)/.test(scopedBridge),
+    'AWB091', 'src/renderer/tauri-awb.ts', '桥接层声明 browseResources 与 openHomepage')
   return errors
 }
 

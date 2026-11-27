@@ -344,6 +344,14 @@ const cases = [
   ['AWB090', 'src-tauri/core/src/resources.rs', 'let path = if input.is_empty() { String::new() } else { crate::templates::resource_path(input, windows, language)? };', 'let path = input.to_string();'],
   ['AWB090', 'src-tauri/core/src/resources.rs', 'let host = crate::templates::machine(db, host_id, true, language)?.clone();', 'let host = db["hosts"].as_array().expect("hosts").iter().find(|host| host["id"] == host_id).cloned().expect("host");'],
   ['AWB090', 'src-tauri/core/src/remote_resources.rs', 'if files { result["files"] = json!(entries(listed.files)); }', 'result["files"] = json!(entries(listed.files));'],
+  // An About page told one address and a link opening another; an author
+  // named in one language whatever the interface speaks; a bridge without
+  // the two members the page and the resource dialogs call.
+  ['AWB091', 'src-tauri/core/src/workbench.rs', '"app:homepage" => { shell::open_external(HOMEPAGE); Ok(Value::Null) }', '"app:homepage" => { shell::open_external("https://github.com/FangYang970206/Pello"); Ok(Value::Null) }'],
+  ['AWB091', 'src-tauri/core/src/workbench.rs', '"author": if language == "en" { "FangYang" } else { "方阳" }', '"author": "方阳"'],
+  ['AWB091', 'src-tauri/core/src/workbench.rs', '"version": env!("CARGO_PKG_VERSION")', '"version": "0.1.18"'],
+  ['AWB091', 'src/renderer/tauri-awb.ts', "browseResources: (hostId, input, files) => call('resources:browse', [hostId, input, files])", "browseResources: (hostId, input, files) => call('path:list', [hostId, input])"],
+  ['AWB091', 'src/renderer/tauri-awb.ts', "openHomepage: () => call('app:homepage')", ''],
   ['AWB088', 'src-tauri/core/src/workbench.rs', '.map(|template| template["env"].as_array().cloned().unwrap_or_default()).unwrap_or_else(|| request["env"].as_array().cloned().unwrap_or_default())', '.map(|template| [template["env"].as_array().cloned().unwrap_or_default(), request["env"].as_array().cloned().unwrap_or_default()].concat()).unwrap_or_default()'],
   ['AWB088', 'src-tauri/core/src/workbench.rs', 'templates::prune(&mut next);\n        for binding in bindings.as_array().cloned().unwrap_or_default() {', 'for binding in bindings.as_array().cloned().unwrap_or_default() {'],
 ]

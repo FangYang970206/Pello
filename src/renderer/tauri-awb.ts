@@ -65,6 +65,7 @@ const api: WorkbenchApi = {
   createTemporarySession: (root) => call('temporary:create', [root ?? null]),
   checkPath: (hostId, input) => call('path:check', [hostId, input]),
   listDir: (hostId, input) => call('path:list', [hostId, input]),
+  browseResources: (hostId, input, files) => call('resources:browse', [hostId, input, files]),
   gitStatus: (projectId, rescan) => call('git:status', [projectId, rescan ?? false]),
   gitDiff: (projectId, rel, untracked) => call('git:diff', [projectId, rel, untracked]),
   gitDiscard: (projectId, rel, untracked) => call('git:discard', [projectId, rel, untracked]),
@@ -127,7 +128,8 @@ const api: WorkbenchApi = {
   winClose: () => call('win:close'),
   winResize: (width, height) => call('win:resize', [width, height]),
   shot: (name) => call('app:shot', [name]),
-  meta: () => call('app:meta')
+  meta: () => call('app:meta'),
+  openHomepage: () => call('app:homepage')
 }
 
 /**

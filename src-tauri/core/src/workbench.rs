@@ -300,7 +300,11 @@ impl Workbench {
             "app:update-check" => self.update_check(),
             "app:update-download" => self.update_download(),
             "app:update-install" => Ok(json!(self.update_install())),
-            "app:meta" => Ok(json!({ "capture": std::env::var("AWB_CAPTURE").ok().as_deref() == Some("1"), "platform": node_platform(), "shots": std::env::var_os("AWB_SHOTS").is_some() })),
+            "app:meta" => {
+                let language = self.db.lock().expect("db")["settings"]["language"].as_str().unwrap_or("zh-CN").to_string();
+                Ok(json!({ "version": env!("CARGO_PKG_VERSION"), "author": if language == "en" { "FangYang" } else { "方阳" }, "homepage": HOMEPAGE, "capture": std::env::var("AWB_CAPTURE").ok().as_deref() == Some("1"), "platform": node_platform(), "shots": std::env::var_os("AWB_SHOTS").is_some() }))
+            }
+            "app:homepage" => { shell::open_external(HOMEPAGE); Ok(Value::Null) }
             "app:shot" => Ok(json!(false)),
             "dialog:directory" => self.pick_directory(&language),
             "dialog:picker" => self.picker(args.first().cloned().unwrap_or(json!({})), &language),
@@ -1694,6 +1698,10 @@ fn session_ids(db: &Value) -> Vec<String> {
     }
     ids
 }
+
+/// Where the workbench is published, as the Electron build's `APP_HOMEPAGE`
+/// says of it: opened from the About page.
+const HOMEPAGE: &str = "https://github.com/FangYang970206/Pello";
 
 /// The kind of the terminal made to test an executor: not a Shell and none
 /// of the Agents, known by its name wherever a terminal is told apart.

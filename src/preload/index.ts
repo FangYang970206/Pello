@@ -43,6 +43,7 @@ const api: WorkbenchApi = {
   createTemporarySession: (root) => ipcRenderer.invoke('temporary:create', root),
   checkPath: (hostId, input) => ipcRenderer.invoke('path:check', hostId, input),
   listDir: (hostId, input) => ipcRenderer.invoke('path:list', hostId, input),
+  browseResources: (hostId, input, files) => ipcRenderer.invoke('resources:browse', hostId, input, files),
   gitStatus: (projectId, rescan) => ipcRenderer.invoke('git:status', projectId, rescan),
   gitDiff: (projectId, rel, untracked) => ipcRenderer.invoke('git:diff', projectId, rel, untracked),
   gitDiscard: (projectId, rel, untracked) => ipcRenderer.invoke('git:discard', projectId, rel, untracked),
@@ -124,7 +125,8 @@ const api: WorkbenchApi = {
   winClose: () => ipcRenderer.invoke('win:close'),
   winResize: (width, height) => ipcRenderer.invoke('win:resize', width, height),
   shot: (name) => ipcRenderer.invoke('app:shot', name),
-  meta: () => ipcRenderer.invoke('app:meta')
+  meta: () => ipcRenderer.invoke('app:meta'),
+  openHomepage: () => ipcRenderer.invoke('app:homepage')
 }
 
 contextBridge.exposeInMainWorld('awb', api)
