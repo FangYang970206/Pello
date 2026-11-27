@@ -8,6 +8,7 @@ import { PRESETS, cmdline, hostDisplayName, hostLine, preferredAgent, shellLabel
 import { useLocalShells } from './useLocalShells'
 import { ResourceSettings } from './ResourceSettings'
 import { AppUpdate } from './AppUpdate'
+import { AboutView } from './AboutView'
 import { CODE_FONTS, UI_FONTS } from '../shared/fonts'
 import { THEMES } from '../shared/themes'
 import { Icon, type IconName, Mark } from './icons'
@@ -19,7 +20,8 @@ const SECTIONS: { id: SettingsSection; label: string; icon: IconName }[] = [
   { id: 'hosts', get label() { return t("远程机器") }, icon: 'server' },
   { id: 'mcp', label: 'MCP', icon: 'puzzle' },
   { id: 'skills', label: 'Skill', icon: 'file' },
-  { id: 'keys', get label() { return t("快捷键") }, icon: 'key' }
+  { id: 'keys', get label() { return t("快捷键") }, icon: 'key' },
+  { id: 'about', get label() { return t("关于") }, icon: 'info' }
 ]
 
 const LEADS: Record<SettingsSection, string> = {
@@ -29,7 +31,8 @@ const LEADS: Record<SettingsSection, string> = {
   get hosts() { return t("项目可以运行在本机或通过 SSH 连接的远程机器上") },
   get mcp() { return t("管理各个 Code Agent 的 MCP 服务器") },
   get skills() { return t("查看与分发 Code Agent 的 Skill") },
-  get keys() { return t("键盘快捷键") }
+  get keys() { return t("键盘快捷键") },
+  about: ''
 }
 
 function Row({ title, desc, control, lead }: { title: string; desc?: ReactNode; control?: ReactNode; lead?: ReactNode }) {
@@ -345,6 +348,7 @@ export function SettingsView({
     )
   }
   if (section === 'mcp' || section === 'skills') body = <ResourceSettings key={section} kind={section} />
+  if (section === 'about') body = <AboutView />
   if (section === 'keys') {
     const rows: [string, string][] = [
       [t("新建项目"), 'Ctrl N'],
@@ -425,8 +429,8 @@ export function SettingsView({
       </nav>
       <div className="scontent">
         <div className="scol">
-          <h1>{title}</h1>
-          <p className="lead">{LEADS[section]}</p>
+          {section !== 'about' ? <h1>{title}</h1> : null}
+          {LEADS[section] ? <p className="lead">{LEADS[section]}</p> : null}
           {body}
         </div>
       </div>

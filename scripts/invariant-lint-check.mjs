@@ -364,6 +364,17 @@ const cases = [
   ['AWB092', 'src-tauri/core/src/workbench.rs', 'args.get(2).and_then(|value| value.as_str()), &language)?.unwrap_or(Value::Null)),', 'None, &language)?.unwrap_or(Value::Null)),'],
   ['AWB088', 'src-tauri/core/src/workbench.rs', '.map(|template| template["env"].as_array().cloned().unwrap_or_default()).unwrap_or_else(|| request["env"].as_array().cloned().unwrap_or_default())', '.map(|template| [template["env"].as_array().cloned().unwrap_or_default(), request["env"].as_array().cloned().unwrap_or_default()].concat()).unwrap_or_default()'],
   ['AWB088', 'src-tauri/core/src/workbench.rs', 'templates::prune(&mut next);\n        for binding in bindings.as_array().cloned().unwrap_or_default() {', 'for binding in bindings.as_array().cloned().unwrap_or_default() {'],
+  // The About page shown with the page heading drawn a second time; its
+  // homepage link navigating itself instead of the kernel opening it; a made
+  // up version on it; its logo not blinking any more.
+  ['AWB093', 'src/renderer/SettingsView.tsx', "if (section === 'about') body = <AboutView />", "if (section === 'none') body = <AboutView />"],
+  ['AWB093', 'src/renderer/SettingsView.tsx', "{section !== 'about' ? <h1>{title}</h1> : null}", '<h1>{title}</h1>'],
+  ['AWB093', 'src/renderer/SettingsView.tsx', '{LEADS[section] ? <p className="lead">{LEADS[section]}</p> : null}', '<p className="lead">{LEADS[section]}</p>'],
+  ['AWB093', 'src/renderer/AboutView.tsx', 'event.preventDefault(); void window.awb.openHomepage()', 'void window.open(meta.homepage)'],
+  ['AWB093', 'src/renderer/AboutView.tsx', "<dd data-about=\"version\">{meta ? `v${meta.version}` : '—'}</dd>", '<dd data-about="version">v1.0.0</dd>'],
+  ['AWB093', 'src/renderer/styles/extra.css', 'animation: pello-blink 1.6s ease-in-out; }', '}'],
+  ['AWB093', 'src/renderer/styles/extra.css', '@media (prefers-reduced-motion: reduce) { .about-eye { animation: none; } }', '.about-reduced { display: none; }'],
+  ['AWB093', 'package.json', '"check:about": "node scripts/about-check.mjs",', ''],
 ]
 cases.forEach(([id, file, before, after], index) => {
   const mutated = new Map(files)

@@ -547,6 +547,21 @@ export function checkInvariants(files) {
     'AWB092', 'src-tauri/core/src/git.rs', '读取主机文件：只有主机说文件不存在才算丢失，主机问不到是错误；版本戳相同则不再发送')
   require(scopedDispatch.includes('"git:refresh" => Ok(self.git_refresh(&str_arg(args, 0), str_arg(args, 1), args.get(2).and_then(|value| value.as_str()), &language)?.unwrap_or(Value::Null)),') && /gitRefresh: \(projectId, rel, stamp\) => call\('git:refresh', \[projectId, rel, stamp \?\? null\]\)/.test(scopedBridge),
     'AWB092', 'src-tauri/core/src/workbench.rs', 'git:refresh 的第三参是可选的版本戳；未变时返回 null')
+  // The About page is one more settings section. It draws its own heading, so
+  // the page title and the lead line are not drawn twice; the brand, the
+  // version, the author and the one homepage all come from the kernel; the
+  // link is opened by the kernel, not by the page; and blinking honours the
+  // reduced-motion setting.
+  const aboutView = files.get('src/renderer/AboutView.tsx') || ''
+  const settingsView = files.get('src/renderer/SettingsView.tsx') || ''
+  const extraCss = files.get('src/renderer/styles/extra.css') || ''
+  const aboutSection = /\{ id: 'about', get label\(\) \{ return t\("关于"\) \}, icon: 'info' \}/.exec(files.get('src/renderer/SettingsView.tsx') || '')?.[0] || ''
+  require(aboutSection === `{ id: 'about', get label() { return t("关于") }, icon: 'info' }` && settingsView.includes('if (section === \'about\') body = <AboutView />') && settingsView.includes("{section !== 'about' ? <h1>{title}</h1> : null}") && settingsView.includes("{LEADS[section] ? <p className=\"lead\">{LEADS[section]}</p> : null}"),
+    'AWB093', 'src/renderer/SettingsView.tsx', '关于页是设置的独立一栏：自己绘制标题，不再叠加页标题和引导语')
+  require(aboutView.includes('void window.awb.meta().then((value) => { if (current) { setMeta(value); setError(\'\') } })') && aboutView.includes('<dd data-about="version">{meta ? `v${meta.version}` : \'—\'}</dd>') && aboutView.includes("event.preventDefault(); void window.awb.openHomepage()") && !aboutView.includes('<a href={meta.homepage} target=') && !aboutView.includes("window.open("),
+    'AWB093', 'src/renderer/AboutView.tsx', '关于页：版本、作者与主页来自内核；主页链接由内核打开，页面不自己导航')
+  require(aboutView.includes("about: ''") === false && files.get('src/shared/types.ts')?.includes("| 'keys' | 'about'") && extraCss.includes('.about-eye { transform-box: fill-box; transform-origin: center; animation: pello-blink 1.6s ease-in-out; }') && extraCss.includes('@keyframes pello-blink') && /@media \(prefers-reduced-motion: reduce\) \{ \.about-eye \{ animation: none; \} \}/.test(extraCss) && scripts['check:about']?.includes('scripts/about-check.mjs'),
+    'AWB093', 'src/renderer/styles/extra.css', '关于页：图标眨眼，尊重减少动态效果；about 是正式的设置栏目类型')
   return errors
 }
 

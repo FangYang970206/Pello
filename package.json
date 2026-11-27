@@ -26,6 +26,7 @@
     "check:rust": "node scripts/rust-port-check.mjs",
     "check:diagram": "node scripts/tauri-diagram-check.mjs",
     "check:window": "node scripts/tauri-window-check.mjs",
+    "check:about": "node scripts/about-check.mjs",
     "dev:tauri:web": "vite --config vite.tauri.config.ts",
     "build:tauri:web": "vite build --config vite.tauri.config.ts",
     "dev:tauri": "node scripts/tauri-helper.mjs && tauri dev",

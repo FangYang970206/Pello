@@ -381,3 +381,20 @@ kbd {
 .app-update-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .app-update-actions .btn { display: inline-flex; align-items: center; gap: 8px; }
 .app-update-error { padding: 0 16px 14px; color: var(--red); }
+.about-view { container-type: inline-size; max-width: 480px; margin: 0 auto; padding: 40px 0 0; text-align: center; }
+.about-logo { width: 128px; height: 128px; margin: 0 auto 24px; }
+.about-logo svg { display: block; width: 100%; height: 100%; }
+.about-eye { transform-box: fill-box; transform-origin: center; animation: pello-blink 1.6s ease-in-out; }
+@keyframes pello-blink { 0%, 25%, 37%, 53%, 65%, 100% { transform: scaleY(1); } 31%, 59% { transform: scaleY(.08); } }
+.about-view h1 { font-size: 32px; line-height: 1.25; font-weight: 620; letter-spacing: -.02em; }
+.about-description { color: var(--muted); margin: 8px 0 32px; text-wrap: balance; }
+.about-details { text-align: left; border-top: 1px solid var(--line); }
+.about-details > div { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--line); }
+.about-details dt { color: var(--muted); }
+.about-details dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.about-details a { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; color: var(--text); text-decoration: underline; text-decoration-color: var(--line2); text-underline-offset: 4px; }
+.about-details a:hover { color: var(--accent); text-decoration-color: currentColor; }
+.about-details a .i { flex: none; }
+.about-error { display: flex; justify-content: center; align-items: center; gap: 12px; margin-top: 16px; color: var(--red); }
+@container (max-width: 420px) { .about-details > div { grid-template-columns: minmax(0, 1fr); gap: 4px; padding: 12px 0; } }
+@media (prefers-reduced-motion: reduce) { .about-eye { animation: none; } }

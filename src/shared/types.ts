@@ -4,7 +4,7 @@ export type ShellKind = 'pwsh' | 'cmd' | 'bash' | 'zsh'
 export type LocalShell = { id: ShellKind; label: string; path: string }
 export type OsKind = 'windows' | 'linux'
 export type ProcState = 'running' | 'idle' | 'exited' | 'failed'
-export type SettingsSection = 'general' | 'look' | 'agents' | 'hosts' | 'mcp' | 'skills' | 'keys'
+export type SettingsSection = 'general' | 'look' | 'agents' | 'hosts' | 'mcp' | 'skills' | 'keys' | 'about'
 export type ChangeStatus = 'M' | 'A' | 'D'
 
 export interface EnvVar {
