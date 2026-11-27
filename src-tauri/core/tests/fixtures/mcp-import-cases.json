@@ -1,0 +1,470 @@
+{
+ "toml-plain": {
+  "file": "a.toml",
+  "text": "[mcp_servers.one]\ncommand = \"tool\"\nargs = [\"a\"]\n\n[mcp_servers.two]\nurl = \"https://example.com/mcp\"\n"
+ },
+ "toml-quoted": {
+  "file": "a.toml",
+  "text": "[mcp_servers.\"my.server\"]\ncommand = \"tool\"\n"
+ },
+ "toml-env": {
+  "file": "a.toml",
+  "text": "[mcp_servers.one]\ncommand = \"tool\"\n[mcp_servers.one.env]\nA = \"1\"\nB = \"2\"\n"
+ },
+ "toml-dotted": {
+  "file": "a.toml",
+  "text": "[mcp_servers.one]\ncommand = \"tool\"\nenv = { A = \"1\", B = \"2\" }\n"
+ },
+ "toml-deep": {
+  "file": "a.toml",
+  "text": "[a.b.mcp_servers.one]\ncommand = \"tool\"\n"
+ },
+ "toml-context": {
+  "file": "a.toml",
+  "text": "[context_servers.one]\ncommand = \"tool\"\n"
+ },
+ "toml-mcpservers": {
+  "file": "a.toml",
+  "text": "[mcpServers.one]\ncommand = \"tool\"\n"
+ },
+ "toml-arraycollection": {
+  "file": "a.toml",
+  "text": "mcp_servers = [{ command = \"tool\" }, { url = \"https://e.com\" }]\n"
+ },
+ "toml-root": {
+  "file": "my.server.tool.toml",
+  "text": "command = \"tool\"\n"
+ },
+ "toml-rootnamed": {
+  "file": "a.toml",
+  "text": "name = \"mine\"\ncommand = \"tool\"\n"
+ },
+ "toml-notobject": {
+  "file": "a.toml",
+  "text": "mcp_servers = 7\n"
+ },
+ "toml-empty": {
+  "file": "a.toml",
+  "text": ""
+ },
+ "toml-syntax": {
+  "file": "a.toml",
+  "text": "[mcp_servers.one\ncommand = \"tool\"\n"
+ },
+ "toml-comment": {
+  "file": "a.toml",
+  "text": "# c\n[mcp_servers.one] # c\ncommand = \"tool\" # c\n"
+ },
+ "toml-spaced": {
+  "file": "a.toml",
+  "text": "[ mcp_servers . one ]\ncommand = \"tool\"\n"
+ },
+ "toml-commandarray": {
+  "file": "a.toml",
+  "text": "[mcp_servers.one]\ncommand = [\"node\", \"x.js\"]\n"
+ },
+ "toml-headers": {
+  "file": "a.toml",
+  "text": "[mcp_servers.one]\ncommand = \"tool\"\nheaders = { A = \"B\" }\n"
+ },
+ "toml-backslash": {
+  "file": "a.toml",
+  "text": "[mcp_servers.one]\ncommand = \"C:\\\\tools\\\\x.exe\"\n"
+ },
+ "toml-singlequote": {
+  "file": "a.toml",
+  "text": "[mcp_servers.one]\ncommand = 'C:\\tools\\x.exe'\n"
+ },
+ "toml-uppercase-ext": {
+  "file": "a.TOML",
+  "text": "[mcp_servers.one]\ncommand = \"tool\"\n"
+ },
+ "toml-cr": {
+  "file": "a.toml",
+  "text": "[mcp_servers.one]\r\ncommand = \"tool\"\r\n"
+ },
+ "toml-root-mcpservers-empty": {
+  "file": "a.toml",
+  "text": "[mcp_servers]\n"
+ },
+ "json-extra": {
+  "file": "a.json",
+  "text": "{\"mcpServers\":{\"one\":{\"command\":\"tool\",\"timeout\":5,\"retry\":2}}}"
+ },
+ "json-urltype": {
+  "file": "a.json",
+  "text": "{\"mcpServers\":{\"one\":{\"url\":\"https://example.com/mcp\",\"type\":\"sse\"}}}"
+ },
+ "json-urlnotstring": {
+  "file": "a.json",
+  "text": "{\"mcpServers\":{\"one\":{\"url\":42}}}"
+ },
+ "json-commandobject": {
+  "file": "a.json",
+  "text": "{\"mcpServers\":{\"one\":{\"command\":{\"path\":\"node\",\"args\":[\"server.js\"],\"env\":{\"A\":\"1\"}}}}}"
+ },
+ "json-commandnull": {
+  "file": "a.json",
+  "text": "{\"mcpServers\":{\"one\":{\"command\":\"tool\\u0000x\"}}}"
+ },
+ "json-notobject": {
+  "file": "a.json",
+  "text": "{\"mcpServers\":{\"one\":7}}"
+ },
+ "json-rootarray": {
+  "file": "a.json",
+  "text": "[1,2]"
+ },
+ "json-nocollection": {
+  "file": "a.json",
+  "text": "{\"theme\":\"dark\"}"
+ },
+ "json-syntax": {
+  "file": "a.json",
+  "text": "{\"mcpServers\":"
+ },
+ "json-fallback-root": {
+  "file": "my.tool.json",
+  "text": "{\"command\":\"tool\",\"env\":{\"A\":\"1\"}}"
+ },
+ "json-fallback-named": {
+  "file": "a.json",
+  "text": "{\"name\":\"mine\",\"url\":\"https://e.com\"}"
+ },
+ "json-fallback-allrecords": {
+  "file": "a.json",
+  "text": "{\"one\":{\"command\":\"tool\"},\"two\":{\"url\":\"https://e.com\"}}"
+ },
+ "json-fallback-notall": {
+  "file": "a.json",
+  "text": "{\"one\":{\"command\":\"tool\"},\"two\":7}"
+ },
+ "json-depth64": {
+  "file": "a.json",
+  "text": "{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"mcpServers\":{\"one\":{\"command\":\"tool\"}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}"
+ },
+ "json-depth65": {
+  "file": "a.json",
+  "text": "{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"a\":{\"mcpServers\":{\"one\":{\"command\":\"tool\"}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}"
+ },
+ "json-collectionarray": {
+  "file": "a.json",
+  "text": "{\"mcpServers\":[1,2]}"
+ },
+ "json-mcp-servers": {
+  "file": "a.json",
+  "text": "{\"mcp\":{\"servers\":{\"one\":{\"command\":\"tool\"}}}}"
+ },
+ "json-mcp-plain": {
+  "file": "a.json",
+  "text": "{\"mcp\":{\"one\":{\"command\":\"tool\"}}}"
+ },
+ "json-servers-root": {
+  "file": "a.json",
+  "text": "{\"servers\":{\"one\":{\"command\":\"tool\"}}}"
+ },
+ "json-servers-deep": {
+  "file": "a.json",
+  "text": "{\"a\":{\"servers\":{\"one\":{\"command\":\"tool\"}}}}"
+ },
+ "json-badname": {
+  "file": "a.json",
+  "text": "{\"mcpServers\":{\"my.server\":{\"command\":\"tool\"},\"\":{\"command\":\"tool\"},\"ok_name-1\":{\"command\":\"tool\"}}}"
+ },
+ "json-trailingcomma": {
+  "file": "a.json",
+  "text": "{\"mcpServers\":{\"one\":{\"command\":\"tool\",},},}"
+ },
+ "json-comments": {
+  "file": "a.json",
+  "text": "{// c\n\"mcpServers\":{\"one\":{\"command\":\"tool\"/* c */}}}"
+ },
+ "json-bom": {
+  "file": "a.json",
+  "text": "﻿{\"mcpServers\":{\"one\":{\"command\":\"tool\"}}}"
+ },
+ "json-disabled": {
+  "file": "a.json",
+  "text": "{\"mcpServers\":{\"a\":{\"command\":\"tool\",\"disabled\":true},\"b\":{\"command\":\"tool\",\"enabled\":false},\"c\":{\"command\":\"tool\",\"enabled\":true}}}"
+ },
+ "json-uppercase-ext": {
+  "file": "a.JSON",
+  "text": "{\"mcpServers\":{\"one\":{\"command\":\"tool\"}}}"
+ },
+ "jsonc-ext": {
+  "file": "a.jsonc",
+  "text": "{\"mcpServers\":{\"one\":{\"command\":\"tool\"}}}"
+ },
+ "yaml-mcpservers": {
+  "file": "a.yaml",
+  "text": "mcpServers:\n  one:\n    command: tool\n    args: [\"a\", \"b\"]\n    env:\n      A: \"1\"\n"
+ },
+ "yaml-list": {
+  "file": "a.yaml",
+  "text": "- one\n- two\n"
+ },
+ "yaml-syntax": {
+  "file": "a.yaml",
+  "text": "mcpServers: [\n"
+ },
+ "yaml-rootcommand": {
+  "file": "a.yaml",
+  "text": "command: tool\n"
+ },
+ "yaml-quotedurl": {
+  "file": "a.yaml",
+  "text": "mcpServers:\n  one:\n    url: 'https://example.com/mcp'\n"
+ },
+ "yaml-empty": {
+  "file": "a.yaml",
+  "text": ""
+ },
+ "yaml-upper": {
+  "file": "a.YML",
+  "text": "mcpServers:\n  one:\n    command: tool\n"
+ },
+ "random-fuzz-2-json-servers": {
+  "file": "f.json",
+  "text": "{\"servers\":{\"one\":{\"name\":1.5,\"env\":[],\"environment\":{},\"url\":\"HTTP\",\"http_headers\":[]},\"my.server\":{\"name\":false,\"type\":false,\"enabled\":7,\"timeout\":1.5},\"\":{\"description\":null,\"type\":\"streamable-http\",\"command\":{\"path\":\"node\",\"args\":[\"x.js\"],\"env\":{\"A\":\"1\"}},\"environment\":\"x\",\"url\":7,\"http_headers\":[],\"enabled\":true,\"timeout\":true}}}"
+ },
+ "random-fuzz-3-json-mcpServers": {
+  "file": "f.json",
+  "text": "{\"mcpServers\":{\"one\":{\"command\":{\"path\":\"node\",\"args\":[\"x.js\"],\"env\":{\"A\":\"1\"}},\"args\":null,\"http_headers\":null,\"enabled\":true},\"my.server\":{\"name\":true,\"command\":[\"node\",\"x.js\",\"--flag\"],\"env\":{\"A\":7},\"environment\":{\"A\":7},\"enabled\":1.5},\"\":{\"description\":\"https://e.com:99999/a\",\"command\":[],\"env\":{},\"environment\":{\"A\":7},\"http_headers\":{}}}}"
+ },
+ "random-fuzz-8-json-mcpServers": {
+  "file": "f.json",
+  "text": "{\"mcpServers\":{\"one\":{\"url\":7,\"http_headers\":null,\"enabled\":null,\"timeout\":false},\"my.server\":{\"description\":0,\"command\":{\"path\":\"node\",\"args\":\"x\",\"env\":{\"A\":1}},\"env\":\"x\",\"environment\":null,\"url\":true,\"disabled\":true,\"tools\":null}}}"
+ },
+ "random-fuzz-16-json-mcp": {
+  "file": "f.json",
+  "text": "{\"mcp\":{\"servers\":{\"one\":{\"name\":\"tool\",\"args\":null,\"url\":1.5}}}}"
+ },
+ "random-fuzz-28-toml-mcp_servers": {
+  "file": "f.toml",
+  "text": "[mcp_servers.one]\nargs = [\"a\", 7]\nurl = \"\"\n"
+ },
+ "random-fuzz-29-json-mcpServers": {
+  "file": "f.json",
+  "text": "{\"mcpServers\":{\"one\":{\"args\":[\"a\",7],\"environment\":{\"A\":7},\"url\":null},\"my.server\":{\"name\":\"streamable-http\",\"description\":0,\"url\":\"/usr/bin/tool\",\"enabled\":\"C:\\\\tools\\\\x.exe\"},\"\":{\"args\":\"notalist\"}}}"
+ },
+ "random-fuzz-31-json-mcp": {
+  "file": "f.json",
+  "text": "{\"mcp\":{\"servers\":{\"one\":{\"description\":0,\"command\":{\"path\":\"node\",\"args\":[\"x.js\"],\"env\":{\"A\":\"1\"}},\"args\":[\"a\",7],\"headers\":null},\"my.server\":{\"type\":1.5,\"command\":7,\"url\":null,\"tools\":false},\"\":{\"tools\":true}}}}"
+ },
+ "random-fuzz-55-json-servers": {
+  "file": "f.json",
+  "text": "{\"servers\":{\"one\":{\"name\":\"C:\\\\tools\\\\x.exe\",\"description\":false,\"command\":\"tool\",\"args\":null,\"env\":{\"A\":\"1\"},\"disabled\":1.5},\"my.server\":{\"type\":null,\"command\":[\"x\",7]},\"\":{\"description\":\"HTTP\",\"url\":false,\"headers\":\"x\"}}}"
+ },
+ "random-fuzz-77-json-mcp_servers": {
+  "file": "f.json",
+  "text": "{\"mcp_servers\":{\"one\":{\"type\":1.5,\"env\":{\"A\":7},\"environment\":[],\"url\":\"http\"}},\"other\":{\"deep\":{\"mcpServers\":{\"one\":{\"type\":1.5,\"env\":{\"A\":7},\"environment\":[],\"url\":\"http\"}}}}}"
+ },
+ "random-fuzz-104-toml-mcp_servers": {
+  "file": "f.toml",
+  "text": "[mcp_servers.one]\nurl = \"remote\"\n[mcp_servers.\"my.server\"]\nurl = \"HTTP://E.COM/x\"\ntimeout = \"node\"\n"
+ },
+ "random-fuzz-114-json-mcp_servers": {
+  "file": "f.json",
+  "text": "{\"mcp_servers\":{\"one\":{\"name\":null,\"description\":\"https://u:p@e.com/x?token=a#h\",\"command\":{\"path\":\"node\",\"args\":[\"x.js\"],\"env\":{\"A\":\"1\"}},\"env\":\"x\",\"url\":\"\",\"headers\":{\"A\":7}},\"my.server\":{\"name\":7,\"description\":1.5,\"command\":\"tool\\u0000\",\"http_headers\":[]},\"\":{\"type\":0,\"command\":{\"path\":\"node\",\"args\":[\"x.js\"],\"env\":{\"A\":\"1\"}},\"args\":[\"a\"],\"env\":null,\"headers\":[],\"timeout\":\"stdio://x\"}}}"
+ },
+ "random-fuzz-117-json-servers": {
+  "file": "f.json",
+  "text": "{\"servers\":{\"one\":{\"args\":null,\"env\":null,\"environment\":[],\"url\":null,\"headers\":[],\"disabled\":0},\"my.server\":{\"headers\":{},\"disabled\":false}}}"
+ },
+ "random-fuzz-119-json-mcp_servers": {
+  "file": "f.json",
+  "text": "{\"mcp_servers\":{\"one\":{\"name\":null,\"description\":\"http:/e.com\",\"type\":1.5,\"command\":{\"args\":[\"x\"]},\"args\":null,\"env\":{\"A\":\"1\"}}}}"
+ },
+ "random-fuzz-136-json-mcpServers": {
+  "file": "f.json",
+  "text": "{\"mcpServers\":{\"one\":{\"env\":{\"A\":7},\"url\":false,\"disabled\":null},\"my.server\":{\"name\":null,\"command\":\"\",\"env\":null,\"headers\":[],\"http_headers\":\"x\",\"enabled\":false,\"tools\":null}},\"other\":{\"deep\":{\"mcpServers\":{\"one\":{\"env\":{\"A\":7},\"url\":false,\"disabled\":null},\"my.server\":{\"name\":null,\"command\":\"\",\"env\":null,\"headers\":[],\"http_headers\":\"x\",\"enabled\":false,\"tools\":null}}}}}"
+ },
+ "random-fuzz-root-file-2": {
+  "file": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.yml",
+  "text": "\"description\": \"http\"\n\"type\": 0\n\"command\": 7\n\"args\": null\n\"url\": false\n\"http_headers\": {\"A\": \"1\"}\n"
+ },
+ "random-fuzz-0-json-mcp": {
+  "file": "f.json",
+  "text": "{\"mcp\":{\"servers\":{\"one\":{\"command\":{\"path\":\"node\",\"args\":[\"x.js\"],\"env\":{\"A\":\"1\"}},\"url\":true,\"http_headers\":{\"A\":\"1\"}}}}}"
+ },
+ "random-fuzz-10-json-mcp": {
+  "file": "f.json",
+  "text": "{\"mcp\":{\"one\":{\"description\":\"local\",\"args\":[],\"env\":[],\"environment\":[]}}}"
+ },
+ "random-fuzz-1-yaml-mcp_servers": {
+  "file": "f.yaml",
+  "text": "\"mcp_servers\": {\"one\": {\"url\": false, \"http_headers\": []}, \"my.server\": {\"name\": false, \"type\": true, \"env\": {\"A\": \"1\"}, \"headers\": []}}\n"
+ },
+ "random-fuzz-143-yaml-mcp_servers": {
+  "file": "f.yaml",
+  "text": "\"mcp_servers\": {\"one\": {\"name\": 0, \"type\": 1.5, \"command\": [\"x\", 7], \"env\": {}, \"url\": 7, \"http_headers\": null}}\n\"other\": {\"deep\": {\"mcpServers\": {\"one\": {\"name\": 0, \"type\": 1.5, \"command\": [\"x\", 7], \"env\": {}, \"url\": 7, \"http_headers\": null}}}}\n"
+ },
+ "random-fuzz-7-json-servers": {
+  "file": "f.json",
+  "text": "{\"servers\":{\"one\":[]}}"
+ },
+ "random-fuzz-15-json-servers": {
+  "file": "f.json",
+  "text": "{\"servers\":{\"one\":{\"command\":\"  \",\"environment\":[],\"headers\":{\"A\":7},\"timeout\":0}}}"
+ },
+ "random-fuzz-9-json-mcpServers": {
+  "file": "f.json",
+  "text": "{\"mcpServers\":{\"one\":{},\"my.server\":{\"enabled\":false,\"timeout\":1.5},\"\":{\"name\":1.5,\"type\":\"npx\",\"environment\":{\"A\":7},\"url\":null,\"disabled\":1.5,\"timeout\":0}}}"
+ },
+ "random-fuzz-25-json-mcpServers": {
+  "file": "f.json",
+  "text": "{\"mcpServers\":{\"one\":{\"command\":\"tool\\u0000\",\"headers\":\"x\"},\"my.server\":{\"type\":true,\"url\":1.5,\"timeout\":7}}}"
+ },
+ "random-fuzz-4-toml-context_servers": {
+  "file": "f.toml",
+  "text": "[mcp_servers.one]\ndescription = true\ndisabled = 1.5\n"
+ },
+ "random-fuzz-18-toml-context_servers": {
+  "file": "f.toml",
+  "text": "[mcp_servers.one]\ntype = 1.5\ntools = 1.5\n[mcp_servers.\"my.server\"]\ndescription = 0\ntype = 7\nargs = [7]\nenv = []\n[[mcp_servers]]\nname = \"\"\n"
+ },
+ "random-fuzz-5-json-other": {
+  "file": "f.json",
+  "text": "{\"other\":{\"one\":{\"name\":null,\"command\":\"tool\",\"args\":null,\"disabled\":\"HTTP\"}}}"
+ },
+ "random-fuzz-14-json-other": {
+  "file": "f.json",
+  "text": "{\"other\":{\"one\":{\"name\":null,\"type\":null,\"args\":[],\"headers\":null,\"http_headers\":null,\"enabled\":\"http:/e.com\",\"disabled\":\"HTTP\"},\"my.server\":{\"headers\":[],\"timeout\":false}}}"
+ },
+ "random-fuzz-6-toml-mcp": {
+  "file": "f.toml",
+  "text": "theme = \"dark\"\n"
+ },
+ "random-fuzz-19-toml-mcp": {
+  "file": "f.toml",
+  "text": "theme = \"dark\"\n"
+ },
+ "random-fuzz-11-toml-mcp_servers": {
+  "file": "f.toml",
+  "text": "[mcp_servers.one]\nname = 0\nenvironment = \"x\"\nurl = false\n[mcp_servers.\"my.server\"]\nargs = [\"a\"]\nurl = \"HTTP\"\nenabled = \"http\"\ntimeout = 0\ntools = \"remote\"\n"
+ },
+ "random-fuzz-12-toml-mcp_servers": {
+  "file": "f.toml",
+  "text": "\n"
+ },
+ "random-fuzz-13-json-mcp_servers": {
+  "file": "f.json",
+  "text": "{\"mcp_servers\":{\"one\":{\"description\":true,\"command\":\"tool\",\"env\":{\"A\":\"1\"},\"environment\":{},\"timeout\":false},\"my.server\":{\"type\":7,\"args\":[],\"url\":false,\"disabled\":null}}}"
+ },
+ "random-fuzz-17-json-mcp_servers": {
+  "file": "f.json",
+  "text": "{\"mcp_servers\":{\"one\":{\"description\":true,\"disabled\":7},\"my.server\":{\"command\":{\"path\":\"node\",\"args\":\"x\",\"env\":{\"A\":1}},\"environment\":{\"A\":\"1\"},\"headers\":null,\"enabled\":false}}}"
+ },
+ "random-fuzz-20-toml-other": {
+  "file": "f.toml",
+  "text": "theme = \"dark\"\n"
+ },
+ "random-fuzz-53-toml-other": {
+  "file": "f.toml",
+  "text": "theme = \"dark\"\n"
+ },
+ "random-fuzz-21-json-context_servers": {
+  "file": "f.json",
+  "text": "{\"context_servers\":{\"one\":{\"command\":{\"path\":\"node\",\"args\":\"x\",\"env\":{\"A\":1}},\"enabled\":7,\"timeout\":true},\"my.server\":{\"name\":0,\"command\":\"  \",\"env\":[],\"environment\":{\"A\":\"1\"},\"url\":0,\"tools\":7}}}"
+ },
+ "random-fuzz-23-json-context_servers": {
+  "file": "f.json",
+  "text": "{\"context_servers\":\"x\"}"
+ },
+ "random-fuzz-32-yaml-mcp": {
+  "file": "f.yaml",
+  "text": "\"mcp\": {\"one\": {\"name\": \"HTTP://E.COM/x\", \"description\": 1.5, \"enabled\": 7, \"disabled\": 0, \"timeout\": 7}, \"my.server\": {\"type\": \"sse\", \"headers\": [], \"enabled\": false, \"disabled\": false, \"tools\": 0}}\n"
+ },
+ "random-fuzz-75-yaml-mcp": {
+  "file": "f.yaml",
+  "text": "\"mcp\": {\"one\": {\"type\": null, \"enabled\": 7, \"disabled\": \"stdio\"}, \"my.server\": {\"description\": \"  \", \"url\": \"C:\\\\tools\\\\x.exe\", \"timeout\": false, \"tools\": true}, \"\": {\"url\": 7, \"enabled\": \"  \"}}\n"
+ },
+ "random-fuzz-33-yaml-servers": {
+  "file": "f.yaml",
+  "text": "\"servers\": {\"one\": {\"type\": 1.5, \"enabled\": 0}, \"my.server\": {\"command\": \"\", \"headers\": []}, \"\": {\"type\": 0, \"env\": {}, \"enabled\": 1.5}}\n"
+ },
+ "random-fuzz-45-yaml-servers": {
+  "file": "f.yaml",
+  "text": "\"servers\": {\"one\": {\"type\": \"  \", \"command\": [\"node\", \"a\", null], \"env\": {\"A\": \"1\"}, \"timeout\": 0}}\n"
+ },
+ "random-fuzz-49-toml-servers": {
+  "file": "f.toml",
+  "text": "theme = \"dark\"\n"
+ },
+ "random-fuzz-68-toml-servers": {
+  "file": "f.toml",
+  "text": "theme = \"dark\"\n"
+ },
+ "random-fuzz-51-yaml-context_servers": {
+  "file": "f.yaml",
+  "text": "\"context_servers\": {\"one\": {\"args\": [\"node\", \"x.js\"], \"http_headers\": {\"A\": 7}}, \"my.server\": {\"description\": \"node\", \"command\": [\"node\", \"x.js\", \"--flag\"], \"env\": {\"A\": 7}, \"headers\": {\"A\": \"1\"}, \"enabled\": false}, \"\": {\"url\": \"http\", \"disabled\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"timeout\": \"https://e.com:99999/a\", \"tools\": \"http:/e.com\"}}\n"
+ },
+ "random-fuzz-67-yaml-context_servers": {
+  "file": "f.yaml",
+  "text": "\"context_servers\": {\"one\": {\"env\": \"x\", \"timeout\": 1.5}}\n"
+ },
+ "random-fuzz-76-toml-mcpServers": {
+  "file": "f.toml",
+  "text": "[mcp_servers.one]\nenv = \"x\"\nenabled = false\n"
+ },
+ "random-fuzz-145-toml-mcpServers": {
+  "file": "f.toml",
+  "text": "[mcp_servers.one]\ndescription = 0\ncommand = []\nargs = [\"node\", \"x.js\"]\ntimeout = \"stdio\"\n[mcp_servers.\"my.server\"]\ntype = \"\"\ncommand = \"  \"\n[mcp_servers.\"\"]\ncommand = \"tool\\u0000\"\ntimeout = true\n"
+ },
+ "random-fuzz-82-yaml-mcpServers": {
+  "file": "f.yaml",
+  "text": "\"mcpServers\": {\"one\": {\"name\": 1.5, \"description\": \"tool\", \"type\": \"HTTP\", \"command\": null, \"headers\": null, \"timeout\": null}}\n"
+ },
+ "random-fuzz-96-yaml-mcpServers": {
+  "file": "f.yaml",
+  "text": "\"mcpServers\": 7\n"
+ },
+ "random-fuzz-102-yaml-other": {
+  "file": "f.yaml",
+  "text": "\"other\": {\"one\": {\"name\": \"\", \"description\": false, \"command\": \"\", \"env\": {}, \"url\": false}, \"my.server\": {\"name\": false, \"environment\": [], \"url\": 7, \"http_headers\": [], \"timeout\": \"local\"}, \"\": {\"name\": null, \"description\": 0, \"args\": [7], \"environment\": {}, \"url\": \"stdio\"}}\n"
+ },
+ "random-fuzz-123-yaml-other": {
+  "file": "f.yaml",
+  "text": "\"other\": {\"one\": {\"url\": \"sse\", \"http_headers\": []}, \"my.server\": {\"name\": null, \"type\": 0, \"command\": {\"env\": {\"A\": \"1\"}}, \"environment\": null, \"http_headers\": {}, \"enabled\": true, \"disabled\": false}}\n"
+ },
+ "random-fuzz-root-0": {
+  "file": "my.tool.json",
+  "text": "{\"url\":false,\"headers\":\"x\"}"
+ },
+ "random-fuzz-root-1": {
+  "file": "中文 config.json",
+  "text": "{\"env\":[],\"environment\":{},\"http_headers\":{\"A\":7},\"enabled\":\"a\\u0000b\"}"
+ },
+ "random-fuzz-root-file-0": {
+  "file": "my.tool.toml",
+  "text": "theme = \"dark\"\n"
+ },
+ "random-fuzz-root-file-1": {
+  "file": "中文 config.yaml",
+  "text": "\"description\": 1.5\n\"environment\": \"x\"\n\"disabled\": \"node\"\n\"timeout\": false\n"
+ },
+ "random-fuzz-root-2": {
+  "file": ".json",
+  "text": "{\"command\":{\"args\":[\"x\"]},\"args\":[],\"url\":7}"
+ },
+ "random-fuzz-root-3": {
+  "file": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+  "text": "{\"description\":true,\"type\":0,\"url\":0}"
+ },
+ "random-fuzz-root-4": {
+  "file": "x.json",
+  "text": "{\"name\":0,\"args\":[\"node\",\"x.js\"],\"http_headers\":null,\"timeout\":true}"
+ },
+ "random-fuzz-root-file-3": {
+  "file": ".yaml",
+  "text": "\"environment\": null\n\"url\": 1.5\n\"enabled\": true\n"
+ },
+ "random-fuzz-53-json-mcp_servers": {
+  "file": "f.json",
+  "text": "{\"mcp_servers\":{\"one\":{\"command\":\"\",\"env\":\"x\",\"url\":\"https://[::1]/a\",\"http_headers\":null},\"my.server\":{\"env\":{\"A\":\"1\"},\"url\":false}}}"
+ },
+ "random-fuzz-117-json-mcpServers": {
+  "file": "f.json",
+  "text": "{\"mcpServers\":{\"one\":{\"url\":\"http:/e.com\",\"headers\":{}},\"my.server\":{\"command\":\"tool\",\"args\":[\"a\"],\"environment\":{},\"headers\":{\"A\":7},\"http_headers\":[],\"enabled\":7}}}"
+ }
+}

@@ -339,16 +339,32 @@ export function checkInvariants(files) {
   // system's reason as Node names it, and falls back to a translated word
   // and not to Chinese written into the code; a skill that cannot be
   // recycled, and the name of a shell that was not detected, are translated
-  // too. The full coverage of callers and menu texts is asked by
+  // too; so is the word said of a server whose URL cannot be read, which
+  // is asked of the parser by the rule that follows. The full coverage of
+  // callers and menu texts is asked by
   // `scripts/i18n-check.mjs`, which runs with the daily checks.
   const kernelResources = files.get('src-tauri/core/src/resources.rs') || ''
   const kernelShells = files.get('src-tauri/core/src/shells.rs') || ''
   const trashPath = /fn trash_path\(path: &Path, language: &str\)[\s\S]*?\n\}/.exec(kernelResources)?.[0] || ''
-  const publicUrl = /fn public_url\(raw: &str, language: &str\)[\s\S]*?\n\}/.exec(kernelResources)?.[0] || ''
+  const mcpDescription = /fn mcp_description\(value: &Value, language: &str\) -> String \{[\s\S]*?\n\}/.exec(kernelResources)?.[0] || ''
   const discover = /fn discover\(root: &Path, language: &str\)[\s\S]*?\n\}/.exec(kernelGit)?.[0] || ''
   const errnoName = /pub fn errno_name\(error: &std::io::Error\) -> Option<&'static str> \{[\s\S]*?\n\}/.exec(kernelFiles)?.[0] || ''
-  require(discover.includes('translate(language, "{{0}}：{{1}}", &[rel, reason])') && discover.includes('unwrap_or_else(|| translate(language, "无法读取", &[] as &[String]))') && discover.includes('files::errno_name(&error)') && !/format!\("[^"]*[\u3400-\u9fff]/.test(kernelGit) && kernelGit.includes('translate(language, "{{0}}：无法读取 Git 状态", &[prefix.clone()])') && errnoName.includes('ERROR_ACCESS_DENIED | ERROR_PRIVILEGE_NOT_HELD => "EPERM"') && errnoName.includes('| ERROR_PATH_NOT_FOUND => "ENOENT"') && trashPath.includes('let unmovable = || t(language, "无法移入回收站");') && !/^[^/]*"([^"]*[\u3400-\u9fff][^"]*)"/m.test(trashPath.replace(/t\(language, "[^"]*"\)/g, '')) && (publicUrl.match(/t\(language, "无效 URL"\)/g) || []).length === 2 && !/^[^/]*"([^"]*[\u3400-\u9fff][^"]*)"/m.test(publicUrl.replace(/t\(language, "[^"]*"\)/g, '')) && kernelShells.includes('translate(language, "Git Bash 或本机 Bash", &[] as &[String])') && i18nTable.includes('("{{0}}：{{1}}", "{{0}}: {{1}}"),') && i18nTable.includes('("无法读取", "Cannot read"),') && i18nTable.includes('("{{0}}：无法读取 Git 状态", "{{0}}: cannot read Git status"),') && i18nTable.includes('("无法移入回收站", "Cannot move to the Recycle Bin"),') && i18nTable.includes('("Git Bash 或本机 Bash", "Git Bash or local Bash"),') && i18nTable.includes('("无效 URL", "Invalid URL"),') && i18nTable.includes('("粘贴为纯文本", "Paste as plain text"),') && i18nTable.includes('("重新读取", "Reload"),') && (JSON.parse(files.get('package.json') || '{}').scripts || {}).check?.includes('scripts/i18n-check.mjs'),
+  require(discover.includes('translate(language, "{{0}}：{{1}}", &[rel, reason])') && discover.includes('unwrap_or_else(|| translate(language, "无法读取", &[] as &[String]))') && discover.includes('files::errno_name(&error)') && !/format!\("[^"]*[\u3400-\u9fff]/.test(kernelGit) && kernelGit.includes('translate(language, "{{0}}：无法读取 Git 状态", &[prefix.clone()])') && errnoName.includes('ERROR_ACCESS_DENIED | ERROR_PRIVILEGE_NOT_HELD => "EPERM"') && errnoName.includes('| ERROR_PATH_NOT_FOUND => "ENOENT"') && trashPath.includes('let unmovable = || t(language, "无法移入回收站");') && !/^[^/]*"([^"]*[\u3400-\u9fff][^"]*)"/m.test(trashPath.replace(/t\(language, "[^"]*"\)/g, '')) && (mcpDescription.match(/t\(language, "无效 URL"\)/g) || []).length === 1 && !/^[^/]*"([^"]*[\u3400-\u9fff][^"]*)"/m.test(mcpDescription.replace(/t\(language, "[^"]*"\)/g, '')) && kernelShells.includes('translate(language, "Git Bash 或本机 Bash", &[] as &[String])') && i18nTable.includes('("{{0}}：{{1}}", "{{0}}: {{1}}"),') && i18nTable.includes('("无法读取", "Cannot read"),') && i18nTable.includes('("{{0}}：无法读取 Git 状态", "{{0}}: cannot read Git status"),') && i18nTable.includes('("无法移入回收站", "Cannot move to the Recycle Bin"),') && i18nTable.includes('("Git Bash 或本机 Bash", "Git Bash or local Bash"),') && i18nTable.includes('("无效 URL", "Invalid URL"),') && i18nTable.includes('("粘贴为纯文本", "Paste as plain text"),') && i18nTable.includes('("重新读取", "Reload"),') && (JSON.parse(files.get('package.json') || '{}').scripts || {}).check?.includes('scripts/i18n-check.mjs'),
     'AWB084', 'src-tauri/core/src/git.rs', '内核面向用户的消息一律经翻译表：无法列出的目录按 Node 的错误码报告并以翻译兜底，回收站失败与未检测到的 Shell 名称同样翻译，菜单文本有词条，覆盖检查纳入日常检查')
+  // A server's URL is read by the URL standard's own parser, wherever a URL
+  // is read, and never by how its text begins; the parser's own message is
+  // passed on as it is, as the Electron build passes on what `new URL`
+  // throws. A string is trimmed to the characters JavaScript's `trim` takes
+  // off, among which the byte order mark is and the next line character is
+  // not. Where a list of servers is looked for, a value JavaScript calls
+  // false stands for an empty object, the last one on the way included, as
+  // `object(value || {})` has it.
+  const whitespace = /fn is_js_whitespace\(character: char\) -> bool \{[\s\S]*?\n\}/.exec(kernelResources)?.[0] || ''
+  const mcpRoot = /fn mcp_root<'a>\([\s\S]*?\n\}/.exec(kernelResources)?.[0] || ''
+  const parsed = (kernelResources.match(/ada_url::Url::parse\(/g) || []).length
+  const parsedAlone = (kernelResources.match(/ada_url::Url::parse\([^;]*?, None\)/g) || []).length
+  require(parsed === 4 && parsedAlone === 4 && !/(?<!ada_)url::Url::parse/.test(kernelResources) && !/starts_with\("https?:/.test(kernelResources) && (kernelResources.match(/"Invalid URL"\.to_string\(\)/g) || []).length === 3 && !kernelResources.includes('t(language, "Invalid URL")') && !i18nTable.includes('"Invalid URL",') && whitespace.includes(`'\\u{0009}'..='\\u{000d}'`) && whitespace.includes(`'\\u{feff}'`) && !whitespace.includes('u{85}') && kernelResources.includes('fn js_trim(text: &str) -> &str { text.trim_matches(is_js_whitespace) }') && (kernelResources.match(/js_trim\(/g) || []).length === 3 && kernelResources.includes('Some(value) if !js_trim(value).is_empty() && !value.contains(\'\\0\') => {}') && kernelResources.includes('js_trim(text).is_empty() || text.contains(\'\\0\')') && mcpRoot.includes('fn asked<\'a>(value: &\'a Value, language: &str)') && mcpRoot.includes('if is_truthy(value) { object_or(value, language) } else { Ok(EMPTY.get_or_init(Map::new)) }') && (mcpRoot.match(/asked\(value, language\)\?/g) || []).length === 2 && mcpRoot.includes('let servers = asked(value, language)?;'),
+    'AWB085', 'src-tauri/core/src/resources.rs', 'MCP 的 URL 一律由 URL 标准的解析器读取而非按文本前缀判断，解析器自身的 Invalid URL 不翻译；trim 取 JavaScript 的空白集；查找服务器集合时假值视为空对象且最终值同样处理')
   return errors
 }
 

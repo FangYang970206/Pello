@@ -62,6 +62,56 @@ struct Target {
 
 fn t(language: &str, text: &str) -> String { translate(language, text, &[] as &[String]) }
 
+/// Whether a value is what JavaScript calls an object: not null and not an array.
+fn is_record(value: &Value) -> bool { value.as_object().is_some() }
+
+/// Whether a value is what JavaScript calls truthy, for the few fields the
+/// Electron build tests that way: a set string is true unless it is empty,
+/// and an array or an object is true however empty.
+fn is_truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(flag) => *flag,
+        Value::Number(number) => number.as_f64().is_some_and(|number| number != 0.0),
+        Value::String(text) => !text.is_empty(),
+        Value::Array(_) | Value::Object(_) => true,
+    }
+}
+
+/// What JavaScript's `String(value)` makes of a value: an array is its items
+/// joined by commas, an object is `[object Object]`, null is `null`.
+fn string_of(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(flag) => flag.to_string(),
+        Value::Number(number) => js_number(number),
+        Value::String(text) => text.clone(),
+        Value::Array(items) => items.iter().map(string_of).collect::<Vec<_>>().join(","),
+        Value::Object(_) => "[object Object]".to_string(),
+    }
+}
+
+/// A number as JavaScript writes it. Only the whole of it matters here: a
+/// number never equals one of the words a type is compared with.
+fn js_number(number: &serde_json::Number) -> String {
+    match number.as_f64() {
+        Some(value) if value == value.trunc() && value.abs() < 1e21 => format!("{}", value as i64),
+        Some(value) => format!("{}", value),
+        None => number.to_string(),
+    }
+}
+
+/// Whether a character is one JavaScript's `String.prototype.trim` takes
+/// off. Its set is not Rust's: the byte order mark is in it and the next
+/// line character is not.
+fn is_js_whitespace(character: char) -> bool {
+    matches!(character, '\u{0009}'..='\u{000d}' | '\u{0020}' | '\u{00a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}')
+}
+
+/// A string without the characters at its ends that JavaScript's `trim`
+/// takes off.
+fn js_trim(text: &str) -> &str { text.trim_matches(is_js_whitespace) }
+
 fn home_dir() -> PathBuf {
     std::env::var_os("AWB_RESOURCE_HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())))
 }
@@ -180,67 +230,110 @@ pub fn list(resources: &Resources, data: &Path, custom: &Value, kind: &str, agen
 
 fn mcp_items(target: &Target, language: &str) -> Result<Vec<Value>, String> {
     let text = read_text(Path::new(&target.mcp_path), language)?;
-    if target.format == "codex" {
-        return Ok(toml_servers(&text).into_iter().map(|(name, value)| mcp_item(&name, &value, &target.mcp_path, language, value.get("enabled").and_then(|item| item.as_bool()) != Some(false))).collect());
-    }
-    let config = parse_json_text(&text, language)?;
-    let (_active_key, servers, v2) = mcp_root(target, &config);
+    let config = parse_config(target, &text, language)?;
+    let (_active_key, map, v2) = mcp_root(target, &config, language)?;
     let mut items = Vec::new();
-    if let Some(map) = servers.as_object() {
-        for (name, value) in map {
-            let enabled = if v2 { value.get("disabled").and_then(|item| item.as_bool()) != Some(true) } else { value.get("enabled").and_then(|item| item.as_bool()) != Some(false) };
-            items.push(mcp_item(name, value, &target.mcp_path, language, enabled));
-        }
+    for (name, value) in map {
+        // Every entry is asked to be an object, as the Electron build asks;
+        // one that is not fails the whole list.
+        object_or(value, language)?;
+        items.push(mcp_item(name, value, &target.mcp_path, v2, language));
     }
-    if let Some(parked) = config.get("awbDisabledMcp").and_then(|value| value.as_object()) {
-        for (name, value) in parked {
-            if servers.get(name).is_some() { continue; }
-            items.push(mcp_item(name, value, &target.mcp_path, language, false));
+    // Servers parked as disabled are listed too, unless the active list
+    // has one of the same name.
+    if let Some(parked) = config.get("awbDisabledMcp").filter(|value| is_truthy(value)) {
+        for (name, value) in object_or(parked, language)? {
+            if map.contains_key(name) { continue; }
+            object_or(value, language)?;
+            let has_url = value.get("url").is_some_and(is_truthy);
+            items.push(json!({ "name": name, "description": mcp_description(value, language), "path": target.mcp_path, "transport": if has_url { "http" } else { "stdio" }, "enabled": false }));
         }
     }
     Ok(items)
 }
 
-fn mcp_item(name: &str, value: &Value, path: &str, language: &str, enabled: bool) -> Value {
-    let transport = if value.get("url").and_then(|item| item.as_str()).is_some() { value.get("type").and_then(|item| item.as_str()).unwrap_or("http") } else { "stdio" };
+/// A value as an object, or the Electron build's own refusal of it.
+fn object_or<'a>(value: &'a Value, language: &str) -> Result<&'a Map<String, Value>, String> {
+    match value {
+        Value::Object(map) => Ok(map),
+        _ => Err(t(language, "配置必须是对象")),
+    }
+}
+
+/// An agent's configuration as the Electron build's `parseConfig` reads it:
+/// Codex's in TOML, the others in JSON with comments and trailing commas.
+fn parse_config(target: &Target, text: &str, language: &str) -> Result<Value, String> {
+    if target.format == "codex" { read_toml_config(text) } else { parse_json_text(text, language) }
+}
+
+/// A TOML document as the JSON the rest of the kernel works with, read
+/// whole by the format's own parser. A date or a time is a string, as it is
+/// to the Electron build, and the order of the keys is the document's own.
+fn read_toml_config(text: &str) -> Result<Value, String> {
+    // A file the parser cannot read fails with the parser's own message, as
+    // the Electron build's does; it is not translated.
+    let parsed: toml::Value = toml::from_str(text.trim_start_matches('\u{feff}')).map_err(|error| error.to_string())?;
+    Ok(toml_to_json(parsed))
+}
+
+/// One server as the list shows it.
+fn mcp_item(name: &str, value: &Value, path: &str, v2: bool, language: &str) -> Value {
+    let has_url = value.get("url").is_some_and(is_truthy);
+    let transport = if has_url { value.get("type").filter(|item| is_truthy(item)).map(string_of).unwrap_or_else(|| "http".to_string()) } else { "stdio".to_string() };
+    let enabled = if v2 { value.get("disabled") != Some(&json!(true)) } else { value.get("enabled") != Some(&json!(false)) };
     json!({ "name": name, "description": mcp_description(value, language), "path": path, "transport": transport, "enabled": enabled })
 }
 
+/// What the list says of a server: where it is reached, read by the URL
+/// standard's parser and shown as its scheme, host and path; or the program
+/// it runs. A URL the parser cannot read is said so, in words.
 fn mcp_description(value: &Value, language: &str) -> String {
-    if let Some(url) = value.get("url").and_then(|item| item.as_str()) { return public_url(url, language); }
-    if let Some(command) = value.get("command").and_then(|item| item.as_array()) { return command.first().and_then(|item| item.as_str()).unwrap_or("").to_string(); }
-    value.get("command").and_then(|item| item.as_str()).unwrap_or("").to_string()
+    if let Some(url) = value.get("url").and_then(|item| item.as_str()) {
+        return match ada_url::Url::parse(url, None) {
+            // As the Electron build writes it: the protocol with its colon,
+            // the host with its port, and the path, `/` when the URL has none.
+            Ok(parsed) => format!("{}//{}{}", parsed.protocol(), parsed.host(), parsed.pathname()),
+            Err(_) => t(language, "无效 URL"),
+        };
+    }
+    // `String(command[0] || '')`: the first item as JavaScript writes it, or
+    // nothing when there is none or it is false.
+    match value.get("command") {
+        Some(Value::Array(list)) => list.first().filter(|item| is_truthy(item)).map(string_of).unwrap_or_default(),
+        Some(Value::String(text)) => text.clone(),
+        _ => String::new(),
+    }
 }
 
-fn public_url(raw: &str, language: &str) -> String {
-    let Some(scheme_end) = raw.find("://") else { return t(language, "无效 URL") };
-    if !raw[..scheme_end].eq_ignore_ascii_case("http") && !raw[..scheme_end].eq_ignore_ascii_case("https") { return t(language, "无效 URL") }
-    let rest = &raw[scheme_end + 3..];
-    let rest = match (rest.find('@'), rest.find('/')) {
-        (Some(at), Some(slash)) if at < slash => &rest[at + 1..],
-        (Some(at), None) => &rest[at + 1..],
-        _ => rest,
-    };
-    let end = rest.find(['?', '#']).unwrap_or(rest.len());
-    format!("{}://{}", &raw[..scheme_end], &rest[..end])
-}
-
-fn mcp_root<'a>(target: &Target, config: &'a Value) -> (Vec<&'a str>, &'a Value, bool) {
-    if target.format == "opencode" && opencode_v2(config) {
-        let servers = config.get("mcp").and_then(|value| value.get("servers")).unwrap_or(&Value::Null);
-        return (vec!["mcp", "servers"], servers, true);
+/// Where the MCP servers of a configuration are, as the Electron build's
+/// `mcpRoot` finds them: the keys that lead to them, the servers themselves,
+/// and whether an OpenCode configuration is of its second release. Each
+/// value along the way, and the last one above all, is asked to be an object
+/// after a value JavaScript calls false has stood for an empty one.
+fn mcp_root<'a>(target: &Target, config: &'a Value, language: &str) -> Result<(Vec<&'a str>, &'a Map<String, Value>, bool), String> {
+    let v2 = target.format == "opencode" && opencode_v2(config);
+    let keys: Vec<&'a str> = if target.format == "codex" { vec!["mcp_servers"] } else if target.format == "opencode" { if v2 { vec!["mcp", "servers"] } else { vec!["mcp"] } } else { vec!["mcpServers"] };
+    static NONE: Value = Value::Null;
+    static EMPTY: std::sync::OnceLock<Map<String, Value>> = std::sync::OnceLock::new();
+    // `object(value || {})`: a value JavaScript calls false is an empty
+    // object before it is asked to be one.
+    fn asked<'a>(value: &'a Value, language: &str) -> Result<&'a Map<String, Value>, String> {
+        if is_truthy(value) { object_or(value, language) } else { Ok(EMPTY.get_or_init(Map::new)) }
     }
-    if target.format == "opencode" {
-        let servers = config.get("mcp").unwrap_or(&Value::Null);
-        return (vec!["mcp"], servers, false);
+    let mut value: &Value = config;
+    for key in &keys {
+        value = asked(value, language)?.get(*key).unwrap_or(&NONE);
     }
-    (vec!["mcpServers"], config.get("mcpServers").unwrap_or(&Value::Null), false)
+    let servers = asked(value, language)?;
+    Ok((keys, servers, v2))
 }
 
 fn opencode_v2(config: &Value) -> bool {
+    // The second release of the OpenCode configuration is told by a value
+    // that is true to JavaScript, whatever its kind, in one of these fields.
     let servers = config.get("mcp").and_then(|value| value.get("servers"));
     config.get("permissions").is_some_and(|value| value.is_array())
-        || config.get("providers").is_some()
+        || config.get("providers").is_some_and(is_truthy)
         || config.get("skills").is_some_and(|value| value.is_array())
         || servers.is_some_and(|value| value.is_object() && value.get("type").is_none() && value.get("command").is_none() && value.get("url").is_none())
 }
@@ -774,7 +867,7 @@ fn toggle_mcp(target: &Target, item: &Value, enabled: bool, language: &str) -> R
         return atomic_text(path, &before, &moved, language);
     }
     let config = parse_json_text(&before, language)?;
-    let (keys, _, v2) = mcp_root(target, &config);
+    let (keys, _, v2) = mcp_root(target, &config, language)?;
     let mut path_keys = keys;
     path_keys.push(name);
     path_keys.push(if v2 { "disabled" } else { "enabled" });
@@ -830,53 +923,83 @@ pub fn detail(resources: &Resources, data: &Path, custom: &Value, kind: &str, ag
         return Ok(detail);
     }
     let text = read_text(Path::new(&target.mcp_path), language)?;
-    let value = if target.format == "codex" {
-        toml_servers(&text).into_iter().find(|(name, _)| name == found["name"].as_str().unwrap_or("")).map(|(_, value)| value).unwrap_or_else(|| json!({}))
-    } else {
-        let config = parse_json_text(&text, language)?;
-        let (_, servers, _) = mcp_root(&target, &config);
-        servers.get(found["name"].as_str().unwrap_or("")).cloned().or_else(|| config.get("awbDisabledMcp").and_then(|value| value.get(found["name"].as_str().unwrap_or(""))).cloned()).unwrap_or_else(|| json!({}))
+    let config = if target.format == "codex" { read_toml_config(&text)? } else { parse_json_text(&text, language)? };
+    // `servers[item.name] || object(config.awbDisabledMcp || {})[item.name]`:
+    // the active entry when it is true to JavaScript, else the parked one;
+    // what is found is asked to be an object, as the Electron build asks.
+    let (_, servers, _) = mcp_root(&target, &config, language)?;
+    let name = found["name"].as_str().unwrap_or("");
+    let value = match servers.get(name).filter(|item| is_truthy(item)) {
+        Some(value) => value.clone(),
+        None => {
+            let parked = config.get("awbDisabledMcp").filter(|item| is_truthy(item)).cloned().unwrap_or_else(|| json!({}));
+            object_or(&parked, language)?.get(name).cloned().unwrap_or(Value::Null)
+        }
     };
-    let clean = redact(&value, language);
+    let clean = redact(&value, language)?;
     let mut detail = found;
     detail["content"] = json!(serde_json::to_string_pretty(&clean).unwrap_or_else(|_| "{}".into()));
     detail["notice"] = json!(t(language, "环境变量、请求头和认证信息已隐藏。"));
     Ok(detail)
 }
 
-fn redact(value: &Value, language: &str) -> Value {
+/// A server's configuration with what must not be shown taken out: the
+/// entries of its environment and headers, any field whose name says it is
+/// a credential, the account, query and fragment of its URL, and the
+/// arguments around a credential. Each step is the Electron build's, and
+/// fails as its does when a value is not of the kind it asks for.
+fn redact(value: &Value, language: &str) -> Result<Value, String> {
     let mut clean = value.clone();
-    let Some(object) = clean.as_object_mut() else { return clean };
+    let object = object_or_mut(&mut clean, language)?;
     for field in ["env", "environment", "headers", "http_headers"] {
-        if let Some(map) = object.get_mut(field).and_then(|item| item.as_object_mut()) {
-            for entry in map.values_mut() { *entry = json!("********"); }
+        if let Some(entries) = object.get_mut(field).filter(|item| is_truthy(item)) {
+            let map = object_or_mut(entries, language)?;
+            for (_key, entry) in map.iter_mut() { *entry = json!("********"); }
         }
     }
-    let keys = object.keys().cloned().collect::<Vec<_>>();
-    for key in keys {
-        if key.to_ascii_lowercase().contains("token") || key.to_ascii_lowercase().contains("password") || key.to_ascii_lowercase().contains("secret") {
-            object.insert(key, json!("********"));
-        }
-    }
-    if let Some(url) = object.get("url").and_then(|item| item.as_str()).map(|item| item.to_string()) {
-        object.insert("url".into(), json!(public_url(&url, language)));
+    let keys = object.keys().filter(|key| regex_credential(key)).cloned().collect::<Vec<_>>();
+    for key in keys { object.insert(key, json!("********")); }
+    if let Some(url) = object.get("url").filter(|item| item.is_string()).map(|item| item.as_str().expect("checked to be a string").to_string()) {
+        // Read by the standard's parser, as the Electron build reads it; a
+        // URL it cannot read fails the whole detail there, and does here.
+        let mut parsed = ada_url::Url::parse(&url, None).map_err(|_| "Invalid URL".to_string())?;
+        let _ = parsed.set_username(Some(""));
+        let _ = parsed.set_password(Some(""));
+        parsed.set_search(None);
+        parsed.set_hash(None);
+        object.insert("url".into(), json!(parsed.href()));
     }
     for field in ["args", "command"] {
         if let Some(list) = object.get_mut(field).and_then(|item| item.as_array_mut()) {
             let mut secret = false;
             for arg in list.iter_mut() {
-                let text = arg.as_str().unwrap_or("");
-                let hide = secret || regex_secret(text);
-                secret = regex_secret(text);
+                let text = string_of(arg);
+                let hide = secret || regex_secret(&text);
+                secret = regex_secret(&text);
                 if hide { *arg = json!("********"); }
             }
         }
     }
-    clean
+    Ok(clean)
+}
+
+/// A value as an object to change, or the Electron build's own refusal of it.
+fn object_or_mut<'a>(value: &'a mut Value, language: &str) -> Result<&'a mut Map<String, Value>, String> {
+    match value {
+        Value::Object(map) => Ok(map),
+        _ => Err(t(language, "配置必须是对象")),
+    }
+}
+
+/// Whether a field's name says it is a credential, as the Electron build's
+/// `/token|password|secret/i` asks.
+fn regex_credential(field: &str) -> bool {
+    let lower = field.to_lowercase();
+    lower.contains("token") || lower.contains("password") || lower.contains("secret")
 }
 
 fn regex_secret(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
+    let lower = text.to_lowercase();
     lower.contains("token") || lower.contains("password") || lower.contains("secret") || lower.contains("api-key") || lower.contains("api_key")
 }
 
@@ -931,7 +1054,9 @@ pub fn delete_skill(resources: &Resources, data: &Path, custom: &Value, agent: &
 fn trash_path(path: &Path, language: &str) -> Result<(), String> {
     let unmovable = || t(language, "无法移入回收站");
     if let Ok(program) = std::env::var("AWB_TRASH_BIN") {
-        let output = std::process::Command::new(program).arg(path).output().map_err(|error| error.to_string())?;
+        let mut mover = std::process::Command::new(program);
+        mover.arg(path);
+        let output = crate::sys::hidden(&mut mover).output().map_err(|error| error.to_string())?;
         if output.status.success() { return Ok(()) }
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -952,33 +1077,43 @@ fn mcp_name_ok(name: &str) -> bool {
     !bytes.is_empty() && bytes.len() <= 64 && bytes.iter().all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_' || *byte == b'-')
 }
 
+/// A server's configuration as the add form gives it, checked in the order
+/// the Electron build checks it, so that the first fault found is the same.
 fn validate_mcp_config(config: &Value, language: &str) -> Result<(), String> {
-    let object = config.as_object().ok_or_else(|| t(language, "配置必须是对象"))?;
-    let allowed = ["type", "command", "args", "env", "url", "headers"];
-    if object.keys().any(|key| !allowed.contains(&key.as_str())) { return Err(t(language, "支持的字段为 type、command、args、env、url、headers")); }
-    let remote = config.get("url").and_then(|value| value.as_str());
-    if let Some(url) = remote {
-        if !(url.starts_with("http://") || url.starts_with("https://")) || url.contains('@') { return Err(t(language, "请使用不含账号密码的 HTTP / HTTPS URL")); }
-        if config.get("command").is_some() || config.get("type").and_then(|value| value.as_str()).is_some_and(|value| value != "http") { return Err(t(language, "HTTP MCP 请仅配置 url，type 使用 http")); }
-        if config.get("args").is_some() || config.get("env").is_some() { return Err(t(language, "HTTP MCP 使用 headers；args、env 仅用于 stdio")); }
+    let object = object_or(config, language)?;
+    // A server is remote when its URL is a string, be that string empty.
+    let remote = object.get("url").is_some_and(|value| value.is_string());
+    if remote {
+        // The URL is read by the standard's own parser, as the Electron
+        // build reads it. One it cannot read fails with its message, which
+        // is not translated there and is not here.
+        let text = object.get("url").and_then(|value| value.as_str()).expect("checked to be a string");
+        let parsed = ada_url::Url::parse(text, None).map_err(|_| "Invalid URL".to_string())?;
+        if !matches!(parsed.protocol(), "http:" | "https:") || !parsed.username().is_empty() || !parsed.password().is_empty() { return Err(t(language, "请使用不含账号密码的 HTTP / HTTPS URL")); }
+        if object.get("command").is_some() || object.get("type").is_some_and(|value| is_truthy(value) && value.as_str() != Some("http")) { return Err(t(language, "HTTP MCP 请仅配置 url，type 使用 http")); }
+        if object.get("args").is_some() || object.get("env").is_some() { return Err(t(language, "HTTP MCP 使用 headers；args、env 仅用于 stdio")); }
     } else {
-        match config.get("command").and_then(|value| value.as_str()) {
-            Some(value) if !value.trim().is_empty() && !value.contains('\0') => {}
+        match object.get("command").and_then(|value| value.as_str()) {
+            Some(value) if !js_trim(value).is_empty() && !value.contains('\0') => {}
             _ => return Err(t(language, "stdio MCP 需要 command")),
         }
     }
-    if remote.is_none() && (config.get("headers").is_some() || config.get("type").and_then(|value| value.as_str()).is_some_and(|value| value != "stdio")) {
+    if !remote && (object.get("headers").is_some() || object.get("type").is_some_and(|value| is_truthy(value) && value.as_str() != Some("stdio"))) {
         return Err(t(language, "stdio MCP 使用 command、args、env；不支持 headers 或其他 type"));
     }
-    if let Some(args) = config.get("args") {
+    if let Some(args) = object.get("args") {
         if !args.as_array().is_some_and(|list| list.iter().all(|item| item.is_string())) { return Err(t(language, "args 必须是字符串数组")); }
     }
     for key in ["env", "headers"] {
-        if let Some(map) = config.get(key) {
-            let ok = map.as_object().is_some_and(|map| map.values().all(|value| value.is_string()));
-            if !ok { return Err(translate(language, "{{0}} 必须是字符串键值对象", &[key])); }
+        if let Some(map) = object.get(key) {
+            // A value that is not an object is refused as the Electron
+            // build refuses it before it looks at the entries.
+            let map = object_or(map, language)?;
+            if map.values().any(|value| !value.is_string()) { return Err(translate(language, "{{0}} 必须是字符串键值对象", &[key.to_string()])); }
         }
     }
+    let allowed = ["type", "command", "args", "env", "url", "headers"];
+    if object.keys().any(|key| !allowed.contains(&key.as_str())) { return Err(t(language, "支持的字段为 type、command、args、env、url、headers")); }
     Ok(())
 }
 
@@ -987,12 +1122,12 @@ fn write_mcp(target: &Target, name: &str, config: &Value, enabled: bool, languag
     let path = Path::new(&target.mcp_path);
     let before = read_text(path, language)?;
     if target.format == "codex" {
-        if toml_servers(&before).iter().any(|(existing, _)| existing == name) { return Err(t(language, "已存在同名 MCP，保留原配置")); }
+        if toml_servers(&before, language)?.iter().any(|(existing, _)| existing == name) { return Err(t(language, "已存在同名 MCP，保留原配置")); }
         let next = format!("{before}{}", toml_table(name, config, enabled));
         return atomic_text(path, &before, &next, language);
     }
     let parsed = parse_json_text(&before, language)?;
-    let (keys, servers, v2) = mcp_root(target, &parsed);
+    let (keys, servers, v2) = mcp_root(target, &parsed, language)?;
     let parked = !enabled && target.format == "standard" && target.id != "pi" && target.id != "omp";
     if servers.get(name).is_some() || parsed.get("awbDisabledMcp").and_then(|value| value.get(name)).is_some() { return Err(t(language, "已存在同名 MCP，保留原配置")); }
     let value = mcp_value(target, config, enabled, v2, parked);
@@ -1057,62 +1192,33 @@ fn inline_toml(value: &Value) -> String {
     format!("{{ {body} }}")
 }
 
-fn toml_servers(text: &str) -> Vec<(String, Value)> {
-    let mut servers = toml_table_servers(text);
-    servers.extend(inline_mcp_servers(text));
-    servers
+/// The MCP servers of a TOML configuration, as `mcpRoot` finds them.
+fn toml_servers(text: &str, language: &str) -> Result<Vec<(String, Value)>, String> {
+    let config = read_toml_config(text)?;
+    let target = Target { id: String::new(), name: String::new(), mcp_path: String::new(), skill_path: String::new(), skill_config_path: String::new(), format: "codex".to_string(), skill_adapter: String::new() };
+    let (_, servers, _) = mcp_root(&target, &config, language)?;
+    Ok(servers.iter().map(|(name, value)| (name.clone(), value.clone())).collect())
 }
 
-fn toml_table_servers(text: &str) -> Vec<(String, Value)> {
-    let mut servers: Vec<(String, Map<String, Value>)> = Vec::new();
-    let mut current = None;
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') { continue; }
-        if trimmed.starts_with('[') && trimmed.ends_with(']') && !trimmed.starts_with("[[") {
-            let header = trimmed.trim_matches(&['[', ']'][..]).trim();
-            current = header.strip_prefix("mcp_servers.").map(|name| name.trim_matches('"').to_string());
-            if let Some(name) = &current { servers.push((name.clone(), Map::new())); }
-            continue;
-        }
-        let Some(name) = &current else { continue };
-        let Some((key, value)) = trimmed.split_once('=') else { continue };
-        let parsed = parse_toml_value(value.trim());
-        if let Some(entry) = servers.iter_mut().rev().find(|(item, _)| item == name) { entry.1.insert(key.trim().to_string(), parsed); }
+/// A TOML document as the JSON the rest of the kernel works with. A date or
+/// a time is a string, as it is to the Electron build, and the order of the
+/// keys is the document's own.
+fn toml_to_json(value: toml::Value) -> Value {
+    match value {
+        toml::Value::String(text) => Value::String(text),
+        toml::Value::Integer(number) => json!(number),
+        toml::Value::Float(number) if number.is_finite() => json!(number),
+        toml::Value::Float(_) => Value::Null,
+        toml::Value::Boolean(flag) => json!(flag),
+        toml::Value::Datetime(moment) => Value::String(moment.to_string()),
+        toml::Value::Array(items) => Value::Array(items.into_iter().map(toml_to_json).collect()),
+        toml::Value::Table(table) => Value::Object(table.into_iter().map(|(key, item)| (key, toml_to_json(item))).collect()),
     }
-    servers.into_iter().map(|(name, map)| (name, Value::Object(map))).collect()
 }
 
-fn parse_toml_value(value: &str) -> Value {
-    let value = value.trim();
-    if value == "true" { return json!(true); }
-    if value == "false" { return json!(false); }
-    if let Some(text) = value.strip_prefix('"') { return json!(text.trim_end_matches('"').replace("\\\"", "\"")); }
-    if value.starts_with('[') { return serde_json::from_str(value).unwrap_or(json!([])); }
-    if value.starts_with('{') && value.ends_with('}') {
-        if let Ok(parsed) = serde_json::from_str::<Value>(value) { return parsed; }
-        let mut map = Map::new();
-        for part in split_toml_fields(&value[1..value.len() - 1]) {
-            let Some((key, item)) = part.split_once('=') else { continue };
-            map.insert(key.trim().trim_matches('"').to_string(), parse_toml_value(item.trim()));
-        }
-        return Value::Object(map);
-    }
-    json!(value)
-}
 
-fn split_toml_fields(text: &str) -> Vec<String> {
-    let mut fields = Vec::new();
-    let mut current = String::new();
-    let mut quoted = false;
-    for ch in text.chars() {
-        if ch == '"' { quoted = !quoted; current.push(ch); continue; }
-        if ch == ',' && !quoted { fields.push(std::mem::take(&mut current)); continue; }
-        current.push(ch);
-    }
-    if !current.trim().is_empty() { fields.push(current); }
-    fields
-}
+
+
 
 /// The value of a TOML basic string, with the two escapes `escape_toml` writes
 /// restored. A Windows path holds backslashes, so a value read back has to
@@ -1157,24 +1263,6 @@ fn set_toml_enabled(text: &str, name: &str, enabled: bool) -> Result<String, ()>
     Ok(lines.join("\n") + if text.ends_with('\n') { "\n" } else { "" })
 }
 
-fn inline_mcp_servers(text: &str) -> Vec<(String, Value)> {
-    let mut servers = Vec::new();
-    let mut index = 0;
-    while index < text.len() {
-        let Some(found) = text[index..].find("mcp_servers") else { break };
-        let start = index + found;
-        let after = start + "mcp_servers".len();
-        let rest = text[after..].trim_start();
-        if !rest.starts_with('=') { index = after; continue; }
-        let Some(eq) = text[after..].find('=') else { break };
-        let Some(open_rel) = text[after + eq..].find('{') else { break };
-        let open = after + eq + open_rel;
-        let Some(close) = matching_brace(text, open) else { break };
-        servers.extend(inline_server_pairs(&text[open + 1..close]));
-        index = close + 1;
-    }
-    servers
-}
 
 fn matching_brace(text: &str, open: usize) -> Option<usize> {
     let bytes = text.as_bytes();
@@ -1200,67 +1288,9 @@ fn matching_brace(text: &str, open: usize) -> Option<usize> {
     None
 }
 
-fn inline_server_pairs(body: &str) -> Vec<(String, Value)> {
-    let mut pairs = Vec::new();
-    let bytes = body.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        while index < bytes.len() && (bytes[index].is_ascii_whitespace() || bytes[index] == b',') { index += 1; }
-        if index >= bytes.len() { break; }
-        let (key, next) = if bytes[index] == b'"' {
-            let Some(end) = body[index + 1..].find('"') else { break };
-            let end = index + 1 + end;
-            (body[index + 1..end].to_string(), end + 1)
-        } else {
-            let start = index;
-            while index < bytes.len() && bytes[index] != b'=' && !bytes[index].is_ascii_whitespace() { index += 1; }
-            (body[start..index].to_string(), index)
-        };
-        let Some(eq) = body[next..].find('=') else { break };
-        let value_from = next + eq + 1;
-        let Some(rel) = body[value_from..].find(|char: char| !char.is_whitespace()) else { break };
-        let value_at = value_from + rel;
-        if bytes.get(value_at) != Some(&b'{') { break; }
-        let Some(close) = matching_brace(body, value_at) else { break };
-        let inner = &body[value_at + 1..close];
-        let mut map = Map::new();
-        if let Some(enabled) = inline_flag(inner, "enabled") { map.insert("enabled".into(), json!(enabled)); }
-        if let Some(command) = inline_string(inner, "command") { map.insert("command".into(), json!(command)); }
-        pairs.push((key, Value::Object(map)));
-        index = close + 1;
-    }
-    pairs
-}
 
-fn inline_flag(body: &str, key: &str) -> Option<bool> {
-    let token = flag_token(body, key)?;
-    if token == "true" { Some(true) } else if token == "false" { Some(false) } else { None }
-}
 
-fn inline_string(body: &str, key: &str) -> Option<String> {
-    let token = flag_token(body, key)?;
-    Some(token.trim_matches('"').to_string())
-}
 
-fn flag_token<'a>(body: &'a str, key: &str) -> Option<&'a str> {
-    let bytes = body.as_bytes();
-    let mut index = 0;
-    while let Some(found) = body[index..].find(key) {
-        let at = index + found;
-        let after = at + key.len();
-        let before_ok = at == 0 || !bytes[at - 1].is_ascii_alphanumeric();
-        let rest = body[after..].trim_start();
-        if before_ok && rest.starts_with('=') {
-            let eq = body[after..].find('=')? + after;
-            let mut value_at = eq + 1;
-            while value_at < bytes.len() && bytes[value_at].is_ascii_whitespace() { value_at += 1; }
-            let end = value_at + body[value_at..].find(|char: char| char == ',' || char == '}' || char.is_whitespace()).unwrap_or(body.len() - value_at);
-            return Some(&body[value_at..end]);
-        }
-        index = after;
-    }
-    None
-}
 
 fn set_inline_toml_enabled(text: &str, name: &str, enabled: bool) -> Result<String, ()> {
     let mut index = 0;
@@ -1365,7 +1395,13 @@ pub fn scan(data: &Path, custom: &Value, kind: &str, source: &str, language: &st
         return Ok(Value::Array(listed));
     }
     let entries = read_mcp_import(Path::new(source), language)?;
-    Ok(Value::Array(entries.into_iter().map(|entry| json!({ "id": entry.id, "name": entry.name, "path": entry.path, "enabled": entry.enabled, "error": entry.error })).collect()))
+    // A server that can be imported has no error said of it at all, as in
+    // the Electron build's scan; the configuration itself is not returned.
+    Ok(Value::Array(entries.into_iter().map(|entry| {
+        let mut shown = json!({ "id": entry.id, "name": entry.name, "path": entry.path, "enabled": entry.enabled });
+        if let Some(error) = entry.error { shown["error"] = json!(error); }
+        shown
+    }).collect()))
 }
 
 struct ImportEntry { id: String, name: String, path: String, config: Option<Value>, enabled: bool, error: Option<String> }
@@ -1389,113 +1425,209 @@ pub fn import_mcp(resources: &Resources, data: &Path, custom: &Value, source: &s
     Ok(Value::Array(results))
 }
 
+/// The servers of a configuration file, found as the Electron build's
+/// `readMcpImport` finds them, with what each one would be refused for. The
+/// file's own content is not returned with them, only its shape.
 fn read_mcp_import(source: &Path, language: &str) -> Result<Vec<ImportEntry>, String> {
+    let syntax = || t(language, "配置语法有误，请检查 JSON、JSONC、TOML 或 YAML 格式");
+    // The limit here is in round millions of bytes, as the Electron build's
+    // own reading of an import file has it; the other files it reads are
+    // limited to 32 MiB.
     if !source.is_absolute() { return Err(t(language, "请选择 32 MB 以内的 MCP 配置文件")); }
-    let meta = fs::symlink_metadata(source).map_err(|error| error.to_string())?;
-    if meta.len() > MAX_CONFIG { return Err(t(language, "请选择 32 MB 以内的 MCP 配置文件")); }
+    let meta = fs::metadata(source).map_err(|error| error.to_string())?;
+    if meta.len() > 32_000_000 { return Err(t(language, "请选择 32 MB 以内的 MCP 配置文件")); }
     let text = read_text(source, language)?;
-    let name = source.file_name().and_then(|item| item.to_str()).unwrap_or("");
-    let mut entries = Vec::new();
-    if name.ends_with(".toml") {
-        for (server, value) in toml_servers(&text) { entries.push(import_entry(&server, &value, "$.mcp_servers")); }
-    } else if name.ends_with(".yaml") || name.ends_with(".yml") {
-        let config = yaml_to_json(&parse_yaml(&text).map_err(|_| t(language, "配置语法有误，请检查 JSON、JSONC、TOML 或 YAML 格式"))?);
-        if !config.is_object() { return Err(t(language, "MCP 配置的根节点必须是对象")); }
-        collect_mcp(&config, "$", &mut entries);
+    // The format is chosen by the file's name, without regard to case.
+    let lower = source.file_name().and_then(|item| item.to_str()).unwrap_or("").to_lowercase();
+    let config: Value = if lower.ends_with(".toml") {
+        toml::from_str::<toml::Value>(text.trim_start_matches('\u{feff}')).map(toml_to_json).map_err(|_| syntax())?
+    } else if lower.ends_with(".yaml") || lower.ends_with(".yml") {
+        yaml_document(&text).map_err(|_| syntax())?
     } else {
-        let config = parse_json_text(&text, language).map_err(|_| t(language, "配置语法有误，请检查 JSON、JSONC、TOML 或 YAML 格式"))?;
-        collect_mcp(&config, "$", &mut entries);
-        if entries.is_empty() {
-            if config.get("command").is_some() || config.get("url").is_some() {
-                let name = config.get("name").and_then(|value| value.as_str()).unwrap_or("imported-mcp");
-                entries.push(import_entry(name, &config, "$"));
-            }
+        let source = text.trim_start_matches('\u{feff}').trim();
+        // Comments and trailing commas are allowed, as jsonc-parser allows them.
+        jsonc_value(if source.is_empty() { "{}" } else { source }).map_err(|_| syntax())?
+    };
+    if !config.is_object() { return Err(t(language, "MCP 配置的根节点必须是对象")); }
+    let mut entries = Vec::new();
+    walk_mcp(&config, "$", 0, language, &mut entries)?;
+    if entries.is_empty() {
+        let object = config.as_object().expect("the root was checked to be an object");
+        // A file that is one server on its own takes its name from what it
+        // says, or from the file's name with what a name cannot hold replaced.
+        if object.contains_key("command") || object.contains_key("url") {
+            let name = object.get("name").filter(|value| value.is_string()).map(|value| value.as_str().unwrap_or("").to_string()).unwrap_or_else(|| {
+                let base = source.file_stem().and_then(|item| item.to_str()).unwrap_or("").to_string();
+                let cleaned: String = base.chars().map(|character| if character.is_ascii_alphanumeric() || character == '_' || character == '-' { character } else { '-' }).take(64).collect();
+                if cleaned.is_empty() { "imported-mcp".to_string() } else { cleaned }
+            });
+            add_import_entry(&name, &config, "$", language, &mut entries);
+        } else if !object.is_empty() && object.values().all(|item| item.as_object().is_some_and(|map| map.contains_key("command") || map.contains_key("url"))) {
+            collect_mcp(&config, "$", language, &mut entries)?;
         }
     }
     if entries.is_empty() { return Err(t(language, "未发现 MCP 服务器。支持 mcpServers、mcp_servers、mcp.servers、servers 和 context_servers")); }
     Ok(entries)
 }
 
-fn collect_mcp(node: &Value, location: &str, entries: &mut Vec<ImportEntry>) {
-    let Some(object) = node.as_object() else { return };
+/// A JSON or JSONC document, with comments and trailing commas allowed.
+fn jsonc_value(text: &str) -> Result<Value, ()> {
+    let stripped = strip_jsonc(text);
+    serde_json::from_str::<Value>(&stripped).map_err(|_| ())
+}
+
+/// A YAML document as the JSON the rest of the kernel works with. A document
+/// that says nothing is null, as it is to the Electron build's package, so
+/// that the caller refuses it as a root that is not an object.
+fn yaml_document(text: &str) -> Result<Value, ()> {
+    let parsed: serde_yaml::Value = serde_yaml::from_str(text.trim_start_matches('\u{feff}')).map_err(|_| ())?;
+    Ok(yaml_value_to_json(parsed))
+}
+
+fn yaml_value_to_json(node: serde_yaml::Value) -> Value {
+    match node {
+        serde_yaml::Value::Null => Value::Null,
+        serde_yaml::Value::Bool(flag) => json!(flag),
+        serde_yaml::Value::Number(number) => json!(number),
+        serde_yaml::Value::String(text) => Value::String(text),
+        serde_yaml::Value::Sequence(items) => Value::Array(items.into_iter().map(yaml_value_to_json).collect()),
+        serde_yaml::Value::Mapping(map) => Value::Object(map.into_iter().map(|(key, value)| (yaml_key(key), yaml_value_to_json(value))).collect()),
+        other => json!(other.as_str().unwrap_or("")),
+    }
+}
+
+/// A mapping's key as text. A key that is not a string is written as the
+/// YAML package writes it to a JavaScript object's key.
+fn yaml_key(key: serde_yaml::Value) -> String {
+    match key {
+        serde_yaml::Value::String(text) => text,
+        serde_yaml::Value::Bool(flag) => flag.to_string(),
+        serde_yaml::Value::Number(number) => number.to_string(),
+        serde_yaml::Value::Null => "null".to_string(),
+        _ => String::new(),
+    }
+}
+
+/// The collections of servers in a configuration, at any depth up to 64.
+fn walk_mcp(node: &Value, location: &str, depth: usize, language: &str, entries: &mut Vec<ImportEntry>) -> Result<(), String> {
+    if depth > 64 { return Err(t(language, "配置嵌套超过 64 层，请选择更小的配置文件")); }
+    let Some(object) = node.as_object() else { return Ok(()) };
     for (key, child) in object {
         let current = format!("{location}.{key}");
         if matches!(key.as_str(), "mcpServers" | "mcp_servers" | "context_servers") {
-            if let Some(map) = child.as_object() { for (name, value) in map { entries.push(import_entry(name, value, &current)); } }
-        } else if key == "mcp" {
-            let map = child.get("servers").unwrap_or(child);
-            if let Some(map) = map.as_object() { for (name, value) in map { entries.push(import_entry(name, value, &current)); } }
+            collect_mcp(child, &current, language, entries)?;
+        } else if key == "mcp" && child.is_object() {
+            let servers = child.get("servers").filter(|value| value.is_object()).unwrap_or(child);
+            collect_mcp(servers, &current, language, entries)?;
         } else if key == "servers" && location == "$" {
-            if let Some(map) = child.as_object() { for (name, value) in map { entries.push(import_entry(name, value, &current)); } }
-        } else if child.is_object() { collect_mcp(child, &current, entries); }
+            collect_mcp(child, &current, language, entries)?;
+        } else if child.is_object() {
+            walk_mcp(child, &current, depth + 1, language, entries)?;
+        }
     }
+    Ok(())
 }
 
-fn import_entry(name: &str, value: &Value, location: &str) -> ImportEntry {
-    let enabled = value.get("enabled").and_then(|item| item.as_bool()) != Some(false) && value.get("disabled").and_then(|item| item.as_bool()) != Some(true);
+/// The servers named by a collection, each checked on its own.
+fn collect_mcp(map: &Value, location: &str, language: &str, entries: &mut Vec<ImportEntry>) -> Result<(), String> {
+    let Some(object) = map.as_object() else { return Err(translate(language, "{{0}} 必须是服务器对象集合", &[location.to_string()])) };
+    for (name, value) in object { add_import_entry(name, value, location, language, entries); }
+    Ok(())
+}
+
+fn add_import_entry(name: &str, value: &Value, location: &str, language: &str, entries: &mut Vec<ImportEntry>) {
+    // A server that is not an object is enabled by default; its reason is
+    // said by the check below.
+    let enabled = match value.as_object() {
+        Some(object) => object.get("enabled") != Some(&json!(false)) && object.get("disabled") != Some(&json!(true)),
+        None => true,
+    };
     let mut entry = ImportEntry { id: format!("{location}:{name}"), name: name.to_string(), path: location.to_string(), config: None, enabled, error: None };
     if !mcp_name_ok(name) {
-        entry.error = Some("MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符".into());
-        return entry;
+        entry.error = Some(t(language, "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"));
+    } else {
+        match normalize_import(value, language) {
+            Ok(config) => entry.config = Some(config),
+            Err(error) => entry.error = Some(error),
+        }
     }
-    match normalize_import(value) {
-        Ok(config) => entry.config = Some(config),
-        Err(error) => entry.error = Some(error),
-    }
-    entry
+    entries.push(entry);
 }
 
-fn normalize_import(value: &Value) -> Result<Value, String> {
-    let object = value.as_object().ok_or_else(|| "服务器配置必须是对象".to_string())?;
-    if object.get("args").is_some_and(|item| !item.as_array().is_some_and(|list| list.iter().all(|item| item.is_string()))) { return Err("args 必须是字符串数组".into()); }
+fn string_map(value: &Value) -> bool { value.as_object().is_some_and(|map| map.values().all(|item| item.is_string())) }
+
+/// A server's configuration in the form the agents take, or the one reason
+/// it cannot be used, checked in the order the Electron build checks it.
+/// A field that is absent is `undefined` there; null is a value that is set.
+fn normalize_import(value: &Value, language: &str) -> Result<Value, String> {
+    let object = value.as_object().ok_or_else(|| t(language, "服务器配置必须是对象"))?;
+    // The field's value, when the file sets it; null counts as set.
+    let set = |key: &str| object.get(key);
+    if set("args").is_some_and(|item| !item.is_array()) { return Err(t(language, "args 必须是字符串数组")); }
     for key in ["enabled", "disabled"] {
-        if object.get(key).is_some_and(|item| !item.is_boolean()) { return Err(format!("{key} 必须是布尔值")); }
+        if set(key).is_some_and(|item| !item.is_boolean()) { return Err(translate(language, "{{0}} 必须是布尔值", &[key.to_string()])); }
     }
     let supported = ["name", "description", "type", "command", "args", "env", "environment", "url", "headers", "http_headers", "enabled", "disabled"];
-    if let Some(extra) = object.keys().find(|key| !supported.contains(&key.as_str())) { return Err(format!("包含需要手动适配的字段：{extra}")); }
-    if let Some(url) = object.get("url").and_then(|item| item.as_str()) {
-        if !(url.starts_with("http://") || url.starts_with("https://")) { return Err("HTTP MCP 需要有效的 http/https URL".into()); }
-        let headers = object.get("headers").or_else(|| object.get("http_headers"));
-        let mut config = json!({ "url": url });
-        if let Some(headers) = headers { config["headers"] = headers.clone(); }
-        return Ok(config);
+    let extra = object.keys().filter(|key| !supported.contains(&key.as_str())).cloned().collect::<Vec<_>>();
+    if !extra.is_empty() { return Err(translate(language, "包含需要手动适配的字段：{{0}}", &[extra.join("、")])); }
+    if let Some(url) = set("url") {
+        // A URL that is not a string is refused in so many words. A string
+        // the URL parser cannot read throws its own error there, which is
+        // shown as it is, not translated.
+        if !url.is_string() { return Err(t(language, "HTTP MCP 需要有效的 http/https URL")); }
+        let parsed = match ada_url::Url::parse(url.as_str().expect("checked to be a string"), None) {
+            Ok(parsed) => parsed,
+            // The message of Node's `new URL` for a URL it cannot read.
+            Err(_) => return Err("Invalid URL".to_string()),
+        };
+        if !matches!(parsed.protocol(), "http:" | "https:") { return Err(t(language, "HTTP MCP 需要有效的 http/https URL")); }
+        if set("type").is_some_and(is_truthy) && !["http", "remote", "streamable-http"].contains(&string_of(set("type").unwrap()).as_str()) { return Err(t(language, "暂不支持此远程传输类型")); }
+        // The first of the two that is not null or absent; the second may
+        // itself be null, which is a value that does not pass the check.
+        let headers = match set("headers") {
+            Some(first) if !first.is_null() => Some(first),
+            _ => set("http_headers"),
+        };
+        if headers.is_some_and(|headers| !is_record(headers) || !string_map(headers)) { return Err(t(language, "headers 必须是字符串键值对象")); }
+        let mut config = serde_json::Map::new();
+        config.insert("url".into(), url.clone());
+        if let Some(headers) = headers.filter(|value| is_truthy(value)) { config.insert("headers".into(), headers.clone()); }
+        return Ok(Value::Object(config));
     }
-    let (command, mut args) = if let Some(list) = object.get("command").and_then(|item| item.as_array()) {
-        let command = list.first().and_then(|item| item.as_str()).ok_or_else(|| "stdio MCP 缺少有效 command".to_string())?.to_string();
-        let extra = list.iter().skip(1).cloned().collect::<Vec<_>>();
-        if extra.iter().any(|item| !item.is_string()) { return Err("args 必须是字符串数组".into()); }
-        (command, extra)
+    if set("type").is_some_and(is_truthy) && !["stdio", "local"].contains(&string_of(set("type").unwrap()).as_str()) { return Err(t(language, "暂不支持此传输类型")); }
+    if set("headers").is_some() || set("http_headers").is_some() { return Err(t(language, "stdio MCP 不支持 HTTP headers，请确认源配置")); }
+    // A command may be given as an object: the program, its arguments and
+    // its environment in one place.
+    let command_value = set("command").unwrap_or(&Value::Null);
+    let command_object = if is_record(command_value) { command_value.as_object().expect("checked to be an object") } else { object };
+    let command = if is_record(command_value) {
+        command_object.get("path").unwrap_or(&Value::Null)
+    } else if let Some(list) = command_value.as_array() {
+        list.first().unwrap_or(&Value::Null)
     } else {
-        (object.get("command").and_then(|item| item.as_str()).ok_or_else(|| "stdio MCP 缺少有效 command".to_string())?.to_string(), Vec::new())
+        command_value
     };
-    if command.trim().is_empty() { return Err("stdio MCP 缺少有效 command".into()); }
-    if let Some(given) = object.get("args").and_then(|item| item.as_array()) { args.extend(given.iter().cloned()); }
-    let mut config = json!({ "command": command, "args": args });
-    if let Some(env) = object.get("env").or_else(|| object.get("environment")) { config["env"] = env.clone(); }
-    Ok(config)
-}
-
-fn yaml_to_json(node: &Yaml) -> Value {
-    match node {
-        Yaml::Map(entries) => {
-            let mut map = serde_json::Map::new();
-            for (key, value) in entries { map.insert(key.clone(), yaml_to_json(value)); }
-            Value::Object(map)
+    let args = match command_value.as_array() {
+        Some(list) => {
+            let mut args: Vec<Value> = list.iter().skip(1).cloned().collect();
+            if let Some(extra) = set("args").and_then(|value| value.as_array()) { args.extend(extra.iter().cloned()); }
+            Value::Array(args)
         }
-        Yaml::Seq(items) => Value::Array(items.iter().map(yaml_to_json).collect()),
-        Yaml::Null => Value::Null,
-        Yaml::Str(value) => yaml_scalar(value),
-    }
-}
-
-fn yaml_scalar(value: &str) -> Value {
-    if value == "true" || value == "false" { return json!(value == "true"); }
-    if value.starts_with('[') && value.ends_with(']') {
-        let inner = &value[1..value.len() - 1];
-        let items = if inner.trim().is_empty() { Vec::new() } else { inner.split(',').map(|item| json!(unyaml(item.trim()))).collect() };
-        return Value::Array(items);
-    }
-    json!(value)
+        None => command_object.get("args").filter(|value| is_truthy(value)).cloned().unwrap_or_else(|| Value::Array(Vec::new())),
+    };
+    // The first of the two that is not null or absent, as above.
+    let env = match command_object.get("env") {
+        Some(first) if !first.is_null() => Some(first),
+        _ => set("environment"),
+    };
+    if !command.is_string() || command.as_str().is_some_and(|text| js_trim(text).is_empty() || text.contains('\0')) { return Err(t(language, "stdio MCP 缺少有效 command")); }
+    if !args.as_array().is_some_and(|list| list.iter().all(|item| item.is_string())) { return Err(t(language, "args 必须是字符串数组")); }
+    if env.is_some_and(|env| !is_record(env) || !string_map(env)) { return Err(t(language, "env 必须是字符串键值对象")); }
+    let mut config = serde_json::Map::new();
+    config.insert("command".into(), command.clone());
+    config.insert("args".into(), args);
+    if let Some(env) = env.filter(|value| is_truthy(value)) { config.insert("env".into(), env.clone()); }
+    Ok(Value::Object(config))
 }
 
 struct StagedSkill { folder: PathBuf, name: String, description: String, relative: String }
@@ -1732,33 +1864,37 @@ fn remove_tree(path: &Path) -> Result<(), String> {
 }
 
 fn read_text(path: &Path, language: &str) -> Result<String, String> {
-    match fs::symlink_metadata(path) {
+    // The file's size is taken through a link, as the Electron build takes
+    // it: a configuration that is a link to another file is read like any
+    // other; only writing through one is refused.
+    match fs::metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
         Err(error) => Err(error.to_string()),
-        Ok(meta) if meta.file_type().is_symlink() => Err(t(language, "配置是符号链接，请选择真实配置文件")),
         Ok(meta) if meta.len() > MAX_CONFIG => Err(t(language, "配置文件超过 32 MB")),
         Ok(_) => fs::read_to_string(path).map_err(|error| error.to_string()),
     }
 }
 
 fn atomic_text(path: &Path, before: &str, next: &str, language: &str) -> Result<(), String> {
-    if fs::symlink_metadata(path).ok().is_some_and(|meta| meta.file_type().is_symlink()) { return Err(t(language, "配置是符号链接，请选择真实配置文件")); }
     if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(|error| error.to_string())?; }
-    let temp = path.with_file_name(format!(".{}.tmp", random_id()));
-    {
-        let mut file = OpenOptions::new().write(true).create_new(true).open(&temp).map_err(|error| error.to_string())?;
-        crate::sys::restrict_to_owner(&file);
-        file.write_all(next.as_bytes()).map_err(|error| error.to_string())?;
-    }
-    let current = read_text(path, language)?;
-    if current != before {
-        let _ = fs::remove_file(&temp);
-        return Err(t(language, "配置已被其他程序修改，请刷新后重试"));
-    }
-    if path.exists() {
-        fs::copy(path, PathBuf::from(format!("{}.awb-backup", path.display()))).map_err(|error| error.to_string())?;
-    }
-    fs::rename(&temp, path).map_err(|error| error.to_string())
+    if fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) { return Err(t(language, "配置是符号链接，请选择真实配置文件")); }
+    let temp = path.with_file_name(format!("{}.{}.tmp", path.file_name().and_then(|item| item.to_str()).unwrap_or(""), random_id()));
+    // Whatever happens, the temporary file does not stay behind.
+    let outcome = (|| {
+        {
+            let mut file = OpenOptions::new().write(true).create_new(true).open(&temp).map_err(|error| error.to_string())?;
+            crate::sys::restrict_to_owner(&file);
+            file.write_all(next.as_bytes()).map_err(|error| error.to_string())?;
+        }
+        let current = read_text(path, language)?;
+        if current != before { return Err(t(language, "配置已被其他程序修改，请刷新后重试")); }
+        if path.exists() {
+            fs::copy(path, PathBuf::from(format!("{}.awb-backup", path.display()))).map_err(|error| error.to_string())?;
+        }
+        fs::rename(&temp, path).map_err(|error| error.to_string())
+    })();
+    if temp.exists() { let _ = fs::remove_file(&temp); }
+    outcome
 }
 
 fn parse_json_text(text: &str, language: &str) -> Result<Value, String> {

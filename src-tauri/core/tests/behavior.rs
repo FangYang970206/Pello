@@ -5251,32 +5251,430 @@ fn an_unreadable_folder_is_reported_in_the_selected_language_with_the_systems_co
     let _ = fs::remove_dir_all(root);
 }
 
-/// An MCP server whose URL is not one is described so in the selected
-/// language: the Electron build says `Invalid URL` through its catalog, and
-/// so does this build, in the list and in the details.
+/// An MCP server whose URL the URL standard's parser cannot read is
+/// described so in the selected language: the Electron build says `无效 URL`
+/// through its catalog in the list, and `Invalid URL` in English. A URL of
+/// another scheme is a URL all the same, and is shown as the parser reads
+/// it. The details of a server with such a URL cannot be shown at all, as
+/// the Electron build's own reading of the URL fails there.
 #[test]
 fn an_mcp_server_with_a_url_that_is_not_one_is_described_so_in_the_selected_language() {
     let root = temp_dir("mcp-url-wording");
     let (bench, _) = workbench(&root);
-    fs::write(root.join("box-mcp.json"), "{\n  \"mcpServers\": {\n    \"odd\": { \"url\": \"stdio://nowhere\", \"type\": \"http\" },\n    \"fine\": { \"url\": \"https://example.com/mcp\" }\n  }\n}\n").unwrap();
+    fs::write(root.join("box-mcp.json"), "{\n  \"mcpServers\": {\n    \"odd\": { \"url\": \"nowhere\", \"type\": \"http\" },\n    \"fine\": { \"url\": \"https://example.com/mcp\" },\n    \"other\": { \"url\": \"stdio://nowhere\" },\n    \"space\": { \"url\": \"HTTP://Example.com:8080/a b\" },\n    \"port\": { \"url\": \"http://example.com:80/x\" }\n  }\n}\n").unwrap();
     bench.dispatch("db:custom", &[json!([{
         "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
         "resources": { "mcpPath": root.join("box-mcp.json").display().to_string(), "skillPath": root.join("box-skills").display().to_string(), "format": "standard", "skillAdapter": "portable" }
     }])]).unwrap();
     let listed = bench.dispatch("resources:list", &[json!("mcp"), json!("box"), json!(1), json!("")]).unwrap();
     let items = listed["items"].as_array().unwrap();
-    let odd = items.iter().find(|item| item["name"] == "odd").expect("the server is listed");
-    assert_eq!(odd["description"], "无效 URL");
-    assert_eq!(items.iter().find(|item| item["name"] == "fine").unwrap()["description"], "https://example.com/mcp");
+    let description = |name: &str| items.iter().find(|item| item["name"] == name).unwrap_or_else(|| panic!("{name} is listed")).clone();
+    // What Node's `new URL` makes of each, as `mcpDescription` puts it
+    // together: the scheme in lower case, the host with its port, the path,
+    // and a space as `%20`.
+    assert_eq!(description("odd")["description"], "无效 URL");
+    assert_eq!(description("fine")["description"], "https://example.com/mcp");
+    assert_eq!(description("other")["description"], "stdio://nowhere", "a URL of another scheme is read, not refused: {}", description("other")["description"]);
+    assert_eq!(description("space")["description"], "http://example.com:8080/a%20b");
+    assert_eq!(description("port")["description"], "http://example.com/x", "the scheme's own port is not shown: {}", description("port")["description"]);
 
     bench.dispatch("db:settings", &[json!({ "language": "en" })]).unwrap();
     let listed = bench.dispatch("resources:list", &[json!("mcp"), json!("box"), json!(1), json!("")]).unwrap();
-    let odd = listed["items"].as_array().unwrap().iter().find(|item| item["name"] == "odd").expect("the server is listed").clone();
-    assert_eq!(odd["description"], "Invalid URL", "the Electron build's words, in English: {}", odd["description"]);
+    let items = listed["items"].as_array().unwrap();
+    let description = |name: &str| items.iter().find(|item| item["name"] == name).unwrap_or_else(|| panic!("{name} is listed")).clone();
+    assert_eq!(description("odd")["description"], "Invalid URL", "the Electron build's words, in English: {}", description("odd")["description"]);
+    assert_eq!(description("other")["description"], "stdio://nowhere");
 
-    let detail = bench.dispatch("resources:detail", &[json!("mcp"), json!("box"), odd]).unwrap();
+    // The details show the URL with its account, query and fragment taken
+    // off; a URL the parser cannot read fails them, with the parser's own
+    // message, as it fails the Electron build's.
+    let detail = bench.dispatch("resources:detail", &[json!("mcp"), json!("box"), description("fine")]).unwrap();
     let content = detail["content"].as_str().unwrap();
-    assert!(content.contains("Invalid URL"), "the details say of the URL what the list says: {content}");
-    assert!(!content.contains("\u{65e0}\u{6548}"), "no Chinese is left in an English message: {content}");
+    assert!(content.contains("\"url\": \"https://example.com/mcp\""), "the URL as the details show it: {content}");
+    let error = bench.dispatch("resources:detail", &[json!("mcp"), json!("box"), description("odd")]).unwrap_err();
+    assert_eq!(error, "Invalid URL", "the parser's own message, not translated: {error}");
+    let _ = fs::remove_dir_all(root);
+}
+
+
+
+
+
+/// The MCP servers of a configuration file are found as the Electron build's
+/// `readMcpImport` finds them, and each is refused for the reason it is
+/// refused there, in the selected language. The inputs are the cases written
+/// by hand for every fault of the first port and a fixed selection of
+/// randomly made ones; what is expected of each was read from the Electron
+/// build's own code, in Chinese and in English, and is kept in the fixtures.
+#[test]
+fn an_mcp_configuration_file_is_read_as_the_electron_build_reads_it() {
+    let root = temp_dir("mcp-import-fixture");
+    let (bench, _) = workbench(&root);
+    let cases: serde_json::Value = serde_json::from_str(include_str!("fixtures/mcp-import-cases.json")).unwrap();
+    let expected: serde_json::Value = serde_json::from_str(include_str!("fixtures/mcp-import-expected.json")).unwrap();
+    assert_eq!(cases.as_object().unwrap().len(), expected.as_object().unwrap().len(), "every case has an expectation");
+    assert!(cases.as_object().unwrap().len() >= 117, "the cases written by hand and the random ones are all here: {}", cases.as_object().unwrap().len());
+    let mut checked = Vec::new();
+    for (language, name) in [("zh-CN", "zh-CN"), ("en", "en")] {
+        bench.dispatch("db:settings", &[json!({ "language": language })]).unwrap();
+        for (case, item) in cases.as_object().unwrap() {
+            let file = root.join(item["file"].as_str().unwrap());
+            fs::write(&file, item["text"].as_str().unwrap()).unwrap();
+            let want = &expected[case][name];
+            let got = bench.dispatch("resources:scan", &[json!("mcp"), json!(file.display().to_string())]);
+            match want {
+                serde_json::Value::Object(refused) => {
+                    let error = got.expect_err(&format!("{case} is refused as a whole"));
+                    assert_eq!(error, refused["error"].as_str().unwrap(), "{case}, {language}");
+                }
+                serde_json::Value::Array(entries) => {
+                    let found = got.unwrap_or_else(|error| panic!("{case}, {language}: {error}"));
+                    // A server that can be imported has no error said of it
+                    // at all, and the configuration is not returned.
+                    let found: Vec<serde_json::Value> = found.as_array().unwrap().iter().map(|entry| {
+                        let mut entry = entry.clone();
+                        if entry["error"].is_null() { as_object(&mut entry).remove("error"); }
+                        entry
+                    }).collect();
+                    assert_eq!(serde_json::Value::Array(found), serde_json::Value::Array(entries.clone()), "{case}, {language}");
+                }
+                _ => panic!("{case}: an expectation is a list or a refusal"),
+            }
+            checked.push((case.clone(), language));
+        }
+    }
+    let _ = fs::remove_dir_all(root);
+    assert_eq!(checked.len(), 2 * cases.as_object().unwrap().len());
+}
+
+fn as_object(value: &mut serde_json::Value) -> &mut serde_json::Map<String, serde_json::Value> { value.as_object_mut().expect("an entry is an object") }
+
+/// The faults of the first port, each told of in its own right, so that a
+/// case's reason is not lost among many: a field that is null is a field
+/// that is set; a URL is read by the URL standard's parser, not by how its
+/// text begins; a parser's own message is not translated.
+#[test]
+fn an_mcp_server_is_judged_as_javascript_judges_it() {
+    let root = temp_dir("mcp-import-judgement");
+    let (bench, _) = workbench(&root);
+    bench.dispatch("db:custom", &[json!([{
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
+        "resources": { "mcpPath": root.join("box-mcp.json").display().to_string(), "skillPath": root.join("box-skills").display().to_string(), "format": "standard", "skillAdapter": "portable" }
+    }])]).unwrap();
+    let scan = |text: &str| -> serde_json::Value {
+        let file = root.join("servers.json");
+        fs::write(&file, text).unwrap();
+        bench.dispatch("resources:scan", &[json!("mcp"), json!(file.display().to_string())]).unwrap_or_else(|error| panic!("{text}: {error}"))
+    };
+    let errors = |text: &str| -> Vec<String> { scan(text).as_array().unwrap().iter().map(|entry| match &entry["error"] { serde_json::Value::String(error) => error.clone(), _ => String::new() }).collect() };
+    // null is a value that is set: it is not a field left out.
+    assert_eq!(errors(r#"{"mcpServers":{"a":{"command":"tool","enabled":null}}}"#), ["enabled 必须是布尔值"]);
+    assert_eq!(errors(r#"{"mcpServers":{"a":{"command":"tool","args":null}}}"#), ["args 必须是字符串数组"]);
+    assert_eq!(errors(r#"{"mcpServers":{"a":{"url":null,"command":"tool"}}}"#), ["HTTP MCP 需要有效的 http/https URL"]);
+    assert_eq!(errors(r#"{"mcpServers":{"a":{"command":"tool","headers":null}}}"#), ["stdio MCP 不支持 HTTP headers，请确认源配置"]);
+    // `headers ?? http_headers`: a null second field is taken, and refused.
+    assert_eq!(errors(r#"{"mcpServers":{"a":{"url":"https://e.com","http_headers":null}}}"#), ["headers 必须是字符串键值对象"]);
+    assert_eq!(errors(r#"{"mcpServers":{"a":{"url":"https://e.com","http_headers":{}}}}"#), [String::new()]);
+    // Every field that is not supported is named, in the file's order.
+    assert_eq!(errors(r#"{"mcpServers":{"a":{"command":"tool","retry":1,"timeout":2,"z":3}}}"#), ["包含需要手动适配的字段：retry、timeout、z"]);
+    // `String(type)` is compared with the words: an array of one word is that word.
+    assert_eq!(errors(r#"{"mcpServers":{"a":{"url":"https://e.com","type":["sse"]}}}"#), ["暂不支持此远程传输类型"]);
+    assert_eq!(errors(r#"{"mcpServers":{"a":{"url":"https://e.com","type":["http"]}}}"#), [String::new()]);
+    assert_eq!(errors(r#"{"mcpServers":{"a":{"command":"tool","type":7}}}"#), ["暂不支持此传输类型"]);
+    assert_eq!(errors(r#"{"mcpServers":{"a":{"command":"tool","type":""}}}"#), [String::new()]);
+    // A URL is read by its scheme, in any case it is written and with one
+    // slash or two; one the parser cannot read fails with its own message.
+    assert_eq!(errors(r#"{"mcpServers":{"a":{"url":"HTTP://E.COM/x"}}}"#), [String::new()]);
+    assert_eq!(errors(r#"{"mcpServers":{"a":{"url":"http:/e.com"}}}"#), [String::new()]);
+    assert_eq!(errors(r#"{"mcpServers":{"a":{"url":"nowhere"}}}"#), ["Invalid URL"]);
+    assert_eq!(errors(r#"{"mcpServers":{"a":{"url":"https://e.com:99999/"}}}"#), ["Invalid URL"]);
+    assert_eq!(errors(r#"{"mcpServers":{"a":{"url":7}}}"#), ["HTTP MCP 需要有效的 http/https URL"]);
+    assert_eq!(errors(r#"{"mcpServers":{"a":{"url":"ftp://e.com"}}}"#), ["HTTP MCP 需要有效的 http/https URL"]);
+    // A command that is an object, an array, or blank by JavaScript's trim.
+    let imported = |text: &str| -> serde_json::Value {
+        let file = root.join("servers.json");
+        fs::write(&file, text).unwrap();
+        let list = bench.dispatch("resources:scan", &[json!("mcp"), json!(file.display().to_string())]).unwrap();
+        let id = list[0]["id"].clone();
+        let _ = fs::remove_file(root.join("box-mcp.json"));
+        let results = bench.dispatch("resources:import-mcp", &[json!(file.display().to_string()), json!(["box"]), json!([id])]).unwrap();
+        assert_eq!(results[0]["ok"], json!(true), "{text}: {results}");
+        let written: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join("box-mcp.json")).unwrap()).unwrap();
+        written["mcpServers"][list[0]["name"].as_str().unwrap()].clone()
+    };
+    assert_eq!(imported(r#"{"mcpServers":{"a":{"command":{"path":"node","args":["x.js"],"env":{"A":"1"}}}}}"#), json!({ "command": "node", "args": ["x.js"], "env": { "A": "1" } }));
+    assert_eq!(imported(r#"{"mcpServers":{"a":{"command":["node","x.js","--flag"],"args":["more"]}}}"#), json!({ "command": "node", "args": ["x.js", "--flag", "more"] }));
+    // An empty environment is a value that is set, and is written as it is;
+    // one left out is not written.
+    assert_eq!(imported(r#"{"mcpServers":{"a":{"command":"tool","env":{}}}}"#), json!({ "command": "tool", "args": [], "env": {} }));
+    assert_eq!(imported(r#"{"mcpServers":{"a":{"command":"tool"}}}"#), json!({ "command": "tool", "args": [] }));
+    assert_eq!(errors(r#"{"mcpServers":{"a":{"command":["node",7]}}}"#), ["args 必须是字符串数组"]);
+    // The byte order mark is whitespace to JavaScript's trim, and the next
+    // line character is not; both are written as JSON writes them.
+    assert_eq!(errors("{\"mcpServers\":{\"a\":{\"command\":\"\\ufeff\"}}}"), ["stdio MCP 缺少有效 command"]);
+    assert_eq!(errors("{\"mcpServers\":{\"a\":{\"command\":\"\\u0085\"}}}"), [String::new()]);
+    let _ = fs::remove_dir_all(root);
+}
+
+/// The servers of an agent's own configuration as its list shows them: every
+/// entry is asked to be an object, as the Electron build asks, so that one
+/// that is not fails the whole list with the path said first; a transport is
+/// named by the server's `type` as JavaScript writes it, or is `http` for a
+/// server with a URL; and a URL is shown as the URL standard's parser reads
+/// it, in a domain written in the script of its language as in ASCII.
+#[test]
+fn an_agents_mcp_list_judges_each_server_as_the_electron_build_does() {
+    let root = temp_dir("mcp-list-judgement");
+    let (bench, _) = workbench(&root);
+    let file = root.join("box-mcp.json");
+    bench.dispatch("db:custom", &[json!([{
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
+        "resources": { "mcpPath": file.display().to_string(), "skillPath": root.join("box-skills").display().to_string(), "format": "standard", "skillAdapter": "portable" }
+    }])]).unwrap();
+    let list = |text: &str| -> serde_json::Value {
+        fs::write(&file, text).unwrap();
+        bench.dispatch("resources:list", &[json!("mcp"), json!("box"), json!(1), json!("")]).unwrap()
+    };
+    let shape = |text: &str| -> serde_json::Value {
+        let listed = list(text);
+        assert_eq!(listed["errors"], json!([]), "{listed}");
+        let items: Vec<serde_json::Value> = listed["items"].as_array().unwrap().iter().map(|item| json!([item["name"], item["description"], item["transport"], item["enabled"]])).collect();
+        serde_json::Value::Array(items)
+    };
+    // One entry that is not an object fails the whole list.
+    assert_eq!(list(r#"{"mcpServers":{"docs":{"command":"tool"},"odd":"text"}}"#)["errors"], json!([format!("{}: 配置必须是对象", file.display())]));
+    assert_eq!(list(r#"{"mcpServers":{"docs":{"command":"tool"},"odd":[]}}"#)["errors"], json!([format!("{}: 配置必须是对象", file.display())]));
+    assert_eq!(list(r#"{"mcpServers":{"docs":{"command":"tool"},"odd":null}}"#)["errors"], json!([format!("{}: 配置必须是对象", file.display())]));
+    assert_eq!(list(r#"{"mcpServers":["docs"]}"#)["errors"], json!([format!("{}: 配置必须是对象", file.display())]));
+    // `value.url ? String(value.type || 'http') : 'stdio'`.
+    assert_eq!(shape(r#"{"mcpServers":{"a":{"url":"https://e.com/mcp"},"b":{"url":"https://e.com/mcp","type":"sse"},"c":{"url":"https://e.com/mcp","type":""},"d":{"url":"https://e.com/mcp","type":["sse","x"]},"e":{"command":"tool"},"f":{"command":"tool","type":"http"},"g":{"url":"","type":"http"}}}"#), json!([
+        ["a", "https://e.com/mcp", "http", true],
+        ["b", "https://e.com/mcp", "sse", true],
+        ["c", "https://e.com/mcp", "http", true],
+        ["d", "https://e.com/mcp", "sse,x", true],
+        ["e", "tool", "stdio", true],
+        ["f", "tool", "stdio", true],
+        ["g", "无效 URL", "stdio", true]
+    ]));
+    // A server with a URL is shown by its scheme, host and path as the URL
+    // standard's parser reads it, and a domain of another script as it is
+    // written in ASCII; one the parser cannot read is said so. A server that
+    // runs a program is shown by the first of its command as JavaScript
+    // writes it, or by the command's text, or by nothing.
+    assert_eq!(shape(r#"{"mcpServers":{"a":{"url":"HTTP://Bücher.de:8080/a b?x#y"},"b":{"url":"https://xn--e-9t.com/x"},"c":{"url":"nowhere"},"d":{"url":"stdio://x"},"e":{"command":["", "y"]},"f":{"command":[]},"g":{"command":["a", 7]},"h":{"command":{"path":"tool"}}}}"#), json!([
+        ["a", "http://xn--bcher-kva.de:8080/a%20b", "http", true],
+        ["b", "https://xn--e-9t.com/x", "http", true],
+        ["c", "无效 URL", "http", true],
+        ["d", "stdio://x", "http", true],
+        ["e", "", "stdio", true],
+        ["f", "", "stdio", true],
+        ["g", "a", "stdio", true],
+        ["h", "", "stdio", true]
+    ]));
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A configuration file that is a hard link to another file is, to the
+/// kernel and to the Electron build alike, a plain file: it is read, and it
+/// is written, by a new file taking its name's place, which leaves the other
+/// name with what was there. Only a symbolic link is refused for writing,
+/// for taking its name's place would lose the link itself.
+#[test]
+fn a_configuration_file_that_is_a_hard_link_is_read_and_written_as_a_plain_file() {
+    let root = temp_dir("mcp-hard-linked-configuration");
+    let (bench, _) = workbench(&root);
+    let real = root.join("real-mcp.json");
+    fs::write(&real, r#"{"mcpServers":{"docs":{"command":"tool"}}}"#).unwrap();
+    let link = root.join("linked-mcp.json");
+    fs::hard_link(&real, &link).unwrap();
+    bench.dispatch("db:custom", &[json!([{
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
+        "resources": { "mcpPath": link.display().to_string(), "skillPath": root.join("box-skills").display().to_string(), "format": "standard", "skillAdapter": "portable" }
+    }])]).unwrap();
+    // Read through the link.
+    let listed = bench.dispatch("resources:list", &[json!("mcp"), json!("box"), json!(1), json!("")]).unwrap();
+    let names: Vec<&str> = listed["items"].as_array().unwrap().iter().map(|item| item["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["docs"], "{listed}");
+    let item = listed["items"][0].clone();
+    let shown = bench.dispatch("resources:detail", &[json!("mcp"), json!("box"), item.clone()]).unwrap();
+    assert!(shown["content"].as_str().unwrap().contains("\"command\": \"tool\""), "{shown}");
+    // Written, as a plain file is: a new file takes the name's place, and
+    // the other name keeps what was there, for they are no longer one file.
+    // The Electron build writes the same way, by replacing the name.
+    bench.dispatch("resources:toggle", &[json!("mcp"), json!("box"), item, json!(false)]).unwrap();
+    let after = fs::read_to_string(&link).unwrap();
+    assert!(after.contains("awbDisabledMcp") && after.contains("\"docs\""), "{after}");
+    assert_eq!(fs::read_to_string(&real).unwrap(), r#"{"mcpServers":{"docs":{"command":"tool"}}}"#, "the other name keeps what was there");
+    assert_eq!(fs::read_to_string(format!("{}.awb-backup", link.display())).unwrap(), r#"{"mcpServers":{"docs":{"command":"tool"}}}"#, "what was there is kept beside it");
+    let leftovers: Vec<String> = fs::read_dir(&root).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().to_string()).filter(|name| name.ends_with(".tmp")).collect();
+    assert_eq!(leftovers, Vec::<String>::new(), "no temporary file is left behind");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A configuration file that is a symbolic link to another file is read as
+/// any other file is, by what it leads to, and is not written through: the
+/// Electron build refuses a file that `lstat` says is a link, and leaves the
+/// link and what it leads to as they were. This case needs the privilege to
+/// make a symbolic link; on a machine without it, it says so and is not
+/// run, which is not the same as having passed.
+#[test]
+fn a_configuration_file_that_is_a_symbolic_link_is_read_but_not_written_through() {
+    let root = temp_dir("mcp-sym-linked-configuration");
+    let (bench, _) = workbench(&root);
+    let real = root.join("real-mcp.json");
+    fs::write(&real, r#"{"mcpServers":{"docs":{"command":"tool"}}}"#).unwrap();
+    let link = root.join("linked-mcp.json");
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(&real, &link).is_ok();
+    #[cfg(windows)]
+    let made = {
+        let output = std::process::Command::new("cmd").args(["/C", "mklink", &link.display().to_string(), &real.display().to_string()]).output().unwrap();
+        output.status.success() && fs::symlink_metadata(&link).map(|meta| meta.file_type().is_symlink()).unwrap_or(false)
+    };
+    if !made {
+        eprintln!("NOT RUN: this machine cannot make a symbolic link (it needs a privilege the test does not have)");
+        let _ = fs::remove_dir_all(root);
+        return;
+    }
+    bench.dispatch("db:custom", &[json!([{
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
+        "resources": { "mcpPath": link.display().to_string(), "skillPath": root.join("box-skills").display().to_string(), "format": "standard", "skillAdapter": "portable" }
+    }])]).unwrap();
+    // Read through the link: the size is taken of what it leads to.
+    let listed = bench.dispatch("resources:list", &[json!("mcp"), json!("box"), json!(1), json!("")]).unwrap();
+    let names: Vec<&str> = listed["items"].as_array().unwrap().iter().map(|item| item["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["docs"], "{listed}");
+    let item = listed["items"][0].clone();
+    let shown = bench.dispatch("resources:detail", &[json!("mcp"), json!("box"), item.clone()]).unwrap();
+    assert!(shown["content"].as_str().unwrap().contains("\"command\": \"tool\""), "{shown}");
+    // Written: not through the link.
+    let refused = bench.dispatch("resources:toggle", &[json!("mcp"), json!("box"), item, json!(false)]).unwrap_err();
+    assert!(refused.contains("符号链接"), "{refused}");
+    assert_eq!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), true, "the link is left as it is");
+    assert_eq!(fs::read_to_string(&real).unwrap(), r#"{"mcpServers":{"docs":{"command":"tool"}}}"#, "what it leads to is not written either");
+    let leftovers: Vec<String> = fs::read_dir(&root).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().to_string()).filter(|name| name.ends_with(".tmp") || name.ends_with(".awb-backup")).collect();
+    assert_eq!(leftovers, Vec::<String>::new(), "nothing is left beside the configuration");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A server added from the form is checked in the order the Electron build
+/// checks it, so that the one reason given is the same: what kind of server
+/// it is is decided by its URL being a string; a remote one may not also run
+/// a program or carry a program's fields; a local one may not carry HTTP
+/// fields; and a field that is not supported is said last, after every field
+/// that is has been found in order.
+#[test]
+fn an_mcp_server_added_from_the_form_is_refused_for_the_first_of_its_faults_as_the_electron_build_refuses_it() {
+    let root = temp_dir("mcp-form-validation");
+    let (bench, _) = workbench(&root);
+    let file = root.join("box-mcp.json");
+    bench.dispatch("db:custom", &[json!([{
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
+        "resources": { "mcpPath": file.display().to_string(), "skillPath": root.join("box-skills").display().to_string(), "format": "standard", "skillAdapter": "portable" }
+    }])]).unwrap();
+    let thrown = |name: &str, config: serde_json::Value| -> String { bench.dispatch("resources:mcp", &[json!(name), config, json!(["box"])]).unwrap_err() };
+    assert!(thrown("bad name", json!({ "command": "tool" })).contains("MCP 名称只能包含"), "the name is checked first");
+    assert_eq!(thrown("ok", json!("text")), "配置必须是对象");
+    assert_eq!(thrown("ok", json!(["tool"])), "配置必须是对象");
+    // A remote server: its URL by the URL standard's parser, then with an
+    // account in it, then with a program or a program's fields.
+    assert_eq!(thrown("ok", json!({ "url": "nowhere", "command": "tool", "extra": 1 })), "Invalid URL");
+    assert_eq!(thrown("ok", json!({ "url": "ftp://e.com", "command": "tool" })), "请使用不含账号密码的 HTTP / HTTPS URL");
+    assert_eq!(thrown("ok", json!({ "url": "https://u:p@e.com", "command": "tool" })), "请使用不含账号密码的 HTTP / HTTPS URL");
+    assert_eq!(thrown("ok", json!({ "url": "HTTP://E.COM/x", "extra": 1 })), "支持的字段为 type、command、args、env、url、headers", "a scheme in upper case is the scheme");
+    assert_eq!(thrown("ok", json!({ "url": "https://e.com", "command": "" })), "HTTP MCP 请仅配置 url，type 使用 http", "a command that is set is a command, empty or not");
+    assert_eq!(thrown("ok", json!({ "url": "https://e.com", "type": "sse" })), "HTTP MCP 请仅配置 url，type 使用 http");
+    assert_eq!(thrown("ok", json!({ "url": "https://e.com", "type": ["http"] })), "HTTP MCP 请仅配置 url，type 使用 http", "an array is not the word");
+    assert_eq!(thrown("ok", json!({ "url": "https://e.com", "type": "http", "args": [] })), "HTTP MCP 使用 headers；args、env 仅用于 stdio");
+    assert_eq!(thrown("ok", json!({ "url": "https://e.com", "env": {} })), "HTTP MCP 使用 headers；args、env 仅用于 stdio");
+    assert_eq!(thrown("ok", json!({ "url": "https://e.com", "type": "", "extra": 1 })), "支持的字段为 type、command、args、env、url、headers", "a false type is no type");
+    // A local server: a command that is a string with something in it.
+    assert_eq!(thrown("ok", json!({ "command": 7 })), "stdio MCP 需要 command");
+    let blank = json!({ "command": " \u{feff}" });
+    assert_eq!(thrown("ok", blank), "stdio MCP 需要 command", "the byte order mark is whitespace to JavaScript's trim");
+    assert_eq!(thrown("ok", json!({ "command": "tool", "type": "http" })), "stdio MCP 使用 command、args、env；不支持 headers 或其他 type");
+    assert_eq!(thrown("ok", json!({ "command": "tool", "headers": {} })), "stdio MCP 使用 command、args、env；不支持 headers 或其他 type");
+    // The arguments and the string maps, before the unknown fields.
+    assert_eq!(thrown("ok", json!({ "command": "tool", "args": "x", "extra": 1 })), "args 必须是字符串数组");
+    assert_eq!(thrown("ok", json!({ "command": "tool", "args": [1], "extra": 1 })), "args 必须是字符串数组", "an argument that is not a string");
+    assert_eq!(thrown("ok", json!({ "command": "tool", "env": null, "extra": 1 })), "配置必须是对象");
+    assert_eq!(thrown("ok", json!({ "command": "tool", "env": [], "extra": 1 })), "配置必须是对象");
+    assert_eq!(thrown("ok", json!({ "command": "tool", "env": { "A": 1 }, "extra": 1 })), "env 必须是字符串键值对象");
+    assert_eq!(thrown("ok", json!({ "url": "https://e.com", "headers": { "A": 1 }, "extra": 1 })), "headers 必须是字符串键值对象");
+    // An unknown field, last.
+    assert_eq!(thrown("ok", json!({ "command": "tool", "extra": 1 })), "支持的字段为 type、command、args、env、url、headers");
+    // A local server may say it is one.
+    let local = bench.dispatch("resources:mcp", &[json!("ok"), json!({ "command": "tool", "type": "stdio" }), json!(["box"])]).unwrap();
+    assert_eq!(local[0]["ok"], json!(true), "{local}");
+    // What is in order is added, and the file holds it.
+    let added = bench.dispatch("resources:mcp", &[json!("ok2"), json!({ "command": "tool", "args": ["--flag"], "env": { "A": "1" } }), json!(["box"])]).unwrap();
+    assert_eq!(added[0]["ok"], json!(true), "{added}");
+    // The server is written in the form the agent takes, which for a plain
+    // configuration is its command, its arguments and its environment; the
+    // type it was said to be is not written.
+    let held: serde_json::Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(held["mcpServers"]["ok"], json!({ "command": "tool", "args": [] }), "{held}");
+    assert_eq!(held["mcpServers"]["ok2"], json!({ "command": "tool", "args": ["--flag"], "env": { "A": "1" } }), "{held}");
+    // What is wrong for one agent alone is said of that agent and not of
+    // the call: a name that is already taken, a path that is not set, an
+    // agent that is not there. The others are still written to.
+    bench.dispatch("db:custom", &[json!([{
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
+        "resources": { "mcpPath": file.display().to_string(), "skillPath": root.join("box-skills").display().to_string(), "format": "standard", "skillAdapter": "portable" }
+    }, {
+        "id": "bare", "name": "Bare", "cmd": "echo", "args": "", "letter": "R", "color": "#884422", "shell": "pwsh", "env": []
+    }])]).unwrap();
+    let results = bench.dispatch("resources:mcp", &[json!("ok"), json!({ "command": "again" }), json!(["box", "bare", "missing"])]).unwrap();
+    let said = |agent: &str| results.as_array().unwrap().iter().find(|item| item["agent"] == agent).unwrap().clone();
+    assert_eq!(said("box")["ok"], json!(false), "{results}");
+    assert!(said("box")["error"].as_str().unwrap().contains("已存在同名"), "{results}");
+    assert_eq!(said("bare")["error"], json!("请先设置这个 Agent 的 MCP 配置路径"), "{results}");
+    assert_eq!(said("missing")["error"], json!("Agent 不存在"), "{results}");
+    assert_eq!(results.as_array().unwrap().iter().map(|item| item["ok"].clone()).collect::<Vec<_>>(), vec![json!(false), json!(false), json!(false)]);
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&fs::read_to_string(&file).unwrap()).unwrap()["mcpServers"]["ok"], json!({ "command": "tool", "args": [] }), "what was there is kept");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// Where the servers of an OpenCode configuration are, as the Electron build
+/// finds them: under `mcp` in its first release and under `mcp.servers` in
+/// its second, which is told by a list of permissions or skills, or by
+/// providers that are true to JavaScript, or by `mcp.servers` being an object
+/// that is not one server on its own.
+#[test]
+fn an_opencode_configuration_is_read_in_the_release_it_is_written_in() {
+    let root = temp_dir("mcp-opencode-releases");
+    let (bench, _) = workbench(&root);
+    let file = root.join("box-mcp.json");
+    bench.dispatch("db:custom", &[json!([{
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
+        "resources": { "mcpPath": file.display().to_string(), "skillPath": root.join("box-skills").display().to_string(), "format": "opencode", "skillAdapter": "portable" }
+    }])]).unwrap();
+    let names = |text: &str| -> serde_json::Value {
+        fs::write(&file, text).unwrap();
+        let listed = bench.dispatch("resources:list", &[json!("mcp"), json!("box"), json!(1), json!("")]).unwrap();
+        json!({ "errors": listed["errors"], "items": listed["items"].as_array().unwrap().iter().map(|item| [item["name"].clone(), item["enabled"].clone()]).collect::<Vec<_>>() })
+    };
+    let ok = |items: serde_json::Value| json!({ "errors": [], "items": items });
+    // The first release: `mcp` is the list of servers, and `enabled` is read.
+    assert_eq!(names(r#"{"mcp":{"docs":{"command":"tool"}}}"#), ok(json!([["docs", true]])));
+    assert_eq!(names(r#"{"mcp":{"docs":{"command":"tool","enabled":false}}}"#), ok(json!([["docs", false]])));
+    // The second release, told by `mcp.servers` being an object that is not
+    // a server on its own; `disabled` is what makes a server off.
+    assert_eq!(names(r#"{"mcp":{"servers":{"docs":{"command":"tool"}}}}"#), ok(json!([["docs", true]])));
+    assert_eq!(names(r#"{"mcp":{"servers":{"docs":{"command":"tool","disabled":true}}}}"#), ok(json!([["docs", false]])));
+    // Told by a list of permissions or skills, whatever `mcp` holds.
+    assert_eq!(names(r#"{"permissions":[],"mcp":{"servers":{"docs":{"command":"tool"}}}}"#), ok(json!([["docs", true]])));
+    assert_eq!(names(r#"{"skills":[],"mcp":{"servers":{"docs":{"command":"tool","enabled":false}}}}"#), ok(json!([["docs", true]])), "in the second release `enabled` is not read");
+    // Told by providers that are true to JavaScript, an empty object being true.
+    assert_eq!(names(r#"{"providers":{},"mcp":{"servers":{"docs":{"command":"tool","disabled":true}}}}"#), ok(json!([["docs", false]])));
+    assert_eq!(names(r#"{"providers":0,"mcp":{"docs":{"command":"tool"}}}"#), ok(json!([["docs", true]])));
+    assert_eq!(names(r#"{"providers":[],"mcp":{"servers":{"docs":{"command":"tool"}}}}"#), ok(json!([["docs", true]])));
+    // A list of permissions makes the second release, and `mcp` is then not
+    // a list of servers: one on its own there is not found.
+    assert_eq!(names(r#"{"permissions":[],"mcp":{"type":"remote","url":"https://e.com"}}"#), ok(json!([])));
+    assert_eq!(names(r#"{"mcp":null,"permissions":[]}"#), ok(json!([])));
+    // A value that is not an object where a list of servers is asked for
+    // fails the list, with the path said first.
+    assert_eq!(names(r#"{"mcp":["docs"],"permissions":[]}"#)["errors"], json!([format!("{}: 配置必须是对象", file.display())]));
     let _ = fs::remove_dir_all(root);
 }

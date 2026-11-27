@@ -1,0 +1,2498 @@
+{
+ "toml-plain": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true
+   },
+   {
+    "id": "$.mcp_servers:two",
+    "name": "two",
+    "path": "$.mcp_servers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true
+   },
+   {
+    "id": "$.mcp_servers:two",
+    "name": "two",
+    "path": "$.mcp_servers",
+    "enabled": true
+   }
+  ]
+ },
+ "toml-quoted": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:my.server",
+    "name": "my.server",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:my.server",
+    "name": "my.server",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   }
+  ]
+ },
+ "toml-env": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true
+   }
+  ]
+ },
+ "toml-dotted": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true
+   }
+  ]
+ },
+ "toml-deep": {
+  "zh-CN": [
+   {
+    "id": "$.a.b.mcp_servers:one",
+    "name": "one",
+    "path": "$.a.b.mcp_servers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.a.b.mcp_servers:one",
+    "name": "one",
+    "path": "$.a.b.mcp_servers",
+    "enabled": true
+   }
+  ]
+ },
+ "toml-context": {
+  "zh-CN": [
+   {
+    "id": "$.context_servers:one",
+    "name": "one",
+    "path": "$.context_servers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.context_servers:one",
+    "name": "one",
+    "path": "$.context_servers",
+    "enabled": true
+   }
+  ]
+ },
+ "toml-mcpservers": {
+  "zh-CN": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true
+   }
+  ]
+ },
+ "toml-arraycollection": {
+  "zh-CN": {
+   "error": "$.mcp_servers 必须是服务器对象集合"
+  },
+  "en": {
+   "error": "$.mcp_servers must be a collection of server objects"
+  }
+ },
+ "toml-root": {
+  "zh-CN": [
+   {
+    "id": "$:my-server-tool",
+    "name": "my-server-tool",
+    "path": "$",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$:my-server-tool",
+    "name": "my-server-tool",
+    "path": "$",
+    "enabled": true
+   }
+  ]
+ },
+ "toml-rootnamed": {
+  "zh-CN": [
+   {
+    "id": "$:mine",
+    "name": "mine",
+    "path": "$",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$:mine",
+    "name": "mine",
+    "path": "$",
+    "enabled": true
+   }
+  ]
+ },
+ "toml-notobject": {
+  "zh-CN": {
+   "error": "$.mcp_servers 必须是服务器对象集合"
+  },
+  "en": {
+   "error": "$.mcp_servers must be a collection of server objects"
+  }
+ },
+ "toml-empty": {
+  "zh-CN": {
+   "error": "未发现 MCP 服务器。支持 mcpServers、mcp_servers、mcp.servers、servers 和 context_servers"
+  },
+  "en": {
+   "error": "No MCP servers found. Supported fields: mcpServers, mcp_servers, mcp.servers, servers and context_servers."
+  }
+ },
+ "toml-syntax": {
+  "zh-CN": {
+   "error": "配置语法有误，请检查 JSON、JSONC、TOML 或 YAML 格式"
+  },
+  "en": {
+   "error": "Invalid configuration syntax. Check the JSON, JSONC, TOML or YAML format."
+  }
+ },
+ "toml-comment": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true
+   }
+  ]
+ },
+ "toml-spaced": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true
+   }
+  ]
+ },
+ "toml-commandarray": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true
+   }
+  ]
+ },
+ "toml-headers": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "stdio MCP 不支持 HTTP headers，请确认源配置"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "stdio MCP does not support HTTP headers. Check the source configuration."
+   }
+  ]
+ },
+ "toml-backslash": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true
+   }
+  ]
+ },
+ "toml-singlequote": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true
+   }
+  ]
+ },
+ "toml-uppercase-ext": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true
+   }
+  ]
+ },
+ "toml-cr": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true
+   }
+  ]
+ },
+ "toml-root-mcpservers-empty": {
+  "zh-CN": {
+   "error": "未发现 MCP 服务器。支持 mcpServers、mcp_servers、mcp.servers、servers 和 context_servers"
+  },
+  "en": {
+   "error": "No MCP servers found. Supported fields: mcpServers, mcp_servers, mcp.servers, servers and context_servers."
+  }
+ },
+ "json-extra": {
+  "zh-CN": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "包含需要手动适配的字段：timeout、retry"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "Fields require manual adaptation: timeout、retry"
+   }
+  ]
+ },
+ "json-urltype": {
+  "zh-CN": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "暂不支持此远程传输类型"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "This remote transport type is not supported"
+   }
+  ]
+ },
+ "json-urlnotstring": {
+  "zh-CN": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "HTTP MCP 需要有效的 http/https URL"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "HTTP MCP requires a valid http/https URL"
+   }
+  ]
+ },
+ "json-commandobject": {
+  "zh-CN": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true
+   }
+  ]
+ },
+ "json-commandnull": {
+  "zh-CN": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "stdio MCP 缺少有效 command"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "stdio MCP requires a valid command"
+   }
+  ]
+ },
+ "json-notobject": {
+  "zh-CN": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "服务器配置必须是对象"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "Server configuration must be an object"
+   }
+  ]
+ },
+ "json-rootarray": {
+  "zh-CN": {
+   "error": "MCP 配置的根节点必须是对象"
+  },
+  "en": {
+   "error": "The MCP configuration root must be an object"
+  }
+ },
+ "json-nocollection": {
+  "zh-CN": {
+   "error": "未发现 MCP 服务器。支持 mcpServers、mcp_servers、mcp.servers、servers 和 context_servers"
+  },
+  "en": {
+   "error": "No MCP servers found. Supported fields: mcpServers, mcp_servers, mcp.servers, servers and context_servers."
+  }
+ },
+ "json-syntax": {
+  "zh-CN": {
+   "error": "配置语法有误，请检查 JSON、JSONC、TOML 或 YAML 格式"
+  },
+  "en": {
+   "error": "Invalid configuration syntax. Check the JSON, JSONC, TOML or YAML format."
+  }
+ },
+ "json-fallback-root": {
+  "zh-CN": [
+   {
+    "id": "$:my-tool",
+    "name": "my-tool",
+    "path": "$",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$:my-tool",
+    "name": "my-tool",
+    "path": "$",
+    "enabled": true
+   }
+  ]
+ },
+ "json-fallback-named": {
+  "zh-CN": [
+   {
+    "id": "$:mine",
+    "name": "mine",
+    "path": "$",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$:mine",
+    "name": "mine",
+    "path": "$",
+    "enabled": true
+   }
+  ]
+ },
+ "json-fallback-allrecords": {
+  "zh-CN": [
+   {
+    "id": "$:one",
+    "name": "one",
+    "path": "$",
+    "enabled": true
+   },
+   {
+    "id": "$:two",
+    "name": "two",
+    "path": "$",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$:one",
+    "name": "one",
+    "path": "$",
+    "enabled": true
+   },
+   {
+    "id": "$:two",
+    "name": "two",
+    "path": "$",
+    "enabled": true
+   }
+  ]
+ },
+ "json-fallback-notall": {
+  "zh-CN": {
+   "error": "未发现 MCP 服务器。支持 mcpServers、mcp_servers、mcp.servers、servers 和 context_servers"
+  },
+  "en": {
+   "error": "No MCP servers found. Supported fields: mcpServers, mcp_servers, mcp.servers, servers and context_servers."
+  }
+ },
+ "json-depth64": {
+  "zh-CN": [
+   {
+    "id": "$.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.mcpServers:one",
+    "name": "one",
+    "path": "$.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.mcpServers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.mcpServers:one",
+    "name": "one",
+    "path": "$.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.mcpServers",
+    "enabled": true
+   }
+  ]
+ },
+ "json-depth65": {
+  "zh-CN": {
+   "error": "配置嵌套超过 64 层，请选择更小的配置文件"
+  },
+  "en": {
+   "error": "Configuration exceeds 64 nesting levels. Choose a smaller configuration file."
+  }
+ },
+ "json-collectionarray": {
+  "zh-CN": {
+   "error": "$.mcpServers 必须是服务器对象集合"
+  },
+  "en": {
+   "error": "$.mcpServers must be a collection of server objects"
+  }
+ },
+ "json-mcp-servers": {
+  "zh-CN": [
+   {
+    "id": "$.mcp:one",
+    "name": "one",
+    "path": "$.mcp",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp:one",
+    "name": "one",
+    "path": "$.mcp",
+    "enabled": true
+   }
+  ]
+ },
+ "json-mcp-plain": {
+  "zh-CN": [
+   {
+    "id": "$.mcp:one",
+    "name": "one",
+    "path": "$.mcp",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp:one",
+    "name": "one",
+    "path": "$.mcp",
+    "enabled": true
+   }
+  ]
+ },
+ "json-servers-root": {
+  "zh-CN": [
+   {
+    "id": "$.servers:one",
+    "name": "one",
+    "path": "$.servers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.servers:one",
+    "name": "one",
+    "path": "$.servers",
+    "enabled": true
+   }
+  ]
+ },
+ "json-servers-deep": {
+  "zh-CN": {
+   "error": "未发现 MCP 服务器。支持 mcpServers、mcp_servers、mcp.servers、servers 和 context_servers"
+  },
+  "en": {
+   "error": "No MCP servers found. Supported fields: mcpServers, mcp_servers, mcp.servers, servers and context_servers."
+  }
+ },
+ "json-badname": {
+  "zh-CN": [
+   {
+    "id": "$.mcpServers:my.server",
+    "name": "my.server",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   },
+   {
+    "id": "$.mcpServers:",
+    "name": "",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   },
+   {
+    "id": "$.mcpServers:ok_name-1",
+    "name": "ok_name-1",
+    "path": "$.mcpServers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcpServers:my.server",
+    "name": "my.server",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   },
+   {
+    "id": "$.mcpServers:",
+    "name": "",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   },
+   {
+    "id": "$.mcpServers:ok_name-1",
+    "name": "ok_name-1",
+    "path": "$.mcpServers",
+    "enabled": true
+   }
+  ]
+ },
+ "json-trailingcomma": {
+  "zh-CN": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true
+   }
+  ]
+ },
+ "json-comments": {
+  "zh-CN": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true
+   }
+  ]
+ },
+ "json-bom": {
+  "zh-CN": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true
+   }
+  ]
+ },
+ "json-disabled": {
+  "zh-CN": [
+   {
+    "id": "$.mcpServers:a",
+    "name": "a",
+    "path": "$.mcpServers",
+    "enabled": false
+   },
+   {
+    "id": "$.mcpServers:b",
+    "name": "b",
+    "path": "$.mcpServers",
+    "enabled": false
+   },
+   {
+    "id": "$.mcpServers:c",
+    "name": "c",
+    "path": "$.mcpServers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcpServers:a",
+    "name": "a",
+    "path": "$.mcpServers",
+    "enabled": false
+   },
+   {
+    "id": "$.mcpServers:b",
+    "name": "b",
+    "path": "$.mcpServers",
+    "enabled": false
+   },
+   {
+    "id": "$.mcpServers:c",
+    "name": "c",
+    "path": "$.mcpServers",
+    "enabled": true
+   }
+  ]
+ },
+ "json-uppercase-ext": {
+  "zh-CN": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true
+   }
+  ]
+ },
+ "jsonc-ext": {
+  "zh-CN": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true
+   }
+  ]
+ },
+ "yaml-mcpservers": {
+  "zh-CN": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true
+   }
+  ]
+ },
+ "yaml-list": {
+  "zh-CN": {
+   "error": "MCP 配置的根节点必须是对象"
+  },
+  "en": {
+   "error": "The MCP configuration root must be an object"
+  }
+ },
+ "yaml-syntax": {
+  "zh-CN": {
+   "error": "配置语法有误，请检查 JSON、JSONC、TOML 或 YAML 格式"
+  },
+  "en": {
+   "error": "Invalid configuration syntax. Check the JSON, JSONC, TOML or YAML format."
+  }
+ },
+ "yaml-rootcommand": {
+  "zh-CN": [
+   {
+    "id": "$:a",
+    "name": "a",
+    "path": "$",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$:a",
+    "name": "a",
+    "path": "$",
+    "enabled": true
+   }
+  ]
+ },
+ "yaml-quotedurl": {
+  "zh-CN": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true
+   }
+  ]
+ },
+ "yaml-empty": {
+  "zh-CN": {
+   "error": "MCP 配置的根节点必须是对象"
+  },
+  "en": {
+   "error": "The MCP configuration root must be an object"
+  }
+ },
+ "yaml-upper": {
+  "zh-CN": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true
+   }
+  ]
+ },
+ "random-fuzz-2-json-servers": {
+  "zh-CN": [
+   {
+    "id": "$.servers:one",
+    "name": "one",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "Invalid URL"
+   },
+   {
+    "id": "$.servers:my.server",
+    "name": "my.server",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   },
+   {
+    "id": "$.servers:",
+    "name": "",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.servers:one",
+    "name": "one",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "Invalid URL"
+   },
+   {
+    "id": "$.servers:my.server",
+    "name": "my.server",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   },
+   {
+    "id": "$.servers:",
+    "name": "",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   }
+  ]
+ },
+ "random-fuzz-3-json-mcpServers": {
+  "zh-CN": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "args 必须是字符串数组"
+   },
+   {
+    "id": "$.mcpServers:my.server",
+    "name": "my.server",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   },
+   {
+    "id": "$.mcpServers:",
+    "name": "",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "args must be an array of strings"
+   },
+   {
+    "id": "$.mcpServers:my.server",
+    "name": "my.server",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   },
+   {
+    "id": "$.mcpServers:",
+    "name": "",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   }
+  ]
+ },
+ "random-fuzz-8-json-mcpServers": {
+  "zh-CN": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "enabled 必须是布尔值"
+   },
+   {
+    "id": "$.mcpServers:my.server",
+    "name": "my.server",
+    "path": "$.mcpServers",
+    "enabled": false,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "enabled must be a boolean"
+   },
+   {
+    "id": "$.mcpServers:my.server",
+    "name": "my.server",
+    "path": "$.mcpServers",
+    "enabled": false,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   }
+  ]
+ },
+ "random-fuzz-16-json-mcp": {
+  "zh-CN": [
+   {
+    "id": "$.mcp:one",
+    "name": "one",
+    "path": "$.mcp",
+    "enabled": true,
+    "error": "args 必须是字符串数组"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp:one",
+    "name": "one",
+    "path": "$.mcp",
+    "enabled": true,
+    "error": "args must be an array of strings"
+   }
+  ]
+ },
+ "random-fuzz-28-toml-mcp_servers": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "Invalid URL"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "Invalid URL"
+   }
+  ]
+ },
+ "random-fuzz-29-json-mcpServers": {
+  "zh-CN": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "HTTP MCP 需要有效的 http/https URL"
+   },
+   {
+    "id": "$.mcpServers:my.server",
+    "name": "my.server",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   },
+   {
+    "id": "$.mcpServers:",
+    "name": "",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "HTTP MCP requires a valid http/https URL"
+   },
+   {
+    "id": "$.mcpServers:my.server",
+    "name": "my.server",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   },
+   {
+    "id": "$.mcpServers:",
+    "name": "",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   }
+  ]
+ },
+ "random-fuzz-31-json-mcp": {
+  "zh-CN": [
+   {
+    "id": "$.mcp:one",
+    "name": "one",
+    "path": "$.mcp",
+    "enabled": true,
+    "error": "stdio MCP 不支持 HTTP headers，请确认源配置"
+   },
+   {
+    "id": "$.mcp:my.server",
+    "name": "my.server",
+    "path": "$.mcp",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   },
+   {
+    "id": "$.mcp:",
+    "name": "",
+    "path": "$.mcp",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp:one",
+    "name": "one",
+    "path": "$.mcp",
+    "enabled": true,
+    "error": "stdio MCP does not support HTTP headers. Check the source configuration."
+   },
+   {
+    "id": "$.mcp:my.server",
+    "name": "my.server",
+    "path": "$.mcp",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   },
+   {
+    "id": "$.mcp:",
+    "name": "",
+    "path": "$.mcp",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   }
+  ]
+ },
+ "random-fuzz-55-json-servers": {
+  "zh-CN": [
+   {
+    "id": "$.servers:one",
+    "name": "one",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "args 必须是字符串数组"
+   },
+   {
+    "id": "$.servers:my.server",
+    "name": "my.server",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   },
+   {
+    "id": "$.servers:",
+    "name": "",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.servers:one",
+    "name": "one",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "args must be an array of strings"
+   },
+   {
+    "id": "$.servers:my.server",
+    "name": "my.server",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   },
+   {
+    "id": "$.servers:",
+    "name": "",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   }
+  ]
+ },
+ "random-fuzz-77-json-mcp_servers": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "Invalid URL"
+   },
+   {
+    "id": "$.other.deep.mcpServers:one",
+    "name": "one",
+    "path": "$.other.deep.mcpServers",
+    "enabled": true,
+    "error": "Invalid URL"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "Invalid URL"
+   },
+   {
+    "id": "$.other.deep.mcpServers:one",
+    "name": "one",
+    "path": "$.other.deep.mcpServers",
+    "enabled": true,
+    "error": "Invalid URL"
+   }
+  ]
+ },
+ "random-fuzz-104-toml-mcp_servers": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "Invalid URL"
+   },
+   {
+    "id": "$.mcp_servers:my.server",
+    "name": "my.server",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "Invalid URL"
+   },
+   {
+    "id": "$.mcp_servers:my.server",
+    "name": "my.server",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   }
+  ]
+ },
+ "random-fuzz-114-json-mcp_servers": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "Invalid URL"
+   },
+   {
+    "id": "$.mcp_servers:my.server",
+    "name": "my.server",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   },
+   {
+    "id": "$.mcp_servers:",
+    "name": "",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "Invalid URL"
+   },
+   {
+    "id": "$.mcp_servers:my.server",
+    "name": "my.server",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   },
+   {
+    "id": "$.mcp_servers:",
+    "name": "",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   }
+  ]
+ },
+ "random-fuzz-117-json-servers": {
+  "zh-CN": [
+   {
+    "id": "$.servers:one",
+    "name": "one",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "args 必须是字符串数组"
+   },
+   {
+    "id": "$.servers:my.server",
+    "name": "my.server",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.servers:one",
+    "name": "one",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "args must be an array of strings"
+   },
+   {
+    "id": "$.servers:my.server",
+    "name": "my.server",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   }
+  ]
+ },
+ "random-fuzz-119-json-mcp_servers": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "args 必须是字符串数组"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "args must be an array of strings"
+   }
+  ]
+ },
+ "random-fuzz-136-json-mcpServers": {
+  "zh-CN": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "disabled 必须是布尔值"
+   },
+   {
+    "id": "$.mcpServers:my.server",
+    "name": "my.server",
+    "path": "$.mcpServers",
+    "enabled": false,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   },
+   {
+    "id": "$.other.deep.mcpServers:one",
+    "name": "one",
+    "path": "$.other.deep.mcpServers",
+    "enabled": true,
+    "error": "disabled 必须是布尔值"
+   },
+   {
+    "id": "$.other.deep.mcpServers:my.server",
+    "name": "my.server",
+    "path": "$.other.deep.mcpServers",
+    "enabled": false,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "disabled must be a boolean"
+   },
+   {
+    "id": "$.mcpServers:my.server",
+    "name": "my.server",
+    "path": "$.mcpServers",
+    "enabled": false,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   },
+   {
+    "id": "$.other.deep.mcpServers:one",
+    "name": "one",
+    "path": "$.other.deep.mcpServers",
+    "enabled": true,
+    "error": "disabled must be a boolean"
+   },
+   {
+    "id": "$.other.deep.mcpServers:my.server",
+    "name": "my.server",
+    "path": "$.other.deep.mcpServers",
+    "enabled": false,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   }
+  ]
+ },
+ "random-fuzz-root-file-2": {
+  "zh-CN": [
+   {
+    "id": "$:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "path": "$",
+    "enabled": true,
+    "error": "args 必须是字符串数组"
+   }
+  ],
+  "en": [
+   {
+    "id": "$:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "path": "$",
+    "enabled": true,
+    "error": "args must be an array of strings"
+   }
+  ]
+ },
+ "random-fuzz-0-json-mcp": {
+  "zh-CN": [
+   {
+    "id": "$.mcp:one",
+    "name": "one",
+    "path": "$.mcp",
+    "enabled": true,
+    "error": "HTTP MCP 需要有效的 http/https URL"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp:one",
+    "name": "one",
+    "path": "$.mcp",
+    "enabled": true,
+    "error": "HTTP MCP requires a valid http/https URL"
+   }
+  ]
+ },
+ "random-fuzz-10-json-mcp": {
+  "zh-CN": [
+   {
+    "id": "$.mcp:one",
+    "name": "one",
+    "path": "$.mcp",
+    "enabled": true,
+    "error": "stdio MCP 缺少有效 command"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp:one",
+    "name": "one",
+    "path": "$.mcp",
+    "enabled": true,
+    "error": "stdio MCP requires a valid command"
+   }
+  ]
+ },
+ "random-fuzz-1-yaml-mcp_servers": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "HTTP MCP 需要有效的 http/https URL"
+   },
+   {
+    "id": "$.mcp_servers:my.server",
+    "name": "my.server",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "HTTP MCP requires a valid http/https URL"
+   },
+   {
+    "id": "$.mcp_servers:my.server",
+    "name": "my.server",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   }
+  ]
+ },
+ "random-fuzz-143-yaml-mcp_servers": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "HTTP MCP 需要有效的 http/https URL"
+   },
+   {
+    "id": "$.other.deep.mcpServers:one",
+    "name": "one",
+    "path": "$.other.deep.mcpServers",
+    "enabled": true,
+    "error": "HTTP MCP 需要有效的 http/https URL"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "HTTP MCP requires a valid http/https URL"
+   },
+   {
+    "id": "$.other.deep.mcpServers:one",
+    "name": "one",
+    "path": "$.other.deep.mcpServers",
+    "enabled": true,
+    "error": "HTTP MCP requires a valid http/https URL"
+   }
+  ]
+ },
+ "random-fuzz-7-json-servers": {
+  "zh-CN": [
+   {
+    "id": "$.servers:one",
+    "name": "one",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "服务器配置必须是对象"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.servers:one",
+    "name": "one",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "Server configuration must be an object"
+   }
+  ]
+ },
+ "random-fuzz-15-json-servers": {
+  "zh-CN": [
+   {
+    "id": "$.servers:one",
+    "name": "one",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "包含需要手动适配的字段：timeout"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.servers:one",
+    "name": "one",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "Fields require manual adaptation: timeout"
+   }
+  ]
+ },
+ "random-fuzz-9-json-mcpServers": {
+  "zh-CN": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "stdio MCP 缺少有效 command"
+   },
+   {
+    "id": "$.mcpServers:my.server",
+    "name": "my.server",
+    "path": "$.mcpServers",
+    "enabled": false,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   },
+   {
+    "id": "$.mcpServers:",
+    "name": "",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "stdio MCP requires a valid command"
+   },
+   {
+    "id": "$.mcpServers:my.server",
+    "name": "my.server",
+    "path": "$.mcpServers",
+    "enabled": false,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   },
+   {
+    "id": "$.mcpServers:",
+    "name": "",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   }
+  ]
+ },
+ "random-fuzz-25-json-mcpServers": {
+  "zh-CN": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "stdio MCP 不支持 HTTP headers，请确认源配置"
+   },
+   {
+    "id": "$.mcpServers:my.server",
+    "name": "my.server",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "stdio MCP does not support HTTP headers. Check the source configuration."
+   },
+   {
+    "id": "$.mcpServers:my.server",
+    "name": "my.server",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   }
+  ]
+ },
+ "random-fuzz-4-toml-context_servers": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "disabled 必须是布尔值"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "disabled must be a boolean"
+   }
+  ]
+ },
+ "random-fuzz-18-toml-context_servers": {
+  "zh-CN": {
+   "error": "配置语法有误，请检查 JSON、JSONC、TOML 或 YAML 格式"
+  },
+  "en": {
+   "error": "Invalid configuration syntax. Check the JSON, JSONC, TOML or YAML format."
+  }
+ },
+ "random-fuzz-5-json-other": {
+  "zh-CN": {
+   "error": "未发现 MCP 服务器。支持 mcpServers、mcp_servers、mcp.servers、servers 和 context_servers"
+  },
+  "en": {
+   "error": "No MCP servers found. Supported fields: mcpServers, mcp_servers, mcp.servers, servers and context_servers."
+  }
+ },
+ "random-fuzz-14-json-other": {
+  "zh-CN": {
+   "error": "未发现 MCP 服务器。支持 mcpServers、mcp_servers、mcp.servers、servers 和 context_servers"
+  },
+  "en": {
+   "error": "No MCP servers found. Supported fields: mcpServers, mcp_servers, mcp.servers, servers and context_servers."
+  }
+ },
+ "random-fuzz-6-toml-mcp": {
+  "zh-CN": {
+   "error": "未发现 MCP 服务器。支持 mcpServers、mcp_servers、mcp.servers、servers 和 context_servers"
+  },
+  "en": {
+   "error": "No MCP servers found. Supported fields: mcpServers, mcp_servers, mcp.servers, servers and context_servers."
+  }
+ },
+ "random-fuzz-19-toml-mcp": {
+  "zh-CN": {
+   "error": "未发现 MCP 服务器。支持 mcpServers、mcp_servers、mcp.servers、servers 和 context_servers"
+  },
+  "en": {
+   "error": "No MCP servers found. Supported fields: mcpServers, mcp_servers, mcp.servers, servers and context_servers."
+  }
+ },
+ "random-fuzz-11-toml-mcp_servers": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "HTTP MCP 需要有效的 http/https URL"
+   },
+   {
+    "id": "$.mcp_servers:my.server",
+    "name": "my.server",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "HTTP MCP requires a valid http/https URL"
+   },
+   {
+    "id": "$.mcp_servers:my.server",
+    "name": "my.server",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   }
+  ]
+ },
+ "random-fuzz-12-toml-mcp_servers": {
+  "zh-CN": {
+   "error": "未发现 MCP 服务器。支持 mcpServers、mcp_servers、mcp.servers、servers 和 context_servers"
+  },
+  "en": {
+   "error": "No MCP servers found. Supported fields: mcpServers, mcp_servers, mcp.servers, servers and context_servers."
+  }
+ },
+ "random-fuzz-13-json-mcp_servers": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "包含需要手动适配的字段：timeout"
+   },
+   {
+    "id": "$.mcp_servers:my.server",
+    "name": "my.server",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "Fields require manual adaptation: timeout"
+   },
+   {
+    "id": "$.mcp_servers:my.server",
+    "name": "my.server",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   }
+  ]
+ },
+ "random-fuzz-17-json-mcp_servers": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "disabled 必须是布尔值"
+   },
+   {
+    "id": "$.mcp_servers:my.server",
+    "name": "my.server",
+    "path": "$.mcp_servers",
+    "enabled": false,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "disabled must be a boolean"
+   },
+   {
+    "id": "$.mcp_servers:my.server",
+    "name": "my.server",
+    "path": "$.mcp_servers",
+    "enabled": false,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   }
+  ]
+ },
+ "random-fuzz-20-toml-other": {
+  "zh-CN": {
+   "error": "未发现 MCP 服务器。支持 mcpServers、mcp_servers、mcp.servers、servers 和 context_servers"
+  },
+  "en": {
+   "error": "No MCP servers found. Supported fields: mcpServers, mcp_servers, mcp.servers, servers and context_servers."
+  }
+ },
+ "random-fuzz-53-toml-other": {
+  "zh-CN": {
+   "error": "未发现 MCP 服务器。支持 mcpServers、mcp_servers、mcp.servers、servers 和 context_servers"
+  },
+  "en": {
+   "error": "No MCP servers found. Supported fields: mcpServers, mcp_servers, mcp.servers, servers and context_servers."
+  }
+ },
+ "random-fuzz-21-json-context_servers": {
+  "zh-CN": [
+   {
+    "id": "$.context_servers:one",
+    "name": "one",
+    "path": "$.context_servers",
+    "enabled": true,
+    "error": "enabled 必须是布尔值"
+   },
+   {
+    "id": "$.context_servers:my.server",
+    "name": "my.server",
+    "path": "$.context_servers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.context_servers:one",
+    "name": "one",
+    "path": "$.context_servers",
+    "enabled": true,
+    "error": "enabled must be a boolean"
+   },
+   {
+    "id": "$.context_servers:my.server",
+    "name": "my.server",
+    "path": "$.context_servers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   }
+  ]
+ },
+ "random-fuzz-23-json-context_servers": {
+  "zh-CN": {
+   "error": "$.context_servers 必须是服务器对象集合"
+  },
+  "en": {
+   "error": "$.context_servers must be a collection of server objects"
+  }
+ },
+ "random-fuzz-32-yaml-mcp": {
+  "zh-CN": [
+   {
+    "id": "$.mcp:one",
+    "name": "one",
+    "path": "$.mcp",
+    "enabled": true,
+    "error": "enabled 必须是布尔值"
+   },
+   {
+    "id": "$.mcp:my.server",
+    "name": "my.server",
+    "path": "$.mcp",
+    "enabled": false,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp:one",
+    "name": "one",
+    "path": "$.mcp",
+    "enabled": true,
+    "error": "enabled must be a boolean"
+   },
+   {
+    "id": "$.mcp:my.server",
+    "name": "my.server",
+    "path": "$.mcp",
+    "enabled": false,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   }
+  ]
+ },
+ "random-fuzz-75-yaml-mcp": {
+  "zh-CN": [
+   {
+    "id": "$.mcp:one",
+    "name": "one",
+    "path": "$.mcp",
+    "enabled": true,
+    "error": "enabled 必须是布尔值"
+   },
+   {
+    "id": "$.mcp:my.server",
+    "name": "my.server",
+    "path": "$.mcp",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   },
+   {
+    "id": "$.mcp:",
+    "name": "",
+    "path": "$.mcp",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp:one",
+    "name": "one",
+    "path": "$.mcp",
+    "enabled": true,
+    "error": "enabled must be a boolean"
+   },
+   {
+    "id": "$.mcp:my.server",
+    "name": "my.server",
+    "path": "$.mcp",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   },
+   {
+    "id": "$.mcp:",
+    "name": "",
+    "path": "$.mcp",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   }
+  ]
+ },
+ "random-fuzz-33-yaml-servers": {
+  "zh-CN": [
+   {
+    "id": "$.servers:one",
+    "name": "one",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "enabled 必须是布尔值"
+   },
+   {
+    "id": "$.servers:my.server",
+    "name": "my.server",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   },
+   {
+    "id": "$.servers:",
+    "name": "",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.servers:one",
+    "name": "one",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "enabled must be a boolean"
+   },
+   {
+    "id": "$.servers:my.server",
+    "name": "my.server",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   },
+   {
+    "id": "$.servers:",
+    "name": "",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   }
+  ]
+ },
+ "random-fuzz-45-yaml-servers": {
+  "zh-CN": [
+   {
+    "id": "$.servers:one",
+    "name": "one",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "包含需要手动适配的字段：timeout"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.servers:one",
+    "name": "one",
+    "path": "$.servers",
+    "enabled": true,
+    "error": "Fields require manual adaptation: timeout"
+   }
+  ]
+ },
+ "random-fuzz-49-toml-servers": {
+  "zh-CN": {
+   "error": "未发现 MCP 服务器。支持 mcpServers、mcp_servers、mcp.servers、servers 和 context_servers"
+  },
+  "en": {
+   "error": "No MCP servers found. Supported fields: mcpServers, mcp_servers, mcp.servers, servers and context_servers."
+  }
+ },
+ "random-fuzz-68-toml-servers": {
+  "zh-CN": {
+   "error": "未发现 MCP 服务器。支持 mcpServers、mcp_servers、mcp.servers、servers 和 context_servers"
+  },
+  "en": {
+   "error": "No MCP servers found. Supported fields: mcpServers, mcp_servers, mcp.servers, servers and context_servers."
+  }
+ },
+ "random-fuzz-51-yaml-context_servers": {
+  "zh-CN": [
+   {
+    "id": "$.context_servers:one",
+    "name": "one",
+    "path": "$.context_servers",
+    "enabled": true,
+    "error": "stdio MCP 不支持 HTTP headers，请确认源配置"
+   },
+   {
+    "id": "$.context_servers:my.server",
+    "name": "my.server",
+    "path": "$.context_servers",
+    "enabled": false,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   },
+   {
+    "id": "$.context_servers:",
+    "name": "",
+    "path": "$.context_servers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.context_servers:one",
+    "name": "one",
+    "path": "$.context_servers",
+    "enabled": true,
+    "error": "stdio MCP does not support HTTP headers. Check the source configuration."
+   },
+   {
+    "id": "$.context_servers:my.server",
+    "name": "my.server",
+    "path": "$.context_servers",
+    "enabled": false,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   },
+   {
+    "id": "$.context_servers:",
+    "name": "",
+    "path": "$.context_servers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   }
+  ]
+ },
+ "random-fuzz-67-yaml-context_servers": {
+  "zh-CN": [
+   {
+    "id": "$.context_servers:one",
+    "name": "one",
+    "path": "$.context_servers",
+    "enabled": true,
+    "error": "包含需要手动适配的字段：timeout"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.context_servers:one",
+    "name": "one",
+    "path": "$.context_servers",
+    "enabled": true,
+    "error": "Fields require manual adaptation: timeout"
+   }
+  ]
+ },
+ "random-fuzz-76-toml-mcpServers": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": false,
+    "error": "stdio MCP 缺少有效 command"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": false,
+    "error": "stdio MCP requires a valid command"
+   }
+  ]
+ },
+ "random-fuzz-145-toml-mcpServers": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "包含需要手动适配的字段：timeout"
+   },
+   {
+    "id": "$.mcp_servers:my.server",
+    "name": "my.server",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   },
+   {
+    "id": "$.mcp_servers:",
+    "name": "",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "Fields require manual adaptation: timeout"
+   },
+   {
+    "id": "$.mcp_servers:my.server",
+    "name": "my.server",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   },
+   {
+    "id": "$.mcp_servers:",
+    "name": "",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   }
+  ]
+ },
+ "random-fuzz-82-yaml-mcpServers": {
+  "zh-CN": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "包含需要手动适配的字段：timeout"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "Fields require manual adaptation: timeout"
+   }
+  ]
+ },
+ "random-fuzz-96-yaml-mcpServers": {
+  "zh-CN": {
+   "error": "$.mcpServers 必须是服务器对象集合"
+  },
+  "en": {
+   "error": "$.mcpServers must be a collection of server objects"
+  }
+ },
+ "random-fuzz-102-yaml-other": {
+  "zh-CN": {
+   "error": "未发现 MCP 服务器。支持 mcpServers、mcp_servers、mcp.servers、servers 和 context_servers"
+  },
+  "en": {
+   "error": "No MCP servers found. Supported fields: mcpServers, mcp_servers, mcp.servers, servers and context_servers."
+  }
+ },
+ "random-fuzz-123-yaml-other": {
+  "zh-CN": {
+   "error": "未发现 MCP 服务器。支持 mcpServers、mcp_servers、mcp.servers、servers 和 context_servers"
+  },
+  "en": {
+   "error": "No MCP servers found. Supported fields: mcpServers, mcp_servers, mcp.servers, servers and context_servers."
+  }
+ },
+ "random-fuzz-root-0": {
+  "zh-CN": [
+   {
+    "id": "$:my-tool",
+    "name": "my-tool",
+    "path": "$",
+    "enabled": true,
+    "error": "HTTP MCP 需要有效的 http/https URL"
+   }
+  ],
+  "en": [
+   {
+    "id": "$:my-tool",
+    "name": "my-tool",
+    "path": "$",
+    "enabled": true,
+    "error": "HTTP MCP requires a valid http/https URL"
+   }
+  ]
+ },
+ "random-fuzz-root-1": {
+  "zh-CN": {
+   "error": "未发现 MCP 服务器。支持 mcpServers、mcp_servers、mcp.servers、servers 和 context_servers"
+  },
+  "en": {
+   "error": "No MCP servers found. Supported fields: mcpServers, mcp_servers, mcp.servers, servers and context_servers."
+  }
+ },
+ "random-fuzz-root-file-0": {
+  "zh-CN": {
+   "error": "未发现 MCP 服务器。支持 mcpServers、mcp_servers、mcp.servers、servers 和 context_servers"
+  },
+  "en": {
+   "error": "No MCP servers found. Supported fields: mcpServers, mcp_servers, mcp.servers, servers and context_servers."
+  }
+ },
+ "random-fuzz-root-file-1": {
+  "zh-CN": {
+   "error": "未发现 MCP 服务器。支持 mcpServers、mcp_servers、mcp.servers、servers 和 context_servers"
+  },
+  "en": {
+   "error": "No MCP servers found. Supported fields: mcpServers, mcp_servers, mcp.servers, servers and context_servers."
+  }
+ },
+ "random-fuzz-root-2": {
+  "zh-CN": [
+   {
+    "id": "$:-json",
+    "name": "-json",
+    "path": "$",
+    "enabled": true,
+    "error": "HTTP MCP 需要有效的 http/https URL"
+   }
+  ],
+  "en": [
+   {
+    "id": "$:-json",
+    "name": "-json",
+    "path": "$",
+    "enabled": true,
+    "error": "HTTP MCP requires a valid http/https URL"
+   }
+  ]
+ },
+ "random-fuzz-root-3": {
+  "zh-CN": [
+   {
+    "id": "$:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "path": "$",
+    "enabled": true,
+    "error": "HTTP MCP 需要有效的 http/https URL"
+   }
+  ],
+  "en": [
+   {
+    "id": "$:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "path": "$",
+    "enabled": true,
+    "error": "HTTP MCP requires a valid http/https URL"
+   }
+  ]
+ },
+ "random-fuzz-root-4": {
+  "zh-CN": {
+   "error": "未发现 MCP 服务器。支持 mcpServers、mcp_servers、mcp.servers、servers 和 context_servers"
+  },
+  "en": {
+   "error": "No MCP servers found. Supported fields: mcpServers, mcp_servers, mcp.servers, servers and context_servers."
+  }
+ },
+ "random-fuzz-root-file-3": {
+  "zh-CN": [
+   {
+    "id": "$:-yaml",
+    "name": "-yaml",
+    "path": "$",
+    "enabled": true,
+    "error": "HTTP MCP 需要有效的 http/https URL"
+   }
+  ],
+  "en": [
+   {
+    "id": "$:-yaml",
+    "name": "-yaml",
+    "path": "$",
+    "enabled": true,
+    "error": "HTTP MCP requires a valid http/https URL"
+   }
+  ]
+ },
+ "random-fuzz-53-json-mcp_servers": {
+  "zh-CN": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "headers 必须是字符串键值对象"
+   },
+   {
+    "id": "$.mcp_servers:my.server",
+    "name": "my.server",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcp_servers:one",
+    "name": "one",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "headers must be an object of string pairs"
+   },
+   {
+    "id": "$.mcp_servers:my.server",
+    "name": "my.server",
+    "path": "$.mcp_servers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   }
+  ]
+ },
+ "random-fuzz-117-json-mcpServers": {
+  "zh-CN": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true
+   },
+   {
+    "id": "$.mcpServers:my.server",
+    "name": "my.server",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "MCP 名称只能包含字母、数字、下划线和连字符，最多 64 字符"
+   }
+  ],
+  "en": [
+   {
+    "id": "$.mcpServers:one",
+    "name": "one",
+    "path": "$.mcpServers",
+    "enabled": true
+   },
+   {
+    "id": "$.mcpServers:my.server",
+    "name": "my.server",
+    "path": "$.mcpServers",
+    "enabled": true,
+    "error": "MCP names may contain letters, digits, underscores and hyphens, up to 64 characters"
+   }
+  ]
+ }
+}

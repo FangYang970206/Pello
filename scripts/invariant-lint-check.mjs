@@ -194,8 +194,7 @@ const cases = [
   ['AWB084', 'src-tauri/core/src/git.rs', 'translate(language, "{{0}}：无法读取 Git 状态", &[prefix.clone()])', 'format!("{prefix}：无法读取 Git 状态")'],
   ['AWB084', 'src-tauri/core/src/files.rs', 'ERROR_ACCESS_DENIED | ERROR_PRIVILEGE_NOT_HELD => "EPERM"', 'ERROR_ACCESS_DENIED | ERROR_PRIVILEGE_NOT_HELD => "EACCES"'],
   ['AWB084', 'src-tauri/core/src/resources.rs', 'let unmovable = || t(language, "无法移入回收站");', 'let unmovable = || "无法移入回收站".to_string();'],
-  ['AWB084', 'src-tauri/core/src/resources.rs', 'else { return t(language, "无效 URL") };', 'else { return "无效 URL".into() };'],
-  ['AWB084', 'src-tauri/core/src/resources.rs', 'eq_ignore_ascii_case("https") { return t(language, "无效 URL") }', 'eq_ignore_ascii_case("https") { return "无效 URL".into() }'],
+  ['AWB084', 'src-tauri/core/src/resources.rs', 'Err(_) => t(language, "无效 URL"),', 'Err(_) => "无效 URL".to_string(),'],
   ['AWB084', 'src-tauri/core/src/shells.rs', 'translate(language, "Git Bash 或本机 Bash", &[] as &[String])', '"Git Bash 或本机 Bash".to_string()'],
   ['AWB084', 'src-tauri/core/src/i18n.rs', '("{{0}}：{{1}}", "{{0}}: {{1}}"),', ''],
   ['AWB084', 'src-tauri/core/src/i18n.rs', '("无法读取", "Cannot read"),', ''],
@@ -205,6 +204,20 @@ const cases = [
   // A message taken out of the code altogether is not seen by the check of
   // callers, which goes from the code to the catalog; this rule holds it.
   ['AWB084', 'src-tauri/core/src/git.rs', 'translate(language, "{{0}}：无法读取 Git 状态", &[prefix.clone()])', '"x".to_string()'],
+  // A URL judged by its text, by another parser, or with the parser's own
+  // message put into words of the kernel's own; a command trimmed to a
+  // different set of characters, or the byte order mark taken off it; a
+  // false value where servers are looked for asked to be an object.
+  ['AWB085', 'src-tauri/core/src/resources.rs', 'ada_url::Url::parse(url, None)', 'url::Url::parse(url, None)'],
+  ['AWB085', 'src-tauri/core/src/resources.rs', 'let mut parsed = ada_url::Url::parse(&url, None)', 'let mut parsed = ada_url::Url::parse(&url, Some(&base))'],
+  ['AWB085', 'src-tauri/core/src/resources.rs', 'let parsed = ada_url::Url::parse(text, None).map_err(|_| "Invalid URL".to_string())?;', 'let parsed = ada_url::Url::parse(text, None).map_err(|_| t(language, "Invalid URL"))?;'],
+  ['AWB085', 'src-tauri/core/src/resources.rs', 'Err(_) => return Err("Invalid URL".to_string()),', 'Err(_) => return Err(t(language, "Invalid URL")),'],
+  ['AWB085', 'src-tauri/core/src/resources.rs', "fn js_trim(text: &str) -> &str { text.trim_matches(is_js_whitespace) }", 'fn js_trim(text: &str) -> &str { text.trim() }'],
+  ['AWB085', 'src-tauri/core/src/resources.rs', " | '\\u{feff}')", "')"],
+  ['AWB085', 'src-tauri/core/src/resources.rs', " | '\\u{feff}')", " | '\\u{feff}' | '\\u{85}')"],
+  ['AWB085', 'src-tauri/core/src/resources.rs', "js_trim(text).is_empty() || text.contains('\\0')", "text.trim().is_empty() || text.contains('\\0')"],
+  ['AWB085', 'src-tauri/core/src/resources.rs', "if is_truthy(value) { object_or(value, language) } else { Ok(EMPTY.get_or_init(Map::new)) }", 'object_or(value, language)'],
+  ['AWB085', 'src-tauri/core/src/resources.rs', 'let servers = asked(value, language)?;', 'let servers = object_or(value, language)?;'],
 ]
 cases.forEach(([id, file, before, after], index) => {
   const mutated = new Map(files)

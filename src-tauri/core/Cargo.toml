@@ -20,9 +20,21 @@ rand = "0.8"
 # opens it: `IFileDialog` on Windows, the desktop's own on Linux and macOS.
 rfd = { version = "0.18", default-features = false, features = ["xdg-portal", "common-controls-v6"] }
 russh = { version = "0.54", default-features = false, features = ["ring"] }
-serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
+# A TOML file is read whole, as smol-toml reads the Electron build's: a
+# table nested under another is part of it, a comment ends a line, and a
+# value keeps the escapes the format defines.
+toml = { version = "0.8", features = ["preserve_order"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "process"] }
+# A URL is taken apart as Node's `new URL` takes one apart: this is that
+# parser itself, so that what is shown of a server's URL, and whether a URL
+# is taken at all, are the same down to the last domain-name rule.
+ada-url = { version = "4", default-features = false, features = ["bundled", "std"] }
+# A YAML file is read whole too: anchors, flow collections, quoted and
+# block scalars, as the `yaml` package reads the Electron build's.
+serde_yaml = "0.9"
 zip = { version = "2.2.0", default-features = false, features = ["deflate"] }
 
 [features]
