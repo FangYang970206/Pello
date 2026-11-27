@@ -261,28 +261,63 @@ pub fn discard_remote(data: &Path, host: &Value, root: &str, rel: &str, untracke
 }
 
 pub fn read_remote(data: &Path, host: &Value, root: &str, rel: &str, language: &str) -> Result<Value, String> {
-    let Ok(relative) = files::clean_relative(rel, language) else { return Ok(files::missing_file()) };
-    if relative.is_empty() { return Ok(files::missing_file()) }
-    if host["platform"] == "windows" {
-        let script = crate::ssh::windows_read_script(root, &relative, language);
-        return match crate::ssh::run(data, host, &script, None, language) {
-            Ok(text) => {
-                let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, text.trim()).unwrap_or_default();
-                Ok(files::decode_file_limited(&relative, &bytes))
-            }
-            Err(_) => Ok(files::missing_file()),
-        };
-    }
-    let absolute = join_remote(root, &relative);
-    let quoted = crate::ssh::bash_quote(&absolute);
-    let script = format!("base64 -w 0 {quoted} 2>/dev/null || base64 {quoted}");
-    match crate::ssh::run(data, host, &script, None, language) {
-        Ok(text) => {
-            let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, text.trim()).unwrap_or_default();
-            Ok(files::decode_file_limited(&relative, &bytes))
+    Ok(read_remote_stamped(data, host, root, rel, None, language)?.unwrap_or(files::missing_file()))
+}
+
+/// What a file of a host was when it was read, asked again with what it was
+/// when it was last read. `None` says it is still that file at that moment
+/// and nothing is sent again. A file that is not there is said to be
+/// missing; a host that cannot say is an error, as it is not a file gone.
+pub fn read_remote_stamped(data: &Path, host: &Value, root: &str, rel: &str, known: Option<&str>, language: &str) -> Result<Option<Value>, String> {
+    let Ok(relative) = files::clean_relative(rel, language) else { return Ok(Some(files::missing_file())) };
+    if relative.is_empty() { return Ok(Some(files::missing_file())) }
+    let limit = files::limit_for(&relative);
+    // The first line says what became of the read; the file follows when
+    // there is one.
+    let script = if host["platform"] == "windows" { windows_read_stamped_script(root, &relative, limit, language) } else { linux_read_stamped_script(&join_remote(root, &relative), limit) };
+    let text = crate::ssh::run(data, host, &script, None, language)?;
+    let (first, body) = text.trim_start().split_once('\n').ok_or_else(|| translate(language, "远程输出过大", &[] as &[String]))?;
+    match first.trim_end_matches('\r') {
+        "PELLO-MISSING" => Ok(Some(files::missing_file())),
+        "PELLO-UNSAFE" => Err(translate(language, "不是安全的普通文件", &[] as &[String])),
+        first if first.starts_with("PELLO-LARGE ") => {
+            let stamp = &first["PELLO-LARGE ".len()..];
+            if Some(stamp) == known { return Ok(None) }
+            let mut file = files::oversized_file();
+            file["fileStamp"] = json!(stamp);
+            Ok(Some(file))
         }
-        Err(_) => Ok(files::missing_file()),
+        first if first.starts_with("PELLO-STAMP ") => {
+            let stamp = &first["PELLO-STAMP ".len()..];
+            if Some(stamp) == known { return Ok(None) }
+            let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, body.trim()).map_err(|error| error.to_string())?;
+            let mut file = files::decode_file_limited(&relative, &bytes);
+            file["fileStamp"] = json!(stamp);
+            Ok(Some(file))
+        }
+        _ => Err(translate(language, "远程输出过大", &[] as &[String])),
     }
+}
+
+/// The Linux way to read a file of a project and say what it was: the
+/// device, the inode, the length and the two times to the nanosecond, as
+/// the Electron build's reader names them, then the file itself. A file
+/// that is not there is said so on the first line; one over the limit is
+/// said to be and not read. The path is named once, and no quote is used:
+/// the script travels as one quoted word of the host's shell, and the
+/// host's own command line is not endless.
+fn linux_read_stamped_script(absolute: &str, limit: u64) -> String {
+    let quoted = crate::ssh::bash_quote(absolute);
+    let stamp = "$(stat -c %d:%i:%s:%y:%z $f 2>/dev/null)";
+    format!("f={quoted}; if [ ! -e $f ] || [ -L $f ]; then echo PELLO-MISSING; elif [ ! -f $f ]; then echo PELLO-UNSAFE; elif [ $(stat -c %s $f 2>/dev/null || echo 0) -gt {limit} ]; then echo PELLO-LARGE {stamp}; else echo PELLO-STAMP {stamp}; base64 -w 0 $f 2>/dev/null || base64 $f; fi")
+}
+
+/// The Windows way, behind the guard the plain read uses: the file must be
+/// inside the project and no part of its way there may be a link.
+fn windows_read_stamped_script(root: &str, relative: &str, limit: u64, language: &str) -> String {
+    let plain = crate::ssh::windows_read_script(root, relative, language);
+    let guard = plain.rsplit_once("; [Convert]::ToBase64String").map(|(guard, _)| guard.to_string()).unwrap_or(plain);
+    format!("{guard}; if (-not (Test-Path -LiteralPath $file)) {{ 'PELLO-MISSING' }} elseif ((Get-Item -LiteralPath $file -Force).PSIsContainer) {{ 'PELLO-UNSAFE' }} else {{ $item=Get-Item -LiteralPath $file -Force; $stamp=([string]$item.Length)+':'+$item.LastWriteTimeUtc.Ticks+':'+$item.CreationTimeUtc.Ticks; if ($item.Length -gt {limit}) {{ 'PELLO-LARGE '+$stamp }} else {{ 'PELLO-STAMP '+$stamp; [Convert]::ToBase64String([IO.File]::ReadAllBytes($file)) }} }}")
 }
 
 pub fn write_remote(data: &Path, host: &Value, root: &str, rel: &str, text: &str, version: Option<&str>, language: &str) -> Result<Value, String> {

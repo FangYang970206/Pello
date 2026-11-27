@@ -197,6 +197,8 @@ export interface FileContent {
   missing: boolean
   version: string | null
   tooBig?: boolean
+  /** What the file was when it was read; a refresh asked with it is told whether it still is. */
+  fileStamp?: string
 }
 
 export interface PathCheck {

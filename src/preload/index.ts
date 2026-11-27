@@ -81,6 +81,7 @@ const api: WorkbenchApi = {
   contentSearchNext: (id) => ipcRenderer.invoke('content:search-next', id),
   contentSearchCancel: (id) => ipcRenderer.invoke('content:search-cancel', id),
   gitRead: (projectId, rel) => ipcRenderer.invoke('git:read', projectId, rel),
+  gitRefresh: (projectId, rel, stamp) => ipcRenderer.invoke('git:refresh', projectId, rel, stamp),
   gitWrite: (projectId, rel, text, version) => ipcRenderer.invoke('git:write', projectId, rel, text, version),
   previewUrl: (projectId, rel, draft) => ipcRenderer.invoke('file:preview-url', projectId, rel, draft),
   renderMermaid: (source) => ipcRenderer.invoke('diagram:mermaid', source),

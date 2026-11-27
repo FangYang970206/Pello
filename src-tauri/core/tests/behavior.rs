@@ -209,6 +209,124 @@ fn fresh_database_defaults_to_chinese_light_theme_and_update_checks() {
 }
 
 #[test]
+fn a_file_read_again_is_not_sent_again_until_it_changes() {
+    let root = temp_dir("file-refresh");
+    let (bench, _) = workbench(&root);
+    let project = root.join("project");
+    fs::create_dir_all(project.join("src")).unwrap();
+    let file = project.join("src/note.txt");
+    fs::write(&file, "first\n").unwrap();
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "path": project.display().to_string(), "branch": "", "agent": "shell" }])]).unwrap();
+    // A read says what the file was: which file, how long, and when.
+    let read = bench.dispatch("git:read", &[json!("p"), json!("src/note.txt")]).unwrap();
+    assert_eq!(read["text"], "first\n");
+    assert_eq!(read["missing"], false, "{read}");
+    let stamp = read["fileStamp"].as_str().expect("the read says what the file was").to_string();
+    assert_eq!(stamp.split(':').count(), 5, "which file, how long, and two times: {stamp}");
+    // Asked again with that, nothing is sent: the file is the same.
+    assert!(bench.dispatch("git:refresh", &[json!("p"), json!("src/note.txt"), json!(stamp)]).unwrap().is_null());
+    // A refresh without a stamp is a plain read.
+    let again = bench.dispatch("git:refresh", &[json!("p"), json!("src/note.txt")]).unwrap();
+    assert_eq!(again["text"], "first\n", "{again}");
+    // Written in place, it is the same file at a later moment.
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    fs::write(&file, "second, longer\n").unwrap();
+    let changed = bench.dispatch("git:refresh", &[json!("p"), json!("src/note.txt"), json!(stamp)]).unwrap();
+    assert_eq!(changed["text"], "second, longer\n", "{changed}");
+    assert_ne!(changed["fileStamp"], stamp, "{changed}");
+    // Replaced by another file of the same length and the same text, it is
+    // still another file: the stamp tells the two apart.
+    let moved = project.join("src/moved.txt");
+    fs::rename(&file, &moved).unwrap();
+    fs::write(&file, "second, longer\n").unwrap();
+    let replaced = bench.dispatch("git:refresh", &[json!("p"), json!("src/note.txt"), json!(changed["fileStamp"].as_str().unwrap())]).unwrap();
+    assert_eq!(replaced["text"], "second, longer\n", "{replaced}");
+    assert_ne!(replaced["fileStamp"], changed["fileStamp"], "another file, another stamp: {replaced}");
+    // Gone, it is said to be. A folder where a file is asked for is not a
+    // file gone but a refusal, as it is on this machine.
+    fs::remove_file(&file).unwrap();
+    let gone = bench.dispatch("git:refresh", &[json!("p"), json!("src/note.txt"), json!(stamp)]).unwrap();
+    assert_eq!(gone["missing"], true, "{gone}");
+    let folder = bench.dispatch("git:refresh", &[json!("p"), json!("src"), json!(stamp)]).unwrap_err();
+    assert!(folder.contains("Not a safe regular file") || folder.contains("不是安全的普通文件"), "{folder}");
+    // Over the limit it is said to be and not read, with what it was, so
+    // that being asked again with that sends nothing.
+    let large = project.join("src/large.txt");
+    fs::write(&large, vec![b'a'; 10 * 1024 * 1024 + 1]).unwrap();
+    let big = bench.dispatch("git:read", &[json!("p"), json!("src/large.txt")]).unwrap();
+    assert_eq!(big["tooBig"], true, "{big}");
+    assert_eq!(big["text"], "", "{big}");
+    let big_stamp = big["fileStamp"].as_str().expect("a file too large still says what it was");
+    assert!(bench.dispatch("git:refresh", &[json!("p"), json!("src/large.txt"), json!(big_stamp)]).unwrap().is_null());
+    // Outside the project nothing is read, whatever is asked of it.
+    assert_eq!(bench.dispatch("git:refresh", &[json!("p"), json!("../pello.config.json"), json!(stamp)]).unwrap()["missing"], true);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_file_of_a_host_is_read_again_the_same_way() {
+    let _lock = env_lock();
+    let password = "{{SECRET_2ce1b7d9}}";
+    let fixture = pello_core::ssh::start_fixture(password).expect("ssh fixture");
+    let root = temp_dir("file-refresh-host");
+    fs::create_dir_all(root.join("data")).unwrap();
+    let host = json!({
+        "id": "box", "name": "Box", "addr": "127.0.0.1", "port": fixture.port, "user": "me",
+        "auth": "password", "password": password, "color": "blue", "on": true, "os": "", "platform": "linux"
+    });
+    fs::write(root.join("data").join("workbench.json"), json!({ "hosts": [{ "id": "local", "name": "本机", "on": true }, host.clone()] }).to_string()).unwrap();
+    let (bench, _) = workbench(&root);
+    bench.dispatch("db:settings", &[json!({ "language": "en" })]).unwrap();
+    let data = bench.database_path().parent().expect("the data directory").to_path_buf();
+    pello_core::ssh::remember_password(&data, &host);
+    let project = root.join("project");
+    fs::create_dir_all(project.join("src")).unwrap();
+    let file = project.join("src/note.txt");
+    fs::write(&file, "first\n").unwrap();
+    // The fixture reads a POSIX path, whichever machine this is.
+    let path_of = |path: &std::path::Path| path.display().to_string().replace('\\', "/");
+    bench.dispatch("db:projects", &[json!([{ "id": "p", "name": "P", "host": "box", "path": path_of(&project), "branch": "", "agent": "shell" }])]).unwrap();
+    // The fixture answers with a POSIX shell, which reads a POSIX path. The
+    // file work is therefore verified on a POSIX host; on Windows the shell
+    // the fixture finds is the one of the Linux subsystem, which does not
+    // see this machine's files.
+    #[cfg(unix)]
+    {
+        let read = bench.dispatch("git:read", &[json!("p"), json!("src/note.txt")]).unwrap();
+        assert_eq!(read["text"], "first\n");
+        let stamp = read["fileStamp"].as_str().expect("the host says what the file was").to_string();
+        // The device, the inode and the length come first, each a number.
+        let numbers: Vec<&str> = stamp.split(':').collect();
+        assert!(numbers[..3].iter().all(|part| part.parse::<u64>().is_ok()), "the device, the inode and the length: {stamp}");
+        assert!(bench.dispatch("git:refresh", &[json!("p"), json!("src/note.txt"), json!(stamp)]).unwrap().is_null());
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        fs::write(&file, "again\n").unwrap();
+        let changed = bench.dispatch("git:refresh", &[json!("p"), json!("src/note.txt"), json!(stamp)]).unwrap();
+        assert_eq!(changed["text"], "again\n", "{changed}");
+        assert_ne!(changed["fileStamp"], stamp);
+        // A file of the host that is not there is said to be missing.
+        fs::remove_file(&file).unwrap();
+        assert_eq!(bench.dispatch("git:refresh", &[json!("p"), json!("src/note.txt"), json!(stamp)]).unwrap()["missing"], true);
+        let beyond = bench.dispatch("git:refresh", &[json!("p"), json!("src/never.txt"), json!(stamp)]).unwrap();
+        assert_eq!(beyond["missing"], true, "{beyond}");
+        // Over the limit it is said to be and not read, with what it was.
+        let large = project.join("src/large.txt");
+        fs::write(&large, vec![b'a'; 10 * 1024 * 1024 + 1]).unwrap();
+        let big = bench.dispatch("git:read", &[json!("p"), json!("src/large.txt")]).unwrap();
+        assert_eq!(big["tooBig"], true, "{big}");
+        assert!(bench.dispatch("git:refresh", &[json!("p"), json!("src/large.txt"), json!(big["fileStamp"].as_str().unwrap())]).unwrap().is_null());
+    }
+    // A host that cannot be asked is an error and not a file gone: the
+    // page keeps the document it has instead of being told it was deleted.
+    drop(fixture);
+    let refused = bench.dispatch("git:refresh", &[json!("p"), json!("src/note.txt"), json!("x")]).unwrap_err();
+    assert!(!refused.is_empty(), "the refusal says why");
+    let read_too = bench.dispatch("git:read", &[json!("p"), json!("src/note.txt")]).unwrap_err();
+    assert!(!read_too.is_empty(), "{read_too}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn the_about_page_is_told_the_version_the_author_in_its_language_and_where_the_workbench_is_published() {
     let root = temp_dir("about");
     let (bench, _) = workbench(&root);

@@ -330,9 +330,12 @@ export function checkInvariants(files) {
   const kernelFiles = files.get('src-tauri/core/src/files.rs') || ''
   const kernelGit = files.get('src-tauri/core/src/git.rs') || ''
   const kernelPreview = files.get('src-tauri/core/src/preview.rs') || ''
-  const readLocal = /fn read_local\([\s\S]*?\n\}/.exec(kernelFiles)?.[0] || ''
+  // The size is asked of the file's stamp before a byte is read, where the
+  // plain read and the refresh both come.
+  const readLocal = /fn read_local\(root: &Path, rel: &str, language: &str\) -> Result<Value, String> \{[\s\S]*?\r?\n\}/.exec(kernelFiles)?.[0] || ''
+  const readLocalStamped = /pub fn read_local_stamped\(root: &Path, rel: &str, known: Option<&str>, language: &str\) -> Result<Option<Value>, String> \{[\s\S]*?\r?\n\}/.exec(kernelFiles)?.[0] || ''
   const oversized = /fn oversized_file\(\)[\s\S]*?\n\}/.exec(kernelFiles)?.[0] || ''
-  require(kernelFiles.includes('pub const DOCUMENT_LIMIT: u64 = 10_000_000;') && kernelFiles.includes('pub const MEDIA_LIMIT: u64 = 12_000_000;') && /fn limit_for\(rel: &str\) -> u64 \{\r?\n\s*if media_kind\(rel\)\.is_some\(\) \{ MEDIA_LIMIT \} else \{ DOCUMENT_LIMIT \}/.test(kernelFiles) && /meta\.len\(\) > limit_for\(&relative\) \{ return Ok\(oversized_file\(\)\) \}/.test(readLocal) && readLocal.indexOf('meta.len() > limit_for(&relative)') < readLocal.indexOf('read_to_end(') && oversized.includes('"version": Value::Null, "tooBig": true') && kernelFiles.includes('if bytes.len() as u64 > DOCUMENT_LIMIT {') && kernelGit.includes('if bytes.len() as u64 > files::DOCUMENT_LIMIT {') && kernelPreview.includes('const DRAFT_LIMIT: usize = crate::files::DOCUMENT_LIMIT as usize;'),
+  require(kernelFiles.includes('pub const DOCUMENT_LIMIT: u64 = 10_000_000;') && kernelFiles.includes('pub const MEDIA_LIMIT: u64 = 12_000_000;') && /fn limit_for\(rel: &str\) -> u64 \{\r?\n\s*if media_kind\(rel\)\.is_some\(\) \{ MEDIA_LIMIT \} else \{ DOCUMENT_LIMIT \}/.test(kernelFiles) && readLocal.includes('Ok(read_local_stamped(root, rel, None, language)?.unwrap_or(missing_file()))') && readLocalStamped.includes('if before.size > limit_for(&relative) {') && readLocalStamped.indexOf('if before.size > limit_for(&relative) {') < readLocalStamped.indexOf('let bytes = fs::read(&full)') && oversized.includes('"version": Value::Null, "tooBig": true') && kernelFiles.includes('if bytes.len() as u64 > DOCUMENT_LIMIT {') && kernelGit.includes('if bytes.len() as u64 > files::DOCUMENT_LIMIT {') && kernelPreview.includes('const DRAFT_LIMIT: usize = crate::files::DOCUMENT_LIMIT as usize;'),
     'AWB083', 'src-tauri/core/src/files.rs', '文档上限为 Electron 的 MAX_DOCUMENT_BYTES（10 MB，媒体 12 MB）：本机先看大小再读取，超限文件按空内容且无版本返回，本机与远程保存及预览草稿沿用同一上限')
   // A message that reaches the user is said by the kernel's catalog and in
   // no other way: what is said of a folder that cannot be listed names the
@@ -532,6 +535,18 @@ export function checkInvariants(files) {
     'AWB091', 'src-tauri/core/src/workbench.rs', '关于页：版本、随界面语言的作者与唯一的主页地址；app:homepage 打开的就是告诉页面的那个地址')
   require(/browseResources: \(hostId, input, files\) => call\('resources:browse', \[hostId, input, files\]\)/.test(scopedBridge) && /openHomepage: \(\) => call\('app:homepage'\)/.test(scopedBridge),
     'AWB091', 'src/renderer/tauri-awb.ts', '桥接层声明 browseResources 与 openHomepage')
+  // A file read says what it was, and asked again with that is not sent
+  // again until it changes. A file found changed while it was read is
+  // refused, not shown half old and half new; a file over its limit is not
+  // read; and a host that cannot be asked is an error, not a file gone.
+  // The local read's slice is the one the size limit is checked in.
+  const readRemoteStamped = /pub fn read_remote_stamped\(data: &Path, host: &Value, root: &str, rel: &str, known: Option<&str>, language: &str\) -> Result<Option<Value>, String> \{[\s\S]*?\r?\n\}/.exec(files.get('src-tauri/core/src/git.rs') || '')?.[0] || ''
+  require(readLocalStamped.includes('let stamp = file_stamp_text(&before);') && readLocalStamped.includes('if Some(stamp.as_str()) == known { return Ok(None) }') && readLocalStamped.indexOf('if Some(stamp.as_str()) == known { return Ok(None) }') < readLocalStamped.indexOf('let bytes = fs::read(&full)') && readLocalStamped.includes('if before.size > limit_for(&relative) {') && readLocalStamped.indexOf('if before.size > limit_for(&relative) {') < readLocalStamped.indexOf('let bytes = fs::read(&full)') && readLocalStamped.includes('Some((_, Some(after))) if after == before =>') && readLocalStamped.includes('_ => Err(translate(language, "读取版本期间文件已更改"'),
+    'AWB092', 'src-tauri/core/src/files.rs', '读取本机文件：先取版本戳，相同则不再发送；超限不读；读后复核未变，变了拒绝')
+  require(readRemoteStamped.includes('crate::ssh::run(data, host, &script, None, language)?;') && readRemoteStamped.includes('"PELLO-MISSING" => Ok(Some(files::missing_file())),') && readRemoteStamped.split('if Some(stamp) == known { return Ok(None) }').length === 3 && !/Err\(_\) => Ok\(files::missing_file\(\)\)/.test(files.get('src-tauri/core/src/git.rs') || ''),
+    'AWB092', 'src-tauri/core/src/git.rs', '读取主机文件：只有主机说文件不存在才算丢失，主机问不到是错误；版本戳相同则不再发送')
+  require(scopedDispatch.includes('"git:refresh" => Ok(self.git_refresh(&str_arg(args, 0), str_arg(args, 1), args.get(2).and_then(|value| value.as_str()), &language)?.unwrap_or(Value::Null)),') && /gitRefresh: \(projectId, rel, stamp\) => call\('git:refresh', \[projectId, rel, stamp \?\? null\]\)/.test(scopedBridge),
+    'AWB092', 'src-tauri/core/src/workbench.rs', 'git:refresh 的第三参是可选的版本戳；未变时返回 null')
   return errors
 }
 

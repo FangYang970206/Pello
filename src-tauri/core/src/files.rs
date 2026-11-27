@@ -125,17 +125,45 @@ pub(crate) fn missing_file() -> Value {
 }
 
 pub fn read_local(root: &Path, rel: &str, language: &str) -> Result<Value, String> {
-    let Ok(relative) = clean_relative(rel, language) else { return Ok(missing_file()) };
-    if relative.is_empty() { return Ok(missing_file()) }
-    let Ok((full, _)) = local_existing(root, &relative, language) else { return Ok(missing_file()) };
-    // Asked how large it is before anything of it is read, as the Electron
-    // build asks: a file over its limit is not read at all.
-    let Ok(mut file) = fs::File::open(&full) else { return Ok(missing_file()) };
-    let Ok(meta) = file.metadata() else { return Ok(missing_file()) };
-    if !meta.is_file() { return Ok(missing_file()) }
-    if meta.len() > limit_for(&relative) { return Ok(oversized_file()) }
-    let mut bytes = Vec::with_capacity(meta.len() as usize);
-    Ok(std::io::Read::read_to_end(&mut file, &mut bytes).map(|_| decode_file(&bytes)).unwrap_or_else(|_| missing_file()))
+    Ok(read_local_stamped(root, rel, None, language)?.unwrap_or(missing_file()))
+}
+
+/// What a file was when it was read, so that a later ask can be answered
+/// "the same" without sending it again: the file, how long it is, and when
+/// it was last written and when its entry last changed, as the Electron
+/// build's `stat` tells of it.
+pub(crate) fn file_stamp_text(stamp: &crate::file_id::Stamp) -> String {
+    format!("{}:{}:{}:{}:{}", stamp.id.0, stamp.id.1, stamp.size, stamp.modified, stamp.changed)
+}
+
+/// Read a file of a project, saying what it was when it was read. Asked
+/// with the stamp it had when it was last read, `None` is returned when
+/// it is still that file at that moment: nothing is sent again. Asked how
+/// large it is before anything of it is read, as the Electron build asks;
+/// a file found to have changed while it was read is refused, not shown
+/// half old and half new.
+pub fn read_local_stamped(root: &Path, rel: &str, known: Option<&str>, language: &str) -> Result<Option<Value>, String> {
+    let Ok(relative) = clean_relative(rel, language) else { return Ok(Some(missing_file())) };
+    if relative.is_empty() { return Ok(Some(missing_file())) }
+    let Ok((full, _)) = local_existing(root, &relative, language) else { return Ok(Some(missing_file())) };
+    let Some((_, Some(before))) = crate::file_id::inspect(&full) else { return Ok(Some(missing_file())) };
+    let stamp = file_stamp_text(&before);
+    if Some(stamp.as_str()) == known { return Ok(None) }
+    if !fs::metadata(&full).map(|meta| meta.is_file()).unwrap_or(false) { return Err(translate(language, "不是安全的普通文件", &[] as &[String])) }
+    if before.size > limit_for(&relative) {
+        let mut file = oversized_file();
+        file["fileStamp"] = json!(stamp);
+        return Ok(Some(file))
+    }
+    let bytes = fs::read(&full).map_err(|error| error.to_string())?;
+    match crate::file_id::inspect(&full) {
+        Some((_, Some(after))) if after == before => {
+            let mut file = decode_file_limited(&relative, &bytes);
+            file["fileStamp"] = json!(stamp);
+            Ok(Some(file))
+        }
+        _ => Err(translate(language, "读取版本期间文件已更改", &[] as &[String])),
+    }
 }
 
 pub fn write_local(root: &Path, rel: &str, text: &str, version: Option<&str>, language: &str) -> Result<Value, String> {

@@ -77,6 +77,7 @@ const EN: &[(&str, &str)] = &[
     ("SSH 连接超时", "SSH connection timed out"),
     ("远程输出过大", "Remote output is too large"),
     ("读取版本期间文件已更改", "File changed while reading its version"),
+    ("不是安全的普通文件", "Not a safe regular file"),
     ("已取消", "Cancelled"),
     ("远程资源写入准备失败", "Could not prepare the remote resource write"),
     ("请选择 SSH 机器", "Select an SSH machine"),

@@ -204,6 +204,7 @@ impl Workbench {
             "git:discard" => self.git_discard_command(args, &language),
             "git:tree" => self.git_tree(&str_arg(args, 0), str_arg(args, 1), &language),
             "git:read" => self.git_read(&str_arg(args, 0), str_arg(args, 1), &language),
+            "git:refresh" => Ok(self.git_refresh(&str_arg(args, 0), str_arg(args, 1), args.get(2).and_then(|value| value.as_str()), &language)?.unwrap_or(Value::Null)),
             "git:write" => self.git_write(&str_arg(args, 0), str_arg(args, 1), str_arg(args, 2), args.get(3).and_then(|value| value.as_str()), &language),
             "tree:ignore-get" => { self.project(&str_arg(args, 0), &language)?; Ok(Value::Array(self.ignores(&str_arg(args, 0)).into_iter().map(Value::String).collect())) }
             "tree:ignore-set" => self.set_ignores(&str_arg(args, 0), args.get(1).cloned().unwrap_or(json!([])), &language),
@@ -703,10 +704,19 @@ impl Workbench {
     }
 
     fn git_read(&self, project_id: &str, rel: &str, language: &str) -> Result<Value, String> {
+        // A plain read is a refresh that was never read before.
+        Ok(self.git_refresh(project_id, rel, None, language)?.unwrap_or(files::missing_file()))
+    }
+
+    /// Read a file of a project again, as the page asks when it comes back
+    /// to a tab or a file is said to have changed. Asked with the stamp the
+    /// file had when it was last read, `None` says it is the same file at
+    /// the same moment, and nothing is sent again.
+    fn git_refresh(&self, project_id: &str, rel: &str, known: Option<&str>, language: &str) -> Result<Option<Value>, String> {
         if let Some((host, path)) = self.remote_place(project_id, language)? {
-            return git::read_remote(&self.paths.data, &host, &path, rel, language);
+            return git::read_remote_stamped(&self.paths.data, &host, &path, rel, known, language);
         }
-        files::read_local(&self.local_root(project_id, language)?, rel, language)
+        files::read_local_stamped(&self.local_root(project_id, language)?, rel, known, language)
     }
 
     fn git_write(&self, project_id: &str, rel: &str, text: &str, version: Option<&str>, language: &str) -> Result<Value, String> {

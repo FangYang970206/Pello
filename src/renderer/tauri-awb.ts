@@ -95,6 +95,7 @@ const api: WorkbenchApi = {
   contentSearchNext: (id) => call('content:search-next', [id]),
   contentSearchCancel: (id) => call('content:search-cancel', [id]),
   gitRead: (projectId, rel) => call('git:read', [projectId, rel]),
+  gitRefresh: (projectId, rel, stamp) => call('git:refresh', [projectId, rel, stamp ?? null]),
   gitWrite: (projectId, rel, text, version) => call('git:write', [projectId, rel, text, version]),
   previewUrl: (projectId, rel, draft) => call('file:preview-url', [projectId, rel, draft]),
   renderMermaid: (source) => call('diagram:mermaid', [source]),

@@ -100,6 +100,7 @@ export interface WorkbenchApi {
   contentSearchNext(id: string): Promise<import('./types').ContentSearchBatch>
   contentSearchCancel(id: string): Promise<void>
   gitRead(projectId: string, rel: string): Promise<FileContent>
+  gitRefresh(projectId: string, rel: string, stamp?: string): Promise<FileContent | null>
   gitWrite(projectId: string, rel: string, text: string, version: string | null): Promise<FileContent>
   previewUrl(projectId: string, rel: string, draft?: string): Promise<string>
   renderMermaid(source: string): Promise<string>

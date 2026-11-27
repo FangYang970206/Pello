@@ -187,7 +187,7 @@ const cases = [
   ['AWB082', 'src-tauri/core/src/workbench.rs', 'let Some(host) = self.path_host(host_id) else { return Ok(files::list_dir(input)) };', 'let Some(host) = self.optional_host(host_id, language)? else { return Ok(files::list_dir(input)) };'],
   ['AWB083', 'src-tauri/core/src/files.rs', 'pub const DOCUMENT_LIMIT: u64 = 10_000_000;', 'pub const DOCUMENT_LIMIT: u64 = 2_000_000;'],
   ['AWB083', 'src-tauri/core/src/files.rs', 'pub const MEDIA_LIMIT: u64 = 12_000_000;', 'pub const MEDIA_LIMIT: u64 = 10_000_000;'],
-  ['AWB083', 'src-tauri/core/src/files.rs', 'if meta.len() > limit_for(&relative) { return Ok(oversized_file()) }', ''],
+  ['AWB083', 'src-tauri/core/src/files.rs', 'Ok(read_local_stamped(root, rel, None, language)?.unwrap_or(missing_file()))', 'Ok(missing_file())'],
   ['AWB083', 'src-tauri/core/src/files.rs', '"version": Value::Null, "tooBig": true', '"version": "stale", "tooBig": true'],
   ['AWB083', 'src-tauri/core/src/files.rs', 'if bytes.len() as u64 > DOCUMENT_LIMIT {', ''],
   ['AWB083', 'src-tauri/core/src/git.rs', 'if bytes.len() as u64 > files::DOCUMENT_LIMIT {', 'if bytes.len() as u64 > 2_000_000 {'],
@@ -352,6 +352,16 @@ const cases = [
   ['AWB091', 'src-tauri/core/src/workbench.rs', '"version": env!("CARGO_PKG_VERSION")', '"version": "0.1.18"'],
   ['AWB091', 'src/renderer/tauri-awb.ts', "browseResources: (hostId, input, files) => call('resources:browse', [hostId, input, files])", "browseResources: (hostId, input, files) => call('path:list', [hostId, input])"],
   ['AWB091', 'src/renderer/tauri-awb.ts', "openHomepage: () => call('app:homepage')", ''],
+  // A file sent again though it is the same; one read before it is known
+  // to be over the limit; one found changed while read and shown anyway; a
+  // host that cannot be asked taken for a file gone; a refresh without
+  // the stamp it was asked with.
+  ['AWB092', 'src-tauri/core/src/files.rs', 'if Some(stamp.as_str()) == known { return Ok(None) }', ''],
+  ['AWB092', 'src-tauri/core/src/files.rs', 'if before.size > limit_for(&relative) {', 'if false {'],
+  ['AWB092', 'src-tauri/core/src/files.rs', 'Some((_, Some(after))) if after == before =>', 'Some(_) =>'],
+  ['AWB092', 'src-tauri/core/src/git.rs', '"PELLO-MISSING" => Ok(Some(files::missing_file())),', '"PELLO-MISSING" => Err(String::from("missing")),'],
+  ['AWB092', 'src-tauri/core/src/git.rs', 'if Some(stamp) == known { return Ok(None) }', ''],
+  ['AWB092', 'src-tauri/core/src/workbench.rs', 'args.get(2).and_then(|value| value.as_str()), &language)?.unwrap_or(Value::Null)),', 'None, &language)?.unwrap_or(Value::Null)),'],
   ['AWB088', 'src-tauri/core/src/workbench.rs', '.map(|template| template["env"].as_array().cloned().unwrap_or_default()).unwrap_or_else(|| request["env"].as_array().cloned().unwrap_or_default())', '.map(|template| [template["env"].as_array().cloned().unwrap_or_default(), request["env"].as_array().cloned().unwrap_or_default()].concat()).unwrap_or_default()'],
   ['AWB088', 'src-tauri/core/src/workbench.rs', 'templates::prune(&mut next);\n        for binding in bindings.as_array().cloned().unwrap_or_default() {', 'for binding in bindings.as_array().cloned().unwrap_or_default() {'],
 ]
