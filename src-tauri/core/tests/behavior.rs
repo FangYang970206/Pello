@@ -6860,7 +6860,7 @@ fn an_executors_resources_on_a_host_are_listed_switched_and_written_through_the_
     // The host's own files, as the fixture reads them: this machine's.
     let home = root.join("host-home");
     let config = home.join(".claude.json");
-    fs::create_dir_all(home).unwrap();
+    fs::create_dir_all(&home).unwrap();
     fs::write(&config, "{\n  // kept\n  \"mcpServers\": { \"notes\": { \"command\": \"npx\" } }\n}\n").unwrap();
     // A template says where the executor's files are on the host, so the
     // host is not asked for a profile at all.
@@ -6927,10 +6927,93 @@ fn an_executors_resources_on_a_host_are_listed_switched_and_written_through_the_
     let profile = pello_core::remote_resources::remote_resource::<serde_json::Value>(&data, &host, &json!({ "op": "profile" }), &|| Ok(()), None, "en").unwrap();
     let targets = bench.dispatch("resources:targets", &[json!("box")]).unwrap();
     let codex = targets.as_array().expect("targets").iter().find(|target| target["id"] == "codex").expect("codex");
-    let home = profile["home"].as_str().unwrap().to_string();
-    let codex_home = profile["env"]["CODEX_HOME"].as_str().map(|value| value.to_string()).unwrap_or_else(|| pello_core::remote_resources::host_path::join(&home, ".codex", platform == "windows"));
+    let host_home = profile["home"].as_str().unwrap().to_string();
+    let codex_home = profile["env"]["CODEX_HOME"].as_str().map(|value| value.to_string()).unwrap_or_else(|| pello_core::remote_resources::host_path::join(&host_home, ".codex", platform == "windows"));
     assert_eq!(codex["mcpPath"], pello_core::remote_resources::host_path::join(&codex_home, "config.toml", platform == "windows"), "{codex}");
     assert!(codex.get("templateName").is_none(), "no template is said of an executor lent none: {codex}");
+
+    // A Skill on the host: found under the root the template names, listed
+    // with the text of its file, and switched by renaming it there. The
+    // host is asked for every Skill file under the root at once, and what
+    // is renamed is published to it. The root is this test's own folder,
+    // which the host, being this machine over SSH, reads as its own.
+    let skills_root = home.join("skills");
+    fs::create_dir_all(skills_root.join("notes")).unwrap();
+    fs::write(skills_root.join("notes").join("SKILL.md"), "---\nname: notes\ndescription: Keep notes on the host\n---\nHOST-SKILL\n").unwrap();
+    let saved = bench.dispatch("templates:save", &[json!({ "id": "", "hostId": "box", "name": "Box Omp", "mcpPath": path_of(&config), "skillPath": path_of(&skills_root), "format": "standard", "skillAdapter": "omp", "env": [] })]).unwrap();
+    let template = saved["templates"].as_array().expect("templates").iter().find(|template| template["name"] == "Box Omp").expect("the template was saved")["id"].as_str().unwrap().to_string();
+    bench.dispatch("templates:bind", &[json!({ "hostId": "box", "executorId": "omp" }), json!(template)]).unwrap();
+    let omp = json!({ "hostId": "box", "executorId": "omp" });
+    let skills = bench.dispatch("resources:list", &[json!("skills"), omp.clone(), json!(1), json!("")]).unwrap_or_else(|error| panic!("{error}"));
+    let items = skills["items"].as_array().expect("items");
+    assert_eq!(items.len(), 1, "{skills}");
+    assert_eq!(items[0]["name"], "notes");
+    assert_eq!(items[0]["enabled"], true);
+    let skill_file = skills_root.join("notes").join("SKILL.md");
+    assert_eq!(items[0]["path"], path_of(&skill_file), "{skills}");
+    assert!(skills["errors"].as_array().expect("errors").is_empty(), "{skills}");
+    let shown = bench.dispatch("resources:detail", &[json!("skills"), omp.clone(), items[0].clone()]).unwrap();
+    assert!(shown["content"].as_str().unwrap().contains("HOST-SKILL"), "{shown}");
+    // Oh My Pi switches a Skill by its configuration, as it does on this
+    // machine: the file is written on the host, and the Skill file is left
+    // where it is.
+    bench.dispatch("resources:toggle", &[json!("skills"), omp.clone(), items[0].clone(), json!(false)]).unwrap_or_else(|error| panic!("{error}"));
+    let settings = fs::read_to_string(home.join("config.yml")).unwrap_or_else(|error| panic!("{error}"));
+    assert!(settings.contains("disabledExtensions") && settings.contains("skill:notes"), "{settings}");
+    assert!(skill_file.exists(), "the Skill file is not renamed: {}", skills_root.join("notes").display());
+    let off = bench.dispatch("resources:list", &[json!("skills"), omp.clone(), json!(1), json!("")]).unwrap();
+    assert_eq!(off["items"].as_array().expect("items")[0]["enabled"], false, "{off}");
+    bench.dispatch("resources:toggle", &[json!("skills"), omp.clone(), off["items"].as_array().expect("items")[0].clone(), json!(true)]).unwrap_or_else(|error| panic!("{error}"));
+    let settings = fs::read_to_string(home.join("config.yml")).unwrap();
+    assert!(!settings.contains("skill:notes"), "{settings}");
+    let on = bench.dispatch("resources:list", &[json!("skills"), omp.clone(), json!(1), json!("")]).unwrap();
+    assert_eq!(on["items"].as_array().expect("items")[0]["enabled"], true, "{on}");
+
+    // An executor lent the portable adapter switches a Skill by renaming
+    // its file, on the host as on this machine. The adapter is lent to a
+    // custom executor: a built-in one is bound to its own. What is renamed
+    // is published to the host only after the file is found to be the one
+    // that was read.
+    fs::create_dir_all(skills_root.join("plain")).unwrap();
+    fs::write(skills_root.join("plain").join("SKILL.md"), "---\nname: plain\ndescription: Renamed on the host\n---\nPLAIN-SKILL\n").unwrap();
+    let saved = bench.dispatch("templates:save", &[json!({ "id": "", "hostId": "box", "name": "Box Portable", "mcpPath": path_of(&config), "skillPath": path_of(&skills_root), "format": "standard", "skillAdapter": "portable", "env": [] })]).unwrap();
+    let template = saved["templates"].as_array().expect("templates").iter().find(|template| template["name"] == "Box Portable").expect("the template was saved")["id"].as_str().unwrap().to_string();
+    bench.dispatch("db:custom", &[json!([{ "id": "mine", "name": "Mine", "command": "echo" }])]).unwrap();
+    bench.dispatch("templates:bind", &[json!({ "hostId": "box", "executorId": "mine" }), json!(template)]).unwrap();
+    let portable = json!({ "hostId": "box", "executorId": "mine" });
+    let listed = bench.dispatch("resources:list", &[json!("skills"), portable.clone(), json!(1), json!("")]).unwrap_or_else(|error| panic!("{error}"));
+    let plain = listed["items"].as_array().expect("items").iter().find(|item| item["name"] == "plain").expect("plain is listed").clone();
+    assert_eq!(plain["enabled"], true, "{plain}");
+    let plain_file = skills_root.join("plain").join("SKILL.md");
+    bench.dispatch("resources:toggle", &[json!("skills"), portable.clone(), plain.clone(), json!(false)]).unwrap_or_else(|error| panic!("{error}"));
+    assert!(!plain_file.exists(), "renamed on the host");
+    assert!(skills_root.join("plain").join("SKILL.md.awb-disabled").exists(), "renamed on the host");
+    let switched = bench.dispatch("resources:list", &[json!("skills"), portable.clone(), json!(1), json!("")]).unwrap();
+    let plain = switched["items"].as_array().expect("items").iter().find(|item| item["name"] == "plain").expect("plain is listed").clone();
+    assert_eq!(plain["enabled"], false, "{switched}");
+    bench.dispatch("resources:toggle", &[json!("skills"), portable.clone(), plain.clone(), json!(true)]).unwrap_or_else(|error| panic!("{error}"));
+    assert!(plain_file.exists(), "renamed back on the host");
+
+    // A folder on the host, to choose a path on it: this machine is refused,
+    // a folder is listed with its folders and, when asked, its files, the
+    // path made real as the host writes it, and nothing is asked of a path
+    // that is not one.
+    let pick = root.join("pick");
+    fs::create_dir_all(pick.join("one")).unwrap();
+    fs::write(pick.join("a.txt"), "x").unwrap();
+    assert_eq!(bench.dispatch("resources:browse", &[json!("local"), json!(""), json!(false)]).unwrap_err(), "Select an SSH machine");
+    let listed = bench.dispatch("resources:browse", &[json!("box"), json!(path_of(&pick)), json!(true)]).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(listed["path"], path_of(&pick), "{listed}");
+    assert_eq!(listed["dirs"].as_array().expect("dirs").iter().map(|entry| entry["name"].as_str().unwrap()).collect::<Vec<_>>(), ["one"], "{listed}");
+    assert_eq!(listed["files"].as_array().expect("files").iter().map(|entry| entry["name"].as_str().unwrap()).collect::<Vec<_>>(), ["a.txt"], "{listed}");
+    assert_eq!(listed["dirs"].as_array().expect("dirs")[0]["path"], pello_core::remote_resources::host_path::join(&path_of(&pick), "one", platform == "windows"), "{listed}");
+    let folders_only = bench.dispatch("resources:browse", &[json!("box"), json!(path_of(&pick)), json!(false)]).unwrap();
+    assert!(folders_only.get("files").is_none(), "{folders_only}");
+    // Nothing given is the host's home.
+    let from_home = bench.dispatch("resources:browse", &[json!("box"), json!(""), json!(false)]).unwrap();
+    assert!(from_home["path"].as_str().is_some_and(|path| !path.is_empty()), "{from_home}");
+    let nowhere = bench.dispatch("resources:browse", &[json!("box"), json!(path_of(&root.join("nowhere"))), json!(false)]).unwrap_err();
+    assert!(nowhere.contains("nowhere"), "{nowhere}");
     let _ = fs::remove_dir_all(root);
 }
 

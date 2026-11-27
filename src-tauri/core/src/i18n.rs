@@ -79,6 +79,7 @@ const EN: &[(&str, &str)] = &[
     ("读取版本期间文件已更改", "File changed while reading its version"),
     ("已取消", "Cancelled"),
     ("远程资源写入准备失败", "Could not prepare the remote resource write"),
+    ("请选择 SSH 机器", "Select an SSH machine"),
     ("SSH 连接失败，未保存机器", "SSH connection failed. Machine was not saved."),
     ("无法保存项目目录外的文件或符号链接", "Cannot save files outside the project or through symbolic links"),
     ("文件不存在", "File does not exist"),

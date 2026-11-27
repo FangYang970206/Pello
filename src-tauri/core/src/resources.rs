@@ -308,6 +308,17 @@ pub fn targets(data: &Path, db: &Value, host_id: &str, language: &str) -> Result
     Ok(Value::Array(list.iter().map(target_json).collect()))
 }
 
+/// A folder on an SSH machine, to choose a path on it as that machine
+/// writes it: the path, the one above it if there is one, the folders in
+/// it, and, when asked, the files. This machine has its own picker.
+pub fn browse(data: &Path, db: &Value, host_id: &str, input: &str, files: bool, language: &str) -> Result<Value, String> {
+    let host = crate::templates::machine(db, host_id, true, language)?.clone();
+    if host_id == "local" { return Err(t(language, "请选择 SSH 机器")) }
+    let windows = host["platform"].as_str() == Some("windows");
+    let path = if input.is_empty() { String::new() } else { crate::templates::resource_path(input, windows, language)? };
+    crate::remote_resources::browse_remote_resources(data, &host, &path, files, language)
+}
+
 fn target_json(target: &Target) -> Value {
     let mut value = json!({ "id": target.id, "name": target.name, "mcpPath": target.mcp_path, "skillPath": target.skill_path });
     if !target.skill_config_path.is_empty() { value["skillConfigPath"] = json!(target.skill_config_path); }

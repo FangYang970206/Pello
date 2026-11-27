@@ -336,6 +336,8 @@ impl Workbench {
             "resources:import-mcp" => resources::import_mcp(&self.resources, &self.paths.data, &self.db.lock().expect("db").clone(), str_arg(args, 0), args.get(1).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), args.get(2).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), args.get(3).and_then(|value| value.as_str()).unwrap_or("local"), &language),
             "resources:skills" => resources::import_skills(&self.resources, &self.paths.data, &self.db.lock().expect("db").clone(), str_arg(args, 0), args.get(1).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), args.get(2).and_then(|value| value.as_array()).map(|list| list.iter().filter_map(|item| item.as_str().map(|item| item.to_string())).collect::<Vec<_>>()).as_ref(), &language),
             "resources:pick" => Ok(menu::choose_open_path(str_arg(args, 0), &language)),
+            // A folder on an SSH machine, to choose a path on it.
+            "resources:browse" => resources::browse(&self.paths.data, &self.db.lock().expect("db").clone(), str_arg(args, 0), str_arg(args, 1), bool_arg(args, 2).unwrap_or(false), &language),
             "file:preview-url" => self.preview_url(args, &language),
             "file:open-html" => self.open_html(str_arg(args, 0), str_arg(args, 1), &language),
             "file:link" => self.file_link(str_arg(args, 0), str_arg(args, 1), str_arg(args, 2), &language),

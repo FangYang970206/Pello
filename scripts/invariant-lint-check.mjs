@@ -335,6 +335,15 @@ const cases = [
   ['AWB088', 'src-tauri/core/src/workbench.rs', 'store::save_database(&self.database_path(), &next)?;\n        *self.db.lock().expect("db") = next.clone();', '*self.db.lock().expect("db") = next.clone();\n        store::save_database(&self.database_path(), &next)?;'],
   ['AWB088', 'src-tauri/core/src/workbench.rs', 'self.emit.clone(), &env).map(|_| Value::Null)', 'self.emit.clone(), &[]).map(|_| Value::Null)'],
   ['AWB088', 'src-tauri/core/src/workbench.rs', 'let text = templates::redact_output(&collected.lock().expect("test output"), &rows);', 'let text = collected.lock().expect("test output").clone();'],
+  // A browse of this machine, asked of the host; one that lists files
+  // without being asked, or that forgets which language to speak; a path
+  // asked of the host as it was typed, or a relative one.
+  ['AWB090', 'src-tauri/core/src/workbench.rs', 'str_arg(args, 1), bool_arg(args, 2).unwrap_or(false), &language),', 'str_arg(args, 1), bool_arg(args, 2).unwrap_or(true), &language),'],
+  ['AWB090', 'src-tauri/core/src/workbench.rs', 'str_arg(args, 1), bool_arg(args, 2).unwrap_or(false), &language),', 'str_arg(args, 1), bool_arg(args, 2).unwrap_or(false), "en"),'],
+  ['AWB090', 'src-tauri/core/src/resources.rs', 'if host_id == "local" { return Err(t(language, "请选择 SSH 机器")) }', ''],
+  ['AWB090', 'src-tauri/core/src/resources.rs', 'let path = if input.is_empty() { String::new() } else { crate::templates::resource_path(input, windows, language)? };', 'let path = input.to_string();'],
+  ['AWB090', 'src-tauri/core/src/resources.rs', 'let host = crate::templates::machine(db, host_id, true, language)?.clone();', 'let host = db["hosts"].as_array().expect("hosts").iter().find(|host| host["id"] == host_id).cloned().expect("host");'],
+  ['AWB090', 'src-tauri/core/src/remote_resources.rs', 'if files { result["files"] = json!(entries(listed.files)); }', 'result["files"] = json!(entries(listed.files));'],
   ['AWB088', 'src-tauri/core/src/workbench.rs', '.map(|template| template["env"].as_array().cloned().unwrap_or_default()).unwrap_or_else(|| request["env"].as_array().cloned().unwrap_or_default())', '.map(|template| [template["env"].as_array().cloned().unwrap_or_default(), request["env"].as_array().cloned().unwrap_or_default()].concat()).unwrap_or_default()'],
   ['AWB088', 'src-tauri/core/src/workbench.rs', 'templates::prune(&mut next);\n        for binding in bindings.as_array().cloned().unwrap_or_default() {', 'for binding in bindings.as_array().cloned().unwrap_or_default() {'],
 ]

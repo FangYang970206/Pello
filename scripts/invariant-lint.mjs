@@ -15,7 +15,7 @@ export function projectFiles() {
     }
   }
   read('src')
-  for (const rel of ['package.json', 'AGENTS.md', 'electron-builder.yml', 'electron.vite.config.ts', 'assets/installer.nsh', 'src/renderer/index.html', 'src-tauri/core/src/menu.rs', 'src-tauri/core/src/workbench.rs', 'src-tauri/core/src/pty.rs', 'src-tauri/core/src/i18n.rs', 'src-tauri/core/src/shell.rs', 'src-tauri/core/src/files.rs', 'src-tauri/core/src/git.rs', 'src-tauri/core/src/preview.rs', 'src-tauri/core/src/resources.rs', 'src-tauri/core/src/templates.rs', 'src-tauri/core/src/shells.rs', 'src-tauri/src/lib.rs', 'src-tauri/src/edit.rs', 'src-tauri/core/tests/behavior.rs']) files.set(rel, fs.readFileSync(path.join(root, rel), 'utf8'))
+  for (const rel of ['package.json', 'AGENTS.md', 'electron-builder.yml', 'electron.vite.config.ts', 'assets/installer.nsh', 'src/renderer/index.html', 'src-tauri/core/src/menu.rs', 'src-tauri/core/src/workbench.rs', 'src-tauri/core/src/pty.rs', 'src-tauri/core/src/i18n.rs', 'src-tauri/core/src/shell.rs', 'src-tauri/core/src/files.rs', 'src-tauri/core/src/git.rs', 'src-tauri/core/src/preview.rs', 'src-tauri/core/src/resources.rs', 'src-tauri/core/src/remote_resources.rs', 'src-tauri/core/src/templates.rs', 'src-tauri/core/src/shells.rs', 'src-tauri/src/lib.rs', 'src-tauri/src/edit.rs', 'src-tauri/core/tests/behavior.rs']) files.set(rel, fs.readFileSync(path.join(root, rel), 'utf8'))
   return files
 }
 
@@ -509,8 +509,21 @@ export function checkInvariants(files) {
     'AWB089', 'src-tauri/core/src/workbench.rs', 'skill-open / skill-delete 的参数是 (作用域, 条目)')
   require(scopedDispatch.includes('str_arg(args, 0), args.get(1).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), args.get(2).and_then(|value| value.as_array()).map(|list| list.iter().filter_map(|item| item.as_str().map(|item| item.to_string())).collect::<Vec<_>>()).as_ref(), &language),'),
     'AWB089', 'src-tauri/core/src/workbench.rs', 'resources:skills 的参数是 (来源, 作用域列表, 名称列表)')
-  require(!scopedBridge.includes("call('resources:target'") && !scopedBridge.includes("call('resources:scope'") && scopedBridge.includes("openSkillRecommendation: (id) => call('resources:open-recommendation', [id])"),
+  require(!scopedBridge.includes("call('resources:target'") && !scopedBridge.includes("call('resources:scope'") && scopedBridge.includes('openSkillRecommendation: (id) => call(\'resources:open-recommendation\', [id])'),
     'AWB089', 'src/renderer/tauri-awb.ts', '桥接层不再调用 resources:target / resources:scope，并声明 openSkillRecommendation')
+  // A folder on an SSH machine, to choose a path on it as that machine
+  // writes it. This machine has its own picker, and nothing that is not an
+  // absolute path of the host's platform is asked of the host.
+  const scopedBrowse = /pub fn browse\(data: &Path, db: &Value, host_id: &str, input: &str, files: bool, language: &str\) -> Result<Value, String> \{[\s\S]*?\r?\n\}/.exec(scopedKernel)?.[0] || ''
+  const scopedBrowseRemote = /pub fn browse_remote_resources\(data: &Path, host: &Value, input: &str, files: bool, language: &str\) -> Result<Value, String> \{[\s\S]*?\r?\n\}/.exec(files.get('src-tauri/core/src/remote_resources.rs') || '')?.[0] || ''
+  require(scopedDispatch.includes('"resources:browse" => resources::browse(&self.paths.data, &self.db.lock().expect("db").clone(), str_arg(args, 0), str_arg(args, 1), bool_arg(args, 2).unwrap_or(false), &language),'),
+    'AWB090', 'src-tauri/core/src/workbench.rs', 'resources:browse 的参数是 (机器, 输入路径, 是否带文件)，缺省不带文件')
+  require(scopedBrowse.includes('let host = crate::templates::machine(db, host_id, true, language)?.clone();') && scopedBrowse.indexOf('crate::templates::machine(db, host_id, true, language)?') < scopedBrowse.indexOf('if host_id == "local" { return Err(t(language, "请选择 SSH 机器")) }'),
+    'AWB090', 'src-tauri/core/src/resources.rs', '浏览机器的文件夹：先问机器（须已连接），本机拒绝')
+  require(scopedBrowse.includes('let path = if input.is_empty() { String::new() } else { crate::templates::resource_path(input, windows, language)? };'),
+    'AWB090', 'src-tauri/core/src/resources.rs', '浏览：空输入是主机的家目录，其余按主机平台归一化为绝对路径')
+  require(scopedBrowseRemote.includes('if files { result["files"] = json!(entries(listed.files)); }'),
+    'AWB090', 'src-tauri/core/src/remote_resources.rs', '浏览：只在要求时带出文件')
   return errors
 }
 
