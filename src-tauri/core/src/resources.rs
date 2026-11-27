@@ -128,11 +128,19 @@ pub fn targets(data: &Path, custom: &Value) -> Vec<Value> {
     let codex = if std::env::var_os("AWB_RESOURCE_HOME").is_some() { join(&[".codex"]) } else { std::env::var_os("CODEX_HOME").map(PathBuf::from).unwrap_or_else(|| join(&[".codex"])) };
     let pi = if std::env::var_os("AWB_RESOURCE_HOME").is_some() { join(&[".pi", "agent"]) } else { std::env::var_os("PI_CODING_AGENT_DIR").map(PathBuf::from).unwrap_or_else(|| join(&[".pi", "agent"])) };
     let opencode_dir = config.join("opencode");
-    let opencode_file = if opencode_dir.join("opencode.jsonc").is_file() { "opencode.jsonc" } else { "opencode.json" };
+    // The configuration OpenCode is told to use wins over either of its
+    // usual names, which are chosen by which of them is there. The
+    // environment says nothing when a resource home is given for a test.
+    let told = if std::env::var_os("AWB_RESOURCE_HOME").is_some() { None } else { std::env::var_os("OPENCODE_CONFIG").filter(|value| !value.is_empty()) };
+    let opencode_file = match told {
+        Some(path) => PathBuf::from(path),
+        None => opencode_dir.join(if opencode_dir.join("opencode.jsonc").exists() { "opencode.jsonc" } else { "opencode.json" }),
+    };
+    let opencode_file = opencode_file.display().to_string();
     let mut builtin = vec![
         Target { id: "claude".into(), name: "Claude Code".into(), mcp_path: join(&[".claude.json"]).display().to_string(), skill_path: claude.join("skills").display().to_string(), skill_config_path: String::new(), format: "standard".into(), skill_adapter: "claude".into() },
         Target { id: "codex".into(), name: "Codex CLI".into(), mcp_path: codex.join("config.toml").display().to_string(), skill_path: join(&[".agents", "skills"]).display().to_string(), skill_config_path: String::new(), format: "codex".into(), skill_adapter: "codex".into() },
-        Target { id: "opencode".into(), name: "OpenCode".into(), mcp_path: opencode_dir.join(opencode_file).display().to_string(), skill_path: opencode_dir.join("skills").display().to_string(), skill_config_path: String::new(), format: "opencode".into(), skill_adapter: "opencode".into() },
+        Target { id: "opencode".into(), name: "OpenCode".into(), mcp_path: opencode_file, skill_path: opencode_dir.join("skills").display().to_string(), skill_config_path: String::new(), format: "opencode".into(), skill_adapter: "opencode".into() },
         Target { id: "pi".into(), name: "Pi".into(), mcp_path: pi.join("mcp.json").display().to_string(), skill_path: pi.join("skills").display().to_string(), skill_config_path: String::new(), format: "standard".into(), skill_adapter: "pi".into() },
         Target { id: "omp".into(), name: "Oh My Pi".into(), mcp_path: join(&[".omp", "agent", "mcp.json"]).display().to_string(), skill_path: join(&[".omp", "agent", "skills"]).display().to_string(), skill_config_path: join(&[".omp", "agent", "config.yml"]).display().to_string(), format: "standard".into(), skill_adapter: "omp".into() },
     ];
@@ -263,16 +271,15 @@ fn object_or<'a>(value: &'a Value, language: &str) -> Result<&'a Map<String, Val
 /// An agent's configuration as the Electron build's `parseConfig` reads it:
 /// Codex's in TOML, the others in JSON with comments and trailing commas.
 fn parse_config(target: &Target, text: &str, language: &str) -> Result<Value, String> {
-    if target.format == "codex" { read_toml_config(text) } else { parse_json_text(text, language) }
+    if target.format == "codex" { read_toml_config(text, language) } else { parse_json_text(text, language) }
 }
 
 /// A TOML document as the JSON the rest of the kernel works with, read
 /// whole by the format's own parser. A date or a time is a string, as it is
 /// to the Electron build, and the order of the keys is the document's own.
-fn read_toml_config(text: &str) -> Result<Value, String> {
-    // A file the parser cannot read fails with the parser's own message, as
-    // the Electron build's does; it is not translated.
-    let parsed: toml::Value = toml::from_str(text.trim_start_matches('\u{feff}')).map_err(|error| error.to_string())?;
+/// A document the parser cannot read fails in the build's own words.
+fn read_toml_config(text: &str, language: &str) -> Result<Value, String> {
+    let parsed: toml::Value = toml::from_str(text.trim_start_matches('\u{feff}')).map_err(|_| t(language, "TOML 配置存在语法错误，请修复后重试"))?;
     Ok(toml_to_json(parsed))
 }
 
@@ -314,11 +321,10 @@ fn mcp_root<'a>(target: &Target, config: &'a Value, language: &str) -> Result<(V
     let v2 = target.format == "opencode" && opencode_v2(config);
     let keys: Vec<&'a str> = if target.format == "codex" { vec!["mcp_servers"] } else if target.format == "opencode" { if v2 { vec!["mcp", "servers"] } else { vec!["mcp"] } } else { vec!["mcpServers"] };
     static NONE: Value = Value::Null;
-    static EMPTY: std::sync::OnceLock<Map<String, Value>> = std::sync::OnceLock::new();
     // `object(value || {})`: a value JavaScript calls false is an empty
     // object before it is asked to be one.
     fn asked<'a>(value: &'a Value, language: &str) -> Result<&'a Map<String, Value>, String> {
-        if is_truthy(value) { object_or(value, language) } else { Ok(EMPTY.get_or_init(Map::new)) }
+        if is_truthy(value) { object_or(value, language) } else { Ok(EMPTY_MAP.get_or_init(Map::new)) }
     }
     let mut value: &Value = config;
     for key in &keys {
@@ -381,7 +387,9 @@ fn scan_skills(folder: &Path, target: &Target, seen: &mut Vec<PathBuf>, items: &
             let enabled = skill_enabled(target, &file, &info.name, language)?;
             items.push(json!({ "name": info.name, "description": info.description, "path": file.display().to_string(), "enabled": enabled }));
         }
-        Err(error) => errors.push(format!("{}: {error}", folder.display())),
+        // Said of the Skill file itself, as the Electron build says it, and
+        // not of the folder it is in.
+        Err(error) => errors.push(format!("{}: {error}", file.display())),
     }
     Ok(())
 }
@@ -406,7 +414,9 @@ fn skill_info(file: &Path, language: &str) -> Result<SkillInfo, String> {
     }
     if !skill_name_ok(&name) { return Err(t(language, "Skill 名称须为小写字母、数字和单连字符，最多 64 字符")); }
     let description = description.trim().to_string();
-    if description.is_empty() || description.chars().count() > 1024 { return Err(t(language, "Skill 需要 1 到 1024 字符的 description")); }
+    // Some published Skills exceed the specification's suggested 1024
+    // characters; the Electron build takes up to 8192, as is done here.
+    if description.is_empty() || description.chars().count() > 8192 { return Err(t(language, "Skill 需要 1 到 8192 字符的 description")); }
     Ok(SkillInfo { name, description })
 }
 
@@ -532,9 +542,27 @@ fn escape_toml(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// A JSON configuration as the text an edit is made in, with the byte
+/// order mark taken off and given back to be put in front of the result, as
+/// the Electron build's `patchJson` does. A file that says nothing but that
+/// is edited as an empty object.
+fn json_edit_source(before: &str) -> (char, String) {
+    let mark = if before.starts_with('\u{feff}') { '\u{feff}' } else { '\0' };
+    let rest = before.strip_prefix('\u{feff}').unwrap_or(before);
+    (mark, if rest.is_empty() { "{\n}\n".to_string() } else { rest.to_string() })
+}
+
+/// An empty object, for where the Electron build's `value || {}` turns a
+/// value JavaScript calls false into one.
+static EMPTY_MAP: std::sync::OnceLock<Map<String, Value>> = std::sync::OnceLock::new();
+
+fn with_mark(mark: char, next: &str) -> String {
+    if mark == '\0' { next.to_string() } else { format!("{mark}{next}") }
+}
+
 fn toggle_opencode_skill(settings: &Path, name: &str, enabled: bool, language: &str) -> Result<(), String> {
     let before = read_text(settings, language)?;
-    let source = if before.trim().is_empty() { "{\n}\n".to_string() } else { before.clone() };
+    let (mark, source) = json_edit_source(&before);
     let config = parse_json_text(&source, language)?;
     let effect = if enabled { "allow" } else { "deny" };
     let next = if opencode_v2(&config) {
@@ -551,6 +579,7 @@ fn toggle_opencode_skill(settings: &Path, name: &str, enabled: bool, language: &
             upsert_json(&source, &["permission", "skill", name], &format!("\"{effect}\"")).map_err(|_| t(language, "JSON 配置存在语法错误，请修复后重试"))?
         }
     };
+    let next = with_mark(mark, &next);
     parse_json_text(&next, language)?;
     atomic_text(settings, &before, &next, language)
 }
@@ -601,7 +630,7 @@ fn array_elements(text: &str, open: usize) -> Result<Vec<(usize, usize)>, ()> {
 
 fn toggle_pi_skill(settings: &Path, skill_path: &str, enabled: bool, language: &str) -> Result<(), String> {
     let before = read_text(settings, language)?;
-    let source = if before.trim().is_empty() { "{\n}\n".to_string() } else { before.clone() };
+    let (order, source) = json_edit_source(&before);
     let config = parse_json_text(&source, language)?;
     let mark = format!("-{skill_path}");
     let mut entries = config.get("skills").and_then(|value| value.as_array()).map(|items| items.iter().filter_map(|item| item.as_str().map(|item| item.to_string())).collect()).unwrap_or_else(Vec::new);
@@ -609,6 +638,7 @@ fn toggle_pi_skill(settings: &Path, skill_path: &str, enabled: bool, language: &
     if !enabled { entries.push(mark); }
     let raw = serde_json::to_string(&entries).map_err(|_| t(language, "JSON 配置存在语法错误，请修复后重试"))?;
     let next = upsert_json(&source, &["skills"], &raw).map_err(|_| t(language, "JSON 配置存在语法错误，请修复后重试"))?;
+    let next = with_mark(order, &next);
     parse_json_text(&next, language)?;
     atomic_text(settings, &before, &next, language)
 }
@@ -852,6 +882,8 @@ fn toggle_mcp(target: &Target, item: &Value, enabled: bool, language: &str) -> R
         return atomic_text(path, &before, &next, language);
     }
     let parks = target.id == "claude" || (target.format == "standard" && target.id != "pi" && target.id != "omp");
+    // The mark, if the file starts with one, is put in front of the result.
+    let (order, rest) = json_edit_source(&before);
     if parks {
         let config = parse_json_text(&before, language)?;
         let active = config.get("mcpServers").cloned().unwrap_or_else(|| json!({}));
@@ -861,9 +893,10 @@ fn toggle_mcp(target: &Target, item: &Value, enabled: bool, language: &str) -> R
         let source = if enabled { "awbDisabledMcp" } else { "mcpServers" };
         let dest = if enabled { "mcpServers" } else { "awbDisabledMcp" };
         if config.get(source).and_then(|value| value.get(name)).is_none() { return Err(t(language, "MCP 配置已改变")); }
-        let moved = move_json_key(&before, &[source, name], &[dest, name]).map_err(|_| t(language, "JSON 配置存在语法错误，请修复后重试"))?;
+        let moved = move_json_key(&rest, &[source, name], &[dest, name]).map_err(|_| t(language, "JSON 配置存在语法错误，请修复后重试"))?;
         parse_json_text(&moved, language)?;
-        if moved.contains("\"enabled\"") && !before.contains("\"enabled\"") { return Err(t(language, "MCP 配置已改变")); }
+        if moved.contains("\"enabled\"") && !rest.contains("\"enabled\"") { return Err(t(language, "MCP 配置已改变")); }
+        let moved = with_mark(order, &moved);
         return atomic_text(path, &before, &moved, language);
     }
     let config = parse_json_text(&before, language)?;
@@ -872,7 +905,8 @@ fn toggle_mcp(target: &Target, item: &Value, enabled: bool, language: &str) -> R
     path_keys.push(name);
     path_keys.push(if v2 { "disabled" } else { "enabled" });
     let raw = if v2 { if enabled { "false" } else { "true" } } else if enabled { "true" } else { "false" };
-    let next = upsert_json(&before, &path_keys, raw).map_err(|_| t(language, "JSON 配置存在语法错误，请修复后重试"))?;
+    let next = upsert_json(&rest, &path_keys, raw).map_err(|_| t(language, "JSON 配置存在语法错误，请修复后重试"))?;
+    let next = with_mark(order, &next);
     parse_json_text(&next, language)?;
     atomic_text(path, &before, &next, language)
 }
@@ -887,8 +921,9 @@ fn toggle_skill(target: &Target, item: &Value, enabled: bool, language: &str) ->
     match target.skill_adapter.as_str() {
         "claude" => {
             let before = read_text(&settings, language)?;
-            let source = if before.trim().is_empty() { "{\n}\n".to_string() } else { before.clone() };
+            let (order, source) = json_edit_source(&before);
             let next = upsert_json(&source, &["skillOverrides", name], if enabled { "\"on\"" } else { "\"off\"" }).map_err(|_| t(language, "JSON 配置存在语法错误，请修复后重试"))?;
+            let next = with_mark(order, &next);
             parse_json_text(&next, language)?;
             atomic_text(&settings, &before, &next, language)?;
             return Ok(());
@@ -901,13 +936,28 @@ fn toggle_skill(target: &Target, item: &Value, enabled: bool, language: &str) ->
     }
     let source = if enabled { PathBuf::from(format!("{}.awb-disabled", file.display())) } else { file.clone() };
     let dest = if enabled { file.clone() } else { PathBuf::from(format!("{}.awb-disabled", file.display())) };
-    let meta = fs::symlink_metadata(&source).map_err(|_| t(language, "MCP 配置已改变"))?;
-    if meta.file_type().is_symlink() { return Err(t(language, "不能切换指向其他目录的 Skill 链接")); }
-    let root = crate::real_path(Path::new(&target.skill_path)).map_err(|error| error.to_string())?;
-    let real = crate::real_path(&source).map_err(|error| error.to_string())?;
-    if !real.starts_with(&root) { return Err(t(language, "不能切换指向其他目录的 Skill 链接")); }
     if dest.exists() { return Err(t(language, "目标文件已存在，未覆盖")); }
-    fs::rename(&source, &dest).map_err(|error| error.to_string())
+    rename_skill(Path::new(&target.skill_path), &source, &dest, language)
+}
+
+/// A Skill file given its other name, as the Electron build's `renameSkill`
+/// does it: the new name is linked to the same file and the old one taken
+/// off, so that nothing is copied and a file that is not a regular one
+/// inside the Skill root is refused.
+fn rename_skill(root: &Path, source: &Path, dest: &Path, language: &str) -> Result<(), String> {
+    let real = crate::real_path(source).map_err(|error| error.to_string())?;
+    let root_real = crate::real_path(root).map_err(|error| error.to_string())?;
+    // The file must be inside the root, by where it really is, and must not
+    // itself be a link.
+    if !real.starts_with(&root_real) || fs::symlink_metadata(source).map(|meta| meta.file_type().is_symlink()).unwrap_or(true) {
+        return Err(t(language, "不能切换指向其他目录的 Skill 链接"));
+    }
+    fs::hard_link(source, dest).map_err(|error| error.to_string())?;
+    if let Err(error) = fs::remove_file(source) {
+        let _ = fs::remove_file(dest);
+        return Err(error.to_string());
+    }
+    Ok(())
 }
 
 pub fn detail(resources: &Resources, data: &Path, custom: &Value, kind: &str, agent: &str, item: &Value, language: &str) -> Result<Value, String> {
@@ -923,7 +973,7 @@ pub fn detail(resources: &Resources, data: &Path, custom: &Value, kind: &str, ag
         return Ok(detail);
     }
     let text = read_text(Path::new(&target.mcp_path), language)?;
-    let config = if target.format == "codex" { read_toml_config(&text)? } else { parse_json_text(&text, language)? };
+    let config = parse_config(&target, &text, language)?;
     // `servers[item.name] || object(config.awbDisabledMcp || {})[item.name]`:
     // the active entry when it is true to JavaScript, else the parked one;
     // what is found is asked to be an object, as the Electron build asks.
@@ -1117,27 +1167,34 @@ fn validate_mcp_config(config: &Value, language: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn write_mcp(target: &Target, name: &str, config: &Value, enabled: bool, language: &str) -> Result<(), String> {
-    if target.mcp_path.is_empty() { return Err(t(language, "请先设置这个 Agent 的 MCP 配置路径")); }
+fn write_mcp(target: &Target, name: &str, config: &Value, enabled: bool, language: &str) -> Result<(), Refused> {
+    if target.mcp_path.is_empty() { return Err(t(language, "请先设置这个 Agent 的 MCP 配置路径").into()) }
     let path = Path::new(&target.mcp_path);
     let before = read_text(path, language)?;
     if target.format == "codex" {
-        if toml_servers(&before, language)?.iter().any(|(existing, _)| existing == name) { return Err(t(language, "已存在同名 MCP，保留原配置")); }
+        if toml_servers(&before, language)?.iter().any(|(existing, _)| existing == name) { return Err(Refused::duplicate(t(language, "已存在同名 MCP，保留原配置"))); }
         let next = format!("{before}{}", toml_table(name, config, enabled));
-        return atomic_text(path, &before, &next, language);
+        return atomic_text(path, &before, &next, language).map_err(Refused::from);
     }
     let parsed = parse_json_text(&before, language)?;
     let (keys, servers, v2) = mcp_root(target, &parsed, language)?;
     let parked = !enabled && target.format == "standard" && target.id != "pi" && target.id != "omp";
-    if servers.get(name).is_some() || parsed.get("awbDisabledMcp").and_then(|value| value.get(name)).is_some() { return Err(t(language, "已存在同名 MCP，保留原配置")); }
+    // `object(parsed.awbDisabledMcp || {})`: what JavaScript calls false is
+    // an empty object, and any other that is not an object is refused.
+    let disabled = match parsed.get("awbDisabledMcp").filter(|value| is_truthy(value)) {
+        Some(value) => object_or(value, language)?,
+        None => EMPTY_MAP.get_or_init(Map::new),
+    };
+    if servers.contains_key(name) || disabled.contains_key(name) { return Err(Refused::duplicate(t(language, "已存在同名 MCP，保留原配置"))); }
     let value = mcp_value(target, config, enabled, v2, parked);
-    let source = if before.trim().is_empty() { "{\n}\n".to_string() } else { before.clone() };
+    let (order, source) = json_edit_source(&before);
     let mut json_keys: Vec<&str> = if parked { vec!["awbDisabledMcp"] } else { keys };
     json_keys.push(name);
     let raw = serde_json::to_string(&value).map_err(|error| error.to_string())?;
     let next = upsert_json(&source, &json_keys, &raw).map_err(|_| t(language, "JSON 配置存在语法错误，请修复后重试"))?;
+    let next = with_mark(order, &next);
     parse_json_text(&next, language)?;
-    atomic_text(path, &before, &next, language)
+    atomic_text(path, &before, &next, language).map_err(Refused::from)
 }
 
 fn mcp_value(target: &Target, config: &Value, enabled: bool, v2: bool, parked: bool) -> Value {
@@ -1194,7 +1251,7 @@ fn inline_toml(value: &Value) -> String {
 
 /// The MCP servers of a TOML configuration, as `mcpRoot` finds them.
 fn toml_servers(text: &str, language: &str) -> Result<Vec<(String, Value)>, String> {
-    let config = read_toml_config(text)?;
+    let config = read_toml_config(text, language)?;
     let target = Target { id: String::new(), name: String::new(), mcp_path: String::new(), skill_path: String::new(), skill_config_path: String::new(), format: "codex".to_string(), skill_adapter: String::new() };
     let (_, servers, _) = mcp_root(&target, &config, language)?;
     Ok(servers.iter().map(|(name, value)| (name.clone(), value.clone())).collect())
@@ -1361,7 +1418,20 @@ fn replace_enabled_token(inner: &str, enabled: bool) -> Result<String, ()> {
     Err(())
 }
 
-fn distribute(resources: &Resources, data: &Path, custom: &Value, agents: &[Value], language: &str, run: &mut dyn FnMut(&Target) -> Result<(), String>) -> Result<Value, String> {
+/// A refusal from a distribution, with whether it is because a resource of
+/// that name already exists and was kept, as the Electron build's
+/// `ResourceDuplicate` says. Any other failure is one without that mark.
+struct Refused { message: String, duplicate: bool }
+
+impl Refused {
+    fn duplicate(message: String) -> Self { Self { message, duplicate: true } }
+}
+
+impl From<String> for Refused {
+    fn from(message: String) -> Self { Self { message, duplicate: false } }
+}
+
+fn distribute(resources: &Resources, data: &Path, custom: &Value, agents: &[Value], language: &str, run: &mut dyn FnMut(&Target) -> Result<(), Refused>) -> Result<Value, String> {
     if resources.busy.swap(true, Ordering::SeqCst) { return Err(t(language, "正在分发资源，请稍候")); }
     let result = (|| {
         if agents.is_empty() { return Err(t(language, "请选择至少一个 Code Agent")); }
@@ -1372,12 +1442,13 @@ fn distribute(resources: &Resources, data: &Path, custom: &Value, agents: &[Valu
             let id = agent.as_str().unwrap_or("").to_string();
             if seen.contains(&id) { continue; }
             seen.push(id.clone());
-            match find_target(&targets, &id, language) {
-                Ok(target) => match run(target) {
-                    Ok(()) => results.push(json!({ "agent": id, "ok": true })),
-                    Err(error) => results.push(json!({ "agent": id, "ok": false, "error": error })),
-                },
-                Err(error) => results.push(json!({ "agent": id, "ok": false, "error": error })),
+            // A target that is not there fails like any other, and is never
+            // said to be a duplicate.
+            let outcome = find_target(&targets, &id, language).map_err(Refused::from).and_then(|target| run(target));
+            match outcome {
+                Ok(()) => results.push(json!({ "agent": id, "ok": true })),
+                Err(refused) if refused.duplicate => results.push(json!({ "agent": id, "ok": false, "error": refused.message, "skipped": true })),
+                Err(refused) => results.push(json!({ "agent": id, "ok": false, "error": refused.message })),
             }
         }
         Ok(Value::Array(results))
@@ -1662,17 +1733,19 @@ impl Clone for StagedSkill {
     fn clone(&self) -> Self { Self { folder: self.folder.clone(), name: self.name.clone(), description: self.description.clone(), relative: self.relative.clone() } }
 }
 
-fn install_skills(target: &Target, skills: &[StagedSkill], language: &str) -> Result<(), String> {
-    if target.skill_path.is_empty() { return Err(t(language, "请先设置这个 Agent 的 Skill 目录")); }
+fn install_skills(target: &Target, skills: &[StagedSkill], language: &str) -> Result<(), Refused> {
+    if target.skill_path.is_empty() { return Err(t(language, "请先设置这个 Agent 的 Skill 目录").into()) }
     let root = PathBuf::from(&target.skill_path);
     fs::create_dir_all(&root).map_err(|error| error.to_string())?;
     let root = crate::real_path(&root).map_err(|error| error.to_string())?;
     for skill in skills {
-        if root.join(&skill.name).exists() { return Err(translate(language, "已存在 {{0}}，保留原文件", &[skill.name.clone()])); }
+        // A Skill of that name already there is kept, and the refusal says
+        // so by its mark as well as by its words.
+        if root.join(&skill.name).exists() { return Err(Refused::duplicate(translate(language, "已存在 {{0}}，保留原文件", &[skill.name.clone()]))); }
     }
     let mut prepared = Vec::new();
     let mut installed = Vec::new();
-    let result = (|| {
+    let result: Result<(), Refused> = (|| {
         for skill in skills {
             let temp = root.join(format!(".awb-{}", random_id()));
             let dest = root.join(&skill.name);
@@ -1680,7 +1753,7 @@ fn install_skills(target: &Target, skills: &[StagedSkill], language: &str) -> Re
             prepared.push((temp, dest));
         }
         for (temp, dest) in &prepared {
-            if dest.exists() { return Err(t(language, "目标目录已变化，请刷新后重试")); }
+            if dest.exists() { return Err(t(language, "目标目录已变化，请刷新后重试").into()); }
             fs::rename(temp, dest).map_err(|error| error.to_string())?;
             installed.push(dest.clone());
         }
@@ -1863,38 +1936,120 @@ fn remove_tree(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// A file's content as the Electron build's `readText` reads it: nothing at
+/// all for a file that is not there, a refusal for one too large, and text
+/// decoded strictly, so that a byte sequence that is not UTF-8 fails with
+/// the decoder's own message, which is not translated. The byte order mark
+/// is kept; each caller takes it off where the build does.
 fn read_text(path: &Path, language: &str) -> Result<String, String> {
-    // The file's size is taken through a link, as the Electron build takes
-    // it: a configuration that is a link to another file is read like any
-    // other; only writing through one is refused.
     match fs::metadata(path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-        Err(error) => Err(error.to_string()),
-        Ok(meta) if meta.len() > MAX_CONFIG => Err(t(language, "配置文件超过 32 MB")),
-        Ok(_) => fs::read_to_string(path).map_err(|error| error.to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(error) => return Err(error.to_string()),
+        Ok(meta) if meta.len() > MAX_CONFIG => return Err(t(language, "配置文件超过 32 MB")),
+        // A directory has a size and can be asked for, as in the Electron
+        // build, and cannot be read: its message there is Node's own, and
+        // is given here in the same words.
+        Ok(meta) if meta.is_dir() => return Err("EISDIR: illegal operation on a directory, read".to_string()),
+        Ok(_) => {}
     }
+    let data = fs::read(path).map_err(|error| error.to_string())?;
+    if data.len() as u64 > MAX_CONFIG { return Err(t(language, "配置文件超过 32 MB")); }
+    match String::from_utf8(data) {
+        Ok(text) => Ok(text),
+        // The message of Node's TextDecoder for bytes that are not the
+        // encoding it was asked for.
+        Err(_) => Err("The encoded data was not valid for encoding utf-8".to_string()),
+    }
+}
+
+/// The identity of the file a path leads to, as far as the Electron build
+/// asks for it: whether there is one, whether it is a regular file, and
+/// a number that is the same for the same file and for no other. A path
+/// that leads nowhere has none.
+fn file_identity(path: &Path) -> std::io::Result<Option<FileIdentity>> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+        Ok(meta) => Ok(Some(FileIdentity { regular: meta.is_file(), number: file_number(path)? })),
+    }
+}
+
+struct FileIdentity { regular: bool, number: u64 }
+
+/// The number a file is known by on its volume. On Windows it is the file
+/// index, which changes when the file is replaced by another and stays for
+/// a file written in place or reached through another hard link.
+#[cfg(windows)]
+fn file_number(path: &Path) -> std::io::Result<u64> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES};
+    // Read attributes only, without following a link and without a file
+    // being a regular one, so that a directory can be asked too.
+    let handle = OpenOptions::new().read(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | FILE_READ_ATTRIBUTES).open(path)?;
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // `lstatSync().ino` is made of the file index's two halves.
+    if unsafe { GetFileInformationByHandle(handle.as_raw_handle() as HANDLE, &mut info) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64)
+}
+
+/// On a Unix system the inode number is the identity, as it is to libuv.
+#[cfg(not(windows))]
+fn file_number(path: &Path) -> std::io::Result<u64> {
+    use std::os::unix::fs::MetadataExt;
+    Ok(fs::symlink_metadata(path)?.ino())
 }
 
 fn atomic_text(path: &Path, before: &str, next: &str, language: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(|error| error.to_string())?; }
-    if fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) { return Err(t(language, "配置是符号链接，请选择真实配置文件")); }
-    let temp = path.with_file_name(format!("{}.{}.tmp", path.file_name().and_then(|item| item.to_str()).unwrap_or(""), random_id()));
-    // Whatever happens, the temporary file does not stay behind.
+    let shown = path.display().to_string();
+    // A configuration that is not a regular file is not written through,
+    // whatever else it is; the Electron build names a symbolic link, and
+    // so does the refusal here.
+    let previous = file_identity(path).map_err(|error| error.to_string())?;
+    if previous.as_ref().is_some_and(|identity| !identity.regular) { return Err(t(language, "配置是符号链接，请选择真实配置文件")); }
+    let backup = PathBuf::from(format!("{shown}.awb-backup"));
+    let backup_stage = PathBuf::from(format!("{shown}.awb-backup.{uuid}.tmp", uuid = random_id()));
+    let temp = PathBuf::from(format!("{shown}.{uuid}.tmp", uuid = random_id()));
+    // Whatever happens, neither staged file stays behind.
     let outcome = (|| {
-        {
-            let mut file = OpenOptions::new().write(true).create_new(true).open(&temp).map_err(|error| error.to_string())?;
-            crate::sys::restrict_to_owner(&file);
-            file.write_all(next.as_bytes()).map_err(|error| error.to_string())?;
+        stage_text(&temp, next)?;
+        let current = file_identity(path).map_err(|error| error.to_string())?;
+        // The file is asked for again: it must still be there or still not
+        // be, be the same file if it is, and hold what it held.
+        let same = match (&current, &previous) {
+            (Some(current), Some(previous)) => current.regular && current.number == previous.number,
+            (None, None) => true,
+            _ => false,
+        };
+        if !same || read_text(path, language)? != before { return Err(t(language, "配置已被其他程序修改，请刷新后重试")); }
+        if current.is_some() {
+            // The backup is written beside its place and moved onto it, so
+            // that it is never seen half written.
+            stage_text(&backup_stage, before)?;
+            fs::rename(&backup_stage, &backup).map_err(|error| error.to_string())?;
+            fs::rename(&temp, path).map_err(|error| error.to_string())?;
+        } else {
+            // Nothing to replace: the staged file is given its name, and
+            // the staged one taken away, which leaves one file.
+            fs::hard_link(&temp, path).map_err(|error| error.to_string())?;
         }
-        let current = read_text(path, language)?;
-        if current != before { return Err(t(language, "配置已被其他程序修改，请刷新后重试")); }
-        if path.exists() {
-            fs::copy(path, PathBuf::from(format!("{}.awb-backup", path.display()))).map_err(|error| error.to_string())?;
-        }
-        fs::rename(&temp, path).map_err(|error| error.to_string())
+        Ok(())
     })();
-    if temp.exists() { let _ = fs::remove_file(&temp); }
+    for staged in [&temp, &backup_stage] {
+        if staged.exists() { let _ = fs::remove_file(staged); }
+    }
     outcome
+}
+
+/// A file written whole under a name nothing else has, for the owner only.
+fn stage_text(path: &Path, text: &str) -> Result<(), String> {
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path).map_err(|error| error.to_string())?;
+    crate::sys::restrict_to_owner(&file);
+    file.write_all(text.as_bytes()).map_err(|error| error.to_string())
 }
 
 fn parse_json_text(text: &str, language: &str) -> Result<Value, String> {

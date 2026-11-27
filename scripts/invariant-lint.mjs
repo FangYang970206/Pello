@@ -15,7 +15,7 @@ export function projectFiles() {
     }
   }
   read('src')
-  for (const rel of ['package.json', 'AGENTS.md', 'electron-builder.yml', 'electron.vite.config.ts', 'assets/installer.nsh', 'src/renderer/index.html', 'src-tauri/core/src/menu.rs', 'src-tauri/core/src/workbench.rs', 'src-tauri/core/src/pty.rs', 'src-tauri/core/src/i18n.rs', 'src-tauri/core/src/shell.rs', 'src-tauri/core/src/files.rs', 'src-tauri/core/src/git.rs', 'src-tauri/core/src/preview.rs', 'src-tauri/core/src/resources.rs', 'src-tauri/core/src/shells.rs', 'src-tauri/src/lib.rs', 'src-tauri/src/edit.rs']) files.set(rel, fs.readFileSync(path.join(root, rel), 'utf8'))
+  for (const rel of ['package.json', 'AGENTS.md', 'electron-builder.yml', 'electron.vite.config.ts', 'assets/installer.nsh', 'src/renderer/index.html', 'src-tauri/core/src/menu.rs', 'src-tauri/core/src/workbench.rs', 'src-tauri/core/src/pty.rs', 'src-tauri/core/src/i18n.rs', 'src-tauri/core/src/shell.rs', 'src-tauri/core/src/files.rs', 'src-tauri/core/src/git.rs', 'src-tauri/core/src/preview.rs', 'src-tauri/core/src/resources.rs', 'src-tauri/core/src/shells.rs', 'src-tauri/src/lib.rs', 'src-tauri/src/edit.rs', 'src-tauri/core/tests/behavior.rs']) files.set(rel, fs.readFileSync(path.join(root, rel), 'utf8'))
   return files
 }
 
@@ -363,8 +363,42 @@ export function checkInvariants(files) {
   const mcpRoot = /fn mcp_root<'a>\([\s\S]*?\n\}/.exec(kernelResources)?.[0] || ''
   const parsed = (kernelResources.match(/ada_url::Url::parse\(/g) || []).length
   const parsedAlone = (kernelResources.match(/ada_url::Url::parse\([^;]*?, None\)/g) || []).length
-  require(parsed === 4 && parsedAlone === 4 && !/(?<!ada_)url::Url::parse/.test(kernelResources) && !/starts_with\("https?:/.test(kernelResources) && (kernelResources.match(/"Invalid URL"\.to_string\(\)/g) || []).length === 3 && !kernelResources.includes('t(language, "Invalid URL")') && !i18nTable.includes('"Invalid URL",') && whitespace.includes(`'\\u{0009}'..='\\u{000d}'`) && whitespace.includes(`'\\u{feff}'`) && !whitespace.includes('u{85}') && kernelResources.includes('fn js_trim(text: &str) -> &str { text.trim_matches(is_js_whitespace) }') && (kernelResources.match(/js_trim\(/g) || []).length === 3 && kernelResources.includes('Some(value) if !js_trim(value).is_empty() && !value.contains(\'\\0\') => {}') && kernelResources.includes('js_trim(text).is_empty() || text.contains(\'\\0\')') && mcpRoot.includes('fn asked<\'a>(value: &\'a Value, language: &str)') && mcpRoot.includes('if is_truthy(value) { object_or(value, language) } else { Ok(EMPTY.get_or_init(Map::new)) }') && (mcpRoot.match(/asked\(value, language\)\?/g) || []).length === 2 && mcpRoot.includes('let servers = asked(value, language)?;'),
+  require(parsed === 4 && parsedAlone === 4 && !/(?<!ada_)url::Url::parse/.test(kernelResources) && !/starts_with\("https?:/.test(kernelResources) && (kernelResources.match(/"Invalid URL"\.to_string\(\)/g) || []).length === 3 && !kernelResources.includes('t(language, "Invalid URL")') && !i18nTable.includes('"Invalid URL",') && whitespace.includes(`'\\u{0009}'..='\\u{000d}'`) && whitespace.includes(`'\\u{feff}'`) && !whitespace.includes('u{85}') && kernelResources.includes('fn js_trim(text: &str) -> &str { text.trim_matches(is_js_whitespace) }') && (kernelResources.match(/js_trim\(/g) || []).length === 3 && kernelResources.includes('Some(value) if !js_trim(value).is_empty() && !value.contains(\'\\0\') => {}') && kernelResources.includes('js_trim(text).is_empty() || text.contains(\'\\0\')') && mcpRoot.includes('fn asked<\'a>(value: &\'a Value, language: &str)') && mcpRoot.includes('if is_truthy(value) { object_or(value, language) } else { Ok(EMPTY_MAP.get_or_init(Map::new)) }') && (mcpRoot.match(/asked\(value, language\)\?/g) || []).length === 2 && mcpRoot.includes('let servers = asked(value, language)?;'),
     'AWB085', 'src-tauri/core/src/resources.rs', 'MCP 的 URL 一律由 URL 标准的解析器读取而非按文本前缀判断，解析器自身的 Invalid URL 不翻译；trim 取 JavaScript 的空白集；查找服务器集合时假值视为空对象且最终值同样处理')
+
+  // A configuration file is decoded strictly, as the Electron build's
+  // `readText` decodes it, so that bytes that are not UTF-8 are refused
+  // with the decoder's own message instead of being read as replacement
+  // characters; the byte order mark is kept in what is read and each edit
+  // takes it off and puts it back. A TOML document the parser cannot read
+  // is refused in the build's own words. A file is not written through
+  // unless it is the same file it was read from: the staged file is
+  // compared with what was read by identity, the backup is moved onto its
+  // name rather than copied onto it, a file that was not there is linked
+  // into place, and no staged file is left behind. A Skill description is
+  // taken up to 8192 characters. A duplicate alone is said to be skipped.
+  // A Skill file is renamed by a link and an unlink, never by a rename.
+  // The configuration OpenCode is told to use by its environment wins.
+  const readText = /fn read_text\(path: &Path, language: &str\) -> Result<String, String> \{[\s\S]*?\n\}/.exec(kernelResources)?.[0] || ''
+  const atomicText = /fn atomic_text\(path: &Path, before: &str, next: &str, language: &str\) -> Result<\(\), String> \{[\s\S]*?\r?\n\}\r?\n\r?\n\/\/\/ A file written whole/.exec(kernelResources)?.[0] || ''
+  const skillInfo = /fn skill_info\(file: &Path, language: &str\) -> Result<SkillInfo, String> \{[\s\S]*?\r?\n\}/.exec(kernelResources)?.[0] || ''
+  const distribute = /fn distribute\([\s\S]*?\r?\n\}\r?\n/.exec(kernelResources)?.[0] || ''
+  const renameSkill = /fn rename_skill\(root: &Path, source: &Path, dest: &Path, language: &str\) -> Result<\(\), String> \{[\s\S]*?\r?\n\}/.exec(kernelResources)?.[0] || ''
+  require(readText.includes('let data = fs::read(path)') && readText.includes('Ok(text) => Ok(text)') && readText.includes('Err("The encoded data was not valid for encoding utf-8".to_string())') && !readText.includes('read_to_string') && !readText.includes('from_utf8_lossy') && !kernelResources.includes('t(language, "The encoded data was not valid for encoding utf-8")') && !i18nTable.includes('"The encoded data was not valid for encoding utf-8",') && atomicText.includes('current.regular && current.number == previous.number') && atomicText.includes('|| read_text(path, language)? != before') && atomicText.includes('fs::rename(&backup_stage, &backup)') && atomicText.includes('fs::hard_link(&temp, path)') && atomicText.includes('for staged in [&temp, &backup_stage] {') && !atomicText.includes('fs::copy(') && !kernelResources.includes('trim().is_empty() { "{\\n}\\n".to_string() }') && (kernelResources.match(/let \(order, (source|rest)\) = json_edit_source\(&before\);/g) || []).length === 4 && (kernelResources.match(/with_mark\(order, &\w+\)/g) || []).length === 5 && skillInfo.includes('description.chars().count() > 8192') && i18nTable.includes('"Skill 需要 1 到 8192 字符的 description",') && !i18nTable.includes('1 到 1024 字符的 description') && kernelResources.includes('.map_err(|_| t(language, "TOML 配置存在语法错误，请修复后重试"))') && i18nTable.includes('"TOML 配置存在语法错误，请修复后重试",') && distribute.includes('"skipped": true') && (distribute.match(/"skipped": true/g) || []).length === 1 && distribute.includes('Err(refused) if refused.duplicate =>') && distribute.includes('Err(refused) => results.push(json!({ "agent": id, "ok": false, "error": refused.message }))') && (kernelResources.match(/Refused::duplicate\(/g) || []).length === 3 && renameSkill.includes('fs::hard_link(source, dest)') && renameSkill.includes('let _ = fs::remove_file(dest);') && !renameSkill.includes('fs::rename(') && kernelResources.includes('std::env::var_os("OPENCODE_CONFIG")'),
+    'AWB086', 'src-tauri/core/src/resources.rs', '配置文件严格按 UTF-8 解码且 BOM 保留并在编辑时摘下复原；TOML 语法错误使用统一词条；写回前按文件身份与内容核对，备份经暂存改名，文件不存在时以硬链接发布，不留暂存；description 上限 8192；仅重复标记 skipped；Skill 改名用链接而非 rename；尊重 OPENCODE_CONFIG')
+
+  // A built-in agent's configuration is a file in the user's own home. A
+  // behaviour case that names a built-in agent in a resource channel must
+  // isolate the resource home, or it reads and writes the user's own files;
+  // one such case once added a server to the user's Claude configuration.
+  const behaviour = files.get('src-tauri/core/tests/behavior.rs') || ''
+  const builtins = ['claude', 'codex', 'opencode', 'pi', 'omp']
+  const resourceChannels = ['resources:mcp', 'resources:toggle', 'resources:import-mcp', 'resources:import-skills', 'resources:skill-delete', 'resources:target', 'resources:list', 'resources:detail', 'resources:skill-directory', 'resources:skill-open']
+  const liveCases = [...behaviour.matchAll(/(#\[test\]\r?\nfn (\w+)\(\) \{[\s\S]*?\r?\n\}\r?\n)/g)]
+    .filter(([, body]) => resourceChannels.some((channel) => body.includes(`"${channel}"`)) && builtins.some((id) => body.includes(`json!("${id}")`)) && !body.includes('var_guard("AWB_RESOURCE_HOME"'))
+    .map(([, , name]) => name)
+  require(liveCases.length === 0,
+    'AWB087', 'src-tauri/core/tests/behavior.rs', `行为用例把内置 Agent 用于资源通道时必须隔离 AWB_RESOURCE_HOME，否则会读写用户主目录里的真实配置：${liveCases.join('、')}`)
   return errors
 }
 

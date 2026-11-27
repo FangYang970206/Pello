@@ -216,8 +216,33 @@ const cases = [
   ['AWB085', 'src-tauri/core/src/resources.rs', " | '\\u{feff}')", "')"],
   ['AWB085', 'src-tauri/core/src/resources.rs', " | '\\u{feff}')", " | '\\u{feff}' | '\\u{85}')"],
   ['AWB085', 'src-tauri/core/src/resources.rs', "js_trim(text).is_empty() || text.contains('\\0')", "text.trim().is_empty() || text.contains('\\0')"],
-  ['AWB085', 'src-tauri/core/src/resources.rs', "if is_truthy(value) { object_or(value, language) } else { Ok(EMPTY.get_or_init(Map::new)) }", 'object_or(value, language)'],
+  ['AWB085', 'src-tauri/core/src/resources.rs', "if is_truthy(value) { object_or(value, language) } else { Ok(EMPTY_MAP.get_or_init(Map::new)) }", 'object_or(value, language)'],
   ['AWB085', 'src-tauri/core/src/resources.rs', 'let servers = asked(value, language)?;', 'let servers = object_or(value, language)?;'],
+  // A configuration read strictly, with its mark kept; a TOML document
+  // refused in words; a file written only if it is the same file.
+  ['AWB086', 'src-tauri/core/src/resources.rs', 'let data = fs::read(path).map_err(|error| error.to_string())?;', 'let data = fs::read_to_string(path).map_err(|error| error.to_string())?;'],
+  ['AWB086', 'src-tauri/core/src/resources.rs', 'Ok(text) => Ok(text),', 'Ok(text) => Ok(text.trim_start_matches(\'\\u{feff}\').to_string()),'],
+  ['AWB086', 'src-tauri/core/src/resources.rs', 'Err(_) => Err("The encoded data was not valid for encoding utf-8".to_string()),', 'Err(error) => Err(error.to_string()),'],
+  ['AWB086', 'src-tauri/core/src/resources.rs', 'Err(_) => Err("The encoded data was not valid for encoding utf-8".to_string()),', 'Err(_) => Err(t(language, "The encoded data was not valid for encoding utf-8")),'],
+  ['AWB086', 'src-tauri/core/src/resources.rs', 'if !same || read_text(path, language)? != before {', 'if read_text(path, language)? != before {'],
+  ['AWB086', 'src-tauri/core/src/resources.rs', 'current.regular && current.number == previous.number', 'current.regular'],
+  ['AWB086', 'src-tauri/core/src/resources.rs', 'fs::rename(&backup_stage, &backup).map_err(|error| error.to_string())?;', 'fs::copy(path, &backup).map_err(|error| error.to_string())?;'],
+  ['AWB086', 'src-tauri/core/src/resources.rs', 'fs::hard_link(&temp, path).map_err(|error| error.to_string())?;', 'fs::rename(&temp, path).map_err(|error| error.to_string())?;'],
+  ['AWB086', 'src-tauri/core/src/resources.rs', 'for staged in [&temp, &backup_stage] {', 'for staged in [&temp] {'],
+  ['AWB086', 'src-tauri/core/src/resources.rs', 'let (order, source) = json_edit_source(&before);', 'let source = before.clone();'],
+  ['AWB086', 'src-tauri/core/src/resources.rs', 'let next = with_mark(order, &next);', 'let next = next;'],
+  ['AWB086', 'src-tauri/core/src/resources.rs', 'let moved = with_mark(order, &moved);', 'let moved = moved;'],
+  ['AWB086', 'src-tauri/core/src/resources.rs', 'if description.is_empty() || description.chars().count() > 8192 {', 'if description.is_empty() || description.chars().count() > 1024 {'],
+  ['AWB086', 'src-tauri/core/src/resources.rs', 'let (order, rest) = json_edit_source(&before);', 'let (order, rest) = json_edit_source(before);'],
+  ['AWB086', 'src-tauri/core/src/resources.rs', 'Err(refused) if refused.duplicate => results.push(json!({ "agent": id, "ok": false, "error": refused.message, "skipped": true })),', 'Err(refused) => results.push(json!({ "agent": id, "ok": false, "error": refused.message })),'],
+  ['AWB086', 'src-tauri/core/src/resources.rs', 'Err(refused) => results.push(json!({ "agent": id, "ok": false, "error": refused.message })),', 'Err(refused) => results.push(json!({ "agent": id, "ok": false, "error": refused.message, "skipped": true })),'],
+  ['AWB086', 'src-tauri/core/src/resources.rs', 'fs::hard_link(source, dest).map_err(|error| error.to_string())?;', 'fs::rename(source, dest).map_err(|error| error.to_string())?;'],
+  ['AWB086', 'src-tauri/core/src/resources.rs', 'std::env::var_os("OPENCODE_CONFIG")', 'std::env::var_os("OPENCODE_CONFIG_DISABLED")'],
+  // A built-in agent named in a resource channel without the resource home
+  // isolated reads and writes the user's own configuration files. The case
+  // is told apart from the other one that guards the resource home by the
+  // Skill folder it makes.
+  ['AWB087', 'src-tauri/core/tests/behavior.rs', 'fs::create_dir_all(home.join(".claude").join("skills").join("one")).unwrap();\r\n    let _home = var_guard("HOME", home.to_str().unwrap());\r\n    let _resource = var_guard("AWB_RESOURCE_HOME", home.to_str().unwrap());', 'fs::create_dir_all(home.join(".claude").join("skills").join("one")).unwrap();\r\n    let _home = var_guard("HOME", home.to_str().unwrap());\r\n    let _elsewhere = var_guard("AWB_ELSEWHERE", home.to_str().unwrap());'],
 ]
 cases.forEach(([id, file, before, after], index) => {
   const mutated = new Map(files)

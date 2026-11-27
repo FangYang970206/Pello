@@ -84,7 +84,7 @@ function skillInfo(file: string): { name: string; description: string; enabled: 
   if (!front) throw new Error(t("SKILL.md 缺少 YAML 文档属性"))
   const value = object(parseYaml(front[1]))
   if (typeof value.name !== 'string' || value.name.length > 64 || !namePattern.test(value.name)) throw new Error(t("Skill 名称须为小写字母、数字和单连字符，最多 64 字符"))
-  if (typeof value.description !== 'string' || !value.description.trim() || value.description.length > 1024) throw new Error(t("Skill 需要 1 到 1024 字符的 description"))
+  if (typeof value.description !== 'string' || !value.description.trim() || value.description.length > 8192) throw new Error(t("Skill 需要 1 到 8192 字符的 description"))
   return { name: value.name, description: value.description.trim(), enabled: value.enabled !== false }
 }
 function safeRelative(value: string) {

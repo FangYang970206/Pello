@@ -5678,3 +5678,313 @@ fn an_opencode_configuration_is_read_in_the_release_it_is_written_in() {
     assert_eq!(names(r#"{"mcp":["docs"],"permissions":[]}"#)["errors"], json!([format!("{}: 配置必须是对象", file.display())]));
     let _ = fs::remove_dir_all(root);
 }
+
+fn scan_names(bench: &Workbench, file: &Path) -> serde_json::Value {
+    bench.dispatch("resources:scan", &[json!("mcp"), json!(file.display().to_string())])
+        .map(|found| serde_json::Value::Array(found.as_array().cloned().unwrap_or_default().iter().map(|item| item["name"].clone()).collect()))
+        .unwrap_or_else(|error| json!(format!("THROWS {error}")))
+}
+
+#[test]
+fn a_single_server_file_is_named_after_its_file_as_the_electron_build_names_it() {
+    let root = temp_dir("mcp-single-name");
+    let (bench, _) = workbench(&root);
+    let single = |name: &str| {
+        let file = root.join(name);
+        std::fs::write(&file, r#"{"command":"run"}"#).unwrap();
+        scan_names(&bench, &file)
+    };
+    // The last extension is taken off, and whatever a name cannot hold in
+    // what remains is replaced, not cut at the first dot.
+    assert_eq!(single("my.server.json"), json!(["my-server"]));
+    // Each character that is not allowed becomes one hyphen, and the
+    // result is a name the build accepts.
+    assert_eq!(single("中文.json"), json!(["--"]));
+    assert_eq!(single("tool_1-v2.json"), json!(["tool_1-v2"]));
+    // Without an extension nothing is taken off; a leading dot alone is not
+    // an extension, and becomes a hyphen.
+    assert_eq!(single("plain"), json!(["plain"]));
+    assert_eq!(single(".rc"), json!(["-rc"]));
+    assert_eq!(single("...json"), json!(["--"]));
+    // A trailing dot is an extension of its own.
+    assert_eq!(single("server."), json!(["server"]));
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A custom agent whose MCP configuration is at `file`, and the language the
+/// workbench speaks for a case.
+fn boxed(bench: &Workbench, root: &Path, file: &Path) {
+    bench.dispatch("db:custom", &[json!([{
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
+        "resources": { "mcpPath": file.display().to_string(), "skillPath": root.join("box-skills").display().to_string(), "format": "standard", "skillAdapter": "portable" }
+    }])]).unwrap();
+}
+
+fn mcp_errors(bench: &Workbench, language: &str) -> serde_json::Value {
+    bench.dispatch("db:settings", &[json!({ "language": language })]).unwrap();
+    bench.dispatch("resources:list", &[json!("mcp"), json!("box"), json!(1), json!("")]).unwrap()["errors"].clone()
+}
+
+/// A configuration whose bytes are not UTF-8 is refused, as the Electron
+/// build's strict decoder refuses it, with the decoder's own message, which
+/// is not translated.
+#[test]
+fn a_configuration_that_is_not_utf8_is_refused_with_the_decoders_own_message() {
+    let root = temp_dir("mcp-not-utf8");
+    let (bench, _) = workbench(&root);
+    let file = root.join("box-mcp.json");
+    boxed(&bench, &root, &file);
+    // A multibyte sequence cut short, which an earlier build read as a
+    // replacement character.
+    fs::write(&file, b"{\"a\":\"\xe4\xb8").unwrap();
+    let expected = format!("{}: The encoded data was not valid for encoding utf-8", file.display());
+    assert_eq!(mcp_errors(&bench, "zh-CN"), json!([expected.clone()]));
+    assert_eq!(mcp_errors(&bench, "en"), json!([expected]));
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A byte order mark is part of what is read, and each place that parses
+/// takes it off where the Electron build does: a marked file lists, and a
+/// change written to it keeps the mark at its head.
+#[test]
+fn a_byte_order_mark_is_kept_in_what_is_read_and_taken_off_where_a_document_is_parsed() {
+    let root = temp_dir("mcp-marked");
+    let (bench, _) = workbench(&root);
+    let file = root.join("box-mcp.json");
+    boxed(&bench, &root, &file);
+    fs::write(&file, "\u{feff}{\"mcpServers\":{\"docs\":{\"command\":\"tool\"}}}").unwrap();
+    let listed = bench.dispatch("resources:list", &[json!("mcp"), json!("box"), json!(1), json!("")]).unwrap();
+    assert_eq!(listed["errors"], json!([]), "{listed}");
+    assert_eq!(listed["total"], json!(1));
+    let added = bench.dispatch("resources:mcp", &[json!("more"), json!({ "command": "other" }), json!(["box"])]).unwrap();
+    assert_eq!(added, json!([{ "agent": "box", "ok": true }]), "{added}");
+    let after = fs::read_to_string(&file).unwrap();
+    assert!(after.starts_with('\u{feff}'), "the mark stays at the head: {after:?}");
+    assert!(after.contains("\"more\""), "{after}");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A TOML document the parser cannot read fails in the Electron build's own
+/// words, in the language selected, and no longer with the parser's message.
+#[test]
+fn a_toml_configuration_with_a_syntax_error_is_refused_in_the_selected_language() {
+    let root = temp_dir("mcp-toml-error");
+    let (bench, _) = workbench(&root);
+    let file = root.join("box-mcp.toml");
+    bench.dispatch("db:custom", &[json!([{
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
+        "resources": { "mcpPath": file.display().to_string(), "skillPath": root.join("box-skills").display().to_string(), "format": "codex", "skillAdapter": "portable" }
+    }])]).unwrap();
+    fs::write(&file, "[mcp_servers.docs\ncommand = \"tool\"\n").unwrap();
+    let errors = |language: &str| {
+        bench.dispatch("db:settings", &[json!({ "language": language })]).unwrap();
+        bench.dispatch("resources:list", &[json!("mcp"), json!("box"), json!(1), json!("")]).unwrap()["errors"].clone()
+    };
+    assert_eq!(errors("zh-CN"), json!([format!("{}: TOML 配置存在语法错误，请修复后重试", file.display())]));
+    assert_eq!(errors("en"), json!([format!("{}: Fix the syntax in the TOML configuration and try again", file.display())]));
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A configuration path that is a directory is not written, and what is
+/// said of it is what the Electron build says: the directory has a size, so
+/// the size limit lets it pass, and reading it fails with Node's own
+/// message for a directory, which is not translated. Nothing is staged.
+#[test]
+fn a_configuration_path_that_is_a_directory_is_refused_as_the_electron_build_refuses_it() {
+    let root = temp_dir("mcp-directory");
+    let (bench, _) = workbench(&root);
+    let file = root.join("box-mcp.json");
+    fs::create_dir_all(&file).unwrap();
+    boxed(&bench, &root, &file);
+    let added = bench.dispatch("resources:mcp", &[json!("docs"), json!({ "command": "tool" }), json!(["box"])]).unwrap();
+    assert_eq!(added, json!([{ "agent": "box", "ok": false, "error": "EISDIR: illegal operation on a directory, read" }]), "{added}");
+    bench.dispatch("db:settings", &[json!({ "language": "en" })]).unwrap();
+    let listed = bench.dispatch("resources:list", &[json!("mcp"), json!("box"), json!(1), json!("")]).unwrap();
+    assert_eq!(listed["errors"], json!([format!("{}: EISDIR: illegal operation on a directory, read", file.display())]), "{listed}");
+    assert!(file.is_dir(), "the directory is left as it was");
+    assert_eq!(fs::read_dir(&file).unwrap().count(), 0, "nothing is put inside it");
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 2, "the workbench's data and the directory: nothing staged beside it");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A configuration that was not there is published as one file: the staged
+/// file is given the configuration's name and the staged one taken away, so
+/// that no backup is made and nothing is left beside it.
+#[test]
+fn a_configuration_that_was_not_there_is_published_as_one_file() {
+    let root = temp_dir("mcp-first-write");
+    let (bench, _) = workbench(&root);
+    let file = root.join("box-mcp.json");
+    boxed(&bench, &root, &file);
+    let added = bench.dispatch("resources:mcp", &[json!("docs"), json!({ "command": "tool" }), json!(["box"])]).unwrap();
+    assert_eq!(added, json!([{ "agent": "box", "ok": true }]), "{added}");
+    assert!(file.is_file(), "the configuration is there");
+    assert!(!root.join("box-mcp.json.awb-backup").exists(), "nothing was there to keep");
+    let beside: Vec<String> = fs::read_dir(&root).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().to_string()).filter(|name| name.starts_with("box-mcp.json")).collect();
+    assert_eq!(beside, ["box-mcp.json"], "no staged file is left beside it");
+    // A second change keeps what was there beside it, as the build does.
+    let listed = bench.dispatch("resources:list", &[json!("mcp"), json!("box"), json!(1), json!("")]).unwrap();
+    bench.dispatch("resources:toggle", &[json!("mcp"), json!("box"), listed["items"][0].clone(), json!(false)]).unwrap();
+    assert!(root.join("box-mcp.json.awb-backup").is_file(), "the first content is kept beside it");
+    let beside: Vec<String> = fs::read_dir(&root).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().to_string()).filter(|name| name.starts_with("box-mcp.json")).collect();
+    assert_eq!(beside, ["box-mcp.json", "box-mcp.json.awb-backup"], "the backup is in its place and no staged file is left");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A Skill's description may be as long as the Electron build takes, which
+/// is more than the specification suggests: 8192 characters.
+#[test]
+fn a_skill_description_may_be_as_long_as_the_electron_build_takes() {
+    let lock = env_lock();
+    let root = temp_dir("skill-description-length");
+    let home = root.join("home");
+    fs::create_dir_all(home.join(".claude").join("skills").join("one")).unwrap();
+    let _home = var_guard("HOME", home.to_str().unwrap());
+    let _resource = var_guard("AWB_RESOURCE_HOME", home.to_str().unwrap());
+    let (bench, _) = workbench(&root);
+    let file = home.join(".claude").join("skills").join("one").join("SKILL.md");
+    let listed = |bench: &Workbench| bench.dispatch("resources:list", &[json!("skills"), json!("claude"), json!(1), json!("")]).unwrap();
+    // What an earlier build refused is taken.
+    fs::write(&file, format!("---\nname: one\ndescription: {}\n---\n", "x".repeat(1100))).unwrap();
+    let page = listed(&bench);
+    assert_eq!(page["errors"], json!([]), "{page}");
+    assert_eq!(page["total"], json!(1));
+    fs::write(&file, format!("---\nname: one\ndescription: {}\n---\n", "x".repeat(8192))).unwrap();
+    let page = listed(&bench);
+    assert_eq!(page["errors"], json!([]), "{page}");
+    assert_eq!(page["items"][0]["description"].as_str().unwrap().len(), 8192);
+    // One character more is refused, in words; the length is in
+    // characters, as JavaScript counts them, and not in bytes.
+    fs::write(&file, format!("---\nname: one\ndescription: {}\n---\n", "x".repeat(8193))).unwrap();
+    let page = listed(&bench);
+    assert_eq!(page["errors"], json!([format!("{}: Skill 需要 1 到 8192 字符的 description", file.display())]), "{page}");
+    fs::write(&file, format!("---\nname: one\ndescription: {}\n---\n", "长".repeat(8192))).unwrap();
+    let page = listed(&bench);
+    assert_eq!(page["errors"], json!([]), "{page}");
+    let _ = fs::remove_dir_all(root);
+    drop(lock);
+}
+
+/// A duplicate is reported as skipped, and nothing else is: the mark is the
+/// Electron build's `skipped: true` for a resource that already exists and
+/// was kept, and for no other failure. Only custom agents are written to
+/// here: a built-in agent's configuration is a file in the user's own home,
+/// which no case without an isolated resource home may touch.
+#[test]
+fn a_duplicate_is_reported_as_skipped_and_no_other_failure_is() {
+    let root = temp_dir("mcp-skipped");
+    let (bench, _) = workbench(&root);
+    let file = root.join("box-mcp.json");
+    fs::write(&file, r#"{"mcpServers":{"docs":{"command":"tool"}}}"#).unwrap();
+    // A second agent with no configuration path, which fails for its own
+    // reason, and a third with an empty one, which takes the server.
+    let other = root.join("other-mcp.json");
+    fs::write(&other, "{}").unwrap();
+    bench.dispatch("db:custom", &[json!([
+        { "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
+          "resources": { "mcpPath": file.display().to_string(), "skillPath": root.join("box-skills").display().to_string(), "format": "standard", "skillAdapter": "portable" } },
+        { "id": "bare", "name": "Bare", "cmd": "echo", "args": "", "letter": "R", "color": "#336699", "shell": "pwsh", "env": [] },
+        { "id": "taker", "name": "Taker", "cmd": "echo", "args": "", "letter": "T", "color": "#336699", "shell": "pwsh", "env": [],
+          "resources": { "mcpPath": other.display().to_string(), "skillPath": root.join("taker-skills").display().to_string(), "format": "standard", "skillAdapter": "portable" } }
+    ])]).unwrap();
+    let added = bench.dispatch("resources:mcp", &[json!("docs"), json!({ "command": "other" }), json!(["box", "bare", "taker", "nobody"])]).unwrap();
+    assert_eq!(added, json!([
+        { "agent": "box", "ok": false, "error": "已存在同名 MCP，保留原配置", "skipped": true },
+        { "agent": "bare", "ok": false, "error": "请先设置这个 Agent 的 MCP 配置路径" },
+        { "agent": "taker", "ok": true },
+        { "agent": "nobody", "ok": false, "error": "Agent 不存在" }
+    ]), "{added}");
+    assert_eq!(fs::read_to_string(&file).unwrap(), r#"{"mcpServers":{"docs":{"command":"tool"}}}"#, "the existing server is kept");
+    let taken = fs::read_to_string(&other).unwrap();
+    assert!(taken.contains("\"docs\"") && taken.contains("\"other\""), "{taken}");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A parked list that is not an object is refused as the Electron build's
+/// `object(parsed.awbDisabledMcp || {})` refuses it, and one that is a value
+/// JavaScript calls false is taken as empty.
+#[test]
+fn a_parked_list_that_is_not_an_object_is_refused_as_the_electron_build_refuses_it() {
+    let root = temp_dir("mcp-parked-object");
+    let (bench, _) = workbench(&root);
+    let file = root.join("box-mcp.json");
+    boxed(&bench, &root, &file);
+    let add = |bench: &Workbench, text: &str| {
+        fs::write(&file, text).unwrap();
+        bench.dispatch("resources:mcp", &[json!("more"), json!({ "command": "other" }), json!(["box"])]).unwrap()
+    };
+    assert_eq!(add(&bench, r#"{"awbDisabledMcp":"x"}"#), json!([{ "agent": "box", "ok": false, "error": "配置必须是对象" }]));
+    assert_eq!(add(&bench, r#"{"awbDisabledMcp":7}"#), json!([{ "agent": "box", "ok": false, "error": "配置必须是对象" }]));
+    // False to JavaScript: an empty list, that holds nothing of the name.
+    assert_eq!(add(&bench, r#"{"awbDisabledMcp":false}"#), json!([{ "agent": "box", "ok": true }]));
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A Skill file of an agent without a native switch is renamed by linking
+/// the new name to it and taking the old name off, as the Electron build's
+/// `renameSkill` does it, so that the file is the same file after as before;
+/// and a name that is already taken is not replaced.
+#[test]
+fn a_skill_file_is_renamed_by_linking_and_unlinking() {
+    let root = temp_dir("skill-rename");
+    let (bench, _) = workbench(&root);
+    let skills = root.join("box-skills").join("one");
+    fs::create_dir_all(&skills).unwrap();
+    bench.dispatch("db:custom", &[json!([{
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
+        "resources": { "mcpPath": root.join("box-mcp.json").display().to_string(), "skillPath": root.join("box-skills").display().to_string(), "format": "standard", "skillAdapter": "portable" }
+    }])]).unwrap();
+    let file = skills.join("SKILL.md");
+    let off = skills.join("SKILL.md.awb-disabled");
+    fs::write(&file, "---\nname: one\ndescription: d\n---\nbody\n").unwrap();
+    let list = |bench: &Workbench| bench.dispatch("resources:list", &[json!("skills"), json!("box"), json!(1), json!("")]).unwrap();
+    let item = list(&bench)["items"][0].clone();
+    assert_eq!(item["enabled"], json!(true));
+    // Off: the other name is linked to the same file and this one taken
+    // off, so when it was last modified does not change, as a copy's would.
+    let modified = fs::metadata(&file).unwrap().modified().unwrap();
+    bench.dispatch("resources:toggle", &[json!("skills"), json!("box"), item.clone(), json!(false)]).unwrap();
+    assert!(!file.exists() && off.is_file());
+    assert_eq!(fs::metadata(&off).unwrap().modified().unwrap(), modified, "the same file, not a copy");
+    assert_eq!(fs::read_to_string(&off).unwrap(), "---\nname: one\ndescription: d\n---\nbody\n");
+    assert_eq!(list(&bench)["items"][0]["enabled"], json!(false));
+    // A name that is taken is not replaced: the file is back under its
+    // first name while the other one is still there.
+    fs::write(&file, "---\nname: one\ndescription: d\n---\nother\n").unwrap();
+    let error = bench.dispatch("resources:toggle", &[json!("skills"), json!("box"), list(&bench)["items"][0].clone(), json!(false)]).unwrap_err();
+    assert_eq!(error, "目标文件已存在，未覆盖");
+    assert_eq!(fs::read_to_string(&off).unwrap(), "---\nname: one\ndescription: d\n---\nbody\n", "what holds the taken name is kept");
+    let _ = fs::remove_file(&file);
+    // On again: the first name is linked to the file and the other taken off.
+    bench.dispatch("resources:toggle", &[json!("skills"), json!("box"), list(&bench)["items"][0].clone(), json!(true)]).unwrap();
+    assert!(file.is_file() && !off.exists());
+    assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), modified);
+    let _ = fs::remove_dir_all(root);
+}
+
+/// The configuration OpenCode is told to use, by its own environment
+/// variable, is the one its servers are read from, ahead of either of its
+/// usual names.
+#[test]
+fn the_configuration_opencode_is_told_to_use_is_the_one_used() {
+    let lock = env_lock();
+    let root = temp_dir("opencode-told");
+    let told = root.join("elsewhere").join("told.jsonc");
+    fs::create_dir_all(told.parent().unwrap()).unwrap();
+    // Only the targets are asked for, so that no file of the user's own is
+    // read or written: the name OpenCode is told is what is compared.
+    let _told = var_guard("OPENCODE_CONFIG", told.to_str().unwrap());
+    let _quiet = var_guard("AWB_RESOURCE_HOME", root.join("quiet").to_str().unwrap());
+    let (bench, _) = workbench(&root);
+    let path_of = |bench: &Workbench| bench.dispatch("resources:targets", &[]).unwrap().as_array().unwrap().iter().find(|item| item["id"] == "opencode").unwrap()["mcpPath"].as_str().unwrap().to_string();
+    // With a resource home given, the environment says nothing, as in the
+    // Electron build, and a usual name is used.
+    let quiet = path_of(&bench);
+    assert!(quiet.ends_with("opencode.json") || quiet.ends_with("opencode.jsonc"), "{quiet}");
+    drop(_quiet);
+    // Without one, the configuration OpenCode is told to use is the one.
+    std::env::remove_var("AWB_RESOURCE_HOME");
+    assert_eq!(path_of(&bench), told.display().to_string());
+    let _ = fs::remove_dir_all(root);
+    drop(lock);
+}
