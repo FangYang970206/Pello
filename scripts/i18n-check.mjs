@@ -51,8 +51,8 @@ const kernelOnly = new Map([
   // Said by a control of this build that the Electron build did not have.
   ['退出', 'the application menu of this shell'],
   ['所有文件', 'the save dialog of this shell offers a filter by name'],
-  // A port that is not finished says so, and does not pretend.
-  ['此功能尚未在 Rust 移植中实现：{{0}}', 'a feature that is not ported yet'],
+  // A channel of a name the kernel does not have is refused by name.
+  ['没有名为 {{0}} 的通道', "a channel that is not there, refused as the Electron build's invoke refuses it"],
   ['上传不再询问同名处理', 'the port is ahead of the catalog here'],
   // The Electron build ends a cancelled search without a word.
   ['搜索已取消', 'the kernel reports a cancelled search as an error'],

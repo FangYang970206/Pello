@@ -209,6 +209,20 @@ fn fresh_database_defaults_to_chinese_light_theme_and_update_checks() {
 }
 
 #[test]
+fn a_channel_that_is_not_there_is_refused_by_name() {
+    let root = temp_dir("no-channel");
+    let (bench, _) = workbench(&root);
+    // Every channel of the Electron build is answered; one that is not a
+    // channel is refused with its name, as its `invoke` refuses it.
+    let error = bench.dispatch("no:such-channel", &[]).unwrap_err();
+    assert!(error.contains("no:such-channel"), "{error}");
+    bench.dispatch("db:settings", &[json!({ "language": "en" })]).unwrap();
+    let english = bench.dispatch("no:such-channel", &[]).unwrap_err();
+    assert!(english.contains("No handler registered for 'no:such-channel'"), "{english}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn a_file_read_again_is_not_sent_again_until_it_changes() {
     let root = temp_dir("file-refresh");
     let (bench, _) = workbench(&root);
@@ -3196,8 +3210,11 @@ fn assert_implemented(value: Result<serde_json::Value, String>) -> serde_json::V
     match value {
         Ok(value) => value,
         Err(error) => {
-            assert!(!error.contains("尚未在 Rust 移植中实现") && !error.contains("尚未实现"), "{error}");
-            panic!("{error}");
+            // A channel the kernel does not have is refused by name: the
+            // case then asked for one that is not there, which is not what
+            // it set out to show.
+            assert!(!error.contains("No handler registered for") && !error.contains("没有名为"), "{error}");
+            panic!("{error}")
         }
     }
 }

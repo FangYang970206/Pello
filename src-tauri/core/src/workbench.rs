@@ -349,7 +349,9 @@ impl Workbench {
             "tree:reference" => self.tree_reference(str_arg(args, 0), str_arg(args, 1), str_arg(args, 3), str_arg(args, 2), &language),
             "diagram:mermaid" => self.preview.render_mermaid(str_arg(args, 0), &language).map(|svg| json!(svg)),
             "diagram:cancel" => { self.preview.cancel(); Ok(Value::Null) },
-            _ => Err(translate(&language, "此功能尚未在 Rust 移植中实现：{{0}}", &[channel.to_string()])),
+            // No channel of that name: said as the Electron build's `invoke`
+            // refuses one, with the name in it.
+            _ => Err(translate(&language, "没有名为 {{0}} 的通道", &[channel.to_string()])),
         }
     }
 

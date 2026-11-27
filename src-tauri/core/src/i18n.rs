@@ -40,7 +40,7 @@ const EN: &[(&str, &str)] = &[
     ("请填写用户和地址", "Enter a user and address"),
     ("连接失败", "Connection failed"),
     ("这台机器未连接", "This machine is disconnected"),
-    ("此功能尚未在 Rust 移植中实现：{{0}}", "This feature is not implemented in the Rust port yet: {{0}}"),
+    ("没有名为 {{0}} 的通道", "No handler registered for '{{0}}'"),
     ("旧远程 Agent 会话缺少原生 ID，原终端历史已保留；未创建空白对话", "The legacy remote Agent session has no native ID. Original terminal history is preserved; no empty conversation was created."),
     ("无法唯一定位旧 Agent 对话，原终端历史已保留；未创建空白对话", "Cannot uniquely identify the legacy Agent conversation. Original terminal history is preserved; no empty conversation was created."),
     ("未检测到 {{0}}，请在设置中选择可用 Shell", "{{0}} was not detected. Choose an available shell in Settings."),
