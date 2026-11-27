@@ -1901,9 +1901,9 @@ fn mcp_and_skills_keep_native_config_and_do_not_execute() {
     let portable = root.join("portable-skills");
     fs::create_dir_all(&portable).unwrap();
     bench.dispatch("db:custom", &[json!([{
-        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
-        "resources": { "mcpPath": root.join("box-mcp.json").display().to_string(), "skillPath": portable.display().to_string(), "format": "standard", "skillAdapter": "portable" }
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": []
     }])]).unwrap();
+    lend(&bench, "box", root.join("box-mcp.json").display().to_string(), portable.display().to_string(), "standard", "portable");
 
     let added = bench.dispatch("resources:mcp", &[json!("docs"), json!({ "command": "tool", "args": ["--flag"], "env": { "TOKEN": "mcp-secret-value" } }), json!(["claude", "codex", "missing"])]).unwrap();
     for (agent, ok) in [("claude", true), ("codex", true), ("missing", false)] {
@@ -3029,6 +3029,22 @@ fn windows_remote_scripts_translate_only_the_fixed_errors() {
     let _ = fs::remove_dir_all(root);
 }
 
+/// Lend a custom executor on this machine a template with these paths, as
+/// the executor settings page does now in place of the executor's own
+/// fields. The template is named after the executor, so that two executors
+/// are not said to share a name.
+fn lend(bench: &Workbench, executor: &str, mcp_path: String, skill_path: String, format: &str, adapter: &str) -> String {
+    // The channel returns the whole database, not the template. A template
+    // lent before is lent again with other paths, not refused by its name.
+    let name = format!("{executor} resources");
+    let current = bench.dispatch("db:get", &[]).unwrap()["db"]["templates"].as_array().expect("templates").iter().find(|template| template["name"] == name).map(|template| template["id"].as_str().unwrap_or("").to_string()).unwrap_or_default();
+    let saved = bench.dispatch("templates:save", &[json!({ "id": current, "hostId": "local", "name": name, "mcpPath": mcp_path, "skillPath": skill_path, "format": format, "skillAdapter": adapter, "env": [] })]).unwrap_or_else(|error| panic!("{error}"));
+    let id = saved["templates"].as_array().expect("templates").iter().find(|template| template["name"] == name).expect("the template was saved")["id"].as_str().unwrap_or("").to_string();
+    assert!(!id.is_empty());
+    bench.dispatch("templates:bind", &[json!({ "hostId": "local", "executorId": executor }), json!(id)]).unwrap();
+    id
+}
+
 fn assert_implemented(value: Result<serde_json::Value, String>) -> serde_json::Value {
     match value {
         Ok(value) => value,
@@ -3103,11 +3119,24 @@ fn wired_channels_do_real_work() {
     assert_eq!(resource, json!(source.display().to_string()));
     // A resource path must be absolute in the host's own terms.
     let (mcp_path, skill_path) = (root.join("mcp.json").display().to_string(), root.join("skills").display().to_string());
-    assert_implemented(bench.dispatch("resources:target", &[json!({ "id": "mine", "mcpPath": mcp_path, "skillPath": skill_path, "format": "standard" })]));
-    // The record is JSON, where a path's separators are escaped; read it back.
-    assert!(fs::read_to_string(root.join("data/resource-targets.json")).unwrap().contains(&mcp_path.replace('\\', "\\\\")));
-    let builtin = bench.dispatch("resources:target", &[json!({ "id": "claude", "mcpPath": mcp_path, "format": "standard" })]).unwrap_err();
-    assert!(builtin.contains("仅自定义 Agent"));
+    let _ = lend(&bench, "mine", mcp_path.clone(), skill_path.clone(), "standard", "portable");
+    let targets = assert_implemented(bench.dispatch("resources:targets", &[json!("local")]));
+    let target = |id: &str| targets.as_array().expect("targets").iter().find(|target| target["id"] == id).cloned().unwrap_or_else(|| panic!("{id} is a target"));
+    // A custom executor's resources are the template lent to it, and are said
+    // to be that by its name.
+    let mine = target("mine");
+    assert_eq!(mine["mcpPath"], json!(mcp_path), "{mine}");
+    assert_eq!(mine["skillPath"], json!(skill_path), "{mine}");
+    assert_eq!(mine["hostId"], json!("local"));
+    assert_eq!(mine["templateName"], json!("mine resources"));
+    // A built-in executor lent nothing has its own paths, and no template
+    // name is said of it at all.
+    let claude = target("claude");
+    assert!(!claude["mcpPath"].as_str().unwrap_or("").is_empty(), "{claude}");
+    assert_eq!(claude["skillAdapter"], json!("claude"));
+    assert!(claude.get("templateName").is_none(), "{claude}");
+    // The record of the old way is not written.
+    assert!(!root.join("data/resource-targets.json").exists());
     let flushed = assert_implemented(bench.dispatch("terminal:history-flushed", &[]));
     assert!(flushed.is_null());
     let rejected = bench.dispatch("file:open-html", &[json!("p"), json!("docs/note.txt")]).unwrap_err();
@@ -5184,9 +5213,9 @@ fn a_skill_that_cannot_be_recycled_is_said_so_in_the_selected_language() {
     fs::create_dir_all(skills.join("quiet")).unwrap();
     fs::write(skills.join("quiet/SKILL.md"), "---\nname: quiet\ndescription: says nothing\n---\nbody\n").unwrap();
     bench.dispatch("db:custom", &[json!([{
-        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
-        "resources": { "mcpPath": root.join("box-mcp.json").display().to_string(), "skillPath": skills.display().to_string(), "format": "standard", "skillAdapter": "portable" }
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": []
     }])]).unwrap();
+    lend(&bench, "box", root.join("box-mcp.json").display().to_string(), skills.display().to_string(), "standard", "portable");
     // A "recycle bin" that fails and says nothing, so that the message is the
     // workbench's own and not a program's output.
     #[cfg(windows)]
@@ -5263,9 +5292,9 @@ fn an_mcp_server_with_a_url_that_is_not_one_is_described_so_in_the_selected_lang
     let (bench, _) = workbench(&root);
     fs::write(root.join("box-mcp.json"), "{\n  \"mcpServers\": {\n    \"odd\": { \"url\": \"nowhere\", \"type\": \"http\" },\n    \"fine\": { \"url\": \"https://example.com/mcp\" },\n    \"other\": { \"url\": \"stdio://nowhere\" },\n    \"space\": { \"url\": \"HTTP://Example.com:8080/a b\" },\n    \"port\": { \"url\": \"http://example.com:80/x\" }\n  }\n}\n").unwrap();
     bench.dispatch("db:custom", &[json!([{
-        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
-        "resources": { "mcpPath": root.join("box-mcp.json").display().to_string(), "skillPath": root.join("box-skills").display().to_string(), "format": "standard", "skillAdapter": "portable" }
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": []
     }])]).unwrap();
+    lend(&bench, "box", root.join("box-mcp.json").display().to_string(), root.join("box-skills").display().to_string(), "standard", "portable");
     let listed = bench.dispatch("resources:list", &[json!("mcp"), json!("box"), json!(1), json!("")]).unwrap();
     let items = listed["items"].as_array().unwrap();
     let description = |name: &str| items.iter().find(|item| item["name"] == name).unwrap_or_else(|| panic!("{name} is listed")).clone();
@@ -5358,9 +5387,9 @@ fn an_mcp_server_is_judged_as_javascript_judges_it() {
     let root = temp_dir("mcp-import-judgement");
     let (bench, _) = workbench(&root);
     bench.dispatch("db:custom", &[json!([{
-        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
-        "resources": { "mcpPath": root.join("box-mcp.json").display().to_string(), "skillPath": root.join("box-skills").display().to_string(), "format": "standard", "skillAdapter": "portable" }
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": []
     }])]).unwrap();
+    lend(&bench, "box", root.join("box-mcp.json").display().to_string(), root.join("box-skills").display().to_string(), "standard", "portable");
     let scan = |text: &str| -> serde_json::Value {
         let file = root.join("servers.json");
         fs::write(&file, text).unwrap();
@@ -5428,9 +5457,9 @@ fn an_agents_mcp_list_judges_each_server_as_the_electron_build_does() {
     let (bench, _) = workbench(&root);
     let file = root.join("box-mcp.json");
     bench.dispatch("db:custom", &[json!([{
-        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
-        "resources": { "mcpPath": file.display().to_string(), "skillPath": root.join("box-skills").display().to_string(), "format": "standard", "skillAdapter": "portable" }
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": []
     }])]).unwrap();
+    lend(&bench, "box", file.display().to_string(), root.join("box-skills").display().to_string(), "standard", "portable");
     let list = |text: &str| -> serde_json::Value {
         fs::write(&file, text).unwrap();
         bench.dispatch("resources:list", &[json!("mcp"), json!("box"), json!(1), json!("")]).unwrap()
@@ -5488,9 +5517,9 @@ fn a_configuration_file_that_is_a_hard_link_is_read_and_written_as_a_plain_file(
     let link = root.join("linked-mcp.json");
     fs::hard_link(&real, &link).unwrap();
     bench.dispatch("db:custom", &[json!([{
-        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
-        "resources": { "mcpPath": link.display().to_string(), "skillPath": root.join("box-skills").display().to_string(), "format": "standard", "skillAdapter": "portable" }
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": []
     }])]).unwrap();
+    lend(&bench, "box", link.display().to_string(), root.join("box-skills").display().to_string(), "standard", "portable");
     // Read through the link.
     let listed = bench.dispatch("resources:list", &[json!("mcp"), json!("box"), json!(1), json!("")]).unwrap();
     let names: Vec<&str> = listed["items"].as_array().unwrap().iter().map(|item| item["name"].as_str().unwrap()).collect();
@@ -5537,9 +5566,9 @@ fn a_configuration_file_that_is_a_symbolic_link_is_read_but_not_written_through(
         return;
     }
     bench.dispatch("db:custom", &[json!([{
-        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
-        "resources": { "mcpPath": link.display().to_string(), "skillPath": root.join("box-skills").display().to_string(), "format": "standard", "skillAdapter": "portable" }
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": []
     }])]).unwrap();
+    lend(&bench, "box", link.display().to_string(), root.join("box-skills").display().to_string(), "standard", "portable");
     // Read through the link: the size is taken of what it leads to.
     let listed = bench.dispatch("resources:list", &[json!("mcp"), json!("box"), json!(1), json!("")]).unwrap();
     let names: Vec<&str> = listed["items"].as_array().unwrap().iter().map(|item| item["name"].as_str().unwrap()).collect();
@@ -5569,9 +5598,9 @@ fn an_mcp_server_added_from_the_form_is_refused_for_the_first_of_its_faults_as_t
     let (bench, _) = workbench(&root);
     let file = root.join("box-mcp.json");
     bench.dispatch("db:custom", &[json!([{
-        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
-        "resources": { "mcpPath": file.display().to_string(), "skillPath": root.join("box-skills").display().to_string(), "format": "standard", "skillAdapter": "portable" }
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": []
     }])]).unwrap();
+    lend(&bench, "box", file.display().to_string(), root.join("box-skills").display().to_string(), "standard", "portable");
     let thrown = |name: &str, config: serde_json::Value| -> String { bench.dispatch("resources:mcp", &[json!(name), config, json!(["box"])]).unwrap_err() };
     assert!(thrown("bad name", json!({ "command": "tool" })).contains("MCP 名称只能包含"), "the name is checked first");
     assert_eq!(thrown("ok", json!("text")), "配置必须是对象");
@@ -5619,17 +5648,17 @@ fn an_mcp_server_added_from_the_form_is_refused_for_the_first_of_its_faults_as_t
     // the call: a name that is already taken, a path that is not set, an
     // agent that is not there. The others are still written to.
     bench.dispatch("db:custom", &[json!([{
-        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
-        "resources": { "mcpPath": file.display().to_string(), "skillPath": root.join("box-skills").display().to_string(), "format": "standard", "skillAdapter": "portable" }
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": []
     }, {
         "id": "bare", "name": "Bare", "cmd": "echo", "args": "", "letter": "R", "color": "#884422", "shell": "pwsh", "env": []
     }])]).unwrap();
+    lend(&bench, "box", file.display().to_string(), root.join("box-skills").display().to_string(), "standard", "portable");
     let results = bench.dispatch("resources:mcp", &[json!("ok"), json!({ "command": "again" }), json!(["box", "bare", "missing"])]).unwrap();
     let said = |agent: &str| results.as_array().unwrap().iter().find(|item| item["agent"] == agent).unwrap().clone();
     assert_eq!(said("box")["ok"], json!(false), "{results}");
     assert!(said("box")["error"].as_str().unwrap().contains("已存在同名"), "{results}");
-    assert_eq!(said("bare")["error"], json!("请先设置这个 Agent 的 MCP 配置路径"), "{results}");
-    assert_eq!(said("missing")["error"], json!("Agent 不存在"), "{results}");
+    assert_eq!(said("bare")["error"], json!("请先设置执行器的资源路径"), "{results}");
+    assert_eq!(said("missing")["error"], json!("执行器不存在"), "{results}");
     assert_eq!(results.as_array().unwrap().iter().map(|item| item["ok"].clone()).collect::<Vec<_>>(), vec![json!(false), json!(false), json!(false)]);
     assert_eq!(serde_json::from_str::<serde_json::Value>(&fs::read_to_string(&file).unwrap()).unwrap()["mcpServers"]["ok"], json!({ "command": "tool", "args": [] }), "what was there is kept");
     let _ = fs::remove_dir_all(root);
@@ -5646,9 +5675,9 @@ fn an_opencode_configuration_is_read_in_the_release_it_is_written_in() {
     let (bench, _) = workbench(&root);
     let file = root.join("box-mcp.json");
     bench.dispatch("db:custom", &[json!([{
-        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
-        "resources": { "mcpPath": file.display().to_string(), "skillPath": root.join("box-skills").display().to_string(), "format": "opencode", "skillAdapter": "portable" }
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": []
     }])]).unwrap();
+    lend(&bench, "box", file.display().to_string(), root.join("box-skills").display().to_string(), "opencode", "portable");
     let names = |text: &str| -> serde_json::Value {
         fs::write(&file, text).unwrap();
         let listed = bench.dispatch("resources:list", &[json!("mcp"), json!("box"), json!(1), json!("")]).unwrap();
@@ -5715,9 +5744,9 @@ fn a_single_server_file_is_named_after_its_file_as_the_electron_build_names_it()
 /// workbench speaks for a case.
 fn boxed(bench: &Workbench, root: &Path, file: &Path) {
     bench.dispatch("db:custom", &[json!([{
-        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
-        "resources": { "mcpPath": file.display().to_string(), "skillPath": root.join("box-skills").display().to_string(), "format": "standard", "skillAdapter": "portable" }
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": []
     }])]).unwrap();
+    lend(&bench, "box", file.display().to_string(), root.join("box-skills").display().to_string(), "standard", "portable");
 }
 
 fn mcp_errors(bench: &Workbench, language: &str) -> serde_json::Value {
@@ -5757,7 +5786,7 @@ fn a_byte_order_mark_is_kept_in_what_is_read_and_taken_off_where_a_document_is_p
     assert_eq!(listed["errors"], json!([]), "{listed}");
     assert_eq!(listed["total"], json!(1));
     let added = bench.dispatch("resources:mcp", &[json!("more"), json!({ "command": "other" }), json!(["box"])]).unwrap();
-    assert_eq!(added, json!([{ "agent": "box", "ok": true }]), "{added}");
+    assert_eq!(added, json!([{ "agent": "box", "hostId": "local", "name": "more", "ok": true }]), "{added}");
     let after = fs::read_to_string(&file).unwrap();
     assert!(after.starts_with('\u{feff}'), "the mark stays at the head: {after:?}");
     assert!(after.contains("\"more\""), "{after}");
@@ -5772,9 +5801,9 @@ fn a_toml_configuration_with_a_syntax_error_is_refused_in_the_selected_language(
     let (bench, _) = workbench(&root);
     let file = root.join("box-mcp.toml");
     bench.dispatch("db:custom", &[json!([{
-        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
-        "resources": { "mcpPath": file.display().to_string(), "skillPath": root.join("box-skills").display().to_string(), "format": "codex", "skillAdapter": "portable" }
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": []
     }])]).unwrap();
+    lend(&bench, "box", file.display().to_string(), root.join("box-skills").display().to_string(), "codex", "portable");
     fs::write(&file, "[mcp_servers.docs\ncommand = \"tool\"\n").unwrap();
     let errors = |language: &str| {
         bench.dispatch("db:settings", &[json!({ "language": language })]).unwrap();
@@ -5797,7 +5826,7 @@ fn a_configuration_path_that_is_a_directory_is_refused_as_the_electron_build_ref
     fs::create_dir_all(&file).unwrap();
     boxed(&bench, &root, &file);
     let added = bench.dispatch("resources:mcp", &[json!("docs"), json!({ "command": "tool" }), json!(["box"])]).unwrap();
-    assert_eq!(added, json!([{ "agent": "box", "ok": false, "error": "EISDIR: illegal operation on a directory, read" }]), "{added}");
+    assert_eq!(added, json!([{ "agent": "box", "hostId": "local", "name": "docs", "ok": false, "error": "EISDIR: illegal operation on a directory, read", "skipped": false }]), "{added}");
     bench.dispatch("db:settings", &[json!({ "language": "en" })]).unwrap();
     let listed = bench.dispatch("resources:list", &[json!("mcp"), json!("box"), json!(1), json!("")]).unwrap();
     assert_eq!(listed["errors"], json!([format!("{}: EISDIR: illegal operation on a directory, read", file.display())]), "{listed}");
@@ -5817,7 +5846,7 @@ fn a_configuration_that_was_not_there_is_published_as_one_file() {
     let file = root.join("box-mcp.json");
     boxed(&bench, &root, &file);
     let added = bench.dispatch("resources:mcp", &[json!("docs"), json!({ "command": "tool" }), json!(["box"])]).unwrap();
-    assert_eq!(added, json!([{ "agent": "box", "ok": true }]), "{added}");
+    assert_eq!(added, json!([{ "agent": "box", "hostId": "local", "name": "docs", "ok": true }]), "{added}");
     assert!(file.is_file(), "the configuration is there");
     assert!(!root.join("box-mcp.json.awb-backup").exists(), "nothing was there to keep");
     let beside: Vec<String> = fs::read_dir(&root).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().to_string()).filter(|name| name.starts_with("box-mcp.json")).collect();
@@ -5881,18 +5910,20 @@ fn a_duplicate_is_reported_as_skipped_and_no_other_failure_is() {
     let other = root.join("other-mcp.json");
     fs::write(&other, "{}").unwrap();
     bench.dispatch("db:custom", &[json!([
-        { "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
-          "resources": { "mcpPath": file.display().to_string(), "skillPath": root.join("box-skills").display().to_string(), "format": "standard", "skillAdapter": "portable" } },
+        { "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": []
+           },
         { "id": "bare", "name": "Bare", "cmd": "echo", "args": "", "letter": "R", "color": "#336699", "shell": "pwsh", "env": [] },
-        { "id": "taker", "name": "Taker", "cmd": "echo", "args": "", "letter": "T", "color": "#336699", "shell": "pwsh", "env": [],
-          "resources": { "mcpPath": other.display().to_string(), "skillPath": root.join("taker-skills").display().to_string(), "format": "standard", "skillAdapter": "portable" } }
+        { "id": "taker", "name": "Taker", "cmd": "echo", "args": "", "letter": "T", "color": "#336699", "shell": "pwsh", "env": []
+           }
     ])]).unwrap();
+    lend(&bench, "box", file.display().to_string(), root.join("box-skills").display().to_string(), "standard", "portable");
+    lend(&bench, "taker", other.display().to_string(), root.join("taker-skills").display().to_string(), "standard", "portable");
     let added = bench.dispatch("resources:mcp", &[json!("docs"), json!({ "command": "other" }), json!(["box", "bare", "taker", "nobody"])]).unwrap();
     assert_eq!(added, json!([
-        { "agent": "box", "ok": false, "error": "已存在同名 MCP，保留原配置", "skipped": true },
-        { "agent": "bare", "ok": false, "error": "请先设置这个 Agent 的 MCP 配置路径" },
-        { "agent": "taker", "ok": true },
-        { "agent": "nobody", "ok": false, "error": "Agent 不存在" }
+        { "agent": "box", "hostId": "local", "name": "docs", "ok": false, "error": "已存在同名 MCP，保留原配置", "skipped": true },
+        { "agent": "bare", "hostId": "local", "name": "docs", "ok": false, "error": "请先设置执行器的资源路径", "skipped": false },
+        { "agent": "taker", "hostId": "local", "name": "docs", "ok": true },
+        { "agent": "nobody", "hostId": "local", "name": "docs", "ok": false, "error": "执行器不存在", "skipped": false }
     ]), "{added}");
     assert_eq!(fs::read_to_string(&file).unwrap(), r#"{"mcpServers":{"docs":{"command":"tool"}}}"#, "the existing server is kept");
     let taken = fs::read_to_string(&other).unwrap();
@@ -5913,10 +5944,10 @@ fn a_parked_list_that_is_not_an_object_is_refused_as_the_electron_build_refuses_
         fs::write(&file, text).unwrap();
         bench.dispatch("resources:mcp", &[json!("more"), json!({ "command": "other" }), json!(["box"])]).unwrap()
     };
-    assert_eq!(add(&bench, r#"{"awbDisabledMcp":"x"}"#), json!([{ "agent": "box", "ok": false, "error": "配置必须是对象" }]));
-    assert_eq!(add(&bench, r#"{"awbDisabledMcp":7}"#), json!([{ "agent": "box", "ok": false, "error": "配置必须是对象" }]));
+    assert_eq!(add(&bench, r#"{"awbDisabledMcp":"x"}"#), json!([{ "agent": "box", "hostId": "local", "name": "more", "ok": false, "error": "配置必须是对象", "skipped": false }]));
+    assert_eq!(add(&bench, r#"{"awbDisabledMcp":7}"#), json!([{ "agent": "box", "hostId": "local", "name": "more", "ok": false, "error": "配置必须是对象", "skipped": false }]));
     // False to JavaScript: an empty list, that holds nothing of the name.
-    assert_eq!(add(&bench, r#"{"awbDisabledMcp":false}"#), json!([{ "agent": "box", "ok": true }]));
+    assert_eq!(add(&bench, r#"{"awbDisabledMcp":false}"#), json!([{ "agent": "box", "hostId": "local", "name": "more", "ok": true }]));
     let _ = fs::remove_dir_all(root);
 }
 
@@ -5931,9 +5962,9 @@ fn a_skill_file_is_renamed_by_linking_and_unlinking() {
     let skills = root.join("box-skills").join("one");
     fs::create_dir_all(&skills).unwrap();
     bench.dispatch("db:custom", &[json!([{
-        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [],
-        "resources": { "mcpPath": root.join("box-mcp.json").display().to_string(), "skillPath": root.join("box-skills").display().to_string(), "format": "standard", "skillAdapter": "portable" }
+        "id": "box", "name": "Box", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": []
     }])]).unwrap();
+    lend(&bench, "box", root.join("box-mcp.json").display().to_string(), root.join("box-skills").display().to_string(), "standard", "portable");
     let file = skills.join("SKILL.md");
     let off = skills.join("SKILL.md.awb-disabled");
     fs::write(&file, "---\nname: one\ndescription: d\n---\nbody\n").unwrap();
@@ -6362,4 +6393,247 @@ fn a_custom_executors_terminal_takes_the_templates_environment_and_keeps_it_when
     assert!(output[before..].contains("from-template"), "a terminal started again keeps its environment:\n{}", &output[before..]);
     assert!(!output[before..].contains("changed-later"), "the environment is the one the terminal was created with:\n{}", &output[before..]);
     bench.dispatch("pty:close", &[json!("term")]).unwrap();
+}
+
+/// What the resources page is shown for every executor on this machine, as
+/// the Electron build's targets has it: a built-in executor lent nothing has
+/// its own paths and no template name; a custom executor lent nothing has
+/// empty paths, the standard format and no adapter said of it at all; an
+/// executor lent a template has the template's paths and its name. A bare
+/// executor id is one on this machine, and an object says which machine.
+#[test]
+fn resource_targets_name_the_machine_the_template_and_nothing_more() {
+    let root = temp_dir("resource-targets");
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let _home = var_guard("AWB_RESOURCE_HOME", home.to_str().unwrap());
+    let (bench, _) = workbench(&root);
+    bench.dispatch("db:custom", &[json!([
+        { "id": "mine", "name": "Mine", "cmd": "echo", "args": "", "letter": "M", "color": "#336699", "shell": "pwsh", "env": [] },
+        { "id": "other", "name": "Other", "cmd": "echo", "args": "", "letter": "O", "color": "#336699", "shell": "pwsh", "env": [] }
+    ])]).unwrap();
+    let file = root.join("shared.json").display().to_string();
+    let skills = root.join("shared-skills").display().to_string();
+    let template = bench.dispatch("templates:save", &[json!({ "id": "", "hostId": "local", "name": "Team", "mcpPath": file, "skillPath": skills, "format": "standard", "skillAdapter": "portable", "env": [] })]).unwrap();
+    let template_id = template["templates"].as_array().unwrap().iter().find(|item| item["name"] == "Team").unwrap()["id"].as_str().unwrap().to_string();
+    bench.dispatch("templates:bind", &[json!({ "hostId": "local", "executorId": "mine" }), json!(template_id)]).unwrap();
+
+    let targets = bench.dispatch("resources:targets", &[]).unwrap();
+    let target = |id: &str| targets.as_array().unwrap().iter().find(|item| item["id"] == id).cloned().unwrap_or_else(|| panic!("{id} is a target"));
+    let claude = target("claude");
+    assert_eq!(claude["name"], json!("Claude Code"));
+    assert_eq!(claude["hostId"], json!("local"));
+    assert_eq!(claude["format"], json!("standard"));
+    assert_eq!(claude["skillAdapter"], json!("claude"));
+    assert!(!claude["mcpPath"].as_str().unwrap().is_empty(), "{claude}");
+    for key in ["templateName", "skillConfigPath"] { assert!(claude.get(key).is_none(), "{key} is said of {claude}"); }
+    // Oh My Pi is the one built-in executor with a configuration of its own.
+    assert_eq!(target("omp")["skillConfigPath"], target("omp")["mcpPath"].as_str().unwrap().replace("mcp.json", "config.yml"));
+    // A custom executor lent nothing: empty paths, and no adapter.
+    let other = target("other");
+    assert_eq!(other, json!({ "id": "other", "name": "Other", "hostId": "local", "mcpPath": "", "skillPath": "", "format": "standard" }), "{other}");
+    // The same executor with the machine said as an object, and as a bare id.
+    let mine = target("mine");
+    assert_eq!(mine["mcpPath"], json!(file));
+    assert_eq!(mine["skillPath"], json!(skills));
+    assert_eq!(mine["skillAdapter"], json!("portable"));
+    assert_eq!(mine["templateName"], json!("Team"));
+    assert_eq!(mine["hostId"], json!("local"));
+    assert_eq!(mine.as_object().unwrap().len(), 8, "{mine}");
+    let by_id = bench.dispatch("resources:list", &[json!("mcp"), json!("mine"), json!(1), json!("")]).unwrap();
+    let by_object = bench.dispatch("resources:list", &[json!("mcp"), json!({ "hostId": "local", "executorId": "mine" }), json!(1), json!("")]).unwrap();
+    assert_eq!(by_id, by_object);
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A machine that is not there, one that is not connected, and an executor
+/// that is not there, are refused in that order, as the Electron build's
+/// machine and describe refuse them.
+#[test]
+fn a_scope_is_refused_for_its_machine_before_its_executor() {
+    let root = temp_dir("resource-scope-refused");
+    fs::create_dir_all(root.join("data")).unwrap();
+    fs::write(root.join("data").join("workbench.json"), json!({ "hosts": [
+        { "id": "local", "name": "本机", "on": true },
+        { "id": "off", "name": "Off", "addr": "127.0.0.1", "user": "u", "port": 1, "auth": "key", "platform": "linux", "os": "Linux", "on": false },
+        { "id": "remote", "name": "Remote", "addr": "127.0.0.1", "user": "u", "port": 1, "auth": "key", "platform": "linux", "os": "Linux", "on": true }
+    ] }).to_string()).unwrap();
+    let (bench, _) = workbench(&root);
+    bench.dispatch("db:settings", &[json!({ "language": "en" })]).unwrap();
+    let list = |scope: serde_json::Value| bench.dispatch("resources:list", &[json!("mcp"), scope, json!(1), json!("")]).map(|_| ());
+    assert_eq!(list(json!({ "hostId": "nowhere", "executorId": "nobody" })).unwrap_err(), "Machine not found");
+    assert_eq!(list(json!({ "hostId": "off", "executorId": "nobody" })).unwrap_err(), "This machine is disconnected");
+    assert_eq!(list(json!({ "hostId": "local", "executorId": "nobody" })).unwrap_err(), "Executor not found");
+    assert_eq!(list(json!("nobody")).unwrap_err(), "Executor not found");
+    // The machine is asked about the whole list too.
+    assert_eq!(bench.dispatch("resources:targets", &[json!("nowhere")]).unwrap_err(), "Machine not found");
+    assert_eq!(bench.dispatch("resources:targets", &[json!("off")]).unwrap_err(), "This machine is disconnected");
+    assert_eq!(bench.dispatch("resources:targets", &[json!("remote")]).unwrap_err(), "This machine is disconnected");
+    // A remote machine's resources are not read until its connection is.
+    assert_eq!(list(json!({ "hostId": "remote", "executorId": "claude" })).unwrap_err(), "This machine is disconnected");
+    // Opening a Skill folder is for this machine alone.
+    assert_eq!(bench.dispatch("resources:skill-open", &[json!({ "hostId": "remote", "executorId": "claude" }), json!({ "name": "x", "path": "y" })]).unwrap_err(), "This action is available for local Skills");
+    assert_eq!(bench.dispatch("resources:skill-open", &[json!({ "hostId": "off", "executorId": "claude" }), json!({ "name": "x", "path": "y" })]).unwrap_err(), "This machine is disconnected");
+    // Skills are scanned from this machine alone.
+    assert_eq!(bench.dispatch("resources:scan", &[json!("skills"), json!(root.display().to_string()), json!("remote")]).unwrap_err(), "Select a local Skill folder or ZIP archive");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A server written to several executors at once: none chosen is refused as
+/// a whole; an executor that is not there, or on a machine that is not
+/// connected, fails on its own and the others are still written to; the same
+/// executor chosen twice is one; two executors lent the same template have
+/// their one file written once and both are told it went well.
+#[test]
+fn a_server_is_distributed_to_each_scope_once_and_each_file_once() {
+    let root = temp_dir("resource-distribute");
+    fs::create_dir_all(root.join("data")).unwrap();
+    fs::write(root.join("data").join("workbench.json"), json!({ "hosts": [{ "id": "local", "name": "本机", "on": true }, { "id": "off", "name": "Off", "addr": "127.0.0.1", "user": "u", "port": 1, "auth": "key", "platform": "linux", "os": "Linux", "on": false }] }).to_string()).unwrap();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let _home = var_guard("AWB_RESOURCE_HOME", home.to_str().unwrap());
+    let (bench, _) = workbench(&root);
+    bench.dispatch("db:custom", &[json!([
+        { "id": "mine", "name": "Mine", "cmd": "echo", "args": "", "letter": "M", "color": "#336699", "shell": "pwsh", "env": [] },
+        { "id": "other", "name": "Other", "cmd": "echo", "args": "", "letter": "O", "color": "#336699", "shell": "pwsh", "env": [] },
+        { "id": "bare", "name": "Bare", "cmd": "echo", "args": "", "letter": "B", "color": "#336699", "shell": "pwsh", "env": [] }
+    ])]).unwrap();
+    let shared = root.join("shared.json");
+    fs::write(&shared, "{\n  \"mcpServers\": {\n  }\n}\n").unwrap();
+    let template = bench.dispatch("templates:save", &[json!({ "id": "", "hostId": "local", "name": "Team", "mcpPath": shared.display().to_string(), "skillPath": root.join("skills").display().to_string(), "format": "standard", "skillAdapter": "portable", "env": [] })]).unwrap();
+    let template_id = template["templates"].as_array().unwrap().iter().find(|item| item["name"] == "Team").unwrap()["id"].as_str().unwrap().to_string();
+    for executor in ["mine", "other"] {
+        bench.dispatch("templates:bind", &[json!({ "hostId": "local", "executorId": executor }), json!(template_id)]).unwrap();
+    }
+    let add = |name: &str, scopes: serde_json::Value| bench.dispatch("resources:mcp", &[json!(name), json!({ "command": "tool", "args": [] }), scopes]);
+
+    assert_eq!(add("none", json!([])).unwrap_err(), "请选择至少一个 Code Agent");
+    assert_eq!(add("ghost", json!(["nobody"])).unwrap(), json!([{ "agent": "nobody", "hostId": "local", "name": "ghost", "ok": false, "error": "执行器不存在", "skipped": false }]));
+    assert_eq!(add("off", json!([{ "hostId": "off", "executorId": "claude" }])).unwrap(), json!([{ "agent": "claude", "hostId": "off", "name": "off", "ok": false, "error": "这台机器未连接", "skipped": false }]));
+    assert_eq!(add("bare", json!(["bare"])).unwrap(), json!([{ "agent": "bare", "hostId": "local", "name": "bare", "ok": false, "error": "请先设置执行器的资源路径", "skipped": false }]));
+
+    // The same executor, as a bare id and as an object, is one.
+    assert_eq!(add("srv", json!(["mine", "mine", { "hostId": "local", "executorId": "mine" }])).unwrap(), json!([{ "agent": "mine", "hostId": "local", "name": "srv", "ok": true }]));
+    // The same name again is kept, and only that is said.
+    assert_eq!(add("srv", json!(["mine"])).unwrap(), json!([{ "agent": "mine", "hostId": "local", "name": "srv", "ok": false, "error": "已存在同名 MCP，保留原配置", "skipped": true }]));
+
+    // Two executors lent the same template: one file, written once, and both
+    // are told it went well.
+    assert_eq!(add("team", json!(["mine", "other"])).unwrap(), json!([
+        { "agent": "mine", "hostId": "local", "name": "team", "ok": true },
+        { "agent": "other", "hostId": "local", "name": "team", "ok": true }
+    ]));
+    let held: serde_json::Value = serde_json::from_str(&fs::read_to_string(&shared).unwrap()).unwrap();
+    assert_eq!(held["mcpServers"]["team"], json!({ "command": "tool", "args": [] }), "the server is in the one file once");
+    let after = fs::read_to_string(&shared).unwrap();
+    assert_eq!(after.matches("\"team\"").count(), 1, "the server is in the file once:\n{after}");
+    assert_eq!(after.matches("\"srv\"").count(), 1, "the server written before is kept:\n{after}");
+    assert_eq!(held["mcpServers"]["srv"], json!({ "command": "tool", "args": [] }), "{held}");
+    // A failure that is not a duplicate is said of the scope and is not
+    // remembered for the next one.
+    fs::remove_file(&shared).unwrap();
+    fs::create_dir(&shared).unwrap();
+    let refused = add("dir", json!(["mine", "other"])).unwrap();
+    assert!(refused.as_array().unwrap().iter().all(|item| item["ok"] == false && item["skipped"] == false), "{refused}");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// The channels the Electron build does not have are not there any more;
+/// the one it has for a recommended repository opens the repository's page,
+/// and refuses one that is not recommended.
+#[test]
+fn a_recommended_repository_is_opened_by_its_id_and_the_old_channels_are_gone() {
+    let root = temp_dir("resource-recommendation");
+    let (bench, _) = workbench(&root);
+    let log = root.join("opened.log");
+    let _bin = var_guard("AWB_OPEN_BIN", "true");
+    let _open_log = var_guard("AWB_OPEN_LOG", &log.display().to_string());
+    bench.dispatch("db:settings", &[json!({ "language": "en" })]).unwrap();
+    for gone in ["resources:scope", "resources:target", "resources:skill-directory"] {
+        let error = bench.dispatch(gone, &[json!(null)]).unwrap_err();
+        // Said as a channel the workbench does not have, by its name, and in
+        // the language the user chose.
+        assert_eq!(error, format!("This feature is not implemented in the Rust port yet: {gone}"));
+    }
+    assert!(bench.dispatch("resources:open-recommendation", &[json!("mattpocock")]).is_ok());
+    assert!(bench.dispatch("resources:open-recommendation", &[json!("impeccable")]).is_ok());
+    assert_eq!(fs::read_to_string(&log).unwrap(), "https://github.com/mattpocock/skills\nhttps://github.com/pbakaus/impeccable\n");
+    assert_eq!(bench.dispatch("resources:open-recommendation", &[json!("nobody")]).unwrap_err(), "The recommended repository does not exist");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// What a scope comes to while an operation runs: the machine, its address,
+/// port, user, platform and way of signing in, and the template lent to the
+/// executor. Any of them changed in between is refused rather than written
+/// to as it was; nothing changed is not.
+#[test]
+fn a_scope_that_changed_while_an_operation_ran_is_refused() {
+    use pello_core::resources::{fingerprint, scope_of};
+    let root = temp_dir("resource-fingerprint");
+    let (bench, _) = workbench(&root);
+    bench.dispatch("db:custom", &[json!([{ "id": "mine", "name": "Mine", "cmd": "echo", "args": "", "letter": "M", "color": "#336699", "shell": "pwsh", "env": [] }])]).unwrap();
+    let file = root.join("mine.json");
+    fs::write(&file, "{}").unwrap();
+    let template = bench.dispatch("templates:save", &[json!({ "id": "", "hostId": "local", "name": "Team", "mcpPath": file.display().to_string(), "skillPath": "", "format": "standard", "skillAdapter": "portable", "env": [] })]).unwrap();
+    let template_id = template["templates"].as_array().unwrap().iter().find(|item| item["name"] == "Team").unwrap()["id"].as_str().unwrap().to_string();
+    let scope = json!({ "hostId": "local", "executorId": "mine" });
+    bench.dispatch("templates:bind", &[scope.clone(), json!(template_id)]).unwrap();
+    let db = || bench.dispatch("db:get", &[]).unwrap()["db"].clone();
+
+    assert_eq!(scope_of(&json!("mine")), ("local".to_string(), "mine".to_string()));
+    assert_eq!(scope_of(&scope), ("local".to_string(), "mine".to_string()));
+    assert!(fingerprint(&db(), &json!("mine"), "en").is_ok());
+    assert!(fingerprint(&db(), &json!({ "hostId": "nowhere", "executorId": "mine" }), "en").unwrap_err().contains("Machine not found"));
+    assert!(fingerprint(&db(), &json!({ "hostId": "local", "executorId": "nobody" }), "en").unwrap_err().contains("Executor not found"));
+
+    // Nothing changed: the mark holds.
+    let mark = fingerprint(&db(), &scope, "en").unwrap();
+    assert!(mark.check(&db(), &scope, "en").is_ok());
+    // A server written in between is not the target, and does not trip it.
+    bench.dispatch("resources:mcp", &[json!("first"), json!({ "command": "tool" }), json!(["mine"])]).unwrap();
+    assert!(mark.check(&db(), &scope, "en").is_ok());
+    // The template lent is replaced: refused.
+    bench.dispatch("templates:bind", &[scope.clone(), json!("")]).unwrap();
+    assert_eq!(mark.check(&db(), &scope, "en").unwrap_err(), "The resource target changed. Refresh and try again.");
+    // The executor is gone: not a change of the target but no target at all.
+    assert!(mark.check(&db(), &json!({ "hostId": "local", "executorId": "gone" }), "en").unwrap_err().contains("Executor not found"));
+    // The machine's way in changes: refused.
+    bench.dispatch("templates:bind", &[scope.clone(), json!(template_id)]).unwrap();
+    let mark = fingerprint(&db(), &scope, "en").unwrap();
+    assert!(mark.check(&db(), &scope, "en").is_ok());
+    let mut changed = db();
+    changed["hosts"][0]["addr"] = json!("elsewhere");
+    let _ = bench.dispatch("db:hosts", &[changed["hosts"].clone()]);
+    // The address is kept as the user gave it only when the machine connects;
+    // what matters is that the mark taken before is not the one after.
+    let after = fingerprint(&db(), &scope, "en");
+    if after.is_ok() { assert_eq!(mark.check(&db(), &scope, "en").unwrap_err(), "The resource target changed. Refresh and try again.") }
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A launch test is not finished by the process leaving: the command says
+/// how it ended with a mark of its own, and what the console has not sent
+/// yet when the process leaves is sent after the mark and before the test
+/// is read. A test that read at the exit of the process lost the end of
+/// what the command wrote, as it did under a full run of the suite.
+#[test]
+fn a_launch_test_keeps_what_the_console_sends_after_the_command_has_left() {
+    // Terminals are closed here: tests that close terminals run one at a time.
+    let _lock = env_lock();
+    let root = temp_dir("launch-test-tail");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let (bench, _) = workbench(&root);
+    let shell = if cfg!(windows) { "pwsh" } else { "bash" };
+    // Enough to be sent in many pieces, and a last line that says so.
+    let args = if cfg!(windows) { "1..400 | ForEach-Object { \"line $_\" }; Write-Output \"the-last-line\"".to_string() } else { format!("-c \"for i in $(seq 1 400); do echo \\\"line $i\\\"; done; echo the-last-line\"") };
+    let test = bench.dispatch("exec:test", &[json!({ "cmd": if cfg!(windows) { "" } else { "bash" }, "args": args, "shell": shell, "cwd": project.display().to_string() })]).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(test["code"], 0, "{test}");
+    let text = test["text"].as_str().unwrap_or("");
+    assert!(text.contains("the-last-line"), "the last line is kept: {test}");
+    // The shell echoes the line it was given, the id in it included, as
+    // colored text; the mark itself, an escape with that id, is not left.
+    assert!(test["code"] == 0, "the code is the one the command said: {test}");
+    assert!(!text.contains(&format!("\u{1b}]777;awb;executor-test-")), "the mark of the end is not shown: {test}");
+    let _ = fs::remove_dir_all(root);
 }

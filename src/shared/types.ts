@@ -40,6 +40,9 @@ export interface Executor {
   color: string
   shell: 'pwsh' | 'cmd'
   env: EnvVar[]
+  hosts?: Record<string, { cmd: string; args: string; shell: 'pwsh' | 'cmd' }>
+  /** Explicit native CLI protocol; never guess --continue or a project's latest session. */
+  session?: { startArgs: string; resumeArgs: string }
   resources?: ResourcePaths
 }
 
@@ -61,11 +64,20 @@ export interface Host {
 
 export type ResourceFormat = 'standard' | 'codex' | 'opencode'
 export interface ResourcePaths { mcpPath: string; skillPath: string; format: ResourceFormat; skillAdapter?: 'claude' | 'codex' | 'opencode' | 'pi' | 'omp' | 'portable'; skillConfigPath?: string }
-export interface ResourceTarget extends ResourcePaths { id: string; name: string }
+export interface ExecutorTemplate extends ResourcePaths {
+  id: string
+  hostId: string
+  name: string
+  env: EnvVar[]
+  session?: Executor['session']
+}
+export interface TemplateBinding { hostId: string; executorId: string; templateId: string }
+export interface ResourceScope { hostId: string; executorId: string }
+export interface ResourceTarget extends ResourcePaths { id: string; name: string; hostId?: string; templateName?: string }
 export interface ResourceItem { name: string; description: string; path: string; transport?: string; enabled?: boolean }
 export interface ResourceDetail extends ResourceItem { content: string; notice?: string }
 export interface ResourcePage { items: ResourceItem[]; total: number; page: number; pages: number; errors: string[] }
-export interface ResourceResult { agent: string; ok: boolean; error?: string; name?: string; id?: string }
+export interface ResourceResult { agent: string; hostId?: string; ok: boolean; skipped?: boolean; error?: string; name?: string; id?: string }
 export interface ResourceSourceItem { id: string; name: string; path: string; description?: string; enabled?: boolean; error?: string }
 
 export interface Project {

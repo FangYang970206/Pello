@@ -320,23 +320,22 @@ impl Workbench {
             // What a copy put on the clipboard, for a test to see: only a
             // clipboard kept in a file is read, never the user's own.
             "clipboard:read" => Ok(shell::read_clipboard().map(Value::String).unwrap_or(Value::Null)),
-            "resources:targets" => Ok(Value::Array(resources::targets(&self.paths.data, &self.custom()))),
-            "resources:scope" => { resources::set_scope(&self.resources, args.first().unwrap_or(&Value::Null)); Ok(Value::Null) },
-            "resources:target" => resources::save_target(&self.paths.data, &self.custom(), args.first().unwrap_or(&Value::Null), &language).map(|_| Value::Null),
+            // The executors on a machine and what resources each has there.
+            "resources:targets" => resources::targets(&self.db.lock().expect("db").clone(), args.first().and_then(|value| value.as_str()).unwrap_or("local"), &language),
+            // A recommended Skill repository's page, opened in the browser.
+            "resources:open-recommendation" => resources::open_recommendation(str_arg(args, 0), &language).map(|_| Value::Null),
+            "resources:list" => resources::list(&self.db.lock().expect("db").clone(), str_arg(args, 0), args.get(1).unwrap_or(&Value::Null), json_usize(args.get(2)), str_arg(args, 3), &language),
+            "resources:toggle" => resources::toggle(&self.db.lock().expect("db").clone(), str_arg(args, 0), args.get(1).unwrap_or(&Value::Null), args.get(2).unwrap_or(&Value::Null), args.get(3).and_then(|value| value.as_bool()), &language).map(|_| Value::Null),
+            "resources:detail" => resources::detail(&self.db.lock().expect("db").clone(), str_arg(args, 0), args.get(1).unwrap_or(&Value::Null), args.get(2).unwrap_or(&Value::Null), &language),
+            // Opening and removing a Skill folder find it themselves, as the
+            // Electron build does: the path is not handed over by the page.
+            "resources:skill-open" => resources::open_skill(&self.db.lock().expect("db").clone(), args.first().unwrap_or(&Value::Null), args.get(1).unwrap_or(&Value::Null), &language),
+            "resources:skill-delete" => resources::delete_skill(&self.db.lock().expect("db").clone(), args.first().unwrap_or(&Value::Null), args.get(1).unwrap_or(&Value::Null), &language),
+            "resources:mcp" => resources::add_mcp(&self.resources, &self.db.lock().expect("db").clone(), str_arg(args, 0), args.get(1).unwrap_or(&Value::Null), args.get(2).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), true, &language),
+            "resources:scan" => resources::scan(&self.db.lock().expect("db").clone(), str_arg(args, 0), str_arg(args, 1), args.get(2).and_then(|value| value.as_str()).unwrap_or("local"), &language),
+            "resources:import-mcp" => resources::import_mcp(&self.resources, &self.db.lock().expect("db").clone(), str_arg(args, 0), args.get(1).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), args.get(2).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), args.get(3).and_then(|value| value.as_str()).unwrap_or("local"), &language),
+            "resources:skills" => resources::import_skills(&self.resources, &self.db.lock().expect("db").clone(), str_arg(args, 0), args.get(1).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), args.get(2).and_then(|value| value.as_array()).map(|list| list.iter().filter_map(|item| item.as_str().map(|item| item.to_string())).collect::<Vec<_>>()).as_ref(), &language),
             "resources:pick" => Ok(menu::choose_open_path(str_arg(args, 0), &language)),
-            "resources:list" => resources::list(&self.resources, &self.paths.data, &self.custom(), str_arg(args, 0), str_arg(args, 1), json_usize(args.get(2)), str_arg(args, 3), &language),
-            "resources:toggle" => resources::toggle(&self.resources, &self.paths.data, &self.custom(), str_arg(args, 0), str_arg(args, 1), args.get(2).unwrap_or(&Value::Null), args.get(3).and_then(|value| value.as_bool()), &language).map(|_| Value::Null),
-            "resources:detail" => resources::detail(&self.resources, &self.paths.data, &self.custom(), str_arg(args, 0), str_arg(args, 1), args.get(2).unwrap_or(&Value::Null), &language),
-            "resources:skill-directory" => resources::skill_directory(&self.resources, &self.paths.data, &self.custom(), str_arg(args, 0), args.get(1).unwrap_or(&Value::Null), args.get(2).and_then(|value| value.as_bool()).unwrap_or(false), &language).map(|path| json!(path.display().to_string())),
-            "resources:skill-open" => resources::open_skill(&self.resources, &self.paths.data, &self.custom(), str_arg(args, 0), args.get(1).unwrap_or(&Value::Null), &language),
-            "resources:skill-delete" => resources::delete_skill(&self.resources, &self.paths.data, &self.custom(), str_arg(args, 0), args.get(1).unwrap_or(&Value::Null), &language),
-            "resources:mcp" => resources::add_mcp(&self.resources, &self.paths.data, &self.custom(), str_arg(args, 0), args.get(1).unwrap_or(&Value::Null), args.get(2).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), true, &language),
-            "resources:scan" => resources::scan(&self.paths.data, &self.custom(), str_arg(args, 0), str_arg(args, 1), &language),
-            "resources:import-mcp" => resources::import_mcp(&self.resources, &self.paths.data, &self.custom(), str_arg(args, 0), args.get(1).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), args.get(2).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), &language),
-            "resources:skills" => {
-                let names = args.get(2).and_then(|value| value.as_array()).map(|list| list.iter().filter_map(|item| item.as_str().map(|item| item.to_string())).collect::<Vec<_>>());
-                resources::import_skills(&self.resources, &self.paths.data, &self.custom(), str_arg(args, 0), args.get(1).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), names.as_ref(), &language)
-            }
             "file:preview-url" => self.preview_url(args, &language),
             "file:open-html" => self.open_html(str_arg(args, 0), str_arg(args, 1), &language),
             "file:link" => self.file_link(str_arg(args, 0), str_arg(args, 1), str_arg(args, 2), &language),
@@ -348,8 +347,6 @@ impl Workbench {
     }
 
     fn language(&self) -> String { i18n::language_of(&self.db.lock().expect("db")) }
-
-    fn custom(&self) -> Value { self.db.lock().expect("db")["custom"].clone() }
 
     fn preview_url(&self, args: &[Value], language: &str) -> Result<Value, String> {
         if let Ok(delay) = std::env::var("AWB_PREVIEW_URL_DELAY") {
@@ -965,9 +962,19 @@ impl Workbench {
         // other shells are those the host offers.
         let preferred = request["shell"].as_str().unwrap_or("bash");
         let shell = if local && cfg!(windows) && preferred == "bash" { "bash" } else { shells::shell_for_host(host.as_ref().map_or(if cfg!(windows) { "windows" } else { "linux" }, |host| host["platform"].as_str().unwrap_or("linux")), preferred) };
-        // PowerShell says a command that wrote an error succeeded: the test
-        // is to fail as a terminal would show it.
-        let command = if shell == "pwsh" { format!("{command}; if (-not $?) {{ $global:LASTEXITCODE = 1 }}") } else { command };
+        let id = format!("executor-test-{}", random_id());
+        // The command says how it ended with a mark of its own at its end.
+        // The leaving of the process is not that: on Windows the console
+        // sends what the command wrote after it says the process has left,
+        // and a test read at that point lost the end of the output.
+        // PowerShell says a command that wrote an error succeeded, so its
+        // code is taken as a terminal would show it.
+        let marker = format!("\u{1b}]777;awb;{id};");
+        let command = match shell {
+            "pwsh" => format!("{command}; $pelloOk = $?; $pelloCode = if ($pelloOk) {{ 0 }} elseif ($global:LASTEXITCODE) {{ $global:LASTEXITCODE }} else {{ 1 }}; [Console]::Out.Write(([char]27).ToString()+'{}'+$pelloCode+([char]7))", marker[1..].replace('\'', "''")),
+            "cmd" => format!("{command} & echo {id}:!ERRORLEVEL!"),
+            _ => format!("{command}; printf '\\033{}%s\\007' \"$?\"", &marker[1..]),
+        };
         // The environment of the template lent to the executor on that
         // machine comes in place of the one the dialog shows; otherwise the
         // dialog's own is taken.
@@ -978,16 +985,31 @@ impl Workbench {
         let env: Vec<(String, String)> = rows.iter()
             .filter_map(|item| Some((item["k"].as_str()?.to_string(), item["v"].as_str().unwrap_or("").to_string())))
             .filter(|(key, _)| !key.is_empty()).collect();
-        let id = format!("executor-test-{}", random_id());
         let watched = id.clone();
+        // The end of the command is found in what it wrote, as the Electron
+        // build finds it: for cmd a line with the id and the code, for the
+        // others the mark with the code, ended by a bell or by a backslash.
+        let exit_begins = if shell == "cmd" { format!("{id}:") } else { marker.clone() };
         let collected = Arc::new(Mutex::new(String::new()));
         let sink = collected.clone();
+        let exit_code = Arc::new(Mutex::new(None));
+        let exit_sink = exit_code.clone();
         // The session's output is kept, its last 12 000 characters, as the
         // page is told nothing of it: it is not a terminal of the workbench.
         let emit: Emit = Arc::new(move |event: Value| {
             if event["channel"] == "pty:event" && event["payload"]["type"] == "data" && event["payload"]["id"] == watched {
+                let data = event["payload"]["data"].as_str().unwrap_or("");
+                if data.is_empty() { return }
                 let mut kept = sink.lock().expect("test output");
-                kept.push_str(event["payload"]["data"].as_str().unwrap_or(""));
+                kept.push_str(data);
+                // The mark is taken out of what is kept, and its code kept
+                // apart, once it is whole in what there is.
+                if exit_sink.lock().expect("test exit").is_none() {
+                    if let Some((code, at, len)) = launch_exit(&kept, &exit_begins, shell == "cmd") {
+                        *exit_sink.lock().expect("test exit") = Some(code);
+                        kept.replace_range(at..at + len, "");
+                    }
+                }
                 let over = kept.chars().count().saturating_sub(12_000);
                 if over > 0 { *kept = kept.chars().skip(over).collect(); }
             }
@@ -999,7 +1021,12 @@ impl Workbench {
         };
         let _ = info;
         let deadline = Instant::now() + TEST_WATCH;
+        // Only the command's own mark, or the leaving of its process, ends
+        // the test: a shell may show more prompts as it starts. The mark is
+        // found in what is kept, and the console is then given its time to
+        // send what it held back, as the Electron build gives it: 180 ms.
         let code = loop {
+            if let Some(code) = *exit_code.lock().expect("test exit") { break code }
             match self.pty.snapshot_of(&id).and_then(|snapshot| snapshot["state"].as_str().and_then(|state| (state == "exited" || state == "failed").then(|| snapshot["exitCode"].as_i64()))) {
                 Some(code) => break code,
                 None => {}
@@ -1007,6 +1034,10 @@ impl Workbench {
             if Instant::now() >= deadline { break None }
             std::thread::sleep(Duration::from_millis(40));
         };
+        // What the console sends after the process has left is still the
+        // command's: the session is given a moment before it is closed, so
+        // that the end of the output is not lost with it.
+        std::thread::sleep(TEST_SETTLE);
         let running = code.is_none();
         self.pty.close(&id);
         let text = templates::redact_output(&collected.lock().expect("test output"), &rows);
@@ -1669,6 +1700,30 @@ const TEST_KIND: &str = "__executor_test__";
 /// How long an executor's startup is watched before the test ends with the
 /// command still running: as long as the Electron build watches it.
 const TEST_WATCH: Duration = Duration::from_millis(8000);
+/// How long the console is given to send what it held back of a command's
+/// output once its mark, or its leaving, is seen.
+const TEST_SETTLE: Duration = Duration::from_millis(180);
+
+/// The end of a launch test as the command wrote it: the code, and where the
+/// mark of it is in the output, with its length. For cmd it is a line with
+/// the id and the code; for the others the mark with the code, ended by a
+/// bell or by a backslash. `None` when the mark is not whole there yet.
+fn launch_exit(text: &str, begins: &str, line: bool) -> Option<(Option<i64>, usize, usize)> {
+    let at = text.find(begins)?;
+    let rest = &text[at + begins.len()..];
+    let digits = rest.bytes().take_while(|byte| byte.is_ascii_digit() || *byte == b'-').count();
+    if digits == 0 { return None }
+    let end = if line {
+        rest[digits..].find(|letter: char| letter == '\r' || letter == '\n').map(|offset| digits + offset + 1)
+    } else if rest[digits..].starts_with('\u{7}') {
+        Some(digits + 1)
+    } else if rest[digits..].starts_with("\u{1b}\\") {
+        Some(digits + 2)
+    } else {
+        None
+    };
+    Some((rest[..digits].parse().ok(), at, begins.len() + end?))
+}
 
 
 fn agent_command(kind: &str, db: &Value) -> String {

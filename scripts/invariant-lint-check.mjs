@@ -151,7 +151,11 @@ const cases = [
   ['AWB078', 'src-tauri/src/edit.rs', 'Input.dispatchKeyEvent', 'Input.insertText'],
   ['AWB079', 'src-tauri/core/src/workbench.rs', 'const TEST_WATCH: Duration = Duration::from_millis(8000);', 'const TEST_WATCH: Duration = Duration::from_millis(2500);'],
   ['AWB079', 'src-tauri/core/src/workbench.rs', 'translate(language, "请先填写命令。", &[] as &[String])', '"请先填写命令。".to_string()'],
-  ['AWB079', 'src-tauri/core/src/workbench.rs', 'if shell == "pwsh" { format!("{command}; if (-not $?) {{ $global:LASTEXITCODE = 1 }}") }', 'command.to_string()'],
+  // The launch test ended by the leaving of the process alone, with no mark
+  // of the command's own; the mark not taken out of what the page is shown.
+  ['AWB079', 'src-tauri/core/src/workbench.rs', '"cmd" => format!("{command} & echo {id}:!ERRORLEVEL!"),', ''],
+  ['AWB079', 'src-tauri/core/src/workbench.rs', 'kept.replace_range(at..at + len, "");', ''],
+  ['AWB079', 'src-tauri/core/src/workbench.rs', 'const TEST_SETTLE: Duration = Duration::from_millis(180);', 'const TEST_SETTLE: Duration = Duration::from_millis(0);'],
   ['AWB079', 'src-tauri/core/src/workbench.rs', 'if running { result["running"] = json!(true); }', ''],
   ['AWB079', 'src-tauri/core/src/workbench.rs', '"pty:write" if self.closing.load(Ordering::SeqCst) => Ok(Value::Null),', ''],
   ['AWB079', 'src-tauri/core/src/workbench.rs', 'if self.closing.load(Ordering::SeqCst) { return Ok(json!("signal")) }', ''],
@@ -234,8 +238,42 @@ const cases = [
   ['AWB086', 'src-tauri/core/src/resources.rs', 'let moved = with_mark(order, &moved);', 'let moved = moved;'],
   ['AWB086', 'src-tauri/core/src/resources.rs', 'if description.is_empty() || description.chars().count() > 8192 {', 'if description.is_empty() || description.chars().count() > 1024 {'],
   ['AWB086', 'src-tauri/core/src/resources.rs', 'let (order, rest) = json_edit_source(&before);', 'let (order, rest) = json_edit_source(before);'],
-  ['AWB086', 'src-tauri/core/src/resources.rs', 'Err(refused) if refused.duplicate => results.push(json!({ "agent": id, "ok": false, "error": refused.message, "skipped": true })),', 'Err(refused) => results.push(json!({ "agent": id, "ok": false, "error": refused.message })),'],
-  ['AWB086', 'src-tauri/core/src/resources.rs', 'Err(refused) => results.push(json!({ "agent": id, "ok": false, "error": refused.message })),', 'Err(refused) => results.push(json!({ "agent": id, "ok": false, "error": refused.message, "skipped": true })),'],
+  // Said to be skipped for a duplicate alone: marked so for any failure,
+  // the user is told a server that failed to be written was only skipped.
+  ['AWB086', 'src-tauri/core/src/resources.rs', 'json!({ "ok": false, "error": error.message, "skipped": error.duplicate })', 'json!({ "ok": false, "error": error.message, "skipped": true })'],
+  ['AWB086', 'src-tauri/core/src/resources.rs', 'result["skipped"] = json!(outcome["skipped"].as_bool().unwrap_or(false));', 'result["skipped"] = json!(true);'],
+  // A scope read wrong; a machine not asked before the executor; a template
+  // that does not come before the executor's own paths; a key said of a
+  // target as an empty string.
+  ['AWB089', 'src-tauri/core/src/resources.rs', 'Some(id) => ("local".into(), id.to_string()),', 'Some(id) => (id.to_string(), String::new()),'],
+  ['AWB089', 'src-tauri/core/src/resources.rs', 'None => (field(scope, "hostId"), field(scope, "executorId")),', 'None => ("local".into(), field(scope, "executorId")),'],
+  ['AWB089', 'src-tauri/core/src/resources.rs', 'crate::templates::machine(db, &host_id, true, language)?;', ''],
+  ['AWB089', 'src-tauri/core/src/resources.rs', 'Some(template) => (template_target(template), false),', 'Some(template) => match defaults.iter().find(|item| item.id == id) { Some(found) => (found.clone(), false), None => (template_target(template), false) },'],
+  ['AWB089', 'src-tauri/core/src/resources.rs', 'if !target.bare { value["skillAdapter"] = json!(target.skill_adapter); }', 'value["skillAdapter"] = json!(target.skill_adapter);'],
+  ['AWB089', 'src-tauri/core/src/resources.rs', 'if !target.template_name.is_empty() { value["templateName"] = json!(target.template_name); }', 'value["templateName"] = json!(target.template_name);'],
+  // A mark that does not see the template lent or the way the machine is
+  // signed in to; a check that lets a change through.
+  ['AWB089', 'src-tauri/core/src/resources.rs', 'let material = json!([host["id"], host["addr"], host["user"], host["port"], host["platform"], host["auth"], template]).to_string();', 'let material = json!([host["id"], host["addr"], host["user"], host["port"], host["platform"]]).to_string();'],
+  ['AWB089', 'src-tauri/core/src/resources.rs', 'if fingerprint(db, scope, language)?.0 != self.0 { return Err(t(language, "资源目标已改变，请刷新后重试")) }', 'Ok(())'],
+  // A scope chosen twice said twice; a file shared by two executors written
+  // twice; a path told apart by case on Windows; a scope that cannot be used
+  // failing the whole call.
+  ['AWB089', 'src-tauri/core/src/resources.rs', 'if !unique.contains(&pair) { unique.push(pair); }', 'unique.push(pair);'],
+  ['AWB089', 'src-tauri/core/src/resources.rs', 'let identity = if cfg!(windows) { canonical.to_string_lossy().to_lowercase() } else { canonical.to_string_lossy().to_string() };', 'let identity = canonical.to_string_lossy().to_string();'],
+  ['AWB089', 'src-tauri/core/src/resources.rs', 'let key = json!([host_id, identity, entry.get("id").filter(|item| item.is_string()).unwrap_or(&entry["name"])]).to_string();', 'let key = json!([host_id, identity, id]).to_string();'],
+  ['AWB089', 'src-tauri/core/src/resources.rs', 'if scopes.is_empty() { return Err(t(language, "请选择至少一个 Code Agent")) }', ''],
+  ['AWB089', 'src-tauri/core/src/resources.rs', 'result["skipped"] = json!(outcome["skipped"].as_bool().unwrap_or(false));', 'result["skipped"] = json!(true);'],
+  ['AWB089', 'src-tauri/core/src/resources.rs', 'resources.busy.store(false, Ordering::SeqCst);', ''],
+  // A Skill folder opened on another machine.
+  ['AWB089', 'src-tauri/core/src/resources.rs', 'if scope_of(scope).0 != "local" { return Err(t(language, "此操作仅适用于本机 Skill")) }', ''],
+  // The arguments of the Skill channels moved over by one; a target read for
+  // a machine other than the one asked of.
+  ['AWB089', 'src-tauri/core/src/workbench.rs', '"resources:skill-open" => resources::open_skill(&self.db.lock().expect("db").clone(), args.first().unwrap_or(&Value::Null), args.get(1).unwrap_or(&Value::Null), &language)', '"resources:skill-open" => resources::open_skill(&self.db.lock().expect("db").clone(), args.get(1).unwrap_or(&Value::Null), args.get(2).unwrap_or(&Value::Null), &language)'],
+  ['AWB089', 'src-tauri/core/src/workbench.rs', 'str_arg(args, 0), args.get(1).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), args.get(2).and_then(|value| value.as_array()).map(|list| list.iter().filter_map(|item| item.as_str().map(|item| item.to_string())).collect::<Vec<_>>()).as_ref(), &language),', 'str_arg(args, 0), args.get(2).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), args.get(3).and_then(|value| value.as_array()).map(|list| list.iter().filter_map(|item| item.as_str().map(|item| item.to_string())).collect::<Vec<_>>()).as_ref(), &language),'],
+  ['AWB089', 'src-tauri/core/src/workbench.rs', '"resources:targets" => resources::targets(&self.db.lock().expect("db").clone(), args.first().and_then(|value| value.as_str()).unwrap_or("local"), &language)', '"resources:targets" => resources::targets(&self.db.lock().expect("db").clone(), "local", &language)'],
+  ['AWB089', 'src-tauri/core/src/workbench.rs', '            "resources:open-recommendation" => resources::open_recommendation(str_arg(args, 0), &language).map(|_| Value::Null),\n', ''],
+  // The old channel back in the bridge.
+  ['AWB089', 'src/renderer/tauri-awb.ts', "openSkillRecommendation: (id) => call('resources:open-recommendation', [id]),", "saveResourceTarget: (target) => call('resources:target', [target]),"],
   ['AWB086', 'src-tauri/core/src/resources.rs', 'fs::hard_link(source, dest).map_err(|error| error.to_string())?;', 'fs::rename(source, dest).map_err(|error| error.to_string())?;'],
   ['AWB086', 'src-tauri/core/src/resources.rs', 'std::env::var_os("OPENCODE_CONFIG")', 'std::env::var_os("OPENCODE_CONFIG_DISABLED")'],
   // A built-in agent named in a resource channel without the resource home

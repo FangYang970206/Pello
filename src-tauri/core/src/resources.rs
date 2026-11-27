@@ -8,7 +8,6 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
 
 const MAX_CONFIG: u64 = 32 * 1024 * 1024;
 const MAX_SKILL_BYTES: u64 = 32 * 1024 * 1024;
@@ -16,37 +15,29 @@ const MAX_SKILL_FILES: usize = 10_000;
 
 pub struct Resources {
     busy: AtomicBool,
-    scope: Mutex<Option<Vec<Target>>>,
 }
 
 impl Resources {
-    pub fn new() -> Self { Self { busy: AtomicBool::new(false), scope: Mutex::new(None) } }
+    pub fn new() -> Self { Self { busy: AtomicBool::new(false) } }
 }
 
-/// Limit the next resource operations to the targets the caller already resolved.
-/// An empty list restores the saved builtin and custom agents.
-pub fn set_scope(resources: &Resources, value: &Value) {
-    let scope = value.as_array().map(|list| list.iter().filter_map(target_from_json).collect::<Vec<_>>()).filter(|list| !list.is_empty());
-    *resources.scope.lock().expect("scope") = scope;
-}
+/// The Skill repositories the page recommends, as the Electron build's
+/// catalog has them. The page names them by id; the repository is what is
+/// opened.
+pub const RECOMMENDATIONS: &[(&str, &str)] = &[
+    ("mattpocock", "mattpocock/skills"),
+    ("anthropics", "anthropics/skills"),
+    ("superpowers", "obra/superpowers"),
+    ("answer-html", "QingYunA/answer-me-with-html"),
+    ("impeccable", "pbakaus/impeccable"),
+];
 
-fn target_from_json(value: &Value) -> Option<Target> {
-    let id = value.get("id").and_then(|item| item.as_str()).unwrap_or("");
-    if id.is_empty() { return None; }
-    Some(Target {
-        id: id.to_string(),
-        name: value.get("name").and_then(|item| item.as_str()).unwrap_or(id).to_string(),
-        mcp_path: value.get("mcpPath").and_then(|item| item.as_str()).unwrap_or("").to_string(),
-        skill_path: value.get("skillPath").and_then(|item| item.as_str()).unwrap_or("").to_string(),
-        skill_config_path: value.get("skillConfigPath").and_then(|item| item.as_str()).unwrap_or("").to_string(),
-        format: value.get("format").and_then(|item| item.as_str()).unwrap_or("standard").to_string(),
-        skill_adapter: value.get("skillAdapter").and_then(|item| item.as_str()).unwrap_or("portable").to_string(),
-    })
-}
-
-fn current_targets(resources: &Resources, data: &Path, custom: &Value) -> Vec<Target> {
-    if let Some(scope) = resources.scope.lock().expect("scope").clone() { return scope; }
-    owned_targets(data, custom)
+/// Open a recommended repository's page in the browser. One that is not
+/// recommended is refused by name, as the Electron build refuses it.
+pub fn open_recommendation(id: &str, language: &str) -> Result<(), String> {
+    let (_, repository) = RECOMMENDATIONS.iter().find(|(known, _)| *known == id).ok_or_else(|| t(language, "推荐仓库不存在"))?;
+    crate::shell::open_external(&format!("https://github.com/{repository}"));
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -58,6 +49,10 @@ struct Target {
     skill_config_path: String,
     format: String,
     skill_adapter: String,
+    host_id: String,
+    template_name: String,
+    /// Neither a template nor a path of the executor's own.
+    bare: bool,
 }
 
 fn t(language: &str, text: &str) -> String { translate(language, text, &[] as &[String]) }
@@ -116,7 +111,10 @@ fn home_dir() -> PathBuf {
     std::env::var_os("AWB_RESOURCE_HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())))
 }
 
-pub fn targets(data: &Path, custom: &Value) -> Vec<Value> {
+/// The built-in executors' own configuration on this machine, as each of
+/// them finds it: by the environment variables it reads, else under the home
+/// directory.
+fn native_targets() -> Vec<Target> {
     let home = home_dir();
     let join = |parts: &[&str]| {
         let mut path = home.clone();
@@ -137,79 +135,131 @@ pub fn targets(data: &Path, custom: &Value) -> Vec<Value> {
         None => opencode_dir.join(if opencode_dir.join("opencode.jsonc").exists() { "opencode.jsonc" } else { "opencode.json" }),
     };
     let opencode_file = opencode_file.display().to_string();
-    let mut builtin = vec![
-        Target { id: "claude".into(), name: "Claude Code".into(), mcp_path: join(&[".claude.json"]).display().to_string(), skill_path: claude.join("skills").display().to_string(), skill_config_path: String::new(), format: "standard".into(), skill_adapter: "claude".into() },
-        Target { id: "codex".into(), name: "Codex CLI".into(), mcp_path: codex.join("config.toml").display().to_string(), skill_path: join(&[".agents", "skills"]).display().to_string(), skill_config_path: String::new(), format: "codex".into(), skill_adapter: "codex".into() },
-        Target { id: "opencode".into(), name: "OpenCode".into(), mcp_path: opencode_file, skill_path: opencode_dir.join("skills").display().to_string(), skill_config_path: String::new(), format: "opencode".into(), skill_adapter: "opencode".into() },
-        Target { id: "pi".into(), name: "Pi".into(), mcp_path: pi.join("mcp.json").display().to_string(), skill_path: pi.join("skills").display().to_string(), skill_config_path: String::new(), format: "standard".into(), skill_adapter: "pi".into() },
-        Target { id: "omp".into(), name: "Oh My Pi".into(), mcp_path: join(&[".omp", "agent", "mcp.json"]).display().to_string(), skill_path: join(&[".omp", "agent", "skills"]).display().to_string(), skill_config_path: join(&[".omp", "agent", "config.yml"]).display().to_string(), format: "standard".into(), skill_adapter: "omp".into() },
-    ];
-    let saved = read_text(&data.join("resource-targets.json"), "zh-CN").ok().and_then(|text| parse_json_text(&text, "zh-CN").ok()).unwrap_or_else(|| json!({}));
-    if let Some(list) = custom.as_array() {
-        for item in list {
-            let id = item["id"].as_str().unwrap_or("").to_string();
-            if id.is_empty() { continue; }
-            let mut target = Target { id: id.clone(), name: item["name"].as_str().unwrap_or(&id).to_string(), mcp_path: String::new(), skill_path: String::new(), skill_config_path: String::new(), format: "standard".into(), skill_adapter: item["resources"]["skillAdapter"].as_str().unwrap_or("portable").to_string() };
-            if let Some(stored) = saved.get(&id) { apply_saved(&mut target, stored); }
-            if item.get("resources").is_some() { apply_saved(&mut target, &item["resources"]); }
-            builtin.push(target);
-        }
+    vec![
+        Target { id: "claude".into(), name: "Claude Code".into(), mcp_path: join(&[".claude.json"]).display().to_string(), skill_path: claude.join("skills").display().to_string(), skill_config_path: String::new(), format: "standard".into(), skill_adapter: "claude".into(), host_id: "local".into(), template_name: String::new(), bare: false },
+        Target { id: "codex".into(), name: "Codex CLI".into(), mcp_path: codex.join("config.toml").display().to_string(), skill_path: join(&[".agents", "skills"]).display().to_string(), skill_config_path: String::new(), format: "codex".into(), skill_adapter: "codex".into(), host_id: "local".into(), template_name: String::new(), bare: false },
+        Target { id: "opencode".into(), name: "OpenCode".into(), mcp_path: opencode_file, skill_path: opencode_dir.join("skills").display().to_string(), skill_config_path: String::new(), format: "opencode".into(), skill_adapter: "opencode".into(), host_id: "local".into(), template_name: String::new(), bare: false },
+        Target { id: "pi".into(), name: "Pi".into(), mcp_path: pi.join("mcp.json").display().to_string(), skill_path: pi.join("skills").display().to_string(), skill_config_path: String::new(), format: "standard".into(), skill_adapter: "pi".into(), host_id: "local".into(), template_name: String::new(), bare: false },
+        Target { id: "omp".into(), name: "Oh My Pi".into(), mcp_path: join(&[".omp", "agent", "mcp.json"]).display().to_string(), skill_path: join(&[".omp", "agent", "skills"]).display().to_string(), skill_config_path: join(&[".omp", "agent", "config.yml"]).display().to_string(), format: "standard".into(), skill_adapter: "omp".into(), host_id: "local".into(), template_name: String::new(), bare: false },
+    ]
+}
+
+fn field(value: &Value, key: &str) -> String { value.get(key).and_then(|item| item.as_str()).unwrap_or("").to_string() }
+
+fn template_target(template: &Value) -> Target {
+    Target {
+        id: String::new(),
+        name: String::new(),
+        mcp_path: field(template, "mcpPath"),
+        skill_path: field(template, "skillPath"),
+        skill_config_path: field(template, "skillConfigPath"),
+        format: field(template, "format"),
+        skill_adapter: field(template, "skillAdapter"),
+        host_id: field(template, "hostId"),
+        template_name: field(template, "name"),
+        bare: false,
     }
-    builtin.into_iter().map(target_json).collect()
 }
 
-pub fn save_target(data: &Path, custom: &Value, value: &Value, language: &str) -> Result<(), String> {
-    let id = value["id"].as_str().unwrap_or("");
-    let known = custom.as_array().map(|list| list.iter().any(|item| item["id"].as_str() == Some(id))).unwrap_or(false);
-    if id.is_empty() || !known { return Err(t(language, "仅自定义 Agent 可设置资源路径")) }
-    let format = value["format"].as_str().unwrap_or("standard");
-    if !matches!(format, "standard" | "codex" | "opencode") { return Err(t(language, "不支持的配置格式")) }
-    for key in ["mcpPath", "skillPath", "skillConfigPath"] {
-        if let Some(path) = value.get(key).and_then(|item| item.as_str()) {
-            if !path.is_empty() && !Path::new(path).is_absolute() { return Err(t(language, "请选择绝对路径")) }
-        }
+/// Every executor that can be lent resources: the built-in ones and the
+/// custom ones, in that order.
+fn rows(db: &Value) -> Vec<Value> {
+    let mut all = crate::templates::PRESETS.iter().map(|(id, name)| json!({ "id": id, "name": name })).collect::<Vec<_>>();
+    all.extend(db["custom"].as_array().cloned().unwrap_or_default());
+    all
+}
+
+/// An executor's resources on a machine: the template lent to it there, else
+/// the paths it finds for itself on this machine, else none. The machine is
+/// asked for first, and must be connected.
+fn describe(db: &Value, scope: &Value, defaults: &[Target], language: &str) -> Result<Target, String> {
+    let (host_id, id) = scope_of(scope);
+    crate::templates::machine(db, &host_id, true, language)?;
+    let Some(executor) = rows(db).into_iter().find(|item| item["id"] == id) else { return Err(t(language, "执行器不存在")) };
+    let template = crate::templates::executor_template(db, &host_id, &id);
+    let (mut target, bare) = match template {
+        Some(template) => (template_target(template), false),
+        None => match defaults.iter().find(|item| item.id == id) {
+            Some(found) => (found.clone(), false),
+            // Neither a template nor a path of its own: said with the three
+            // keys the Electron build's empty paths have, and no adapter.
+            None => (Target { id: String::new(), name: String::new(), mcp_path: String::new(), skill_path: String::new(), skill_config_path: String::new(), format: "standard".into(), skill_adapter: "portable".into(), host_id: String::new(), template_name: String::new(), bare: true }, true),
+        },
+    };
+    target.bare = bare;
+    target.id = id;
+    target.name = field(&executor, "name");
+    target.host_id = host_id;
+    Ok(target)
+}
+
+/// A scope as the Electron build takes it: an executor on a machine, or a
+/// bare executor id, which is one on this machine.
+pub fn scope_of(scope: &Value) -> (String, String) {
+    match scope.as_str() {
+        Some(id) => ("local".into(), id.to_string()),
+        None => (field(scope, "hostId"), field(scope, "executorId")),
     }
-    let file = data.join("resource-targets.json");
-    let mut saved = read_text(&file, language).ok().and_then(|text| parse_json_text(&text, language).ok()).unwrap_or_else(|| json!({}));
-    let entry = saved.as_object_mut().ok_or_else(|| t(language, "不支持的配置格式"))?.entry(id).or_insert_with(|| json!({}));
-    if let Some(path) = value.get("mcpPath").and_then(|item| item.as_str()) { entry["mcpPath"] = json!(path); }
-    if let Some(path) = value.get("skillPath").and_then(|item| item.as_str()) { entry["skillPath"] = json!(path); }
-    if let Some(path) = value.get("skillConfigPath").and_then(|item| item.as_str()) { entry["skillConfigPath"] = json!(path); }
-    entry["format"] = json!(format);
-    fs::write(file, saved.to_string()).map_err(|error| error.to_string())
 }
 
-fn apply_saved(target: &mut Target, value: &Value) {
-    if let Some(path) = value.get("mcpPath").and_then(|item| item.as_str()) { target.mcp_path = path.to_string(); }
-    if let Some(path) = value.get("skillPath").and_then(|item| item.as_str()) { target.skill_path = path.to_string(); }
-    if let Some(path) = value.get("skillConfigPath").and_then(|item| item.as_str()) { target.skill_config_path = path.to_string(); }
-    if let Some(format) = value.get("format").and_then(|item| item.as_str()) { target.format = format.to_string(); }
-    if let Some(adapter) = value.get("skillAdapter").and_then(|item| item.as_str()) { target.skill_adapter = adapter.to_string(); }
+/// What the resources page shows for every executor on a machine.
+pub fn targets(db: &Value, host_id: &str, language: &str) -> Result<Value, String> {
+    crate::templates::machine(db, host_id, true, language)?;
+    if host_id != "local" { return Err(t(language, "这台机器未连接")) }
+    let defaults = native_targets();
+    let list = rows(db).iter().map(|executor| describe(db, &json!({ "hostId": host_id, "executorId": executor["id"] }), &defaults, language)).collect::<Result<Vec<_>, _>>()?;
+    Ok(Value::Array(list.iter().map(target_json).collect()))
 }
 
-fn target_json(target: Target) -> Value {
-    json!({ "id": target.id, "name": target.name, "mcpPath": target.mcp_path, "skillPath": target.skill_path, "skillConfigPath": target.skill_config_path, "format": target.format, "skillAdapter": target.skill_adapter })
+fn target_json(target: &Target) -> Value {
+    let mut value = json!({ "id": target.id, "name": target.name, "mcpPath": target.mcp_path, "skillPath": target.skill_path });
+    if !target.skill_config_path.is_empty() { value["skillConfigPath"] = json!(target.skill_config_path); }
+    value["format"] = json!(target.format);
+    if !target.bare { value["skillAdapter"] = json!(target.skill_adapter); }
+    value["hostId"] = json!(target.host_id);
+    // Said only of a template, as the Electron build's describe has it: no
+    // key at all where there is none.
+    if !target.template_name.is_empty() { value["templateName"] = json!(target.template_name); }
+    value
 }
 
-fn owned_targets(data: &Path, custom: &Value) -> Vec<Target> {
-    targets(data, custom).into_iter().map(|value| Target {
-        id: value["id"].as_str().unwrap_or("").to_string(),
-        name: value["name"].as_str().unwrap_or("").to_string(),
-        mcp_path: value["mcpPath"].as_str().unwrap_or("").to_string(),
-        skill_path: value["skillPath"].as_str().unwrap_or("").to_string(),
-        skill_config_path: value["skillConfigPath"].as_str().unwrap_or("").to_string(),
-        format: value["format"].as_str().unwrap_or("standard").to_string(),
-        skill_adapter: value["skillAdapter"].as_str().unwrap_or("portable").to_string(),
-    }).collect()
+/// What a scope comes to while an operation runs. Taken before and compared
+/// after, so that a machine or a template changed in between is refused
+/// rather than written to as it was. It holds how a machine is reached and
+/// by what means, never a password.
+#[derive(Debug)]
+pub struct Fingerprint(String);
+
+pub fn fingerprint(db: &Value, scope: &Value, language: &str) -> Result<Fingerprint, String> {
+    let (host_id, id) = scope_of(scope);
+    let host = crate::templates::machine(db, &host_id, true, language)?;
+    if !rows(db).iter().any(|item| item["id"] == id) { return Err(t(language, "执行器不存在")) }
+    let template = crate::templates::executor_template(db, &host_id, &id);
+    let material = json!([host["id"], host["addr"], host["user"], host["port"], host["platform"], host["auth"], template]).to_string();
+    Ok(Fingerprint(material))
 }
 
-fn find_target<'a>(targets: &'a [Target], agent: &str, language: &str) -> Result<&'a Target, String> {
-    targets.iter().find(|item| item.id == agent).ok_or_else(|| t(language, "Agent 不存在"))
+impl Fingerprint {
+    pub fn check(&self, db: &Value, scope: &Value, language: &str) -> Result<(), String> {
+        if fingerprint(db, scope, language)?.0 != self.0 { return Err(t(language, "资源目标已改变，请刷新后重试")) }
+        Ok(())
+    }
 }
 
-pub fn list(resources: &Resources, data: &Path, custom: &Value, kind: &str, agent: &str, page: usize, query: &str, language: &str) -> Result<Value, String> {
-    let targets = current_targets(resources, data, custom);
-    let target = find_target(&targets, agent, language)?;
+/// An executor's resources on this machine for an operation on them. A
+/// machine that is not this one is refused until the resources of a remote
+/// machine are read through its connection.
+fn resolve(db: &Value, scope: &Value, language: &str) -> Result<(Target, Fingerprint), String> {
+    let mark = fingerprint(db, scope, language)?;
+    let (host_id, _) = scope_of(scope);
+    if host_id != "local" { return Err(t(language, "这台机器未连接")) }
+    let target = describe(db, scope, &native_targets(), language)?;
+    Ok((target, mark))
+}
+
+pub fn list(db: &Value, kind: &str, scope: &Value, page: usize, query: &str, language: &str) -> Result<Value, String> {
+    let (target, _mark) = resolve(db, scope, language)?;
+    let target = &target;
     let mut items = Vec::new();
     let mut errors = Vec::new();
     if kind == "mcp" {
@@ -847,11 +897,13 @@ fn set_yaml_root_list(text: &str, key: &str, values: &[String]) -> String {
     next
 }
 
-pub fn toggle(resources: &Resources, data: &Path, custom: &Value, kind: &str, agent: &str, item: &Value, enabled: Option<bool>, language: &str) -> Result<(), String> {
+pub fn toggle(db: &Value, kind: &str, scope: &Value, item: &Value, enabled: Option<bool>, language: &str) -> Result<(), String> {
     let enabled = enabled.ok_or_else(|| t(language, "无效的开关状态"))?;
-    let targets = current_targets(resources, data, custom);
-    let target = find_target(&targets, agent, language)?.clone();
-    let found = listed(resources, data, custom, kind, agent, item, language)?;
+    let (target, mark) = resolve(db, scope, language)?;
+    let found = listed(db, kind, scope, item, language)?;
+    // What was read is what is changed: a target changed in between is
+    // refused, not written to as it was.
+    mark.check(db, scope, language)?;
     if kind == "mcp" {
         toggle_mcp(&target, &found, enabled, language)
     } else {
@@ -859,14 +911,14 @@ pub fn toggle(resources: &Resources, data: &Path, custom: &Value, kind: &str, ag
     }
 }
 
-fn listed(resources: &Resources, data: &Path, custom: &Value, kind: &str, agent: &str, item: &Value, language: &str) -> Result<Value, String> {
-    let page = list(resources, data, custom, kind, agent, 1, "", language)?;
+fn listed(db: &Value, kind: &str, scope: &Value, item: &Value, language: &str) -> Result<Value, String> {
+    let page = list(db, kind, scope, 1, "", language)?;
     let name = item["name"].as_str().unwrap_or("");
     let path = item["path"].as_str().unwrap_or("");
     let mut all = page["items"].as_array().cloned().unwrap_or_default();
     if page["pages"].as_u64().unwrap_or(1) > 1 {
         for index in 2..=page["pages"].as_u64().unwrap_or(1) {
-            let next = list(resources, data, custom, kind, agent, index as usize, "", language)?;
+            let next = list(db, kind, scope, index as usize, "", language)?;
             all.extend(next["items"].as_array().cloned().unwrap_or_default());
         }
     }
@@ -960,10 +1012,9 @@ fn rename_skill(root: &Path, source: &Path, dest: &Path, language: &str) -> Resu
     Ok(())
 }
 
-pub fn detail(resources: &Resources, data: &Path, custom: &Value, kind: &str, agent: &str, item: &Value, language: &str) -> Result<Value, String> {
-    let targets = current_targets(resources, data, custom);
-    let target = find_target(&targets, agent, language)?.clone();
-    let found = listed(resources, data, custom, kind, agent, item, language)?;
+pub fn detail(db: &Value, kind: &str, scope: &Value, item: &Value, language: &str) -> Result<Value, String> {
+    let (target, _mark) = resolve(db, scope, language)?;
+    let found = listed(db, kind, scope, item, language)?;
     if kind == "skills" {
         let path = PathBuf::from(found["path"].as_str().unwrap_or(""));
         let disabled = PathBuf::from(format!("{}.awb-disabled", path.display()));
@@ -1053,10 +1104,15 @@ fn regex_secret(text: &str) -> bool {
     lower.contains("token") || lower.contains("password") || lower.contains("secret") || lower.contains("api-key") || lower.contains("api_key")
 }
 
-pub fn skill_directory(resources: &Resources, data: &Path, custom: &Value, agent: &str, item: &Value, removing: bool, language: &str) -> Result<PathBuf, String> {
-    let targets = current_targets(resources, data, custom);
-    let target = find_target(&targets, agent, language)?.clone();
-    let found = listed(resources, data, custom, "skills", agent, item, language)?;
+pub fn skill_directory(db: &Value, scope: &Value, item: &Value, removing: bool, language: &str) -> Result<PathBuf, String> {
+    // The machine is asked for first, and must be connected; opening and
+    // removing a Skill folder are for this machine alone, as the Electron
+    // build has it.
+    let mark = fingerprint(db, scope, language)?;
+    if scope_of(scope).0 != "local" { return Err(t(language, "此操作仅适用于本机 Skill")) }
+    let (target, _) = resolve(db, scope, language)?;
+    let found = listed(db, "skills", scope, item, language)?;
+    mark.check(db, scope, language)?;
     let folder = Path::new(found["path"].as_str().unwrap_or("")).parent().ok_or_else(|| t(language, "Skill 路径不属于当前 Agent"))?.to_path_buf();
     let roots = skill_roots(&target);
     let inside = roots.iter().any(|root| folder.starts_with(root));
@@ -1085,8 +1141,8 @@ pub fn skill_directory(resources: &Resources, data: &Path, custom: &Value, agent
     Ok(folder)
 }
 
-pub fn open_skill(resources: &Resources, data: &Path, custom: &Value, agent: &str, item: &Value, language: &str) -> Result<Value, String> {
-    let folder = skill_directory(resources, data, custom, agent, item, false, language)?;
+pub fn open_skill(db: &Value, scope: &Value, item: &Value, language: &str) -> Result<Value, String> {
+    let folder = skill_directory(db, scope, item, false, language)?;
     let real = crate::real_path(&folder).unwrap_or(folder);
     // `AWB_OPEN_SKILL=0` is a test that has no desktop to open a folder on.
     if std::env::var("AWB_OPEN_SKILL").ok().as_deref() != Some("0") {
@@ -1095,8 +1151,8 @@ pub fn open_skill(resources: &Resources, data: &Path, custom: &Value, agent: &st
     Ok(json!(real.display().to_string()))
 }
 
-pub fn delete_skill(resources: &Resources, data: &Path, custom: &Value, agent: &str, item: &Value, language: &str) -> Result<Value, String> {
-    let folder = skill_directory(resources, data, custom, agent, item, true, language)?;
+pub fn delete_skill(db: &Value, scope: &Value, item: &Value, language: &str) -> Result<Value, String> {
+    let folder = skill_directory(db, scope, item, true, language)?;
     trash_path(&folder, language)?;
     Ok(Value::Null)
 }
@@ -1116,10 +1172,27 @@ fn trash_path(path: &Path, language: &str) -> Result<(), String> {
     crate::sys::trash(path).map_err(|_| unmovable())
 }
 
-pub fn add_mcp(resources: &Resources, data: &Path, custom: &Value, name: &str, config: &Value, agents: &[Value], enabled: bool, language: &str) -> Result<Value, String> {
-    if !mcp_name_ok(name) { return Err(t(language, "MCP 名称只能包含字母、数字、下划线、连字符，最多 64 字符")); }
-    validate_mcp_config(config, language)?;
-    distribute(resources, data, custom, agents, language, &mut |target| write_mcp(target, name, config, enabled, language))
+pub fn add_mcp(resources: &Resources, db: &Value, name: &str, config: &Value, scopes: &[Value], enabled: bool, language: &str) -> Result<Value, String> {
+    write_mcp_entries(resources, db, &[json!({ "name": name, "config": config, "enabled": enabled })], scopes, language)
+}
+
+/// Servers written to every executor chosen. An entry without a usable
+/// configuration, or with an error said of it by the scan, fails on every
+/// executor with that, and is written nowhere.
+fn write_mcp_entries(resources: &Resources, db: &Value, entries: &[Value], scopes: &[Value], language: &str) -> Result<Value, String> {
+    for entry in entries {
+        if entry.get("config").is_some_and(|config| !config.is_null()) && entry.get("error").is_none() {
+            let name = entry["name"].as_str().unwrap_or("");
+            if !mcp_name_ok(name) { return Err(t(language, "MCP 名称只能包含字母、数字、下划线、连字符，最多 64 字符")) }
+            validate_mcp_config(&entry["config"], language)?;
+        }
+    }
+    distribute(resources, db, "mcp", entries, scopes, language, &mut |target, entry| {
+        let config = entry.get("config").filter(|config| config.is_object());
+        if config.is_none() || entry.get("error").is_some() { return Err(entry["error"].as_str().map(|error| error.to_string()).unwrap_or_else(|| t(language, "无效配置")).into()) }
+        let enabled = entry["enabled"].as_bool().unwrap_or(false);
+        write_mcp(target, entry["name"].as_str().unwrap_or(""), config.expect("checked to be there"), enabled, language)
+    })
 }
 
 fn mcp_name_ok(name: &str) -> bool {
@@ -1252,7 +1325,7 @@ fn inline_toml(value: &Value) -> String {
 /// The MCP servers of a TOML configuration, as `mcpRoot` finds them.
 fn toml_servers(text: &str, language: &str) -> Result<Vec<(String, Value)>, String> {
     let config = read_toml_config(text, language)?;
-    let target = Target { id: String::new(), name: String::new(), mcp_path: String::new(), skill_path: String::new(), skill_config_path: String::new(), format: "codex".to_string(), skill_adapter: String::new() };
+    let target = Target { id: String::new(), name: String::new(), mcp_path: String::new(), skill_path: String::new(), skill_config_path: String::new(), format: "codex".to_string(), skill_adapter: String::new(), host_id: String::new(), template_name: String::new(), bare: false };
     let (_, servers, _) = mcp_root(&target, &config, language)?;
     Ok(servers.iter().map(|(name, value)| (name.clone(), value.clone())).collect())
 }
@@ -1431,24 +1504,84 @@ impl From<String> for Refused {
     fn from(message: String) -> Self { Self { message, duplicate: false } }
 }
 
-fn distribute(resources: &Resources, data: &Path, custom: &Value, agents: &[Value], language: &str, run: &mut dyn FnMut(&Target) -> Result<(), Refused>) -> Result<Value, String> {
-    if resources.busy.swap(true, Ordering::SeqCst) { return Err(t(language, "正在分发资源，请稍候")); }
+/// One executor's resources as a distribution uses them: what was found for
+/// it, and what it must still be when a write is about to happen.
+struct Scoped { target: Target, mark: Option<Fingerprint> }
+
+impl std::ops::Deref for Scoped {
+    type Target = Target;
+    fn deref(&self) -> &Target { &self.target }
+}
+
+/// What every entry comes to on every scope. A scope that cannot be used
+/// fails each of its entries and nothing is written for it; the rest go on.
+/// Two executors that share a configuration file have it written once, and
+/// the second is told what the first was, as the Electron build's distribute
+/// has it. The entries are given with a name and, where they have one, an id.
+fn distribute(resources: &Resources, db: &Value, kind: &str, entries: &[Value], scopes: &[Value], language: &str, run: &mut dyn FnMut(&Scoped, &Value) -> Result<(), Refused>) -> Result<Value, String> {
+    if resources.busy.swap(true, Ordering::SeqCst) { return Err(t(language, "正在分发资源，请稍候")) }
     let result = (|| {
-        if agents.is_empty() { return Err(t(language, "请选择至少一个 Code Agent")); }
-        let targets = current_targets(resources, data, custom);
-        let mut seen = Vec::new();
+        if scopes.is_empty() { return Err(t(language, "请选择至少一个 Code Agent")) }
+        // The same executor on the same machine, chosen twice, is one.
+        let mut unique: Vec<(String, String)> = Vec::new();
+        for scope in scopes {
+            let pair = scope_of(scope);
+            if !unique.contains(&pair) { unique.push(pair); }
+        }
         let mut results = Vec::new();
-        for agent in agents {
-            let id = agent.as_str().unwrap_or("").to_string();
-            if seen.contains(&id) { continue; }
-            seen.push(id.clone());
-            // A target that is not there fails like any other, and is never
-            // said to be a duplicate.
-            let outcome = find_target(&targets, &id, language).map_err(Refused::from).and_then(|target| run(target));
-            match outcome {
-                Ok(()) => results.push(json!({ "agent": id, "ok": true })),
-                Err(refused) if refused.duplicate => results.push(json!({ "agent": id, "ok": false, "error": refused.message, "skipped": true })),
-                Err(refused) => results.push(json!({ "agent": id, "ok": false, "error": refused.message })),
+        // What came of an entry on a file, by the file and the entry.
+        let mut completed: Vec<(String, String, Value)> = Vec::new();
+        for (host_id, id) in unique {
+            let outcome = |entry: &Value, outcome: &Value| {
+                let mut result = json!({ "agent": id, "hostId": host_id, "name": entry["name"], "ok": outcome["ok"] });
+                if let Some(item) = entry.get("id") { result["id"] = item.clone(); }
+                if !outcome["ok"].as_bool().unwrap_or(false) {
+                    result["error"] = outcome["error"].clone();
+                    // Said of every failure, true or false, as the Electron
+                    // build says it; never said of a success.
+                    result["skipped"] = json!(outcome["skipped"].as_bool().unwrap_or(false));
+                }
+                result
+            };
+            let failed = |error: &Refused| json!({ "ok": false, "error": error.message, "skipped": error.duplicate });
+            let found = (|| -> Result<(Scoped, String), Refused> {
+                let (target, mark) = resolve(db, &json!({ "hostId": host_id, "executorId": id }), language).map_err(Refused::from)?;
+                let file = if kind == "skills" { &target.skill_path } else { &target.mcp_path };
+                if file.is_empty() { return Err(t(language, "请先设置执行器的资源路径").into()) }
+                // The file as it really is named, so that two executors whose
+                // paths come to the same file are known to share it. What is
+                // not there yet is named by its nearest parent that is.
+                let canonical = local_canonical(Path::new(file)).map_err(Refused::from)?;
+                let identity = if cfg!(windows) { canonical.to_string_lossy().to_lowercase() } else { canonical.to_string_lossy().to_string() };
+                mark.check(db, &json!({ "hostId": host_id, "executorId": id }), language).map_err(Refused::from)?;
+                Ok((Scoped { target, mark: Some(mark) }, identity))
+            })();
+            let (scoped, identity) = match found {
+                Ok(found) => found,
+                Err(refused) => {
+                    for entry in entries { results.push(outcome(entry, &failed(&refused))); }
+                    continue;
+                }
+            };
+            for entry in entries {
+                let key = json!([host_id, identity, entry.get("id").filter(|item| item.is_string()).unwrap_or(&entry["name"])]).to_string();
+                let done = completed.iter().find(|(file, _, _)| *file == key).map(|(_, _, value)| value.clone());
+                let result = match done {
+                    Some(done) => Ok(done),
+                    None => {
+                        let tried = scoped.mark.as_ref().expect("a scope that was found has its mark").check(db, &json!({ "hostId": host_id, "executorId": id }), language).map_err(Refused::from).and_then(|()| run(&scoped, entry));
+                        let value = match &tried {
+                            Ok(()) => json!({ "ok": true }),
+                            Err(refused) => failed(refused),
+                        };
+                        completed.push((key, identity.clone(), value.clone()));
+                        tried.map(|()| value)
+                    }
+                };
+                match result {
+                    Ok(done) => results.push(outcome(entry, &done)),
+                    Err(refused) => results.push(outcome(entry, &failed(&refused))),
+                }
             }
         }
         Ok(Value::Array(results))
@@ -1457,9 +1590,23 @@ fn distribute(resources: &Resources, data: &Path, custom: &Value, agents: &[Valu
     result
 }
 
-pub fn scan(data: &Path, custom: &Value, kind: &str, source: &str, language: &str) -> Result<Value, String> {
+/// A path as it is named on the disk, the nearest parent that exists standing
+/// in for the rest of it, as the Electron build's localCanonical does.
+fn local_canonical(path: &Path) -> Result<PathBuf, String> {
+    match crate::real_path(path) {
+        Ok(real) => Ok(real),
+        Err(error) => {
+            let parent = path.parent().ok_or_else(|| error.to_string())?;
+            if error.kind() != std::io::ErrorKind::NotFound || parent == path { return Err(error.to_string()) }
+            Ok(local_canonical(parent)?.join(path.file_name().ok_or_else(|| error.to_string())?))
+        }
+    }
+}
+
+pub fn scan(db: &Value, kind: &str, source: &str, host_id: &str, language: &str) -> Result<Value, String> {
+    crate::templates::machine(db, host_id, true, language)?;
     if kind == "skills" {
-        let _ = (data, custom);
+        if host_id != "local" { return Err(t(language, "请选择本机 Skill 文件夹或 ZIP 压缩包")) }
         let (staging, skills) = stage_skills(Path::new(source), language)?;
         let listed = skills.iter().map(|skill| json!({ "id": skill.name, "name": skill.name, "description": skill.description, "path": skill.relative })).collect::<Vec<_>>();
         let _ = remove_tree(&staging);
@@ -1477,23 +1624,17 @@ pub fn scan(data: &Path, custom: &Value, kind: &str, source: &str, language: &st
 
 struct ImportEntry { id: String, name: String, path: String, config: Option<Value>, enabled: bool, error: Option<String> }
 
-pub fn import_mcp(resources: &Resources, data: &Path, custom: &Value, source: &str, agents: &[Value], ids: &[Value], language: &str) -> Result<Value, String> {
+pub fn import_mcp(resources: &Resources, db: &Value, source: &str, scopes: &[Value], ids: &[Value], host_id: &str, language: &str) -> Result<Value, String> {
+    crate::templates::machine(db, host_id, true, language)?;
     let entries = read_mcp_import(Path::new(source), language)?;
-    if ids.is_empty() || ids.iter().any(|id| !entries.iter().any(|entry| entry.id == id.as_str().unwrap_or(""))) { return Err(t(language, "请选择扫描结果中的 MCP")); }
-    let mut results = Vec::new();
-    for entry in entries.into_iter().filter(|entry| ids.iter().any(|id| id.as_str() == Some(entry.id.as_str()))) {
-        if entry.config.is_none() || entry.error.is_some() {
-            for agent in agents {
-                results.push(json!({ "agent": agent.as_str().unwrap_or(""), "name": entry.name, "id": entry.id, "ok": false, "error": entry.error.clone().unwrap_or_else(|| t(language, "无效配置")) }));
-            }
-            continue;
-        }
-        let added = add_mcp(resources, data, custom, &entry.name, entry.config.as_ref().unwrap(), agents, entry.enabled, language)?;
-        if let Some(list) = added.as_array() {
-            for item in list { let mut item = item.clone(); item["name"] = json!(entry.name); item["id"] = json!(entry.id); results.push(item); }
-        }
-    }
-    Ok(Value::Array(results))
+    if ids.is_empty() || ids.iter().any(|id| !entries.iter().any(|entry| entry.id == id.as_str().unwrap_or(""))) { return Err(t(language, "请选择扫描结果中的 MCP")) }
+    let chosen = entries.into_iter().filter(|entry| ids.iter().any(|id| id.as_str() == Some(entry.id.as_str()))).map(|entry| {
+        let mut value = json!({ "id": entry.id, "name": entry.name, "enabled": entry.enabled });
+        if let Some(config) = entry.config { value["config"] = config; }
+        if let Some(error) = entry.error { value["error"] = json!(error); }
+        value
+    }).collect::<Vec<_>>();
+    write_mcp_entries(resources, db, &chosen, scopes, language)
 }
 
 /// The servers of a configuration file, found as the Electron build's
@@ -1703,27 +1844,23 @@ fn normalize_import(value: &Value, language: &str) -> Result<Value, String> {
 
 struct StagedSkill { folder: PathBuf, name: String, description: String, relative: String }
 
-pub fn import_skills(resources: &Resources, data: &Path, custom: &Value, source: &str, agents: &[Value], names: Option<&Vec<String>>, language: &str) -> Result<Value, String> {
+pub fn import_skills(resources: &Resources, db: &Value, source: &str, scopes: &[Value], names: Option<&Vec<String>>, language: &str) -> Result<Value, String> {
     let (staging, discovered) = stage_skills(Path::new(source), language)?;
     let outcome = (|| {
         let skills = if let Some(names) = names {
-            if names.is_empty() || names.iter().any(|name| !discovered.iter().any(|skill| &skill.name == name)) { return Err(t(language, "请选择扫描结果中的 Skill")); }
+            if names.is_empty() || names.iter().any(|name| !discovered.iter().any(|skill| &skill.name == name)) { return Err(t(language, "请选择扫描结果中的 Skill")) }
             discovered.iter().filter(|skill| names.iter().any(|name| name == &skill.name)).cloned().collect::<Vec<_>>()
         } else { discovered.clone() };
-        if skills.is_empty() { return Err(t(language, "请选择扫描结果中的 Skill")); }
-        let results = distribute(resources, data, custom, agents, language, &mut |target| install_skills(target, &skills, language))?;
-        if skills.len() == 1 { return Ok(results); }
-        let mut expanded = Vec::new();
-        if let Some(list) = results.as_array() {
-            for result in list {
-                for skill in &skills {
-                    let mut item = result.clone();
-                    item["name"] = json!(skill.name);
-                    expanded.push(item);
-                }
-            }
-        }
-        Ok(Value::Array(expanded))
+        if skills.is_empty() { return Err(t(language, "请选择扫描结果中的 Skill")) }
+        // Every Skill goes to every executor, each as its own entry; a Skill
+        // already on one executor is kept and only that one is said to be
+        // skipped, as the Electron build's installSkill has it.
+        let entries = skills.iter().map(|skill| json!({ "name": skill.name, "folder": skill.folder, "relative": skill.relative })).collect::<Vec<_>>();
+        let found = distribute(resources, db, "skills", &entries, scopes, language, &mut |target, entry| {
+            let skill = skills.iter().find(|skill| skill.name == entry["name"].as_str().unwrap_or("")).expect("every entry is a found Skill");
+            install_skills(target, std::slice::from_ref(skill), language)
+        })?;
+        Ok(found)
     })();
     let _ = remove_tree(&staging);
     outcome
