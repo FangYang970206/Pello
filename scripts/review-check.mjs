@@ -96,31 +96,37 @@ try {
   if (light.theme !== 'light' || light.empty) fail(`浅色主题 buffer 异常 ${JSON.stringify(light)}`)
   else console.log('light buffer ok', light.sample)
 
-  const cycle = async (label, root) => {
-    const count = await page.evaluate((selector) => {
+  const cycle = async (label, root, extraControl) => {
+    const count = await page.evaluate(({ selector, extra }) => {
       const node = document.querySelector(selector)
       if (!node) return 0
-      return node.querySelectorAll('button, input, select, textarea, a[href]').length
-    }, root)
+      return node.querySelectorAll('button, input, select, textarea, a[href]').length + (extra ? 1 : 0)
+    }, { selector: root, extra: extraControl })
     const steps = Math.max(count + 2, 8)
     for (const key of ['Tab', 'Shift+Tab']) {
+      let reachedExtra = false
       for (let i = 0; i < steps; i++) {
         await page.keyboard.press(key)
-        const where = await page.evaluate((selector) => {
+        const where = await page.evaluate(({ selector, extra }) => {
           const box = document.querySelector(selector)
           const el = document.activeElement
-          const inside = !!(box && el && box.contains(el))
           return {
-            inside,
+            inside: !!(box && el && box.contains(el)),
+            extra: !!(extra && el?.matches(extra)),
             xterm: !!el?.closest?.('.xterm'),
             work: !!el?.closest?.('#center, aside.side, aside.right'),
             name: el?.getAttribute?.('aria-label') || el?.textContent?.trim()?.slice(0, 32) || el?.tagName || ''
           }
-        }, root)
-        if (!where.inside || where.xterm || where.work) {
+        }, { selector: root, extra: extraControl })
+        reachedExtra ||= where.extra
+        if ((!where.inside && !where.extra) || where.xterm || where.work) {
           fail(`${label} ${key} 第 ${i + 1} 次焦点跑出弹窗 ${JSON.stringify(where)}`)
           return false
         }
+      }
+      if (extraControl && !reachedExtra) {
+        fail(`${label} ${key} 无法聚焦 ${extraControl}`)
+        return false
       }
     }
     console.log(`focus cycle ok ${label} (${steps} Tab + ${steps} Shift+Tab)`)
@@ -159,7 +165,7 @@ try {
 
   await page.click('[data-a=settings]')
   await page.waitForSelector('.settings')
-  await cycle('设置页', '.settings')
+  await cycle('设置页', '.settings', '.settings-title .settings-theme')
   await openClose('添加执行器', 'button[data-a=custom]', async () => {
     await page.click('[data-a=sec][data-id=agents]')
     await page.click('button[data-a=custom]')

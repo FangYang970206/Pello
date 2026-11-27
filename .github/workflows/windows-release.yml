@@ -79,6 +79,11 @@ jobs:
           node-version: 26
           cache: npm
       - run: npm ci
+      - name: Install Electron for behavioral checks
+        run: |
+          node node_modules/electron/install.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node -e "require('node:fs').accessSync(require('electron'))"
       - uses: actions/download-artifact@v8
         with:
           name: electron-build
