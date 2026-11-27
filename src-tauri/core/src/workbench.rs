@@ -321,20 +321,20 @@ impl Workbench {
             // clipboard kept in a file is read, never the user's own.
             "clipboard:read" => Ok(shell::read_clipboard().map(Value::String).unwrap_or(Value::Null)),
             // The executors on a machine and what resources each has there.
-            "resources:targets" => resources::targets(&self.db.lock().expect("db").clone(), args.first().and_then(|value| value.as_str()).unwrap_or("local"), &language),
+            "resources:targets" => resources::targets(&self.paths.data, &self.db.lock().expect("db").clone(), args.first().and_then(|value| value.as_str()).unwrap_or("local"), &language),
             // A recommended Skill repository's page, opened in the browser.
             "resources:open-recommendation" => resources::open_recommendation(str_arg(args, 0), &language).map(|_| Value::Null),
-            "resources:list" => resources::list(&self.db.lock().expect("db").clone(), str_arg(args, 0), args.get(1).unwrap_or(&Value::Null), json_usize(args.get(2)), str_arg(args, 3), &language),
-            "resources:toggle" => resources::toggle(&self.db.lock().expect("db").clone(), str_arg(args, 0), args.get(1).unwrap_or(&Value::Null), args.get(2).unwrap_or(&Value::Null), args.get(3).and_then(|value| value.as_bool()), &language).map(|_| Value::Null),
-            "resources:detail" => resources::detail(&self.db.lock().expect("db").clone(), str_arg(args, 0), args.get(1).unwrap_or(&Value::Null), args.get(2).unwrap_or(&Value::Null), &language),
+            "resources:list" => resources::list(&self.paths.data, &self.db.lock().expect("db").clone(), str_arg(args, 0), args.get(1).unwrap_or(&Value::Null), json_usize(args.get(2)), str_arg(args, 3), &language),
+            "resources:toggle" => resources::toggle(&self.paths.data, &self.db.lock().expect("db").clone(), str_arg(args, 0), args.get(1).unwrap_or(&Value::Null), args.get(2).unwrap_or(&Value::Null), args.get(3).and_then(|value| value.as_bool()), &language).map(|_| Value::Null),
+            "resources:detail" => resources::detail(&self.paths.data, &self.db.lock().expect("db").clone(), str_arg(args, 0), args.get(1).unwrap_or(&Value::Null), args.get(2).unwrap_or(&Value::Null), &language),
             // Opening and removing a Skill folder find it themselves, as the
             // Electron build does: the path is not handed over by the page.
-            "resources:skill-open" => resources::open_skill(&self.db.lock().expect("db").clone(), args.first().unwrap_or(&Value::Null), args.get(1).unwrap_or(&Value::Null), &language),
-            "resources:skill-delete" => resources::delete_skill(&self.db.lock().expect("db").clone(), args.first().unwrap_or(&Value::Null), args.get(1).unwrap_or(&Value::Null), &language),
-            "resources:mcp" => resources::add_mcp(&self.resources, &self.db.lock().expect("db").clone(), str_arg(args, 0), args.get(1).unwrap_or(&Value::Null), args.get(2).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), true, &language),
+            "resources:skill-open" => resources::open_skill(&self.paths.data, &self.db.lock().expect("db").clone(), args.first().unwrap_or(&Value::Null), args.get(1).unwrap_or(&Value::Null), &language),
+            "resources:skill-delete" => resources::delete_skill(&self.paths.data, &self.db.lock().expect("db").clone(), args.first().unwrap_or(&Value::Null), args.get(1).unwrap_or(&Value::Null), &language),
+            "resources:mcp" => resources::add_mcp(&self.resources, &self.paths.data, &self.db.lock().expect("db").clone(), str_arg(args, 0), args.get(1).unwrap_or(&Value::Null), args.get(2).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), true, &language),
             "resources:scan" => resources::scan(&self.db.lock().expect("db").clone(), str_arg(args, 0), str_arg(args, 1), args.get(2).and_then(|value| value.as_str()).unwrap_or("local"), &language),
-            "resources:import-mcp" => resources::import_mcp(&self.resources, &self.db.lock().expect("db").clone(), str_arg(args, 0), args.get(1).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), args.get(2).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), args.get(3).and_then(|value| value.as_str()).unwrap_or("local"), &language),
-            "resources:skills" => resources::import_skills(&self.resources, &self.db.lock().expect("db").clone(), str_arg(args, 0), args.get(1).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), args.get(2).and_then(|value| value.as_array()).map(|list| list.iter().filter_map(|item| item.as_str().map(|item| item.to_string())).collect::<Vec<_>>()).as_ref(), &language),
+            "resources:import-mcp" => resources::import_mcp(&self.resources, &self.paths.data, &self.db.lock().expect("db").clone(), str_arg(args, 0), args.get(1).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), args.get(2).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), args.get(3).and_then(|value| value.as_str()).unwrap_or("local"), &language),
+            "resources:skills" => resources::import_skills(&self.resources, &self.paths.data, &self.db.lock().expect("db").clone(), str_arg(args, 0), args.get(1).and_then(|value| value.as_array()).map(|list| list.as_slice()).unwrap_or(&[]), args.get(2).and_then(|value| value.as_array()).map(|list| list.iter().filter_map(|item| item.as_str().map(|item| item.to_string())).collect::<Vec<_>>()).as_ref(), &language),
             "resources:pick" => Ok(menu::choose_open_path(str_arg(args, 0), &language)),
             "file:preview-url" => self.preview_url(args, &language),
             "file:open-html" => self.open_html(str_arg(args, 0), str_arg(args, 1), &language),

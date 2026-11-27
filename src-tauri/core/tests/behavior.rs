@@ -2317,7 +2317,7 @@ fn native_skill_switches_edit_agent_overrides_and_leave_skill_md() {
     let (bench, _) = workbench(&root);
     let toggle = |agent: &str, enabled: bool| {
         let listed = bench.dispatch("resources:list", &[json!("skills"), json!(agent), json!(1), json!("")]).unwrap();
-        let item = listed["items"].as_array().unwrap().iter().find(|item| item["name"] == "notes").unwrap().clone();
+        let item = listed["items"].as_array().unwrap().iter().find(|item| item["name"] == "notes").unwrap_or_else(|| panic!("{agent} did not list notes: {listed}")).clone();
         bench.dispatch("resources:toggle", &[json!("skills"), json!(agent), item, json!(enabled)]).unwrap();
     };
     toggle("codex", false);
@@ -6448,7 +6448,8 @@ fn resource_targets_name_the_machine_the_template_and_nothing_more() {
 
 /// A machine that is not there, one that is not connected, and an executor
 /// that is not there, are refused in that order, as the Electron build's
-/// machine and describe refuse them.
+/// machine and describe refuse them. A machine that is on is asked: when
+/// nothing answers it, what fails is the asking, said of the machine.
 #[test]
 fn a_scope_is_refused_for_its_machine_before_its_executor() {
     let root = temp_dir("resource-scope-refused");
@@ -6468,9 +6469,13 @@ fn a_scope_is_refused_for_its_machine_before_its_executor() {
     // The machine is asked about the whole list too.
     assert_eq!(bench.dispatch("resources:targets", &[json!("nowhere")]).unwrap_err(), "Machine not found");
     assert_eq!(bench.dispatch("resources:targets", &[json!("off")]).unwrap_err(), "This machine is disconnected");
-    assert_eq!(bench.dispatch("resources:targets", &[json!("remote")]).unwrap_err(), "This machine is disconnected");
-    // A remote machine's resources are not read until its connection is.
-    assert_eq!(list(json!({ "hostId": "remote", "executorId": "claude" })).unwrap_err(), "This machine is disconnected");
+    // A machine that is on is asked, and the asking is what fails when
+    // nothing answers there: said by ssh itself, and of the machine, not
+    // of the executor.
+    let unreachable = |error: String| { assert!(error.starts_with("ssh:"), "{error}"); };
+    unreachable(bench.dispatch("resources:targets", &[json!("remote")]).unwrap_err());
+    // A remote machine's resources are read through its connection.
+    unreachable(list(json!({ "hostId": "remote", "executorId": "claude" })).unwrap_err());
     // Opening a Skill folder is for this machine alone.
     assert_eq!(bench.dispatch("resources:skill-open", &[json!({ "hostId": "remote", "executorId": "claude" }), json!({ "name": "x", "path": "y" })]).unwrap_err(), "This action is available for local Skills");
     assert_eq!(bench.dispatch("resources:skill-open", &[json!({ "hostId": "off", "executorId": "claude" }), json!({ "name": "x", "path": "y" })]).unwrap_err(), "This machine is disconnected");
@@ -6825,4 +6830,112 @@ fn a_hosts_resources_are_read_and_written_by_the_program_it_is_given() {
     assert!(refused.is_err());
     assert_eq!(fs::read_to_string(&config).unwrap(), "{\"mcpServers\":{\"theirs\":{}}}");
     let _ = fs::remove_dir_all(root);
+}
+
+/// An executor's resources on a host that is not this machine are reached
+/// through the resource channels as this machine's are: listed, shown,
+/// switched and written, with every file asked of the host at once and
+/// what is changed published to it. The host here is the fixture, which is
+/// this machine spoken to over SSH; the files are this machine's, named as
+/// the host names them.
+#[test]
+fn an_executors_resources_on_a_host_are_listed_switched_and_written_through_the_channels() {
+    // A terminal is closed here: tests that close terminals run one at a time.
+    let _lock = env_lock();
+    let password = "{{SECRET_2ce1b7d9}}";
+    let fixture = pello_core::ssh::start_fixture(password).expect("ssh fixture");
+    let platform = if cfg!(windows) { "windows" } else { "linux" };
+    let root = temp_dir("remote-resources-channels");
+    fs::create_dir_all(root.join("data")).unwrap();
+    let host = json!({
+        "id": "box", "name": "Box", "addr": "127.0.0.1", "port": fixture.port, "user": "me",
+        "auth": "password", "password": password, "color": "blue", "on": true, "os": "", "platform": platform
+    });
+    fs::write(root.join("data").join("workbench.json"), json!({ "hosts": [{ "id": "local", "name": "本机", "on": true }, host.clone()] }).to_string()).unwrap();
+    let (bench, _) = workbench(&root);
+    bench.dispatch("db:settings", &[json!({ "language": "en" })]).unwrap();
+    let data = bench.database_path().parent().expect("the data directory").to_path_buf();
+    pello_core::ssh::remember_password(&data, &host);
+    let path_of = |path: &std::path::Path| if platform == "windows" { path.display().to_string() } else { path.display().to_string().replace('\\', "/") };
+    // The host's own files, as the fixture reads them: this machine's.
+    let home = root.join("host-home");
+    let config = home.join(".claude.json");
+    fs::create_dir_all(home).unwrap();
+    fs::write(&config, "{\n  // kept\n  \"mcpServers\": { \"notes\": { \"command\": \"npx\" } }\n}\n").unwrap();
+    // A template says where the executor's files are on the host, so the
+    // host is not asked for a profile at all.
+    let saved = bench.dispatch("templates:save", &[json!({ "id": "", "hostId": "box", "name": "Box Claude", "mcpPath": path_of(&config), "skillPath": "", "format": "standard", "skillAdapter": "claude", "env": [] })]).unwrap_or_else(|error| panic!("{error}"));
+    let template = saved["templates"].as_array().expect("templates").iter().find(|template| template["name"] == "Box Claude").expect("the template was saved")["id"].as_str().unwrap().to_string();
+    bench.dispatch("templates:bind", &[json!({ "hostId": "box", "executorId": "claude" }), json!(template)]).unwrap();
+    let scope = json!({ "hostId": "box", "executorId": "claude" });
+
+    // Listed from the host's file, under the name the host gives it.
+    let listed = bench.dispatch("resources:list", &[json!("mcp"), scope.clone(), json!(1), json!("")]).unwrap_or_else(|error| panic!("{error}"));
+    let items = listed["items"].as_array().expect("items");
+    assert_eq!(items.len(), 1, "{listed}");
+    assert_eq!(items[0]["name"], "notes");
+    assert_eq!(items[0]["path"], path_of(&config));
+    assert!(listed["errors"].as_array().expect("errors").is_empty(), "{listed}");
+    // What the page shows for every executor on the host.
+    let targets = bench.dispatch("resources:targets", &[json!("box")]).unwrap_or_else(|error| panic!("{error}"));
+    let claude = targets.as_array().expect("targets").iter().find(|target| target["id"] == "claude").expect("claude").clone();
+    assert_eq!(claude["mcpPath"], path_of(&config));
+    assert_eq!(claude["hostId"], "box");
+    assert_eq!(claude["templateName"], "Box Claude");
+    // The detail of the server, with the comment line kept in the file.
+    let detail = bench.dispatch("resources:detail", &[json!("mcp"), scope.clone(), items[0].clone()]).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(detail["content"], "{\n  \"command\": \"npx\"\n}", "{detail}");
+
+    // Switched off on the host: the server is moved to the parked ones, and
+    // the file on the host is what was changed.
+    bench.dispatch("resources:toggle", &[json!("mcp"), scope.clone(), items[0].clone(), json!(false)]).unwrap_or_else(|error| panic!("{error}"));
+    let after = fs::read_to_string(&config).unwrap();
+    assert!(after.contains("// kept"), "the comment is kept: {after}");
+    assert!(after.contains("\"awbDisabledMcp\"") && after.contains("\"notes\""), "{after}");
+    let parked = bench.dispatch("resources:list", &[json!("mcp"), scope.clone(), json!(1), json!("")]).unwrap();
+    assert_eq!(parked["items"].as_array().expect("items")[0]["enabled"], false, "{parked}");
+    // Switched back on.
+    bench.dispatch("resources:toggle", &[json!("mcp"), scope.clone(), parked["items"].as_array().expect("items")[0].clone(), json!(true)]).unwrap_or_else(|error| panic!("{error}"));
+
+    // A server written to the executor on the host. The file is still one
+    // a configuration reader takes: the comment is kept, and the server is
+    // where the executor finds it.
+    let written = bench.dispatch("resources:mcp", &[json!("more"), json!({ "command": "node" }), json!([scope.clone()]), json!(true)]).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(written, json!([{ "agent": "claude", "hostId": "box", "name": "more", "ok": true }]), "{written}");
+    let after = fs::read_to_string(&config).unwrap();
+    assert!(after.contains("// kept"), "{after}");
+    let parsed = parse_with_comments(&after);
+    assert_eq!(parsed["mcpServers"]["more"]["command"], "node", "{after}");
+    assert_eq!(parsed["mcpServers"]["notes"]["command"], "npx", "{after}");
+
+    // Two executors on the host lent the same file have it written once,
+    // and both are told it went well.
+    let saved = bench.dispatch("templates:save", &[json!({ "id": "", "hostId": "box", "name": "Box Pi", "mcpPath": path_of(&config), "skillPath": "", "format": "standard", "skillAdapter": "pi", "env": [] })]).unwrap();
+    let template = saved["templates"].as_array().expect("templates").iter().find(|template| template["name"] == "Box Pi").expect("the template was saved")["id"].as_str().unwrap().to_string();
+    bench.dispatch("templates:bind", &[json!({ "hostId": "box", "executorId": "pi" }), json!(template)]).unwrap();
+    let pi = json!({ "hostId": "box", "executorId": "pi" });
+    let both = bench.dispatch("resources:mcp", &[json!("shared"), json!({ "command": "node" }), json!([scope.clone(), pi]), json!(true)]).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(both, json!([{ "agent": "claude", "hostId": "box", "name": "shared", "ok": true }, { "agent": "pi", "hostId": "box", "name": "shared", "ok": true }]), "{both}");
+    let after = fs::read_to_string(&config).unwrap();
+    let parsed = parse_with_comments(&after);
+    assert_eq!(after.matches("\"shared\"").count(), 1, "written once: {after}");
+    assert_eq!(parsed["mcpServers"]["shared"]["command"], "node", "{after}");
+
+    // The host is not asked for a profile when a template says where the
+    // files are; it is asked when nothing does, and what it says is where
+    // the executor's own files are.
+    let profile = pello_core::remote_resources::remote_resource::<serde_json::Value>(&data, &host, &json!({ "op": "profile" }), &|| Ok(()), None, "en").unwrap();
+    let targets = bench.dispatch("resources:targets", &[json!("box")]).unwrap();
+    let codex = targets.as_array().expect("targets").iter().find(|target| target["id"] == "codex").expect("codex");
+    let home = profile["home"].as_str().unwrap().to_string();
+    let codex_home = profile["env"]["CODEX_HOME"].as_str().map(|value| value.to_string()).unwrap_or_else(|| pello_core::remote_resources::host_path::join(&home, ".codex", platform == "windows"));
+    assert_eq!(codex["mcpPath"], pello_core::remote_resources::host_path::join(&codex_home, "config.toml", platform == "windows"), "{codex}");
+    assert!(codex.get("templateName").is_none(), "no template is said of an executor lent none: {codex}");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A JSON file with line comments, as an agent reads it, as JSON.
+fn parse_with_comments(text: &str) -> serde_json::Value {
+    let without: String = text.lines().map(|line| line.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n");
+    serde_json::from_str(&without).unwrap_or_else(|error| panic!("{text}: {error}"))
 }

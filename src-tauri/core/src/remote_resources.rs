@@ -172,6 +172,28 @@ impl RemoteResourceSnapshot {
     }
 }
 
+impl crate::resources::ResourceFiles for RemoteResourceSnapshot {
+    fn read(&self, file: &str) -> Result<String, String> {
+        RemoteResourceSnapshot::read(self, file)
+    }
+
+    fn exists(&self, file: &str) -> bool {
+        RemoteResourceSnapshot::exists(self, file)
+    }
+
+    fn write(&mut self, file: &str, before: &str, next: &str) -> Result<(), String> {
+        RemoteResourceSnapshot::write(self, file, before, next)
+    }
+
+    fn skills(&self, roots: &[String], errors: &mut Vec<String>) -> Vec<String> {
+        RemoteResourceSnapshot::skills(self, roots, errors)
+    }
+
+    fn rename_skill(&mut self, root: &str, source: &str, dest: &str) -> Result<(), String> {
+        RemoteResourceSnapshot::rename_skill(self, root, source, dest)
+    }
+}
+
 /// Ask a host once for every file and every Skill an operation needs, as
 /// the Electron build asks: the files by name, and the Skills under the
 /// roots given.

@@ -30,7 +30,7 @@ pub trait ResourceFiles {
     /// `errors`.
     fn skills(&self, roots: &[String], errors: &mut Vec<String>) -> Vec<String>;
     /// A Skill file under its other name, the disabled one or its own.
-    fn rename_skill(&self, root: &str, source: &str, dest: &str) -> Result<(), String>;
+    fn rename_skill(&mut self, root: &str, source: &str, dest: &str) -> Result<(), String>;
 }
 
 /// The files of this machine.
@@ -56,7 +56,7 @@ impl ResourceFiles for LocalFiles {
         found
     }
 
-    fn rename_skill(&self, root: &str, source: &str, dest: &str) -> Result<(), String> {
+    fn rename_skill(&mut self, root: &str, source: &str, dest: &str) -> Result<(), String> {
         rename_skill(Path::new(root), Path::new(source), Path::new(dest), &self.language)
     }
 }
@@ -127,6 +127,10 @@ struct Target {
     template_name: String,
     /// Neither a template nor a path of the executor's own.
     bare: bool,
+    /// The home the machine said it had, and whether it writes paths as
+    /// Windows does. Not shown: they say how to find what is shown.
+    home: String,
+    windows: bool,
 }
 
 fn t(language: &str, text: &str) -> String { translate(language, text, &[] as &[String]) }
@@ -189,32 +193,50 @@ fn home_dir() -> PathBuf {
 /// them finds it: by the environment variables it reads, else under the home
 /// directory.
 fn native_targets() -> Vec<Target> {
-    let home = home_dir();
-    let join = |parts: &[&str]| {
-        let mut path = home.clone();
-        for part in parts { path.push(part); }
-        path
-    };
-    let config = if std::env::var_os("AWB_RESOURCE_HOME").is_some() { join(&[".config"]) } else { std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| join(&[".config"])) };
-    let claude = if std::env::var_os("AWB_RESOURCE_HOME").is_some() { join(&[".claude"]) } else { std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|| join(&[".claude"])) };
-    let codex = if std::env::var_os("AWB_RESOURCE_HOME").is_some() { join(&[".codex"]) } else { std::env::var_os("CODEX_HOME").map(PathBuf::from).unwrap_or_else(|| join(&[".codex"])) };
-    let pi = if std::env::var_os("AWB_RESOURCE_HOME").is_some() { join(&[".pi", "agent"]) } else { std::env::var_os("PI_CODING_AGENT_DIR").map(PathBuf::from).unwrap_or_else(|| join(&[".pi", "agent"])) };
-    let opencode_dir = config.join("opencode");
+    // The environment says nothing when a resource home is given for a test:
+    // the home is all there is.
+    let isolated = std::env::var_os("AWB_RESOURCE_HOME").is_some();
+    let env = |name: &str| if isolated { None } else { std::env::var_os(name).map(|value| value.display().to_string()).filter(|value| !value.is_empty()) };
+    native_resource_targets(&home_dir().display().to_string(), env, cfg!(windows), |file| Path::new(file).exists())
+}
+
+/// What the built-in executors have on a remote host, from what it says of
+/// itself when asked: where the user's home is, which of the variables that
+/// move an agent's files are set, and whether the OpenCode configuration
+/// written with comments is there. One profile is asked of a host for a
+/// distribution, and shared by every executor on it.
+fn remote_targets(data: &Path, host: &Value, language: &str) -> Result<Vec<Target>, String> {
+    let profile: crate::remote_resources::RemoteProfile = crate::remote_resources::remote_resource(data, host, &json!({ "op": "profile" }), &|| Ok(()), None, language)?;
+    let windows = host["platform"].as_str() == Some("windows");
+    Ok(native_resource_targets(&profile.home, |name| profile.env.get(name).cloned(), windows, |file| file == profile.jsonc))
+}
+
+/// The built-in executors' own configuration on a machine, as each of them
+/// finds it there: by the variables the environment has for it, else under
+/// the home directory. The paths are written as the machine's platform
+/// writes them, and whether a file is there is asked of the machine.
+fn native_resource_targets(home: &str, env: impl Fn(&str) -> Option<String>, windows: bool, exists: impl Fn(&str) -> bool) -> Vec<Target> {
+    let join = |parts: &[&str]| parts.iter().fold(home.to_string(), |path, part| crate::remote_resources::host_path::join(&path, part, windows));
+    let config = env("XDG_CONFIG_HOME").unwrap_or_else(|| join(&[".config"]));
+    let claude = env("CLAUDE_CONFIG_DIR").unwrap_or_else(|| join(&[".claude"]));
+    let codex = env("CODEX_HOME").unwrap_or_else(|| join(&[".codex"]));
+    let pi = env("PI_CODING_AGENT_DIR").unwrap_or_else(|| join(&[".pi", "agent"]));
+    let opencode_dir = crate::remote_resources::host_path::join(&config, "opencode", windows);
     // The configuration OpenCode is told to use wins over either of its
-    // usual names, which are chosen by which of them is there. The
-    // environment says nothing when a resource home is given for a test.
-    let told = if std::env::var_os("AWB_RESOURCE_HOME").is_some() { None } else { std::env::var_os("OPENCODE_CONFIG").filter(|value| !value.is_empty()) };
-    let opencode_file = match told {
-        Some(path) => PathBuf::from(path),
-        None => opencode_dir.join(if opencode_dir.join("opencode.jsonc").exists() { "opencode.jsonc" } else { "opencode.json" }),
+    // usual names, which are chosen by which of them is there.
+    let jsonc = crate::remote_resources::host_path::join(&opencode_dir, "opencode.jsonc", windows);
+    let opencode_file = env("OPENCODE_CONFIG").unwrap_or_else(|| {
+        if exists(&jsonc) { jsonc.clone() } else { crate::remote_resources::host_path::join(&opencode_dir, "opencode.json", windows) }
+    });
+    let made = |id: &str, name: &str, mcp_path: String, skill_path: String, skill_config_path: &str, format: &str| -> Target {
+        Target { id: id.into(), name: name.into(), mcp_path, skill_path, skill_config_path: skill_config_path.into(), format: format.into(), skill_adapter: id.into(), host_id: "local".into(), template_name: String::new(), bare: false, home: home.to_string(), windows }
     };
-    let opencode_file = opencode_file.display().to_string();
     vec![
-        Target { id: "claude".into(), name: "Claude Code".into(), mcp_path: join(&[".claude.json"]).display().to_string(), skill_path: claude.join("skills").display().to_string(), skill_config_path: String::new(), format: "standard".into(), skill_adapter: "claude".into(), host_id: "local".into(), template_name: String::new(), bare: false },
-        Target { id: "codex".into(), name: "Codex CLI".into(), mcp_path: codex.join("config.toml").display().to_string(), skill_path: join(&[".agents", "skills"]).display().to_string(), skill_config_path: String::new(), format: "codex".into(), skill_adapter: "codex".into(), host_id: "local".into(), template_name: String::new(), bare: false },
-        Target { id: "opencode".into(), name: "OpenCode".into(), mcp_path: opencode_file, skill_path: opencode_dir.join("skills").display().to_string(), skill_config_path: String::new(), format: "opencode".into(), skill_adapter: "opencode".into(), host_id: "local".into(), template_name: String::new(), bare: false },
-        Target { id: "pi".into(), name: "Pi".into(), mcp_path: pi.join("mcp.json").display().to_string(), skill_path: pi.join("skills").display().to_string(), skill_config_path: String::new(), format: "standard".into(), skill_adapter: "pi".into(), host_id: "local".into(), template_name: String::new(), bare: false },
-        Target { id: "omp".into(), name: "Oh My Pi".into(), mcp_path: join(&[".omp", "agent", "mcp.json"]).display().to_string(), skill_path: join(&[".omp", "agent", "skills"]).display().to_string(), skill_config_path: join(&[".omp", "agent", "config.yml"]).display().to_string(), format: "standard".into(), skill_adapter: "omp".into(), host_id: "local".into(), template_name: String::new(), bare: false },
+        made("claude", "Claude Code", join(&[".claude.json"]), crate::remote_resources::host_path::join(&claude, "skills", windows), "", "standard"),
+        made("codex", "Codex CLI", crate::remote_resources::host_path::join(&codex, "config.toml", windows), join(&[".agents", "skills"]), "", "codex"),
+        made("opencode", "OpenCode", opencode_file, crate::remote_resources::host_path::join(&opencode_dir, "skills", windows), "", "opencode"),
+        made("pi", "Pi", crate::remote_resources::host_path::join(&pi, "mcp.json", windows), crate::remote_resources::host_path::join(&pi, "skills", windows), "", "standard"),
+        made("omp", "Oh My Pi", join(&[".omp", "agent", "mcp.json"]), join(&[".omp", "agent", "skills"]), &join(&[".omp", "agent", "config.yml"]), "standard"),
     ]
 }
 
@@ -232,6 +254,8 @@ fn template_target(template: &Value) -> Target {
         host_id: field(template, "hostId"),
         template_name: field(template, "name"),
         bare: false,
+        home: String::new(),
+        windows: cfg!(windows),
     }
 }
 
@@ -257,7 +281,7 @@ fn describe(db: &Value, scope: &Value, defaults: &[Target], language: &str) -> R
             Some(found) => (found.clone(), false),
             // Neither a template nor a path of its own: said with the three
             // keys the Electron build's empty paths have, and no adapter.
-            None => (Target { id: String::new(), name: String::new(), mcp_path: String::new(), skill_path: String::new(), skill_config_path: String::new(), format: "standard".into(), skill_adapter: "portable".into(), host_id: String::new(), template_name: String::new(), bare: true }, true),
+            None => (Target { id: String::new(), name: String::new(), mcp_path: String::new(), skill_path: String::new(), skill_config_path: String::new(), format: "standard".into(), skill_adapter: "portable".into(), host_id: String::new(), template_name: String::new(), bare: true, home: String::new(), windows: cfg!(windows) }, true),
         },
     };
     target.bare = bare;
@@ -277,10 +301,9 @@ pub fn scope_of(scope: &Value) -> (String, String) {
 }
 
 /// What the resources page shows for every executor on a machine.
-pub fn targets(db: &Value, host_id: &str, language: &str) -> Result<Value, String> {
-    crate::templates::machine(db, host_id, true, language)?;
-    if host_id != "local" { return Err(t(language, "这台机器未连接")) }
-    let defaults = native_targets();
+pub fn targets(data: &Path, db: &Value, host_id: &str, language: &str) -> Result<Value, String> {
+    let host = crate::templates::machine(db, host_id, true, language)?.clone();
+    let defaults = if host_id == "local" { native_targets() } else { remote_targets(data, &host, language)? };
     let list = rows(db).iter().map(|executor| describe(db, &json!({ "hostId": host_id, "executorId": executor["id"] }), &defaults, language)).collect::<Result<Vec<_>, _>>()?;
     Ok(Value::Array(list.iter().map(target_json).collect()))
 }
@@ -301,7 +324,7 @@ fn target_json(target: &Target) -> Value {
 /// after, so that a machine or a template changed in between is refused
 /// rather than written to as it was. It holds how a machine is reached and
 /// by what means, never a password.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Fingerprint(String);
 
 pub fn fingerprint(db: &Value, scope: &Value, language: &str) -> Result<Fingerprint, String> {
@@ -323,19 +346,49 @@ impl Fingerprint {
 /// An executor's resources on this machine for an operation on them. A
 /// machine that is not this one is refused until the resources of a remote
 /// machine are read through its connection.
-fn resolve(db: &Value, scope: &Value, language: &str) -> Result<(Target, Fingerprint), String> {
-    let mark = fingerprint(db, scope, language)?;
-    let (host_id, _) = scope_of(scope);
-    if host_id != "local" { return Err(t(language, "这台机器未连接")) }
-    let target = describe(db, scope, &native_targets(), language)?;
-    Ok((target, mark))
+fn resolve(data: &Path, db: &Value, scope: &Value, kind: &str, language: &str) -> Result<Resolved, String> {
+    resolve_with(data, db, scope, kind, &mut std::collections::BTreeMap::new(), language)
 }
 
-pub fn list(db: &Value, kind: &str, scope: &Value, page: usize, query: &str, language: &str) -> Result<Value, String> {
-    let (target, _mark) = resolve(db, scope, language)?;
-    let target = &target;
-    let files = LocalFiles { language: language.to_string() };
-    list_with(&files, &target, kind, page, query, language)
+fn resolve_with(data: &Path, db: &Value, scope: &Value, kind: &str, profiles: &mut std::collections::BTreeMap<String, Vec<Target>>, language: &str) -> Result<Resolved, String> {
+    let mark = fingerprint(db, scope, language)?;
+    let (host_id, _) = scope_of(scope);
+    let host = crate::templates::machine(db, &host_id, true, language)?.clone();
+    if host_id == "local" {
+        let target = describe(db, scope, &native_targets(), language)?;
+        return Ok(Resolved { target, mark, scope: scope.clone(), host, machine: Machine::Local(LocalFiles { language: language.to_string() }) });
+    }
+    // An explicit template needs no profile lookup: its paths are all the
+    // executor has there.
+    let template = crate::templates::executor_template(db, &host_id, &target_id(scope)).is_some();
+    if !template && !profiles.contains_key(&host_id) { profiles.insert(host_id.clone(), remote_targets(data, &host, language)?); }
+    let defaults = if template { Vec::new() } else { profiles.get(&host_id).cloned().unwrap_or_default() };
+    let target = describe(db, scope, &defaults, language)?;
+    mark.check(db, scope, language)?;
+    // Every file the operation needs is asked for at once, so that what the
+    // page showed is what the host has when it is asked to change it.
+    let mut files = Vec::new();
+    if kind == "mcp" {
+        if !target.mcp_path.is_empty() { files.push(target.mcp_path.clone()); }
+    } else {
+        let settings = settings_file(&target);
+        if !settings.is_empty() { files.push(settings); }
+    }
+    let roots = if kind == "skills" { skill_roots(&target) } else { Vec::new() };
+    let snapshot = crate::remote_resources::remote_snapshot(data, &host, &files, &roots, &|| mark.check(db, scope, language), None, language)?;
+    mark.check(db, scope, language)?;
+    Ok(Resolved { target, mark, scope: scope.clone(), host, machine: Machine::Remote(snapshot) })
+}
+
+fn target_id(scope: &Value) -> String { scope_of(scope).1 }
+
+pub fn list(data: &Path, db: &Value, kind: &str, scope: &Value, page: usize, query: &str, language: &str) -> Result<Value, String> {
+    let resolved = resolve(data, db, scope, kind, language)?;
+    let result = list_with(resolved.files(), &resolved.target, kind, page, query, language)?;
+    // What was read is what is shown: a target changed in between is not
+    // shown as if it had not been.
+    resolved.check(db, language)?;
+    Ok(result)
 }
 
 /// What the list shows, read through the files of the machine that has
@@ -351,7 +404,7 @@ fn list_with(files: &dyn ResourceFiles, target: &Target, kind: &str, page: usize
             }
         }
     } else if kind == "skills" {
-        for file in files.skills(&skill_roots(target).iter().map(|root| root.display().to_string()).collect::<Vec<_>>(), &mut errors) {
+        for file in files.skills(&skill_roots(target), &mut errors) {
             // Said of the Skill file itself, as the Electron build says it,
             // and not of the folder it is in.
             match skill_info(files, &file, language) {
@@ -481,18 +534,24 @@ fn opencode_v2(config: &Value) -> bool {
         || servers.is_some_and(|value| value.is_object() && value.get("type").is_none() && value.get("command").is_none() && value.get("url").is_none())
 }
 
-fn skill_roots(target: &Target) -> Vec<PathBuf> {
-    let home = home_dir();
+fn skill_roots(target: &Target) -> Vec<String> {
+    let (home, windows) = (target.home.as_str(), target.windows);
+    let join = |base: &str, part: &str| crate::remote_resources::host_path::join(base, part, windows);
     let mut roots = Vec::new();
-    if !target.skill_path.is_empty() { roots.push(PathBuf::from(&target.skill_path)); }
-    if matches!(target.id.as_str(), "codex" | "opencode" | "pi") { roots.push(home.join(".agents").join("skills")); }
-    if target.id == "codex" {
-        if let Some(parent) = Path::new(&target.mcp_path).parent() { roots.push(parent.join("skills")); }
+    if !target.skill_path.is_empty() { roots.push(target.skill_path.clone()); }
+    // A template's paths are all the executor has there: the ones a native
+    // executor shares with others are not added to it, as the Electron
+    // build's skillRoots does not add them.
+    if target.template_name.is_empty() {
+        if matches!(target.id.as_str(), "codex" | "opencode" | "pi") { roots.push(join(&join(home, ".agents"), "skills")); }
+        if target.id == "codex" && !target.mcp_path.is_empty() {
+            roots.push(join(&crate::remote_resources::host_path::dirname(&target.mcp_path, windows), "skills"));
+        }
+        if target.id == "opencode" { roots.push(join(&join(home, ".claude"), "skills")); }
     }
-    if target.id == "opencode" { roots.push(home.join(".claude").join("skills")); }
     let mut unique = Vec::new();
     for root in roots {
-        if !unique.iter().any(|item: &PathBuf| item == &root) { unique.push(root); }
+        if !unique.contains(&root) { unique.push(root); }
     }
     unique
 }
@@ -549,8 +608,7 @@ fn skill_enabled(files: &dyn ResourceFiles, target: &Target, file: &str, name: &
     if files.exists(&disabled) && !files.exists(file) { return Ok(false); }
     if target.skill_adapter.is_empty() || target.skill_adapter == "portable" { return Ok(true); }
     let settings = settings_file(target);
-    if settings.as_os_str().is_empty() { return Ok(true); }
-    let settings = settings.display().to_string();
+    if settings.is_empty() { return Ok(true); }
     let raw = files.read(&settings)?;
     match target.skill_adapter.as_str() {
         "codex" => {
@@ -572,15 +630,16 @@ fn skill_enabled(files: &dyn ResourceFiles, target: &Target, file: &str, name: &
     }
 }
 
-fn settings_file(target: &Target) -> PathBuf {
-    if !target.skill_config_path.is_empty() { return PathBuf::from(&target.skill_config_path); }
-    if target.skill_adapter == "codex" || target.skill_adapter == "opencode" { return PathBuf::from(&target.mcp_path); }
+fn settings_file(target: &Target) -> String {
+    let windows = target.windows;
+    if !target.skill_config_path.is_empty() { return target.skill_config_path.clone(); }
+    if target.skill_adapter == "codex" || target.skill_adapter == "opencode" { return target.mcp_path.clone(); }
     if target.skill_adapter == "omp" {
-        if target.skill_path.is_empty() { return PathBuf::new(); }
-        return Path::new(&target.skill_path).parent().unwrap_or(Path::new("")).join("config.yml");
+        if target.skill_path.is_empty() { return String::new(); }
+        return crate::remote_resources::host_path::join(&crate::remote_resources::host_path::dirname(&target.skill_path, windows), "config.yml", windows);
     }
-    if !target.skill_path.is_empty() { return Path::new(&target.skill_path).parent().unwrap_or(Path::new("")).join("settings.json"); }
-    PathBuf::new()
+    if !target.skill_path.is_empty() { return crate::remote_resources::host_path::join(&crate::remote_resources::host_path::dirname(&target.skill_path, windows), "settings.json", windows); }
+    String::new()
 }
 
 fn toml_skill_entries(text: &str) -> Vec<(String, Option<String>, bool)> {
@@ -957,19 +1016,21 @@ fn set_yaml_root_list(text: &str, key: &str, values: &[String]) -> String {
     next
 }
 
-pub fn toggle(db: &Value, kind: &str, scope: &Value, item: &Value, enabled: Option<bool>, language: &str) -> Result<(), String> {
+pub fn toggle(data: &Path, db: &Value, kind: &str, scope: &Value, item: &Value, enabled: Option<bool>, language: &str) -> Result<(), String> {
     let enabled = enabled.ok_or_else(|| t(language, "无效的开关状态"))?;
-    let (target, mark) = resolve(db, scope, language)?;
-    let mut files = LocalFiles { language: language.to_string() };
-    let found = listed(&files, &target, kind, item, language)?;
+    let mut resolved = resolve(data, db, scope, kind, language)?;
+    let found = listed(resolved.files(), &resolved.target, kind, item, language)?;
     // What was read is what is changed: a target changed in between is
     // refused, not written to as it was.
-    mark.check(db, scope, language)?;
+    resolved.check(db, language)?;
+    let Resolved { target, machine, .. } = &mut resolved;
+    let files: &mut dyn ResourceFiles = machine;
     if kind == "mcp" {
-        toggle_mcp(&mut files, &target, &found, enabled, language)
+        toggle_mcp(files, target, &found, enabled, language)
     } else {
-        toggle_skill(&mut files, &target, &found, enabled, language)
-    }
+        toggle_skill(files, target, &found, enabled, language)
+    }?;
+    resolved.publish(data, db, language)
 }
 
 /// The one entry of the list an operation is asked of, found by the name
@@ -1030,10 +1091,9 @@ fn toggle_skill(files: &mut dyn ResourceFiles, target: &Target, item: &Value, en
     let file = item["path"].as_str().unwrap_or("");
     let name = item["name"].as_str().unwrap_or("");
     let settings = settings_file(target);
-    if !target.skill_adapter.is_empty() && target.skill_adapter != "portable" && settings.as_os_str().is_empty() {
+    if !target.skill_adapter.is_empty() && target.skill_adapter != "portable" && settings.is_empty() {
         return Err(t(language, "请先在执行器高级属性中设置 Skill 配置文件或 MCP 配置文件"));
     }
-    let settings = settings.display().to_string();
     match target.skill_adapter.as_str() {
         "claude" => {
             let before = files.read(&settings)?;
@@ -1075,15 +1135,16 @@ fn rename_skill(root: &Path, source: &Path, dest: &Path, language: &str) -> Resu
     Ok(())
 }
 
-pub fn detail(db: &Value, kind: &str, scope: &Value, item: &Value, language: &str) -> Result<Value, String> {
-    let (target, _mark) = resolve(db, scope, language)?;
-    let files = LocalFiles { language: language.to_string() };
-    let found = listed(&files, &target, kind, item, language)?;
+pub fn detail(data: &Path, db: &Value, kind: &str, scope: &Value, item: &Value, language: &str) -> Result<Value, String> {
+    let resolved = resolve(data, db, scope, kind, language)?;
+    let (files, target) = (resolved.files(), &resolved.target);
+    let found = listed(files, target, kind, item, language)?;
     if kind == "skills" {
         let path = found["path"].as_str().unwrap_or("");
         let source = if files.exists(path) { path.to_string() } else { format!("{path}.awb-disabled") };
         let mut detail = found;
         detail["content"] = json!(files.read(&source)?);
+        resolved.check(db, language)?;
         return Ok(detail);
     }
     let text = files.read(&target.mcp_path)?;
@@ -1167,17 +1228,18 @@ fn regex_secret(text: &str) -> bool {
     lower.contains("token") || lower.contains("password") || lower.contains("secret") || lower.contains("api-key") || lower.contains("api_key")
 }
 
-pub fn skill_directory(db: &Value, scope: &Value, item: &Value, removing: bool, language: &str) -> Result<PathBuf, String> {
+pub fn skill_directory(data: &Path, db: &Value, scope: &Value, item: &Value, removing: bool, language: &str) -> Result<PathBuf, String> {
     // The machine is asked for first, and must be connected; opening and
     // removing a Skill folder are for this machine alone, as the Electron
     // build has it.
     let mark = fingerprint(db, scope, language)?;
     if scope_of(scope).0 != "local" { return Err(t(language, "此操作仅适用于本机 Skill")) }
-    let (target, _) = resolve(db, scope, language)?;
-    let found = listed(&LocalFiles { language: language.to_string() }, &target, "skills", item, language)?;
+    let resolved = resolve(data, db, scope, "skills", language)?;
+    let found = listed(resolved.files(), &resolved.target, "skills", item, language)?;
+    let target = resolved.target.clone();
     mark.check(db, scope, language)?;
     let folder = Path::new(found["path"].as_str().unwrap_or("")).parent().ok_or_else(|| t(language, "Skill 路径不属于当前 Agent"))?.to_path_buf();
-    let roots = skill_roots(&target);
+    let roots = skill_roots(&target).into_iter().map(PathBuf::from).collect::<Vec<_>>();
     let inside = roots.iter().any(|root| folder.starts_with(root));
     if !inside { return Err(t(language, "Skill 路径不属于当前 Agent")); }
     if !removing { return Ok(folder); }
@@ -1204,8 +1266,8 @@ pub fn skill_directory(db: &Value, scope: &Value, item: &Value, removing: bool, 
     Ok(folder)
 }
 
-pub fn open_skill(db: &Value, scope: &Value, item: &Value, language: &str) -> Result<Value, String> {
-    let folder = skill_directory(db, scope, item, false, language)?;
+pub fn open_skill(data: &Path, db: &Value, scope: &Value, item: &Value, language: &str) -> Result<Value, String> {
+    let folder = skill_directory(data, db, scope, item, false, language)?;
     let real = crate::real_path(&folder).unwrap_or(folder);
     // `AWB_OPEN_SKILL=0` is a test that has no desktop to open a folder on.
     if std::env::var("AWB_OPEN_SKILL").ok().as_deref() != Some("0") {
@@ -1214,8 +1276,8 @@ pub fn open_skill(db: &Value, scope: &Value, item: &Value, language: &str) -> Re
     Ok(json!(real.display().to_string()))
 }
 
-pub fn delete_skill(db: &Value, scope: &Value, item: &Value, language: &str) -> Result<Value, String> {
-    let folder = skill_directory(db, scope, item, true, language)?;
+pub fn delete_skill(data: &Path, db: &Value, scope: &Value, item: &Value, language: &str) -> Result<Value, String> {
+    let folder = skill_directory(data, db, scope, item, true, language)?;
     trash_path(&folder, language)?;
     Ok(Value::Null)
 }
@@ -1235,14 +1297,14 @@ fn trash_path(path: &Path, language: &str) -> Result<(), String> {
     crate::sys::trash(path).map_err(|_| unmovable())
 }
 
-pub fn add_mcp(resources: &Resources, db: &Value, name: &str, config: &Value, scopes: &[Value], enabled: bool, language: &str) -> Result<Value, String> {
-    write_mcp_entries(resources, db, &[json!({ "name": name, "config": config, "enabled": enabled })], scopes, language)
+pub fn add_mcp(resources: &Resources, data: &Path, db: &Value, name: &str, config: &Value, scopes: &[Value], enabled: bool, language: &str) -> Result<Value, String> {
+    write_mcp_entries(resources, data, db, &[json!({ "name": name, "config": config, "enabled": enabled })], scopes, language)
 }
 
 /// Servers written to every executor chosen. An entry without a usable
 /// configuration, or with an error said of it by the scan, fails on every
 /// executor with that, and is written nowhere.
-fn write_mcp_entries(resources: &Resources, db: &Value, entries: &[Value], scopes: &[Value], language: &str) -> Result<Value, String> {
+fn write_mcp_entries(resources: &Resources, data: &Path, db: &Value, entries: &[Value], scopes: &[Value], language: &str) -> Result<Value, String> {
     for entry in entries {
         if entry.get("config").is_some_and(|config| !config.is_null()) && entry.get("error").is_none() {
             let name = entry["name"].as_str().unwrap_or("");
@@ -1250,12 +1312,11 @@ fn write_mcp_entries(resources: &Resources, db: &Value, entries: &[Value], scope
             validate_mcp_config(&entry["config"], language)?;
         }
     }
-    distribute(resources, db, "mcp", entries, scopes, language, &mut |scoped, entry| {
+    distribute(resources, data, db, "mcp", entries, scopes, language, &mut |resolved, entry, _canonical| {
         let config = entry.get("config").filter(|config| config.is_object());
         if config.is_none() || entry.get("error").is_some() { return Err(entry["error"].as_str().map(|error| error.to_string()).unwrap_or_else(|| t(language, "无效配置")).into()) }
         let enabled = entry["enabled"].as_bool().unwrap_or(false);
-        let Scoped { target, files, .. } = scoped;
-        write_mcp(files.as_mut(), target, entry["name"].as_str().unwrap_or(""), config.expect("checked to be there"), enabled, language)
+        write_mcp(&mut resolved.machine, &resolved.target, entry["name"].as_str().unwrap_or(""), config.expect("checked to be there"), enabled, language)
     })
 }
 
@@ -1389,7 +1450,7 @@ fn inline_toml(value: &Value) -> String {
 /// The MCP servers of a TOML configuration, as `mcpRoot` finds them.
 fn toml_servers(text: &str, language: &str) -> Result<Vec<(String, Value)>, String> {
     let config = read_toml_config(text, language)?;
-    let target = Target { id: String::new(), name: String::new(), mcp_path: String::new(), skill_path: String::new(), skill_config_path: String::new(), format: "codex".to_string(), skill_adapter: String::new(), host_id: String::new(), template_name: String::new(), bare: false };
+    let target = Target { id: String::new(), name: String::new(), mcp_path: String::new(), skill_path: String::new(), skill_config_path: String::new(), format: "codex".to_string(), skill_adapter: String::new(), host_id: String::new(), template_name: String::new(), bare: false, home: String::new(), windows: false };
     let (_, servers, _) = mcp_root(&target, &config, language)?;
     Ok(servers.iter().map(|(name, value)| (name.clone(), value.clone())).collect())
 }
@@ -1573,18 +1634,56 @@ impl From<String> for Refused {
 /// A scope as an operation has it: the executor's target, what it came to
 /// when it was resolved (asked of again before anything is written), and
 /// the files its resources are in.
-struct Scoped { target: Target, mark: Option<Fingerprint>, files: Box<dyn ResourceFiles> }
-
-impl std::ops::Deref for Scoped {
-    type Target = Target;
-    fn deref(&self) -> &Target { &self.target }
+/// The files of the machine that has an executor's resources: this
+/// machine's own, or what a remote host said of its when it was asked. What
+/// is changed in the latter is kept and published to the host as one request.
+enum Machine {
+    Local(LocalFiles),
+    Remote(crate::remote_resources::RemoteResourceSnapshot),
 }
 
-impl Scoped {
-    /// Whether the machine or the template of the scope is still what it
-    /// was when the scope was resolved.
+impl ResourceFiles for Machine {
+    fn read(&self, file: &str) -> Result<String, String> {
+        match self { Machine::Local(files) => files.read(file), Machine::Remote(files) => files.read(file) }
+    }
+    fn exists(&self, file: &str) -> bool {
+        match self { Machine::Local(files) => files.exists(file), Machine::Remote(files) => files.exists(file) }
+    }
+    fn write(&mut self, file: &str, before: &str, next: &str) -> Result<(), String> {
+        match self { Machine::Local(files) => files.write(file, before, next), Machine::Remote(files) => files.write(file, before, next) }
+    }
+    fn skills(&self, roots: &[String], errors: &mut Vec<String>) -> Vec<String> {
+        match self { Machine::Local(files) => files.skills(roots, errors), Machine::Remote(files) => files.skills(roots, errors) }
+    }
+    fn rename_skill(&mut self, root: &str, source: &str, dest: &str) -> Result<(), String> {
+        match self { Machine::Local(files) => files.rename_skill(root, source, dest), Machine::Remote(files) => files.rename_skill(root, source, dest) }
+    }
+}
+
+/// An executor's resources on a machine, resolved for an operation on them,
+/// with the files of that machine as they were when it was asked.
+struct Resolved {
+    target: Target,
+    mark: Fingerprint,
+    scope: Value,
+    host: Value,
+    machine: Machine,
+}
+
+impl Resolved {
+    fn files(&self) -> &dyn ResourceFiles { &self.machine }
+
+    /// Whether the machine or the template of the scope is still what it was
+    /// when the scope was resolved.
     fn check(&self, db: &Value, language: &str) -> Result<(), String> {
-        self.mark.as_ref().map(|mark| mark.check(db, &json!({ "hostId": self.target.host_id, "executorId": self.target.id }), language)).unwrap_or(Ok(()))
+        self.mark.check(db, &self.scope, language)
+    }
+
+    /// Ask the host to make the change kept, if there is one. On this
+    /// machine a change is made as it is made; there is nothing to publish.
+    fn publish(&self, data: &Path, db: &Value, language: &str) -> Result<(), String> {
+        let Machine::Remote(snapshot) = &self.machine else { return Ok(()) };
+        snapshot.publish(data, &self.host, &|| self.check(db, language), language)
     }
 }
 
@@ -1593,7 +1692,7 @@ impl Scoped {
 /// Two executors that share a configuration file have it written once, and
 /// the second is told what the first was, as the Electron build's distribute
 /// has it. The entries are given with a name and, where they have one, an id.
-fn distribute(resources: &Resources, db: &Value, kind: &str, entries: &[Value], scopes: &[Value], language: &str, run: &mut dyn FnMut(&mut Scoped, &Value) -> Result<(), Refused>) -> Result<Value, String> {
+fn distribute(resources: &Resources, data: &Path, db: &Value, kind: &str, entries: &[Value], scopes: &[Value], language: &str, run: &mut dyn FnMut(&mut Resolved, &Value, &str) -> Result<(), Refused>) -> Result<Value, String> {
     if resources.busy.swap(true, Ordering::SeqCst) { return Err(t(language, "正在分发资源，请稍候")) }
     let result = (|| {
         if scopes.is_empty() { return Err(t(language, "请选择至少一个 Code Agent")) }
@@ -1606,6 +1705,9 @@ fn distribute(resources: &Resources, db: &Value, kind: &str, entries: &[Value], 
         let mut results = Vec::new();
         // What came of an entry on a file, by the file and the entry.
         let mut completed: Vec<(String, String, Value)> = Vec::new();
+        // What each machine said of itself, asked once however many of its
+        // executors are chosen.
+        let mut profiles: std::collections::BTreeMap<String, Vec<Target>> = std::collections::BTreeMap::new();
         for (host_id, id) in unique {
             let outcome = |entry: &Value, outcome: &Value| {
                 let mut result = json!({ "agent": id, "hostId": host_id, "name": entry["name"], "ok": outcome["ok"] });
@@ -1619,19 +1721,27 @@ fn distribute(resources: &Resources, db: &Value, kind: &str, entries: &[Value], 
                 result
             };
             let failed = |error: &Refused| json!({ "ok": false, "error": error.message, "skipped": error.duplicate });
-            let found = (|| -> Result<(Scoped, String), Refused> {
-                let (target, mark) = resolve(db, &json!({ "hostId": host_id, "executorId": id }), language).map_err(Refused::from)?;
-                let file = if kind == "skills" { &target.skill_path } else { &target.mcp_path };
+            let found = (|| -> Result<(Resolved, String, String), Refused> {
+                let scope = json!({ "hostId": host_id, "executorId": id });
+                let resolved = resolve_with(data, db, &scope, kind, &mut profiles, language).map_err(Refused::from)?;
+                let file = if kind == "skills" { &resolved.target.skill_path } else { &resolved.target.mcp_path };
+                let file = file.clone();
                 if file.is_empty() { return Err(t(language, "请先设置执行器的资源路径").into()) }
                 // The file as it really is named, so that two executors whose
                 // paths come to the same file are known to share it. What is
-                // not there yet is named by its nearest parent that is.
-                let canonical = local_canonical(Path::new(file)).map_err(Refused::from)?;
-                let identity = if cfg!(windows) { canonical.to_string_lossy().to_lowercase() } else { canonical.to_string_lossy().to_string() };
-                mark.check(db, &json!({ "hostId": host_id, "executorId": id }), language).map_err(Refused::from)?;
-                Ok((Scoped { target, mark: Some(mark), files: Box::new(LocalFiles { language: language.to_string() }) }, identity))
+                // not there yet is named by its nearest parent that is. On
+                // another machine the host names it.
+                let windows = resolved.target.windows;
+                let canonical = if host_id == "local" {
+                    local_canonical(Path::new(&file)).map_err(Refused::from)?.display().to_string()
+                } else {
+                    crate::remote_resources::remote_resource::<String>(data, &resolved.host, &json!({ "op": "canonical", "path": &file }), &|| resolved.check(db, language), None, language).map_err(Refused::from)?
+                };
+                let identity = if windows { canonical.to_lowercase() } else { canonical.clone() };
+                resolved.check(db, language).map_err(Refused::from)?;
+                Ok((resolved, canonical, identity))
             })();
-            let (mut scoped, identity) = match found {
+            let (mut resolved, canonical, identity) = match found {
                 Ok(found) => found,
                 Err(refused) => {
                     for entry in entries { results.push(outcome(entry, &failed(&refused))); }
@@ -1644,7 +1754,10 @@ fn distribute(resources: &Resources, db: &Value, kind: &str, entries: &[Value], 
                 let result = match done {
                     Some(done) => Ok(done),
                     None => {
-                        let tried = scoped.check(db, language).map_err(Refused::from).and_then(|()| run(&mut scoped, entry));
+                        let tried = resolved.check(db, language).map_err(Refused::from).and_then(|()| run(&mut resolved, entry, &canonical));
+                        // What was changed on another machine is made to be
+                        // so there before the entry is said to be done.
+                        let tried = tried.and_then(|()| resolved.publish(data, db, language).map_err(Refused::from));
                         let value = match &tried {
                             Ok(()) => json!({ "ok": true }),
                             Err(refused) => failed(refused),
@@ -1699,9 +1812,8 @@ pub fn scan(db: &Value, kind: &str, source: &str, host_id: &str, language: &str)
 
 struct ImportEntry { id: String, name: String, path: String, config: Option<Value>, enabled: bool, error: Option<String> }
 
-pub fn import_mcp(resources: &Resources, db: &Value, source: &str, scopes: &[Value], ids: &[Value], host_id: &str, language: &str) -> Result<Value, String> {
-    crate::templates::machine(db, host_id, true, language)?;
-    let entries = read_mcp_import(Path::new(source), language)?;
+pub fn import_mcp(resources: &Resources, data: &Path, db: &Value, source: &str, scopes: &[Value], ids: &[Value], host_id: &str, language: &str) -> Result<Value, String> {
+    let entries = source_mcp(data, db, source, host_id, language)?;
     if ids.is_empty() || ids.iter().any(|id| !entries.iter().any(|entry| entry.id == id.as_str().unwrap_or(""))) { return Err(t(language, "请选择扫描结果中的 MCP")) }
     let chosen = entries.into_iter().filter(|entry| ids.iter().any(|id| id.as_str() == Some(entry.id.as_str()))).map(|entry| {
         let mut value = json!({ "id": entry.id, "name": entry.name, "enabled": entry.enabled });
@@ -1709,23 +1821,49 @@ pub fn import_mcp(resources: &Resources, db: &Value, source: &str, scopes: &[Val
         if let Some(error) = entry.error { value["error"] = json!(error); }
         value
     }).collect::<Vec<_>>();
-    write_mcp_entries(resources, db, &chosen, scopes, language)
+    write_mcp_entries(resources, data, db, &chosen, scopes, language)
+}
+
+/// The servers of a configuration file on a machine, with what each one
+/// would be refused for: read on this machine, or asked of the host by the
+/// path as it writes it. The machine is asked to be still the one it was
+/// after the file was read.
+fn source_mcp(data: &Path, db: &Value, source: &str, host_id: &str, language: &str) -> Result<Vec<ImportEntry>, String> {
+    let host = crate::templates::machine(db, host_id, true, language)?.clone();
+    if host_id == "local" { return read_mcp_import(Path::new(source), language) }
+    let file = crate::templates::resource_path(source, host["platform"].as_str() == Some("windows"), language)?;
+    let snapshot = crate::remote_resources::remote_snapshot(data, &host, &[file.clone()], &[], &|| Ok(()), None, language)?;
+    let still = |language: &str| -> Result<(), String> {
+        let now = crate::templates::machine(db, host_id, true, language)?;
+        if ["addr", "user", "port", "platform", "auth"].iter().any(|key| now[key] != host[key]) { return Err(t(language, "资源目标已改变，请刷新后重试")) }
+        Ok(())
+    };
+    still(language)?;
+    if !snapshot.exists(&file) { return Err(t(language, "文件不存在")) }
+    let content = snapshot.read(&file)?;
+    read_mcp_import_text(&file, &content, language)
 }
 
 /// The servers of a configuration file, found as the Electron build's
 /// `readMcpImport` finds them, with what each one would be refused for. The
 /// file's own content is not returned with them, only its shape.
 fn read_mcp_import(source: &Path, language: &str) -> Result<Vec<ImportEntry>, String> {
-    let syntax = || t(language, "配置语法有误，请检查 JSON、JSONC、TOML 或 YAML 格式");
     // The limit here is in round millions of bytes, as the Electron build's
     // own reading of an import file has it; the other files it reads are
     // limited to 32 MiB.
     if !source.is_absolute() { return Err(t(language, "请选择 32 MB 以内的 MCP 配置文件")); }
     let meta = fs::metadata(source).map_err(|error| error.to_string())?;
     if meta.len() > 32_000_000 { return Err(t(language, "请选择 32 MB 以内的 MCP 配置文件")); }
-    let text = read_text(source, language)?;
+    read_mcp_import_text(source.file_name().and_then(|item| item.to_str()).unwrap_or(""), &read_text(source, language)?, language)
+}
+
+/// The servers of a configuration file's text, the format chosen by the
+/// file's name. The text is one a machine said its file had, or this
+/// machine's own.
+fn read_mcp_import_text(name: &str, text: &str, language: &str) -> Result<Vec<ImportEntry>, String> {
+    let syntax = || t(language, "配置语法有误，请检查 JSON、JSONC、TOML 或 YAML 格式");
     // The format is chosen by the file's name, without regard to case.
-    let lower = source.file_name().and_then(|item| item.to_str()).unwrap_or("").to_lowercase();
+    let lower = name.to_lowercase();
     let config: Value = if lower.ends_with(".toml") {
         toml::from_str::<toml::Value>(text.trim_start_matches('\u{feff}')).map(toml_to_json).map_err(|_| syntax())?
     } else if lower.ends_with(".yaml") || lower.ends_with(".yml") {
@@ -1744,7 +1882,7 @@ fn read_mcp_import(source: &Path, language: &str) -> Result<Vec<ImportEntry>, St
         // says, or from the file's name with what a name cannot hold replaced.
         if object.contains_key("command") || object.contains_key("url") {
             let name = object.get("name").filter(|value| value.is_string()).map(|value| value.as_str().unwrap_or("").to_string()).unwrap_or_else(|| {
-                let base = source.file_stem().and_then(|item| item.to_str()).unwrap_or("").to_string();
+                let base = Path::new(name).file_stem().and_then(|item| item.to_str()).unwrap_or("").to_string();
                 let cleaned: String = base.chars().map(|character| if character.is_ascii_alphanumeric() || character == '_' || character == '-' { character } else { '-' }).take(64).collect();
                 if cleaned.is_empty() { "imported-mcp".to_string() } else { cleaned }
             });
@@ -1919,7 +2057,7 @@ fn normalize_import(value: &Value, language: &str) -> Result<Value, String> {
 
 struct StagedSkill { folder: PathBuf, name: String, description: String, relative: String }
 
-pub fn import_skills(resources: &Resources, db: &Value, source: &str, scopes: &[Value], names: Option<&Vec<String>>, language: &str) -> Result<Value, String> {
+pub fn import_skills(resources: &Resources, data: &Path, db: &Value, source: &str, scopes: &[Value], names: Option<&Vec<String>>, language: &str) -> Result<Value, String> {
     let (staging, discovered) = stage_skills(Path::new(source), language)?;
     let outcome = (|| {
         let skills = if let Some(names) = names {
@@ -1931,9 +2069,11 @@ pub fn import_skills(resources: &Resources, db: &Value, source: &str, scopes: &[
         // already on one executor is kept and only that one is said to be
         // skipped, as the Electron build's installSkill has it.
         let entries = skills.iter().map(|skill| json!({ "name": skill.name, "folder": skill.folder, "relative": skill.relative })).collect::<Vec<_>>();
-        let found = distribute(resources, db, "skills", &entries, scopes, language, &mut |scoped, entry| {
+        let found = distribute(resources, data, db, "skills", &entries, scopes, language, &mut |resolved, entry, canonical| {
             let skill = skills.iter().find(|skill| skill.name == entry["name"].as_str().unwrap_or("")).expect("every entry is a found Skill");
-            install_skills(&scoped.target, std::slice::from_ref(skill), language)
+            if resolved.host["id"].as_str() != Some("local") { return Err(t(language, "此操作仅适用于本机 Skill").into()) }
+            let _ = canonical;
+            install_skills(&resolved.target, std::slice::from_ref(skill), language)
         })?;
         Ok(found)
     })();
