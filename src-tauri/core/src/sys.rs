@@ -19,6 +19,39 @@ pub use imp::{home, open_read_nofollow, private_file, rename_noreplace, trash};
 #[cfg(windows)]
 pub use imp::console_key_text;
 
+/// A program the workbench runs for its own reasons, in the background: Git
+/// asked for a branch, a registry query, an `ssh` that carries a file. The
+/// user never sees it, and no window of it may come up.
+///
+/// The workbench has no console of its own, so on Windows each console
+/// program it starts would be given one: a black window for every call, and
+/// the changes list asks Git every few seconds. The Electron build's
+/// `windowsHide: true` is this flag. A program whose window is the point,
+/// an editor or a folder the user asked to see, is started without it.
+#[cfg(windows)]
+pub fn hidden(command: &mut std::process::Command) -> &mut std::process::Command {
+    use std::os::windows::process::CommandExt;
+    // CREATE_NO_WINDOW: the program runs with a console it cannot show.
+    command.creation_flags(0x0800_0000)
+}
+
+#[cfg(not(windows))]
+pub fn hidden(command: &mut std::process::Command) -> &mut std::process::Command {
+    command
+}
+
+/// The same for a program started on the async runtime, which has a command
+/// of its own.
+#[cfg(windows)]
+pub fn hidden_async(command: &mut tokio::process::Command) -> &mut tokio::process::Command {
+    command.creation_flags(0x0800_0000)
+}
+
+#[cfg(not(windows))]
+pub fn hidden_async(command: &mut tokio::process::Command) -> &mut tokio::process::Command {
+    command
+}
+
 /// Narrow a freshly created file to the current user.
 pub fn restrict_to_owner(file: &std::fs::File) {
     imp::restrict_to_owner(file)

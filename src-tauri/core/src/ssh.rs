@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Base64 of a 12 MB preview is 16 MB. The cap stays above that so a legal asset is not rejected as oversized output.
 const MAX_OUTPUT: usize = 16_000_100;
@@ -1260,12 +1260,13 @@ struct FixtureClient {
     stdin: HashMap<ChannelId, Vec<u8>>,
     pty: HashMap<ChannelId, bool>,
     writers: HashMap<ChannelId, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
+    requests: HashMap<ChannelId, String>,
 }
 
 impl server::Server for FixtureServer {
     type Handler = FixtureClient;
     fn new_client(&mut self, _: Option<SocketAddr>) -> Self::Handler {
-        FixtureClient { password: self.password.clone(), closed: Arc::clone(&self.closed), commands: HashMap::new(), stdin: HashMap::new(), pty: HashMap::new(), writers: HashMap::new() }
+        FixtureClient { password: self.password.clone(), closed: Arc::clone(&self.closed), commands: HashMap::new(), stdin: HashMap::new(), pty: HashMap::new(), writers: HashMap::new(), requests: HashMap::new() }
     }
 }
 
@@ -1298,7 +1299,36 @@ impl server::Handler for FixtureClient {
 
     async fn exec_request(&mut self, channel: ChannelId, data: &[u8], session: &mut server::Session) -> Result<(), Self::Error> {
         let _ = session.channel_success(channel);
-        self.commands.insert(channel, String::from_utf8_lossy(data).into_owned());
+        let command = String::from_utf8_lossy(data).into_owned();
+        // The program that reads and writes an agent's resources on a POSIX
+        // host is run as it would be there, by the Python of this machine:
+        // what the client writes is its input and what it prints is the
+        // client's, while it runs, so that a change is approved in two
+        // steps as it is on a host. It is known by the first line of the
+        // program, which no other command sent to a host carries.
+        if command.contains("import hashlib, json, os, stat, sys, tempfile") {
+            if let Some(program) = unquoted_python(&command) {
+                let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+                self.writers.insert(channel, sender);
+                let handle = session.handle();
+                tokio::spawn(async move { run_resource_program(handle, channel, program, receiver).await });
+                return Ok(());
+            }
+        }
+        // The same program for a Windows host is run by the PowerShell of
+        // this machine, as a Windows host would run it: it is known by the
+        // line with which it reads its request, behind the encoding every
+        // command for a Windows host travels in.
+        if command.starts_with("powershell.exe") {
+            if let Some(program) = decode_powershell_command(&command).filter(|program| program.contains("[Console]::ReadLine()|ConvertFrom-Json")) {
+                let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+                self.writers.insert(channel, sender);
+                let handle = session.handle();
+                tokio::spawn(async move { run_resource_program_powershell(handle, channel, program, receiver).await });
+                return Ok(());
+            }
+        }
+        self.commands.insert(channel, command);
         if self.pty.get(&channel) == Some(&true) {
             let command = self.commands.remove(&channel).unwrap_or_default();
             let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -1309,7 +1339,30 @@ impl server::Handler for FixtureClient {
         Ok(())
     }
 
-    async fn data(&mut self, channel: ChannelId, data: &[u8], _: &mut server::Session) -> Result<(), Self::Error> {
+    async fn data(&mut self, channel: ChannelId, data: &[u8], session: &mut server::Session) -> Result<(), Self::Error> {
+        // A command asked for by name `awb-resource:` is one that is talked
+        // to both ways, as the program that reads and writes an agent's
+        // resources on the host is: it answers the request it is given with
+        // `OK`, and once it is told `1` it says the request back and ends.
+        // The channel is not run through a shell, so that the test does not
+        // depend on what the shell quotes.
+        if self.commands.get(&channel).is_some_and(|command| command.starts_with("awb-resource:")) {
+            let held = self.stdin.entry(channel).or_default();
+            held.extend_from_slice(data);
+            while let Some(at) = held.iter().position(|byte| *byte == b'\n') {
+                let line: Vec<u8> = held.drain(..=at).collect();
+                let line = String::from_utf8_lossy(&line[..line.len() - 1]).into_owned();
+                if line.trim() != "1" { self.requests.insert(channel, line); let _ = session.data(channel, CryptoVec::from("OK\n".as_bytes())); continue }
+                let _ = session.data(channel, CryptoVec::from(format!("{}\n", self.requests.remove(&channel).unwrap_or_default()).as_bytes()));
+                let _ = session.flush();
+                let _ = session.exit_status_request(channel, 0);
+                let _ = session.eof(channel);
+                let _ = session.close(channel);
+                return Ok(());
+            }
+            let _ = session.flush();
+            return Ok(());
+        }
         if let Some(sender) = self.writers.get(&channel) {
             let _ = sender.send(data.to_vec());
             return Ok(());
@@ -1324,7 +1377,12 @@ impl server::Handler for FixtureClient {
     }
 
     async fn channel_eof(&mut self, channel: ChannelId, session: &mut server::Session) -> Result<(), Self::Error> {
+        // A channel with a writer is one whose command is run as it is
+        // talked to: its end is the program's own, not anything started here.
+        // One whose command is a program rather than a terminal is given no
+        // more once the client has no more: the program's input is ended.
         if self.pty.get(&channel) == Some(&true) { return Ok(()) }
+        if self.writers.remove(&channel).is_some() { return Ok(()) }
         let command = self.commands.remove(&channel).unwrap_or_default();
         let input = self.stdin.remove(&channel).unwrap_or_default();
         // A command asked for by name `awb-hold:` is a command that does not
@@ -1413,6 +1471,113 @@ async fn run_pty(handle: server::Handle, channel: ChannelId, command: String, mu
     let _ = child.wait().await;
 }
 
+/// Run the program that reads and writes an agent's resources on this
+/// machine, as a POSIX host would run it, with what the client writes as
+/// its input and what it prints as the client's.
+async fn run_resource_program(handle: server::Handle, channel: ChannelId, program: String, more: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>) {
+    let mut python = tokio::process::Command::new(fixture_python());
+    python.arg("-c").arg(program);
+    run_resource_command(handle, channel, python, more).await;
+}
+
+/// The same for a Windows host: the program is the PowerShell the command
+/// carried, run as a Windows shell would run it.
+async fn run_resource_program_powershell(handle: server::Handle, channel: ChannelId, program: String, more: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>) {
+    let mut powershell = tokio::process::Command::new("powershell.exe");
+    powershell.arg("-NoProfile").arg("-NonInteractive").arg("-OutputFormat").arg("Text").arg("-Command").arg(program);
+    run_resource_command(handle, channel, powershell, more).await;
+}
+
+/// Run the program that reads and writes an agent's resources on this
+/// machine with what the client writes as its input and what it prints as
+/// the client's. Its errors are the client's too, and it ends with its own
+/// code, said with the three messages that end a channel.
+async fn run_resource_command(handle: server::Handle, channel: ChannelId, mut command: tokio::process::Command, mut more: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>) {
+    command.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(_) => {
+            let _ = handle.exit_status_request(channel, 127).await;
+            let _ = handle.eof(channel).await;
+            let _ = handle.close(channel).await;
+            return;
+        }
+    };
+    // What the client writes is the program's input, until the client says
+    // it has no more to give: then the program's input is ended, so that a
+    // program reading all of it ends too.
+    if let Some(mut stdin) = child.stdin.take() {
+        tokio::spawn(async move {
+            while let Some(bytes) = more.recv().await {
+                if tokio::io::AsyncWriteExt::write_all(&mut stdin, &bytes).await.is_err() { break }
+            }
+            drop(stdin);
+        });
+    }
+    if let Some(stdout) = child.stdout.take() {
+        let handle = handle.clone();
+        tokio::spawn(async move {
+            let mut stdout = stdout;
+            let mut buffer = [0u8; 4096];
+            loop {
+                match tokio::io::AsyncReadExt::read(&mut stdout, &mut buffer).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(size) => { let _ = handle.data(channel, CryptoVec::from(&buffer[..size])).await; }
+                }
+            }
+        });
+    }
+    if let Some(stderr) = child.stderr.take() {
+        let handle = handle.clone();
+        tokio::spawn(async move {
+            let mut stderr = stderr;
+            let mut buffer = [0u8; 4096];
+            loop {
+                match tokio::io::AsyncReadExt::read(&mut stderr, &mut buffer).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(size) => { let _ = handle.extended_data(channel, 1, CryptoVec::from(&buffer[..size])).await; }
+                }
+            }
+        });
+    }
+    let status = child.wait().await;
+    let _ = handle.exit_status_request(channel, status.ok().and_then(|status| status.code()).unwrap_or(1) as u32).await;
+    let _ = handle.eof(channel).await;
+    let _ = handle.close(channel).await;
+}
+
+/// Take a command line apart as the POSIX shell would, when it is
+/// `python3 -c <program>` with each part quoted by [bash_quote]; the program
+/// is the third part. `None` when it is not that.
+fn unquoted_python(command: &str) -> Option<String> {
+    let mut parts = Vec::new();
+    let mut rest = command;
+    while !rest.is_empty() {
+        if rest.starts_with(' ') { rest = &rest[1..]; continue }
+        if !rest.starts_with('\'') { return None }
+        let mut part = String::new();
+        rest = &rest[1..];
+        loop {
+            let end = rest.find('\'')?;
+            part.push_str(&rest[..end]);
+            rest = &rest[end + 1..];
+            if rest.starts_with("\\\'") { part.push('\''); rest = &rest[3..]; continue }
+            break;
+        }
+        parts.push(part);
+    }
+    if parts.len() != 3 || parts[0] != "python3" || parts[1] != "-c" { return None }
+    Some(parts.pop().expect("three parts"))
+}
+
+/// The Python the fixture runs a host's program with. A POSIX host has
+/// `python3`; a machine running the suite may have its Python under
+/// another name, as Windows does, where `python3` may be a store's
+/// placeholder that starts no interpreter at all.
+fn fixture_python() -> String {
+    std::env::var("AWB_FIXTURE_PYTHON").unwrap_or_else(|_| "python3".into())
+}
+
 pub fn start_fixture(password: &str) -> Result<Fixture, String> {
     start_fixture_with(password, HostKey::Ed25519)
 }
@@ -1468,4 +1633,233 @@ pub fn start_fixture_with(password: &str, host_key: HostKey) -> Result<Fixture, 
     let port = port_rx.recv().map_err(|error| error.to_string())??;
     let (shutdown, closed) = handle_rx.recv_timeout(Duration::from_secs(5)).map(|(handle, closed)| (Some(handle), closed)).unwrap_or_else(|_| (None, Arc::new(std::sync::atomic::AtomicUsize::new(0))));
     Ok(Fixture { port, closed, shutdown })
+}
+
+/// What the caller of a ResourceStream has for the command on the host.
+enum StreamInput { Write(Vec<u8>), Close }
+
+/// A command on a remote host that is talked to both ways, as the program
+/// that reads and writes an agent's resources there needs: what it writes
+/// is read as it comes, and what it is to be given is written when the
+/// caller has read what came before. Dropping it ends the command on the
+/// host. As with a search, the connection is made when the stream is
+/// opened, so that a failure is reported there.
+pub struct ResourceStream {
+    output: std::sync::mpsc::Receiver<Vec<u8>>,
+    input: tokio::sync::mpsc::Sender<StreamInput>,
+    pending: Vec<u8>,
+    errors: Arc<Mutex<Vec<u8>>>,
+    code: Arc<Mutex<Option<i32>>>,
+    cancel: Arc<AtomicBool>,
+    language: String,
+    /// When the caller stops waiting for the host, if it has said so.
+    deadline: Option<Instant>,
+}
+
+impl ResourceStream {
+    /// Stop waiting for the host at this moment: what is read after it is
+    /// the host's failure to answer in time.
+    pub fn set_deadline(&mut self, deadline: Instant) {
+        self.deadline = Some(deadline);
+    }
+
+    /// Give the command what to read. What is written after its input is
+    /// closed is not sent.
+    pub fn write(&self, data: &[u8]) {
+        let _ = self.input.try_send(StreamInput::Write(data.to_vec()));
+    }
+
+    /// Say that the command has all it is to read.
+    pub fn close_input(&self) {
+        let _ = self.input.try_send(StreamInput::Close);
+    }
+
+    /// How long to wait for the next piece of the host's answer: until the
+    /// caller stops waiting, or a moment at a time, so that cancelling is
+    /// noticed. `None` when that moment has come.
+    fn waiting(&self) -> Option<Duration> {
+        let step = Duration::from_millis(200);
+        match self.deadline {
+            None => Some(step),
+            Some(deadline) => match deadline.checked_duration_since(Instant::now()) {
+                Some(left) => Some(left.min(step)),
+                None => None,
+            },
+        }
+    }
+
+    /// Read what the command wrote into the buffer. Zero is the end of its
+    /// output, whether it ended or the stream was closed; an error says the
+    /// stream was cancelled, or that the host did not answer in time.
+    pub fn read(&mut self, buffer: &mut [u8]) -> Result<usize, String> {
+        while self.pending.is_empty() {
+            let Some(wait) = self.waiting() else { return Err(translate(&self.language, "SSH 连接超时", &[] as &[String])) };
+            match self.output.recv_timeout(wait) {
+                Ok(chunk) => self.pending = chunk,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if self.cancel.load(Ordering::SeqCst) { return Err(translate(&self.language, "传输已取消", &[] as &[String])) }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Ok(0),
+            }
+        }
+        let size = buffer.len().min(self.pending.len());
+        buffer[..size].copy_from_slice(&self.pending[..size]);
+        self.pending.drain(..size);
+        Ok(size)
+    }
+
+    /// Wait for the command to end and say whether it succeeded. An error
+    /// carries what the command printed, or its exit code.
+    pub fn finish(&self) -> Result<(), String> {
+        loop {
+            let Some(wait) = self.waiting() else { return Err(translate(&self.language, "SSH 连接超时", &[] as &[String])) };
+            match self.output.recv_timeout(wait) {
+                Ok(_) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if self.cancel.load(Ordering::SeqCst) { return Err(translate(&self.language, "传输已取消", &[] as &[String])) }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        self.ended()
+    }
+
+    fn ended(&self) -> Result<(), String> {
+        if self.cancel.load(Ordering::SeqCst) { return Err(translate(&self.language, "传输已取消", &[] as &[String])) }
+        let detail = String::from_utf8_lossy(&self.errors.lock().expect("command errors")).trim().to_string();
+        let code = *self.code.lock().expect("command code");
+        match code {
+            Some(0) => Ok(()),
+            _ if !detail.is_empty() => Err(detail.chars().rev().take(240).collect::<String>().chars().rev().collect()),
+            Some(code) => Err(translate(&self.language, "远程命令退出码 {{0}}", &[code.to_string()])),
+            None => Err(translate(&self.language, "SSH 连接中断", &[] as &[String])),
+        }
+    }
+}
+
+impl Drop for ResourceStream {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
+}
+
+/// The pump of a stream: it turns the command's bytes into pieces and hands
+/// them to the caller, and keeps what the command printed as an error.
+struct ResourcePump {
+    sender: std::sync::mpsc::Sender<Vec<u8>>,
+    errors: Arc<Mutex<Vec<u8>>>,
+    code: Arc<Mutex<Option<i32>>>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl ResourcePump {
+    fn send(&self, data: &[u8]) {
+        if self.cancel.load(Ordering::SeqCst) { return }
+        let _ = self.sender.send(data.to_vec());
+    }
+
+    fn failed(&self, data: &[u8]) {
+        let mut held = self.errors.lock().expect("command errors");
+        held.extend_from_slice(data);
+        if held.len() > 16000 { let cut = held.len() - 16000; held.drain(..cut); }
+    }
+}
+
+/// Start a command on a remote host and talk to it both ways, for the
+/// program that reads and writes an agent's resources there. The command
+/// has nothing to read until the caller writes it.
+pub fn open_resource_stream(data: &Path, host: &Value, command: &str, language: &str) -> Result<ResourceStream, String> {
+    let (sender, output) = std::sync::mpsc::channel();
+    let (input, mut given) = tokio::sync::mpsc::channel::<StreamInput>(16);
+    let errors = Arc::new(Mutex::new(Vec::new()));
+    let code = Arc::new(Mutex::new(None));
+    let cancel = Arc::new(AtomicBool::new(false));
+    if host["auth"] == "password" {
+        let password = password_of(data, host).ok_or_else(|| translate(language, "请填写 SSH 登录密码", &[] as &[String]))?;
+        let (session, mut channel) = runtime().block_on(async {
+            let session = open_password(data, host, &password, language).await?;
+            let channel = within(session.channel_open_session()).await.ok_or_else(|| timed_out(language))?.map_err(|error| error.to_string())?;
+            within(channel.exec(true, command.as_bytes().to_vec())).await.ok_or_else(|| timed_out(language))?.map_err(|error| error.to_string())?;
+            Ok::<_, String>((session, channel))
+        })?;
+        let pump = ResourcePump { sender, errors: Arc::clone(&errors), code: Arc::clone(&code), cancel: Arc::clone(&cancel) };
+        runtime().spawn(async move {
+            // Once the input is closed there is nothing more to be given,
+            // and the arm that waits for it is not waited on any more: it
+            // would be ready at once, with nothing, ever after.
+            let mut closed = false;
+            loop {
+                tokio::select! {
+                    message = channel.wait() => match message {
+                        None => break,
+                        Some(ChannelMsg::Data { data }) => pump.send(&data),
+                        Some(ChannelMsg::ExtendedData { data, ext: 1 }) => pump.failed(&data),
+                        Some(ChannelMsg::ExitStatus { exit_status }) => *pump.code.lock().expect("command code") = Some(exit_status as i32),
+                        Some(_) => {}
+                    },
+                    given = given.recv(), if !closed => match given {
+                        None | Some(StreamInput::Close) => { let _ = channel.eof().await; closed = true; }
+                        Some(StreamInput::Write(data)) => { let _ = channel.data(&data[..]).await; }
+                    },
+                }
+                if pump.cancel.load(Ordering::SeqCst) { break }
+            }
+            let _ = channel.close().await;
+            let _ = session.disconnect(Disconnect::ByApplication, "", "").await;
+        });
+    } else {
+        let mut ssh = std::process::Command::new(ssh_program());
+        for arg in ssh_batch_args(host) { ssh.arg(arg); }
+        ssh.arg(command);
+        ssh.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+        let mut child = ssh.spawn().map_err(|error| error.to_string())?;
+        let mut stdin = child.stdin.take().expect("the input of the ssh program is piped");
+        let to_give = runtime().spawn(async move {
+            while let Some(next) = given.recv().await {
+                match next {
+                    StreamInput::Write(data) => { let _ = stdin.write_all(&data); let _ = stdin.flush(); }
+                    StreamInput::Close => break,
+                }
+            }
+            drop(stdin);
+        });
+        let _ = to_give;
+        let mut stdout = child.stdout.take().ok_or_else(|| translate(language, "远程输出过大", &[] as &[String]))?;
+        let mut stderr = child.stderr.take().ok_or_else(|| translate(language, "远程输出过大", &[] as &[String]))?;
+        let pump = ResourcePump { sender, errors: Arc::clone(&errors), code: Arc::clone(&code), cancel: Arc::clone(&cancel) };
+        let tail = ResourcePump { sender: pump.sender.clone(), errors: Arc::clone(&pump.errors), code: Arc::clone(&pump.code), cancel: Arc::clone(&pump.cancel) };
+        std::thread::spawn(move || {
+            let mut buffer = [0u8; 16 * 1024];
+            loop {
+                match stderr.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(size) => tail.failed(&buffer[..size]),
+                }
+            }
+        });
+        let child = Arc::new(Mutex::new(Some(child)));
+        let to_end = Arc::clone(&child);
+        let watching = Arc::clone(&cancel);
+        std::thread::spawn(move || {
+            while !watching.load(Ordering::SeqCst) {
+                let ended = { let mut held = to_end.lock().expect("child"); held.as_mut().map(|child| child.try_wait().ok().flatten().is_some()).unwrap_or(true) };
+                if ended { break }
+                std::thread::sleep(Duration::from_millis(40));
+            }
+            let mut held = to_end.lock().expect("child");
+            if watching.load(Ordering::SeqCst) { if let Some(child) = held.as_mut() { let _ = child.kill(); } }
+        });
+        std::thread::spawn(move || {
+            let mut buffer = [0u8; 16 * 1024];
+            loop {
+                match stdout.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(size) => pump.send(&buffer[..size]),
+                }
+            }
+            let status = { let mut held = child.lock().expect("child"); held.take().map(|mut child| child.wait()) };
+            *pump.code.lock().expect("command code") = status.and_then(|result| result.ok()).and_then(|status| status.code());
+        });
+    }
+    Ok(ResourceStream { output, input, pending: Vec::new(), errors, code, cancel, language: language.to_string(), deadline: None })
 }

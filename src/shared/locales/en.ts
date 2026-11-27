@@ -940,6 +940,7 @@ export const en: Record<string, string> = {
   "SSH 退出码 {{0}}": "SSH exited with code {{0}}",
   "远程命令执行超时": "Remote command timed out",
   "远程输出过大": "Remote output is too large",
+  "远程资源写入准备失败": "Could not prepare the remote resource write",
   "SSH 连接在命令结束前关闭": "SSH connection closed before the command finished",
   "请选择临时会话的绝对目录": "Choose an absolute directory for temporary sessions",
   "临时会话路径必须是文件夹": "Temporary session path must be a folder",

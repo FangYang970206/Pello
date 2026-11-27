@@ -74,12 +74,16 @@ for (const caller of callers.filter((caller) => caller.source !== null)) {
 // a closure of the menu module, whose texts are the menu's; a helper that
 // translates and quotes what it is given for a remote script; a helper that
 // writes what it is given as a quoted string; the two names a search error
-// goes by; and the shorthand of the resource and template modules, each
-// called with a literal message only. A function that translates a variable
-// is not one of them until it is said here.
+// goes by; and the shorthand of the resource, remote resource and template
+// modules, each called with a literal message only. A function that
+// translates a variable is not one of them until it is said here.
 const passesVariable = new Map([
   ['menu.rs', ['layout_menu_items', 'tree_menu', 'file_menu', 'preview_menu']],
   ['resources.rs', ['t']],
+  ['remote_resources.rs', ['t']],
+  // The words the remote resource programs say are a table of their own,
+  // each said with a literal below.
+  ['remote_resource_program.rs', ['localize']],
   ['templates.rs', ['t']],
   ['search.rs', ['from_remote_output', 'next']],
   ['ssh.rs', ['ps_error']],
@@ -90,6 +94,14 @@ for (const caller of callers.filter((caller) => caller.source === null)) {
 }
 for (const [file, names] of passesVariable) for (const name of names) assert.ok(callers.some((caller) => caller.source === null && caller.file === file && caller.within === name), `Said to pass a message on, and no longer does: ${file} ${name}`)
 for (const { line, text } of menu) assert.ok(english.has(text), `src-tauri/core/src/menu.rs:${line}: A menu text with no English: ${text}`)
+// The messages the programs run on a host are said by the table of their
+// module: each is said here with the words the catalog has for it, so that a
+// host says the same of a missing file as the workbench does.
+const programTable = fs.readFileSync(new URL('../src-tauri/core/src/remote_resource_program.rs', import.meta.url), 'utf8').match(/^const MESSAGES: &\[\(&str, &str\)\] = &\[(.*?)^\];/ms)?.[1]
+assert.ok(programTable, 'src-tauri/core/src/remote_resource_program.rs: the table of the programs\' messages is not where it was left')
+const programMessages = [...programTable.matchAll(/^\s*\("([A-Z]+)", "([^"]+)"\),?$/gm)]
+assert.equal(programMessages.length, 8, 'every message the programs say is in the table')
+for (const [, key, words] of programMessages) assert.ok(english.has(words), `src-tauri/core/src/remote_resource_program.rs: no English for the ${key} message: ${words}`)
 console.log(`PASS kernel messages (${entries.length} in the catalog, ${callers.filter((caller) => caller.source !== null).length} translated in place, ${kernelOnly.size} of the kernel's own)`)
 setLanguage('en')
 assert.equal(t('临时会话'), 'TempSessions')

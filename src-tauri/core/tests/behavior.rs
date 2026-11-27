@@ -6637,3 +6637,192 @@ fn a_launch_test_keeps_what_the_console_sends_after_the_command_has_left() {
     assert!(!text.contains(&format!("\u{1b}]777;awb;executor-test-")), "the mark of the end is not shown: {test}");
     let _ = fs::remove_dir_all(root);
 }
+
+/// A command on a remote host that is talked to both ways, as the program
+/// that reads and writes an agent's resources there is: what it is given
+/// first is answered, what it is given after that is read after the
+/// answer, and it ends with a code. The answer is the fixture's own, so
+/// that no real host is asked.
+#[test]
+fn a_resource_stream_talks_both_ways_with_a_command_on_a_remote_host() {
+    // A terminal is closed here: tests that close terminals run one at a time.
+    let _lock = env_lock();
+    let password = "{{SECRET_7a5f9c4e}}";
+    let fixture = pello_core::ssh::start_fixture(password).expect("ssh fixture");
+    let root = temp_dir("resource-stream");
+    let (bench, _) = workbench(&root);
+    let host = json!({
+        "id": "box", "name": "Box", "addr": "127.0.0.1", "port": fixture.port, "user": "me",
+        "auth": "password", "password": password, "color": "blue", "on": true, "os": "", "platform": "linux"
+    });
+    let data = bench.database_path().parent().expect("the data directory").to_path_buf();
+    pello_core::ssh::remember_password(&data, &host);
+    let mut stream = pello_core::ssh::open_resource_stream(&data, &host, "awb-resource:profile", "en").expect("the stream opens");
+    // The request is given, and its answer waited for, before the command
+    // is told to go on: the answer is the fixture's `OK`.
+    stream.write(b"{\"op\":\"profile\"}\n");
+    let mut answer = Vec::new();
+    let mut buffer = [0u8; 64];
+    while !answer.ends_with(b"OK\n") {
+        let size = stream.read(&mut buffer).expect("the answer is read");
+        assert!(size > 0, "the command ended before it answered: {:?}", String::from_utf8_lossy(&answer));
+        answer.extend_from_slice(&buffer[..size]);
+    }
+    stream.write(b"1\n");
+    stream.close_input();
+    let mut said = answer.clone();
+    loop {
+        let size = stream.read(&mut buffer).expect("what the command says is read");
+        if size == 0 { break }
+        said.extend_from_slice(&buffer[..size]);
+    }
+    stream.finish().expect("the command ended well");
+    assert_eq!(String::from_utf8(said).unwrap(), "OK\n{\"op\":\"profile\"}\n");
+    // What the command printed as an error, with a code that is not zero,
+    // is the error the stream ends with.
+    let refused = pello_core::ssh::open_resource_stream(&data, &host, "awb-refuse:", "en").expect("the stream opens");
+    refused.close_input();
+    let error = refused.finish().err().unwrap_or_default();
+    assert!(!error.is_empty(), "a command that did not end well is an error");
+    // A host that has said what it has and then says nothing is not waited
+    // for forever: once the moment set by the caller has come, reading and
+    // waiting for the end both say that the host did not answer in time,
+    // wherever the waiting was.
+    let mut held = pello_core::ssh::open_resource_stream(&data, &host, "awb-hold:held", "en").expect("the stream opens");
+    held.close_input();
+    let mut buffer = [0u8; 64];
+    let mut said = Vec::new();
+    while !said.ends_with(b"\n") {
+        let size = held.read(&mut buffer).expect("the line the command starts with is read");
+        assert!(size > 0, "the command holds the channel open after its line");
+        said.extend_from_slice(&buffer[..size]);
+    }
+    assert_eq!(said, b"held\n");
+    held.set_deadline(std::time::Instant::now() + std::time::Duration::from_millis(300));
+    let started = std::time::Instant::now();
+    let error = held.read(&mut buffer).expect_err("a host that says nothing is given up");
+    assert!(error.contains("timed out") || error.contains("超时"), "{error}");
+    let waiting = std::time::Instant::now();
+    let error = held.finish().expect_err("the end of a host that says nothing is given up too");
+    assert!(error.contains("timed out") || error.contains("超时"), "{error}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(3), "the moment set is kept: {:?}", started.elapsed());
+    assert!(waiting.elapsed() < std::time::Duration::from_secs(3), "the moment set is kept: {:?}", waiting.elapsed());
+    let _ = fs::remove_dir_all(root);
+}
+
+/// The program run on a remote host to read and write an agent's resources
+/// there is the Electron build's own: the Python of a POSIX host and the
+/// PowerShell of a Windows one, each operation's block cut out as it cuts
+/// it, with every message said in the language asked and quoted as the
+/// host's program needs. The expected programs were made by the Electron
+/// build's module and are kept beside the suite; one that differs by a
+/// byte is a program the host may not run, or may not say the same of.
+#[test]
+fn the_program_run_on_a_remote_host_is_the_electron_builds_own() {
+    let kept = include_str!("fixtures/remote-resource-programs.jsonl");
+    let mut compared = 0;
+    for line in kept.lines().filter(|line| !line.is_empty()) {
+        let expected: serde_json::Value = serde_json::from_str(line).unwrap_or_else(|error| panic!("{error}: {line}"));
+        let platform = expected["platform"].as_str().unwrap();
+        let operation = expected["op"].as_str().unwrap();
+        let language = expected["language"].as_str().unwrap();
+        let made = pello_core::remote_resource_program::remote_resource_program(platform, operation, language);
+        let actual = match &made {
+            Ok(args) => json!({ "platform": platform, "op": operation, "language": language, "args": args }),
+            Err(error) => json!({ "platform": platform, "op": operation, "language": language, "error": error }),
+        };
+        assert_eq!(actual.to_string(), line, "the program for {operation} on {platform} in {language} is not the Electron build's");
+        compared += 1;
+    }
+    assert_eq!(compared, 29, "every platform, operation and language is compared, and the operation that is not one");
+    // A host of a platform there is no program for is not given one.
+    assert!(pello_core::remote_resource_program::remote_resource_program("windows", "erase", "en").is_err());
+}
+
+/// An agent's resources on a host are read and written by the program the
+/// host is given: asked once, it says where the user's home is and which
+/// variables move an agent's files; asked for a folder, it says what is in
+/// it; asked for files and Skill roots, it says every file and every Skill
+/// it found, with the version of each. A change is approved in two steps:
+/// the host says it is ready, the workbench asks its guard, and only then
+/// is the host told to go on. A file changed on the host in between is
+/// refused there. The host is the fixture; on a POSIX machine the program
+/// runs by the Python of this machine, on Windows by its PowerShell, so
+/// that no real host is asked.
+#[test]
+fn a_hosts_resources_are_read_and_written_by_the_program_it_is_given() {
+    // A terminal is closed here: tests that close terminals run one at a time.
+    let _lock = env_lock();
+    let password = "{{SECRET_2ce1b7d9}}";
+    let fixture = pello_core::ssh::start_fixture(password).expect("ssh fixture");
+    let root = temp_dir("remote-resources");
+    let (bench, _) = workbench(&root);
+    // The host has the platform of this machine: the program for a POSIX
+    // host does not run on Windows, and the one for Windows nowhere else.
+    let platform = if cfg!(windows) { "windows" } else { "linux" };
+    let host = json!({
+        "id": "box", "name": "Box", "addr": "127.0.0.1", "port": fixture.port, "user": "me",
+        "auth": "password", "password": password, "color": "blue", "on": true, "os": "", "platform": platform
+    });
+    let data = bench.database_path().parent().expect("the data directory").to_path_buf();
+    pello_core::ssh::remember_password(&data, &host);
+    let ask = |request: serde_json::Value| pello_core::remote_resources::remote_resource::<serde_json::Value>(&data, &host, &request, &|| Ok(()), None, "en").unwrap_or_else(|error| panic!("{request}: {error}"));
+    // Paths as the host's platform writes them.
+    let path_of = |path: &std::path::Path| if platform == "windows" { path.display().to_string() } else { path.display().to_string().replace('\\', "/") };
+    // What the host says of itself.
+    let profile = ask(json!({ "op": "profile" }));
+    assert!(profile["home"].as_str().is_some_and(|home| !home.is_empty()), "{profile}");
+    assert!(profile["env"].is_object(), "{profile}");
+    // What is in a folder: the path is made real, and the parent is said
+    // unless the folder is the root.
+    let folder = root.join("agents");
+    fs::create_dir_all(folder.join("one")).unwrap();
+    fs::create_dir_all(folder.join("two")).unwrap();
+    fs::write(folder.join("note.txt"), "kept").unwrap();
+    let browsed = pello_core::remote_resources::browse_remote_resources(&data, &host, &path_of(&folder), true, "en").unwrap();
+    let names = |key: &str, listed: &serde_json::Value| listed[key].as_array().unwrap().iter().map(|entry| entry["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert_eq!(names("dirs", &browsed), ["one", "two"]);
+    assert_eq!(names("files", &browsed), ["note.txt"]);
+    assert!(browsed["parent"].as_str().is_some(), "{browsed}");
+    let without_files = pello_core::remote_resources::browse_remote_resources(&data, &host, &path_of(&folder), false, "en").unwrap();
+    assert!(without_files.get("files").is_none(), "files are not said unless asked for: {without_files}");
+    // A folder that is not there is refused by the program in its own words,
+    // which say the folder asked for: the system's message is passed on as it
+    // is, in whatever language the host speaks, and is not replaced here.
+    let missing = pello_core::remote_resources::remote_resource::<serde_json::Value>(&data, &host, &json!({ "op": "browse", "path": path_of(&root.join("nowhere")) }), &|| Ok(()), None, "en");
+    let missing = missing.expect_err("a folder that is not there is refused");
+    assert!(missing.contains("nowhere"), "{missing}");
+    // Every file and every Skill under a root, asked once.
+    let config = folder.join("config.json");
+    fs::write(&config, "{\"mcpServers\":{}}").unwrap();
+    let skill = folder.join("one").join("SKILL.md");
+    fs::create_dir_all(skill.parent().unwrap()).unwrap();
+    fs::write(&skill, "---\nname: one\ndescription: The first.\n---\n# One\n").unwrap();
+    let mut errors = Vec::new();
+    let snapshot = pello_core::remote_resources::remote_snapshot(&data, &host, &[path_of(&config)], &[path_of(&folder)], &|| Ok(()), None, "en").unwrap();
+    assert_eq!(snapshot.read(&path_of(&config)).unwrap(), "{\"mcpServers\":{}}");
+    assert!(snapshot.exists(&path_of(&config)));
+    assert!(!snapshot.exists(&path_of(&root.join("never.json"))));
+    assert_eq!(snapshot.skills(&[], &mut errors), [path_of(&skill)]);
+    assert!(errors.is_empty(), "{errors:?}");
+    // A change is kept and published as one request: the host is told to
+    // go on only after the guard was asked, and the file is the one kept.
+    let mut change = pello_core::remote_resources::remote_snapshot(&data, &host, &[path_of(&config)], &[], &|| Ok(()), None, "en").unwrap();
+    change.write(&path_of(&config), "{\"mcpServers\":{}}", "{\"mcpServers\":{\"notes\":{}}}").unwrap();
+    let asked = std::cell::Cell::new(0);
+    change.publish(&data, &host, &|| { asked.set(asked.get() + 1); Ok(()) }, "en").unwrap();
+    assert!(asked.get() >= 2, "the guard is asked before the request and once the host is ready: {}", asked.get());
+    assert_eq!(fs::read_to_string(&config).unwrap(), "{\"mcpServers\":{\"notes\":{}}}");
+    // A file changed on the host since it was read is refused there, and
+    // left as it was changed to.
+    fs::write(&config, "{\"mcpServers\":{\"theirs\":{}}}").unwrap();
+    let error = change.publish(&data, &host, &|| Ok(()), "en").unwrap_err();
+    assert!(error.contains("modified"), "the change is refused in the words of the program: {error}");
+    assert_eq!(fs::read_to_string(&config).unwrap(), "{\"mcpServers\":{\"theirs\":{}}}");
+    // A guard that refuses stops the change before the host is told to
+    // go on, and the file is not written.
+    let refused = change.publish(&data, &host, &|| Err("stopped".into()), "en");
+    assert!(refused.is_err());
+    assert_eq!(fs::read_to_string(&config).unwrap(), "{\"mcpServers\":{\"theirs\":{}}}");
+    let _ = fs::remove_dir_all(root);
+}

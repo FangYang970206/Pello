@@ -12,6 +12,8 @@ pub mod search;
 pub mod paths;
 pub mod preview;
 pub mod pty;
+pub mod remote_resource_program;
+pub mod remote_resources;
 pub mod resources;
 pub mod shells;
 pub mod shell;
