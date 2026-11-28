@@ -241,8 +241,8 @@ export function Workspace({
                     data-state={tab.type === 'term' ? tab.state : undefined}
                     hidden={!visible}
                     style={tile ? { gridColumn: `${tile.x + 1} / span ${tile.width}`, gridRow: `${tile.y + 1} / span ${tile.height}` } : undefined}
-                    onContextMenu={(event) => { if (!event.defaultPrevented) { event.preventDefault(); void paneMenu(tab.id) } }}
-                    onKeyDown={(event) => { if (!event.defaultPrevented && (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) { event.preventDefault(); void paneMenu(tab.id) } }}
+                    onContextMenu={(event) => { if (tab.type !== 'term' && !event.defaultPrevented) { event.preventDefault(); void paneMenu(tab.id) } }}
+                    onKeyDown={(event) => { if (tab.type !== 'term' && !event.defaultPrevented && (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) { event.preventDefault(); void paneMenu(tab.id) } }}
                     onFocusCapture={() => { if (!focus) onSelect(tab.id) }}
                     onMouseDownCapture={() => { if (!focus) onSelect(tab.id) }}
                   >

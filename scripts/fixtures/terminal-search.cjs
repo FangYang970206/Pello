@@ -1,0 +1,10 @@
+const fs = require('node:fs')
+process.stdin.setRawMode(true)
+process.stdin.resume()
+process.stdout.write('\x1b[?2004hSELECT_ME 中文选择\r\n' + Array.from({ length: 100 }, (_, i) => `line ${i} FIND_ME\r\n`).join('') + 'READY_SEARCH\r\n')
+process.stdin.on('data', (data) => {
+  fs.appendFileSync(process.argv[2], data)
+  if (data.toString() === 'REFRESH') process.stdout.write('\x1b[0mBACKGROUND_REFRESH\r\n')
+  if (data.toString() === 'MOUSE_ON') process.stdout.write('\x1b[?1000h\x1b[?1006h')
+  if (data.toString() === 'ALT_ON') process.stdout.write('\x1b[?1049h\x1b[2J\x1b[H备用屏幕\r\n\r\n\r\n中文 ALT_FIND one\r\n中文 ALT_FIND two\r\n')
+})

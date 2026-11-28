@@ -7,6 +7,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 import type { ShellKind, ThemeName } from '../shared/types'
 import { bindTerm, unbindTerm } from './terms'
+import { useTerminalSearch } from './TerminalSearch'
 
 
 function xtermTheme(theme: ThemeName) {
@@ -41,6 +42,7 @@ export function TerminalPane({
   onVisible?: (id: string) => void
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const scheduleFit = useRef<() => void>(() => {})
   const interruptRef = useRef(onInterrupt)
@@ -61,7 +63,7 @@ export function TerminalPane({
       cursorBlink: true,
       scrollback: 5000,
       theme: xtermTheme(theme),
-      allowProposedApi: false
+      allowProposedApi: true
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
@@ -212,5 +214,6 @@ export function TerminalPane({
   // only redraw; they must not take focus back from the restored control.
   useLayoutEffect(() => { if (visible && focused) termRef.current?.focus() }, [visible, focused, id, groupId])
 
-  return <div className="termhost" data-term={id}><div className="termframe" ref={hostRef} /></div>
+  const search = useTerminalSearch({ root: rootRef, terminal: termRef, id, visible, focused })
+  return <div className="termhost" data-term={id} ref={rootRef} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); search.menu(event.clientX, event.clientY) }}><div className="termframe" ref={hostRef} />{search.panel}</div>
 }

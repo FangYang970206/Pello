@@ -375,6 +375,20 @@ const cases = [
   ['AWB093', 'src/renderer/styles/extra.css', 'animation: pello-blink 1.6s ease-in-out; }', '}'],
   ['AWB093', 'src/renderer/styles/extra.css', '@media (prefers-reduced-motion: reduce) { .about-eye { animation: none; } }', '.about-reduced { display: none; }'],
   ['AWB093', 'package.json', '"check:about": "node scripts/about-check.mjs",', ''],
+  // Terminal search opened with a control byte sent on; its matches painted
+  // by selecting them; the color balls gone from the menu; the tab's layout
+  // menu back inside the terminal; a paste written to the PTY without
+  // xterm's brackets; and the clipboard read left behind WebView2's prompt.
+  ['AWB094', 'src/renderer/TerminalSearch.tsx', 'event.stopPropagation(); show()', 'show()'],
+  ['AWB094', 'src/renderer/TerminalSearch.tsx', 'term.paste(text)', "window.awb.ptyWrite('wrong', text)"],
+  ['AWB094', 'src/renderer/TerminalSearch.tsx', '<TerminalContextMenu', '<MissingContextMenu'],
+  ['AWB094', 'src/renderer/TerminalHighlights.tsx', 'setHits(next)', 'term.select(0, 0, 1); setHits(next)'],
+  ['AWB094', 'src/renderer/TerminalContextMenu.tsx', 'terminal-color-ball', 'missing-color-ball'],
+  ['AWB094', 'src/renderer/Workspace.tsx', "tab.type !== 'term' && !event.defaultPrevented", '!event.defaultPrevented'],
+  ['AWB094', 'src/renderer/TerminalPane.tsx', 'allowProposedApi: true', 'allowProposedApi: false'],
+  ['AWB094', 'src/renderer/TerminalPane.tsx', 'search.menu(event.clientX, event.clientY)', 'search.menu()'],
+  ['AWB094', 'src-tauri/src/window.rs', '.enable_clipboard_access()', ''],
+  ['AWB094', 'package.json', '"check:terminal-search": "node scripts/terminal-search-check.mjs",', ''],
 ]
 cases.forEach(([id, file, before, after], index) => {
   const mutated = new Map(files)

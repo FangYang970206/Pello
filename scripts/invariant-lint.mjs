@@ -15,7 +15,7 @@ export function projectFiles() {
     }
   }
   read('src')
-  for (const rel of ['package.json', 'AGENTS.md', 'electron-builder.yml', 'electron.vite.config.ts', 'assets/installer.nsh', 'src/renderer/index.html', 'src-tauri/core/src/menu.rs', 'src-tauri/core/src/workbench.rs', 'src-tauri/core/src/pty.rs', 'src-tauri/core/src/i18n.rs', 'src-tauri/core/src/shell.rs', 'src-tauri/core/src/files.rs', 'src-tauri/core/src/git.rs', 'src-tauri/core/src/preview.rs', 'src-tauri/core/src/resources.rs', 'src-tauri/core/src/remote_resources.rs', 'src-tauri/core/src/templates.rs', 'src-tauri/core/src/shells.rs', 'src-tauri/src/lib.rs', 'src-tauri/src/edit.rs', 'src-tauri/core/tests/behavior.rs']) files.set(rel, fs.readFileSync(path.join(root, rel), 'utf8'))
+  for (const rel of ['package.json', 'AGENTS.md', 'electron-builder.yml', 'electron.vite.config.ts', 'assets/installer.nsh', 'src/renderer/index.html', 'src-tauri/core/src/menu.rs', 'src-tauri/core/src/workbench.rs', 'src-tauri/core/src/pty.rs', 'src-tauri/core/src/i18n.rs', 'src-tauri/core/src/shell.rs', 'src-tauri/core/src/files.rs', 'src-tauri/core/src/git.rs', 'src-tauri/core/src/preview.rs', 'src-tauri/core/src/resources.rs', 'src-tauri/core/src/remote_resources.rs', 'src-tauri/core/src/templates.rs', 'src-tauri/core/src/shells.rs', 'src-tauri/src/lib.rs', 'src-tauri/src/edit.rs', 'src-tauri/src/window.rs', 'src-tauri/core/tests/behavior.rs']) files.set(rel, fs.readFileSync(path.join(root, rel), 'utf8'))
   return files
 }
 
@@ -562,6 +562,24 @@ export function checkInvariants(files) {
     'AWB093', 'src/renderer/AboutView.tsx', '关于页：版本、作者与主页来自内核；主页链接由内核打开，页面不自己导航')
   require(aboutView.includes("about: ''") === false && files.get('src/shared/types.ts')?.includes("| 'keys' | 'about'") && extraCss.includes('.about-eye { transform-box: fill-box; transform-origin: center; animation: pello-blink 1.6s ease-in-out; }') && extraCss.includes('@keyframes pello-blink') && /@media \(prefers-reduced-motion: reduce\) \{ \.about-eye \{ animation: none; \} \}/.test(extraCss) && scripts['check:about']?.includes('scripts/about-check.mjs'),
     'AWB093', 'src/renderer/styles/extra.css', '关于页：图标眨眼，尊重减少动态效果；about 是正式的设置栏目类型')
+  // Terminal search and the terminal's own text menu. Matches are painted by
+  // an overlay that reads the buffer and never selects, so a TUI's mouse
+  // selection and the user's survive; the menu is the page's own (the tab's
+  // layout menu stays the native one), paste goes through xterm so it is
+  // bracketed, and reading the clipboard is allowed without a prompt, as the
+  // Electron build allows it: WebView2 keeps it behind one otherwise.
+  const terminalSearch = files.get('src/renderer/TerminalSearch.tsx') || ''
+  const terminalHighlights = files.get('src/renderer/TerminalHighlights.tsx') || ''
+  const terminalMenu = files.get('src/renderer/TerminalContextMenu.tsx') || ''
+  const terminalPane = files.get('src/renderer/TerminalPane.tsx') || ''
+  require(terminalSearch.includes("from '@xterm/addon-search'") && terminalSearch.includes('<TerminalContextMenu') && terminalSearch.includes('event.stopPropagation(); show()') && terminalSearch.includes('term.paste(text)') && !terminalSearch.includes('decorations:'),
+    'AWB094', 'src/renderer/TerminalSearch.tsx', '终端搜索：Ctrl+F 只开搜索不发控制字节，菜单是页面自己的文字菜单，粘贴走 xterm 的括号粘贴')
+  require(!terminalHighlights.includes('.select(') && terminalMenu.includes('terminal-color-ball') && (files.get('src/renderer/Workspace.tsx') || '').includes("tab.type !== 'term' && !event.defaultPrevented"),
+    'AWB094', 'src/renderer/TerminalHighlights.tsx', '高亮只读缓冲区、不抢占选区；菜单提供色球；终端内不再弹出标签布局菜单')
+  require(terminalPane.includes('allowProposedApi: true') && terminalPane.includes('search.menu(event.clientX, event.clientY)') && terminalPane.includes('{search.panel}'),
+    'AWB094', 'src/renderer/TerminalPane.tsx', '终端窗格接入搜索与右键菜单，菜单在鼠标位置打开')
+  require((files.get('src-tauri/src/window.rs') || '').includes('.enable_clipboard_access()') && scripts['check:terminal-search']?.includes('scripts/terminal-search-check.mjs'),
+    'AWB094', 'src-tauri/src/window.rs', '工作台窗口允许页面读剪贴板（粘贴不再卡在权限提示）；保留行为回归')
   return errors
 }
 

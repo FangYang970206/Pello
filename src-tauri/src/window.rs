@@ -48,6 +48,10 @@ pub fn open(app: &tauri::App, theme: &str, data: &Path) -> Result<tauri::Webview
         .visible(false)
         .background_color(sidebar(theme))
         .data_directory(webview_data(data))
+        // The page reads the clipboard when text is pasted, as the Electron
+        // build's page does without asking: WebView2 otherwise puts the read
+        // behind a permission prompt, and a paste waits on it.
+        .enable_clipboard_access()
         .on_page_load(|window, payload| {
             if payload.event() != tauri::webview::PageLoadEvent::Finished { return }
             let _ = window.show();
