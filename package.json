@@ -29,6 +29,8 @@
     "check:about": "node scripts/about-check.mjs",
     "check:terminal-search": "node scripts/terminal-search-check.mjs",
     "check:executor-templates": "node scripts/executor-templates-check.mjs",
+    "check:tab-navigation": "node scripts/tab-navigation-check.mjs",
+    "check:terminal-close-shortcut": "node scripts/terminal-close-shortcut-check.mjs",
     "dev:tauri:web": "vite --config vite.tauri.config.ts",
     "build:tauri:web": "vite build --config vite.tauri.config.ts",
     "dev:tauri": "node scripts/tauri-helper.mjs && tauri dev",

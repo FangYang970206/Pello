@@ -91,6 +91,9 @@ kbd {
   padding: 4px;
 }
 
+.tabs-popover[popover] { position: fixed; inset: auto; margin: 0; color: var(--text); }
+.tabs-popover .row { width: 100%; text-align: left; }
+
 .toast.bad svg {
   color: var(--red);
 }

@@ -600,6 +600,16 @@ export function checkInvariants(files) {
     'AWB095', 'src/renderer/Dialogs.tsx', '执行器的 Shell 按机器取默认值，编辑器对齐设置内容区并随机器选模板；资源位置改由模板提供')
   require(distribution.includes("importMode ? await window.awb.importMcpConfig(source, targets, items, sourceHost)") && distribution.includes("scanResources(kind, file, kind === 'skills' ? 'local' : hostId)") && (files.get('src-tauri/core/src/menu.rs') || '').includes('"file" => ("file", Vec::new(), String::new())') && scripts['check:executor-templates']?.includes('scripts/executor-templates-check.mjs'),
     'AWB095', 'src/renderer/ResourceDistribution.tsx', '分发可选择来源机器与目标执行器并逐项显示结果；模板文件对话框不限类型；保留行为回归')
+  require(groupTabs.includes('useAnchoredMenu(menu && overflow') && groupTabs.includes("el.addEventListener('wheel', wheel, { passive: false })") && groupTabs.includes('event.ctrlKey || event.metaKey || event.altKey || renaming') && groupTabs.includes('role="listbox"') && declarations('.tabs-popover[popover]').get('position') === 'fixed' && scripts['check:tab-navigation']?.includes('scripts/tab-navigation-check.mjs'),
+    'AWB096', 'src/renderer/WorkspaceTabs.tsx', '标签滚轮切换只影响当前栏，全部标签列表锚定箭头并复用外侧关闭与键盘导航，保留行为回归')
+  const appText = files.get('src/renderer/App.tsx') || ''
+  require(appText.includes("window.addEventListener('keydown', onCloseKey, true)") && appText.includes('if (!event.repeat) onAppKey') && appText.includes('requestClose(active.id, true)') && appText.includes("if (modalRef.current || document.querySelector('dialog[open]') || closingTerms.current.has(id)) return") && appText.includes("(!requireConfirm && tab.kind === 'shell' && (tab.state !== 'running' || !db.settings.confirmKill))") && scripts['check:terminal-close-shortcut']?.includes('scripts/terminal-close-shortcut-check.mjs'),
+    'AWB097', 'src/renderer/App.tsx', 'Ctrl+W 在捕获阶段先于页面快捷键拦截，长按不重复触发；模态与原生对话框期间不关闭标签，Agent 标签即使退出也须确认，保留行为回归')
+  const diffPane = source('src/renderer/DiffPane.tsx')
+  const diffActions = nodes(diffPane, (node) => ts.isJsxElement(node) && attrText(node.openingElement, 'className') === 'diff-actions')[0]
+  const actionButtons = diffActions && nodes(diffActions, (node) => ts.isJsxElement(node) && node.openingElement.tagName.getText() === 'button')
+  require(actionButtons?.length === 3 && actionButtons.every((node) => attr(node.openingElement, 'aria-label') && attr(node.openingElement, 'title') && nodes(node, (child) => ts.isJsxSelfClosingElement(child) && child.tagName.getText() === 'Icon').length) && (files.get('src/renderer/MediaPreview.tsx') || '').includes('tooBig ? onReload : retry') && (files.get('src/renderer/FilePane.tsx') || '').includes('tooBig={document.tooBig} onReload={onReload}'),
+    'AWB098', 'src/renderer/DiffPane.tsx', 'Diff 保存、视图与放弃操作使用带无障碍名称和提示的图标；超大媒体经重新读取重试而非仅重取预览地址')
   return errors
 }
 

@@ -35,13 +35,13 @@ fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({
     { id: 'long', name: '跨团队协作与远程项目名称很长时的显示检查', host: 'local', path: project, agent: 'shell' }],
   custom: [{ id: 'custom', name: '项目专用 Agent', cmd: 'custom-agent', args: '--interactive --workspace current-project', shell: 'pwsh', color: '#7fb2ff', letter: 'A', env: [] }]
 }))
+const dpiArg = process.argv.find((arg) => arg.startsWith('--dpi='))?.slice(6)
 const launch = (launchEnv = env) => process.env.AWB_SHELL === 'tauri'
-  ? launchWorkbench({ args: [root], cwd: root, env: launchEnv })
+  ? launchWorkbench({ args: [root], cwd: root, env: launchEnv, scale: dpiArg ? Number(dpiArg) : null })
   : electron.launch({ args: [root], cwd: root, env: launchEnv })
 async function setContentSize(target, page, width, height) {
   if (process.env.AWB_SHELL === 'tauri') {
-    await page.evaluate((size) => window.awb.winResize(size.width, size.height), { width, height })
-    await page.waitForFunction((size) => Math.abs(innerWidth - size.width) <= 4, { width, height })
+    await target.resize(width, height)
     return
   }
   await target.evaluate(({ BrowserWindow }, dimensions) => BrowserWindow.getAllWindows()[0].setContentSize(...dimensions), [width, height])
@@ -106,7 +106,7 @@ try {
         await page.click(`[data-a=sec][data-id=${section}]`)
         await shot(`settings-${section}`, theme, size)
         if (section === 'mcp' || section === 'skills') {
-          const label = section === 'mcp' ? '添加 MCP' : '添加 Skill'
+          const label = section === 'mcp' ? '添加 MCP' : '添加'
           await page.getByRole('button', { name: label, exact: true }).click()
           await shot(`settings-${section}-add`, theme, size)
           await page.locator('.resource-dialog header [data-a=mclose]').click()
@@ -125,8 +125,12 @@ try {
       await page.click('[data-a=sec][data-id=agents]')
       await page.click('[data-a=custom]:not([data-id])')
       await page.click('[data-a=ce-more]')
-      await page.click('[data-a=env-add]')
       await shot('executor', theme, size)
+      await closeDialog()
+      await page.getByRole('button', { name: '模板管理', exact: true }).click()
+      await page.getByRole('button', { name: '新建模板', exact: true }).click()
+      await page.getByRole('button', { name: '添加变量', exact: true }).click()
+      await shot('executor-template', theme, size)
       await closeDialog()
       await page.click('[data-a=back]')
       await page.locator('[data-a=newproj]').locator('..').hover()

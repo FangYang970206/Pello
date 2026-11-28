@@ -773,7 +773,8 @@ export function App() {
     })
   }
 
-  function requestClose(id: string) {
+  function requestClose(id: string, requireConfirm = false) {
+    if (modalRef.current || document.querySelector('dialog[open]') || closingTerms.current.has(id)) return
     const tab = tabs.find((item) => item.id === id)
     if (!tab || !db) return
     if (tab.type !== 'term') {
@@ -788,7 +789,7 @@ export function App() {
         return
       }
     }
-    if (tab.type !== 'term' || tab.state !== 'running' || !db.settings.confirmKill) {
+    if (tab.type !== 'term' || (!requireConfirm && tab.kind === 'shell' && (tab.state !== 'running' || !db.settings.confirmKill))) {
       void closeTab(id)
       return
     }
@@ -1207,9 +1208,26 @@ export function App() {
       else setModal({ type: 'term' })
     } else if (key === ',') openSettings()
     else if (key === 'b') setRight((value) => !value)
-    else if (key === 'w' && active) requestClose(active.id)
+    else if (key === 'w' && active && route === 'work') {
+      const target = document.activeElement
+      if (target?.matches('input,textarea,select') && !target.closest('.xterm')) return
+      requestClose(active.id, true)
+    }
     else if (key === 's' && active && active.type !== 'term') void saveFile(active)
   }
+
+  // Reserve Ctrl+W ahead of the page's own shortcuts and any native close
+  // accelerator: the capture listener owns the key, held repeats included,
+  // and hands it to the current tab's confirmation instead of the window.
+  useEffect(() => {
+    const onCloseKey = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== 'w' || !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return
+      event.preventDefault()
+      if (!event.repeat) onAppKey('w')
+    }
+    window.addEventListener('keydown', onCloseKey, true)
+    return () => window.removeEventListener('keydown', onCloseKey, true)
+  })
 
   useEffect(() => {
     const onSearchKey = (event: KeyboardEvent) => {
@@ -1248,7 +1266,7 @@ export function App() {
       if (field || inTerm || modalRef.current) return
       if (!event.ctrlKey || event.altKey || event.metaKey) return
       const key = event.key.toLowerCase()
-      if (key === 'n' || key === 't' || key === ',' || key === 'b' || key === 'w' || (key === 's' && active && active.type !== 'term')) {
+      if (key === 'n' || key === 't' || key === ',' || key === 'b' || (key === 's' && active && active.type !== 'term')) {
         event.preventDefault()
         onAppKey(key)
       }

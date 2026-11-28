@@ -21,7 +21,8 @@ fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({
 }))
 const env = { ...process.env, AWB_USER_DATA: data, AWB_RESOURCE_HOME: home }
 delete env.ELECTRON_RUN_AS_NODE
-const app = await launchWorkbench({ args: ['.'], env })
+const dpiArg = process.argv.find((arg) => arg.startsWith('--dpi='))?.slice(6)
+const app = await launchWorkbench({ args: ['.'], env, scale: dpiArg ? Number(dpiArg) : null })
 const failures = [], baselines = new Map(), measurements = []
 try {
   const page = await app.firstWindow()
@@ -35,7 +36,7 @@ try {
     const surface = page.locator(selector)
     await surface.waitFor()
     await page.evaluate(() => document.fonts.ready)
-    const m = await surface.boundingBox(), viewport = typeof page.viewportSize === 'function' ? page.viewportSize() : await page.evaluate(() => ({ width: innerWidth, height: innerHeight }))
+    const m = await surface.boundingBox(), viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }))
     const key = `${name}/${width}`, previous = baselines.get(key)
     if (m.x < 0 || m.y < 0 || m.x + m.width > viewport.width + 1 || m.y + m.height > viewport.height + 1) failures.push(`${key}: surface exceeds viewport: ${JSON.stringify(m)}`)
     if (previous && Object.keys(m).some((key) => Math.abs(m[key] - previous[key]) > 1)) failures.push(`${name}/${theme}/${width}: theme changes surface geometry: ${JSON.stringify(m)} vs ${JSON.stringify(previous)}`)
@@ -70,8 +71,7 @@ try {
     assert.equal(await anchor.evaluate((node) => node === document.activeElement), true, `${label}: Escape returns focus`)
   }
   for (const [width, height] of [[1024, 680], [1440, 900]]) {
-    await page.evaluate(([w, h]) => window.awb.winResize(w, h), [width, height])
-    await page.waitForFunction((w) => innerWidth === w, width)
+    await app.resize(width, height)
     for (const theme of ['light', 'dark', 'nord', 'dracula', 'catppuccin', 'solarized-light']) {
       await page.click('[data-a=settings]'); await page.click('[data-a=sec][data-id=look]')
       await page.click(`[data-a=theme][data-id=${theme}]`)
@@ -85,11 +85,9 @@ try {
       await last.click(); await measure('skill-scrolled', last, theme, width)
       await last.click()
       const resizedWidth = width === 1024 ? 1440 : 1024, resizedHeight = width === 1024 ? 900 : 680
-      await page.evaluate(([w, h]) => window.awb.winResize(w, h), [resizedWidth, resizedHeight])
-      await page.waitForFunction((w) => innerWidth === w, resizedWidth)
+      await app.resize(resizedWidth, resizedHeight)
       await measure(`skill-resized-from-${width}`, last, theme, resizedWidth)
-      await page.evaluate(([w, h]) => window.awb.winResize(w, h), [width, height])
-      await page.waitForFunction((w) => innerWidth === w, width)
+      await app.resize(width, height)
       await page.click('[data-a=sec][data-id=general]')
       const agent = page.locator('[data-set=defAgent]')
       await agent.click(); await measure('default-agent', agent, theme, width)
@@ -104,7 +102,7 @@ try {
       await page.click('[data-a=back]')
       await page.locator('[data-a=tabs-menu]').click()
       await compareSurface('all-tabs', '.pop', theme, width)
-      await page.locator('[data-a=tabs-menu]').click()
+      await page.keyboard.press('Escape')
       const project = page.locator('[data-a=proj]')
       await project.click({ button: 'right' }); await measure('project', project, theme, width, true)
       const session = page.locator('[data-a=side-session]')

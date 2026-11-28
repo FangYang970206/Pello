@@ -36,9 +36,12 @@ git('init', '-q'); git('add', '.'); git('-c', 'commit.gpgsign=false', '-c', 'use
 fs.writeFileSync(path.join(project, 'diff.txt'), 'needle work\nneedle common\n')
 fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: { layout: 'balanced', restore: false, confirmKill: false }, projects: [{ id: 'p', name: 'Document search', path: project, host: 'local', agent: 'shell' }] }))
 const env = { ...process.env, AWB_USER_DATA: data }; delete env.ELECTRON_RUN_AS_NODE
-// One scale per run, 100% unless a factor is named: `--scale=1.5`.
-const dpi = Number(process.argv.find((arg) => arg.startsWith('--scale='))?.slice(8) || 1)
-const app = await launchWorkbench({ args: ['.', `--force-device-scale-factor=${dpi}`], env, scale: dpi })
+// One scale per run, the desktop's own unless a factor is named: `--scale=1.5`.
+// A forced factor below the desktop's leaves the window too few physical
+// pixels for the page sizes below, as `app.resize` refuses with the reason.
+const dpiArg = process.argv.find((arg) => arg.startsWith('--scale='))?.slice(8)
+const app = await launchWorkbench({ args: ['.'], env, scale: dpiArg ? Number(dpiArg) : null })
+const dpi = app.scale
 // This check goes through a 1024 by 680 page, the smallest the window
 // takes. A desktop whose scale is above the page's own cannot show it, and
 // then nothing runs here: that is said, with exit code 2, rather than

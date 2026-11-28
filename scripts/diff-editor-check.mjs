@@ -25,10 +25,16 @@ fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({
 }))
 const env = { ...process.env, AWB_USER_DATA: data }
 delete env.ELECTRON_RUN_AS_NODE
-const app = await launchWorkbench({ args: [root], cwd: root, env })
+const dpiArg = process.argv.find((arg) => arg.startsWith('--dpi='))?.slice(6)
+const app = await launchWorkbench({ args: [root], cwd: root, env, scale: dpiArg ? Number(dpiArg) : null })
 try {
   const page = await app.firstWindow()
   page.setDefaultTimeout(15000)
+  // WebView2's mouse hit-testing drifts from CSS geometry in a window whose
+  // page scale differs from the desktop's; a resize round-trip settles the
+  // view before pointer-driven assertions run.
+  await app.resize(1280, 800)
+  await app.resize(1440, 900)
   await page.locator('[data-a=diff][data-id="fixture.txt"]').click()
   await page.locator('[data-a=dmode][data-id=split]').click()
   assert.equal(await page.locator('.diff-split .cm-content[contenteditable=true]').count(), 2, 'both diff panes must be editable')
@@ -76,10 +82,17 @@ try {
   await page.keyboard.press('ArrowLeft')
   assert.ok(await page.locator('.cm-merge-a').evaluate((node) => node.clientWidth) < originalWidth)
   const box = await divider.boundingBox()
-  await page.mouse.move(box.x + box.width / 2, box.y + 30)
-  await page.mouse.down()
-  await page.mouse.move(box.x + 70, box.y + 30)
-  await page.mouse.up()
+  // WebView2 can keep a stale mouse hit-test right after the divider takes
+  // keyboard focus: the first press lands beside it. Drag again when the
+  // ratio did not move, instead of taking the miss for a product failure.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await page.mouse.move(box.x + box.width / 2, box.y + 30)
+    await page.mouse.down()
+    await page.mouse.move(box.x + 70, box.y + 30)
+    await page.mouse.up()
+    await page.waitForTimeout(150)
+    if (await page.locator('.cm-merge-a').evaluate((node) => node.clientWidth) > originalWidth) break
+  }
   assert.ok(await page.locator('.cm-merge-a').evaluate((node) => node.clientWidth) > originalWidth)
   for (const side of [0, 1]) {
     await scrollers.nth(side).evaluate((node) => { node.scrollLeft = 100000 })

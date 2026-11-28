@@ -31,12 +31,18 @@ try {
   await page.locator('[data-a=dmode][data-id=split]').click()
   const panes = page.locator('.diff-split .cm-scroller')
   await panes.nth(1).waitFor()
-  await panes.nth(1).osWheel(0, 400)
+  // A real wheel over the pane, as the Electron build's osWheel injects it.
+  const wheel = async (index, dx, dy) => {
+    const box = await panes.nth(index).boundingBox()
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await page.mouse.wheel(dx, dy)
+  }
+  await wheel(1, 0, 400)
   await page.waitForFunction(() => {
     const nodes = [...document.querySelectorAll('.diff-split .cm-scroller')]
     return nodes.length === 2 && nodes[0].scrollTop > 20 && Math.abs(nodes[0].scrollTop - nodes[1].scrollTop) < 2
   })
-  await panes.nth(0).osWheel(240, 0)
+  await wheel(0, 240, 0)
   await page.waitForFunction(() => {
     const nodes = [...document.querySelectorAll('.diff-split .cm-scroller')]
     return nodes[0].scrollLeft > 20 && Math.abs(nodes[0].scrollLeft - nodes[1].scrollLeft) < 2

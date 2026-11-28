@@ -5,18 +5,22 @@ import { Icon } from './icons'
 import { isZoomWheel, usePreviewWheel } from './usePreviewWheel'
 import { DocumentSearch, useDocumentSearch } from './DocumentSearch'
 
-export default function MediaPreview({ projectId, path, version }: { projectId: string; path: string; version: string | null }) {
+export default function MediaPreview({ projectId, path, version, tooBig, onReload }: {
+  projectId: string; path: string; version: string | null; tooBig?: boolean; onReload: () => void
+}) {
   const [source, setSource] = useState<{ url?: string; error?: string }>({})
   const [attempt, setAttempt] = useState(0)
   useEffect(() => {
+    if (tooBig) return
     let stopped = false
     void window.awb.previewUrl(projectId, path).then((url) => { if (!stopped) setSource({ url }) })
       .catch((error) => { if (!stopped) setSource({ error: String(error) }) })
     return () => { stopped = true }
-  }, [projectId, path, version, attempt])
+  }, [projectId, path, version, attempt, tooBig])
   const retry = () => { setSource({}); setAttempt((value) => value + 1) }
+  const error = tooBig ? t("预览资源超过 12 MB") : source.error
   return <section className="media-preview" aria-label={mediaKind(path) === 'pdf' ? t("PDF 预览") : t("图片预览")}>
-    {source.error ? <PreviewError error={source.error} retry={retry} /> : source.url ? mediaKind(path) === 'pdf' ?
+    {error ? <PreviewError error={error} retry={tooBig ? onReload : retry} /> : source.url ? mediaKind(path) === 'pdf' ?
       <PdfPreview key={`${source.url}:${version}:${attempt}`} url={source.url} retry={retry} /> : <ImagePreview key={`${source.url}:${version}:${attempt}`} url={source.url} path={path} retry={retry} /> : null}
   </section>
 }

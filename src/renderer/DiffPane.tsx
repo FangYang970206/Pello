@@ -3,6 +3,7 @@ import type { FileDiff } from '../shared/types'
 import { lcs, lineStats, segments, splitLines, type Seg, type SideRow } from '../shared/diff'
 import { useMemo, useRef, useState, useEffect } from 'react'
 import { SplitDiffEditor } from './SplitDiffEditor'
+import { Icon } from './icons'
 import { editableText, isDirty, type DocumentDraft } from './documents'
 import { Chunk } from '@codemirror/merge'
 import { Text } from '@codemirror/state'
@@ -212,18 +213,19 @@ export function DiffPane({
         </span>
         <span className="grow" />
         {document && isDirty(document) ? <span className="muted">{t("未保存")}</span> : null}
-        <button className="btn sm" aria-label={t("保存文件")} disabled={!document || document.saving || document.replacing} onClick={onSave}>{document?.saving ? t("保存中…") : t("保存")}</button>
-        <div className="seg" role="radiogroup" aria-label={t("视图")}>
-          {([['unified', t("统一")], ['split', t("并排")]] as const).map(([id, label]) => (
-            <button key={id} className={mode === id ? 'on' : ''} role="radio" aria-checked={mode === id} data-a="dmode" data-id={id} onClick={() => onMode(id)}>
-              {label}
-            </button>
-          ))}
+        <div className="diff-actions">
+          <button className="ib" aria-label={t("保存文件")} title={document?.saving ? t("保存中…") : t("保存文件")} aria-busy={document?.saving || undefined} disabled={!document || document.saving || document.replacing} onClick={onSave}><Icon name="save" /></button>
+          <div className="diff-modes" role="radiogroup" aria-label={t("视图")}>
+            {([['unified', t("统一")], ['split', t("并排")]] as const).map(([id, label]) => (
+              <button key={id} className={`ib${mode === id ? ' on' : ''}`} role="radio" aria-label={label} title={label} aria-checked={mode === id} data-a="dmode" data-id={id} onClick={() => onMode(id)}>
+                <Icon name={id === 'split' ? 'split' : 'unified'} />
+              </button>
+            ))}
+          </div>
+          <button className="ib danger" data-a="discard" aria-label={untracked ? t("删除文件") : t("放弃更改")} title={untracked ? t("删除文件") : t("放弃更改")} onClick={onDiscard}>
+            <Icon name={untracked ? 'trash' : 'undo'} />
+          </button>
         </div>
-        <span className="vsep" />
-        <button className="btn sm dangero" data-a="discard" onClick={onDiscard}>
-          {untracked ? t("删除文件") : t("放弃更改")}
-        </button>
       </div>
       {document?.error ? <div className="file-error" role="alert">{document.error}<button className="btn sm" onClick={onReload}>{t("重新读取文件")}</button></div> : null}
       {mode === 'split' ? <div className="diff-headings"><span>{t("比较基准（可编辑）")}</span><span>{t("工作区")}</span></div> : null}

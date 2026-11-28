@@ -42,6 +42,10 @@ export function useAnchoredMenu(open: boolean, close: () => void, config: { minW
       if (!menu.contains(target) && !anchor.contains(target)) dismiss.current()
     }
     position()
+    const resize = new ResizeObserver(position)
+    resize.observe(anchor)
+    if (anchor.parentElement) resize.observe(anchor.parentElement)
+    if (anchor.parentElement?.parentElement) resize.observe(anchor.parentElement.parentElement)
     const items = options()
     ;(items.find((item) => item.getAttribute('aria-selected') === 'true') || items[0])?.focus()
     window.addEventListener('resize', position)
@@ -50,6 +54,7 @@ export function useAnchoredMenu(open: boolean, close: () => void, config: { minW
     document.addEventListener('pointerdown', outside, true)
     return () => {
       if (menu.matches(':popover-open')) menu.hidePopover()
+      resize.disconnect()
       if (anchor.isConnected && (document.activeElement === document.body || menu.contains(document.activeElement))) anchor.focus()
       window.removeEventListener('resize', position)
       document.removeEventListener('scroll', position, true)

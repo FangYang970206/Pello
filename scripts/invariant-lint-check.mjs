@@ -406,6 +406,19 @@ const cases = [
   ['AWB095', 'src/renderer/ResourceDistribution.tsx', "scanResources(kind, file, kind === 'skills' ? 'local' : hostId)", 'scanResources(kind, file)'],
   ['AWB095', 'src-tauri/core/src/menu.rs', '"file" => ("file", Vec::new(), String::new())', '"file" => ("config", Vec::new(), String::new())'],
   ['AWB095', 'package.json', '"check:executor-templates": "node scripts/executor-templates-check.mjs",', ''],
+  ['AWB096', 'src/renderer/WorkspaceTabs.tsx', 'useAnchoredMenu(menu && overflow', 'useAnchoredMenu(false && overflow'],
+  ['AWB096', 'src/renderer/WorkspaceTabs.tsx', "el.addEventListener('wheel', wheel, { passive: false })", "el.addEventListener('wheel', wheel, { passive: true })"],
+  ['AWB096', 'src/renderer/styles/extra.css', '.tabs-popover[popover] { position: fixed;', '.tabs-popover[popover] { position: absolute;'],
+  ['AWB096', 'package.json', '"check:tab-navigation": "node scripts/tab-navigation-check.mjs",', ''],
+  ['AWB097', 'src/renderer/App.tsx', "window.addEventListener('keydown', onCloseKey, true)", "window.addEventListener('keydown', onCloseKey)"],
+  ['AWB097', 'src/renderer/App.tsx', 'if (!event.repeat) onAppKey', 'if (event.repeat) onAppKey'],
+  ['AWB097', 'src/renderer/App.tsx', 'requestClose(active.id, true)', 'requestClose(active.id, false)'],
+  ['AWB097', 'src/renderer/App.tsx', "(!requireConfirm && tab.kind === 'shell' && (tab.state !== 'running' || !db.settings.confirmKill))", "(tab.state !== 'running' || !db.settings.confirmKill)"],
+  ['AWB097', 'package.json', '"check:terminal-close-shortcut": "node scripts/terminal-close-shortcut-check.mjs",', ''],
+  ['AWB098', 'src/renderer/DiffPane.tsx', '<Icon name="save" />', '{t("保存")}'],
+  ['AWB098', 'src/renderer/DiffPane.tsx', 'title={label}', 'data-missing-title={label}'],
+  ['AWB098', 'src/renderer/MediaPreview.tsx', 'tooBig ? onReload : retry', 'retry'],
+  ['AWB098', 'src/renderer/FilePane.tsx', 'tooBig={document.tooBig} onReload={onReload}', ''],
 ]
 cases.forEach(([id, file, before, after], index) => {
   const mutated = new Map(files)
