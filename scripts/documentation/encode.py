@@ -72,7 +72,10 @@ for tutorial in manifest['tutorials']:
     text += f"- [{tutorial['title']}](#{tutorial['id']})\n"
 for tutorial in manifest['tutorials']:
     text += f"\n<a id=\"{tutorial['id']}\"></a>\n\n## {tutorial['title']}\n\n"
-    text += f"[操作指南](https://github.com/FangYang970206/Pello/wiki/{tutorial['wiki']}) · [播放聚焦动图]({tutorial['id']}.gif)\n\n"
+    text += f"[操作指南](https://github.com/FangYang970206/Pello/wiki/{tutorial['wiki']})"
+    if tutorial['steps']:
+        text += f" · [播放聚焦动图]({tutorial['id']}.gif)"
+    text += '\n\n'
     if tutorial.get('note'):
         text += tutorial['note'] + '\n\n'
     for step in tutorial['steps']:

@@ -271,9 +271,10 @@
 
 ## 浏览推荐 Skill
 
+[操作指南](https://github.com/FangYang970206/Pello/wiki/Skill-Discovery)
+
 从「设置 → Skill → 推荐」打开 GitHub 仓库。需要导入下载的目录或 ZIP 时，使用 Skill 页的「添加」。
 
-[操作指南](https://github.com/FangYang970206/Pello/wiki/Skill-Discovery)
 
 <a id="14-appearance"></a>
 

@@ -21,6 +21,8 @@
 
 ## 全部功能课
 
+在对应页面观看功能动图，或按步骤查看静帧。
+
 - [先启动一个终端](Getting-Started)
 - [用你熟悉的 Code Agent](Executors)
 - [让每个任务保留自己的现场](Sessions)

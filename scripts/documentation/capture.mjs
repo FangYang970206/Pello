@@ -145,9 +145,7 @@ try {
   await page.getByRole('button', { name: '查看 project-files 详情', exact: true }).click(); await shot('02  详情查看命令与参数，认证信息会脱敏', 'dialog, #modal .dlg'); await page.keyboard.press('Escape')
   await section('skills'); await page.getByRole('button', { name: '查看 project-review 详情', exact: true }).click(); await shot('03  Skill 可阅读完整说明，再决定是否启用', 'dialog, #modal .dlg'); await page.keyboard.press('Escape')
 
-  start('13-discovery', '浏览推荐 Skill', 'Skill-Discovery')
-  await page.getByRole('button', { name: '推荐', exact: true }).click(); await shot('01  「推荐」列出五个仓库，点击在系统浏览器打开', 'dialog')
-  await page.keyboard.press('Escape'); await page.getByRole('button', { name: '添加', exact: true }).click(); await shot('02  「添加」可从本机导入目录或 ZIP', 'dialog'); await page.keyboard.press('Escape')
+  start('13-discovery', '浏览推荐 Skill', 'Skill-Discovery', '从「设置 → Skill → 推荐」打开 GitHub 仓库。需要导入下载的目录或 ZIP 时，使用 Skill 页的「添加」。')
 
   start('14-appearance', '语言、主题与独立字号', 'Appearance')
   await section('look'); await shot('01  六套主题，终端与界面同步切换', '.themes')
