@@ -193,6 +193,9 @@ pub fn save_dialog(language: &str, kind: &str, name: &str) -> Value {
 pub fn open_dialog(language: &str, kind: &str) -> Value {
     let (select, filters, title) = match kind {
         "folder" => ("directory", Vec::new(), String::new()),
+        // Any file at all: a template's configuration file has whatever name
+        // its machine gives it.
+        "file" => ("file", Vec::new(), String::new()),
         "zip" => ("file", vec![json!({ "name": translate(language, "ZIP 压缩包", &[] as &[String]), "extensions": ["zip"] })], String::new()),
         "files" => ("many", Vec::new(), translate(language, "选择导入来源", &[] as &[String])),
         "directory" => ("directory", Vec::new(), translate(language, "选择导入来源", &[] as &[String])),

@@ -7186,3 +7186,43 @@ fn parse_with_comments(text: &str) -> serde_json::Value {
     let without: String = text.lines().map(|line| line.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n");
     serde_json::from_str(&without).unwrap_or_else(|error| panic!("{text}: {error}"))
 }
+
+/// A template saved in one run and the executor it is bound to are still
+/// there in the next run: the database read back from disk keeps them.
+#[test]
+fn templates_and_bindings_survive_a_restart() {
+    let root = temp_dir("template-restart");
+    {
+        let (bench, _) = workbench(&root);
+        let saved = bench.dispatch("templates:save", &[json!({ "id": "", "hostId": "local", "name": "Team", "mcpPath": "", "skillPath": "", "format": "standard", "skillAdapter": "claude", "env": [{ "k": "TEAM", "v": "one", "secret": false }] })]).unwrap();
+        let id = saved["templates"].as_array().expect("templates").iter().find(|template| template["name"] == "Team").expect("the template was saved")["id"].as_str().unwrap_or("").to_string();
+        assert!(!id.is_empty());
+        bench.dispatch("templates:bind", &[json!({ "hostId": "local", "executorId": "claude" }), json!(id)]).unwrap();
+    }
+    let (bench, _) = workbench(&root);
+    let state = bench.dispatch("db:get", &[]).unwrap();
+    let templates = state["db"]["templates"].as_array().cloned().unwrap_or_default();
+    assert_eq!(templates.iter().map(|template| template["name"].as_str().unwrap_or("")).collect::<Vec<_>>(), ["Team"], "the template is not there after a restart: {}", state["db"]);
+    assert_eq!(templates[0]["env"][0]["k"], "TEAM");
+    let bindings = state["db"]["templateBindings"].as_array().cloned().unwrap_or_default();
+    assert!(bindings.iter().any(|binding| binding["hostId"] == "local" && binding["executorId"] == "claude"), "the binding is not there after a restart: {}", state["db"]);
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A template's MCP or Skill configuration file can have any name, so the
+/// dialog that chooses one offers every file; the Agent configuration import
+/// still offers only the formats an Agent reads.
+#[test]
+fn a_template_file_is_any_file() {
+    let root = temp_dir("template-file-dialog");
+    let (bench, _) = workbench(&root);
+    let state = bench.dispatch("db:get", &[]).unwrap();
+    let language = state["db"]["settings"]["language"].as_str().unwrap_or("zh-CN");
+    let any = pello_core::menu::open_dialog(language, "file");
+    assert_eq!(any["select"], "file");
+    assert!(any["filters"].as_array().expect("filters").is_empty(), "a template's file dialog filters by extension: {any}");
+    let config = pello_core::menu::open_dialog(language, "config");
+    let extensions: Vec<&str> = config["filters"][0]["extensions"].as_array().expect("extensions").iter().filter_map(|value| value.as_str()).collect();
+    assert!(extensions.contains(&"toml") && extensions.contains(&"json") && !extensions.contains(&"txt"), "the Agent configuration import keeps its own formats: {config}");
+    let _ = fs::remove_dir_all(root);
+}
