@@ -430,8 +430,19 @@ kbd {
 .git-toolbar .br { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; margin-right: 6px; }
 .git-toolbar .ib { flex: none; }
 .git-scanning { animation: upload-spin 1.2s linear infinite; }
-.git-change-rows.tree .nm { min-width: 0; }
+.git-change-item { display: flex; align-items: center; border-radius: var(--r1); }
+.git-change-item:hover { background: var(--hover); }
+.git-change-item.on { background: var(--sel); }
+.right .rlist .git-change-item > .row { flex: 1; min-width: 0; background: transparent; }
+.git-change-item.on > .row { color: var(--text); }
+.git-change-item .nm { min-width: 0; }
 .git-directory { color: var(--muted); }
+.git-change-item .git-row-more { width: 24px; height: 26px; opacity: 0; pointer-events: none; }
+.git-change-item:is(:hover, :focus-within) .git-row-more,
+.git-change-item .git-row-more[aria-expanded=true] { opacity: 1; pointer-events: auto; }
+@media (hover: none) { .git-change-item .git-row-more { opacity: 1; pointer-events: auto; } }
+.git-change-menu .row { min-height: 28px; height: auto; padding: 3px 8px; white-space: normal; color: var(--text); }
+.git-confirm-path { display: block; overflow-wrap: anywhere; margin-block: 3px; }
 .settings .snav { display: flex; flex-direction: column; overflow-y: auto; }
 .settings .snav > * { flex-shrink: 0; }
 .about-view { container-type: inline-size; max-width: 480px; margin: 0 auto; padding: 40px 0 0; text-align: center; }

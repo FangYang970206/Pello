@@ -79,8 +79,10 @@ function parseBranch(status: string): string {
   return body.split('...')[0].trim()
 }
 
-function parseStatus(text: string): { branch: string; files: { path: string; st: GitFile['st']; untracked: boolean }[] } {
-  const files: { path: string; st: GitFile['st']; untracked: boolean }[] = []
+type StatusEntry = { path: string; st: GitFile['st']; untracked: boolean; previousPath?: string; stagedAddition?: boolean }
+
+function parseStatus(text: string): { branch: string; files: StatusEntry[] } {
+  const files: StatusEntry[] = []
   const nul = text.includes('\0'), entries = nul ? text.split('\0') : text.split(/\r?\n/)
   for (let index = 0; index < entries.length; index++) {
     const line = entries[index]
@@ -88,12 +90,16 @@ function parseStatus(text: string): { branch: string; files: { path: string; st:
     if (line.length < 4) continue
     const xy = line.slice(0, 2)
     let file = line.slice(3)
-    if (nul && /[RC]/.test(xy)) index++ // In -z format the new name comes first, followed by the old name.
+    let previousPath: string | undefined
+    if (nul && /[RC]/.test(xy)) {
+      const oldPath = entries[++index] // In -z format the new name comes first.
+      if (xy.includes('R')) previousPath = oldPath
+    }
     if (!nul) { const arrow = file.indexOf(' -> '); if (arrow !== -1) file = file.slice(arrow + 4) }
     if (xy === '??') files.push({ path: file, st: 'A', untracked: true })
-    else if (xy.includes('D')) files.push({ path: file, st: 'D', untracked: false })
+    else if (xy.includes('D')) files.push({ path: file, st: 'D', untracked: false, stagedAddition: xy[0] === 'A' })
     else if (xy.includes('A')) files.push({ path: file, st: 'A', untracked: false })
-    else files.push({ path: file, st: 'M', untracked: false })
+    else files.push({ path: file, st: 'M', untracked: false, previousPath })
   }
   return { branch: parseBranch(text), files }
 }
@@ -186,6 +192,8 @@ async function singleGitStatus(target: Target): Promise<GitPanel & { flags: Reco
     }
   }))
   for (const f of parsed.files) {
+    // A staged deletion followed by a new file at the same path remains a tracked change.
+    if (f.untracked && flags[f.path] === false) continue
     flags[f.path] = f.untracked
     let add = 0
     let del = 0
@@ -393,16 +401,83 @@ export async function gitDiff(target: Target, rel: string, untracked: boolean): 
 
 export async function gitDiscard(target: Target, rel: string, untracked: boolean): Promise<void> {
   const owner = await owningRepository(target, rel)
-  target = owner.target; rel = owner.relative
+  const literal = ['--literal-pathspecs']
+  const paths = [owner.relative]
+  const status = await git(owner.target, [...literal, 'status', '--porcelain=v1', '-z', '-uall', '-b', '--no-renames', '--', ...paths])
+  const entry = parseStatus(status).files.find((file) => file.path === owner.relative)
+  if (!entry || entry.untracked !== untracked) throw new Error(t("Git 状态已更改，请刷新后重试"))
   if (untracked) {
-    await git(target, ['clean', '-f', '--', rel])
+    if (!target.host || target.host.id === 'local') {
+      const root = fs.realpathSync.native(target.cwd)
+      const absolute = path.resolve(root, cleanRelative(rel))
+      if (!inside(root, fs.realpathSync.native(path.dirname(absolute)))) throw new Error(t("路径超出项目目录"))
+      await fs.promises.unlink(absolute)
+    } else await removeRemoteEntry(target, rel, false)
     return
   }
-  try {
-    await git(target, ['restore', '--source=HEAD', '--worktree', '--staged', '--', rel])
-  } catch {
-    await git(target, ['checkout', 'HEAD', '--', rel])
+  if (entry.st === 'A' || entry.stagedAddition) {
+    if (/^## (No commits yet on |Initial commit on )/.test(status)) {
+      await git(owner.target, [...literal, 'rm', '-f', '--', ...paths])
+      return
+    }
+    const renamed = parseStatus(await git(owner.target, ['status', '--porcelain=v1', '-z', '-uno', '--renames'])).files.find((file) => file.path === owner.relative)
+    if (renamed?.previousPath) {
+      const api = target.platform === 'windows' ? path.win32 : path.posix
+      const original = api.relative(target.cwd, api.resolve(owner.target.cwd, renamed.previousPath))
+      if (original === '..' || original.startsWith(`..${api.sep}`) || api.isAbsolute(original)) throw new Error(t("路径超出项目目录"))
+      paths.push(renamed.previousPath)
+    }
   }
+  await git(owner.target, [...literal, 'restore', '--source=HEAD', '--worktree', '--staged', '--', ...paths])
+}
+
+export async function prepareGitIgnore(target: Target, entry: string, directory: boolean, repository: string) {
+  const relativePath = cleanRelative(entry), repo = cleanRelative(repository)
+  if (!relativePath || /[\r\n]/.test(relativePath) || (repo && !relativePath.startsWith(`${repo}/`))) throw new Error(t("无法将此路径加入 .gitignore"))
+  const owner = await owningRepository(target, relativePath)
+  const api = target.platform === 'windows' ? path.win32 : path.posix
+  const scope = api.relative(owner.target.cwd, api.resolve(target.cwd, repo))
+  // When the workspace starts below the repository root, keep the rule inside the workspace.
+  if ((repo && scope) || scope === '..' || scope.startsWith(`..${api.sep}`) || api.isAbsolute(scope)) throw new Error(t("路径超出 Git 仓库"))
+  const relative = repo ? relativePath.slice(repo.length + 1) : relativePath
+  if (relative.toLowerCase() === '.gitignore') throw new Error(t("不能忽略用于写入规则的 .gitignore"))
+  const pattern = '/' + relative.replace(/[\\*?[\]]/g, '\\$&') + (directory ? '/' : '')
+  return { path: repo ? `${repo}/.gitignore` : '.gitignore', pattern, owner, directory }
+}
+
+export async function applyGitIgnore(target: Target, rule: Awaited<ReturnType<typeof prepareGitIgnore>>): Promise<void> {
+  const { owner, directory } = rule
+  const args = ['--cached', '--ignore-unmatch', ...(directory ? ['-r'] : []), '--', owner.relative]
+  // Check for staged content that exists neither on disk nor in HEAD before changing the ignore file.
+  await git(owner.target, ['--literal-pathspecs', 'rm', '--dry-run', ...args])
+  await appendGitIgnore(target, rule.path, rule.pattern)
+  try {
+    await git(owner.target, ['check-ignore', '--no-index', '--quiet', '--', './' + owner.relative + (directory ? '/' : '')])
+  } catch (error) {
+    throw new Error(t("已写入 .gitignore，但 Git 未应用此规则。请检查更靠近该路径的忽略规则。"), { cause: error })
+  }
+  try {
+    await git(owner.target, ['--literal-pathspecs', 'rm', ...args])
+  } catch (error) {
+    const detail = (error as { stderr?: string }).stderr?.trim()
+    throw new Error(t("已写入 .gitignore，但未能从索引移除，请重试。") + (detail ? ' ' + detail : ''), { cause: error })
+  }
+}
+
+export async function appendGitIgnore(target: Target, rel: string, pattern: string): Promise<FileContent> {
+  if (!target.host || target.host.id === 'local') {
+    const abs = path.resolve(fs.realpathSync.native(target.cwd), rel)
+    if (fs.lstatSync(abs, { throwIfNoEntry: false })?.isSymbolicLink()) throw new Error(t("不支持链接目录"))
+  }
+  const current = await readFile(target, rel)
+  if (current.binary || current.tooBig) throw new Error(t("无法编辑 .gitignore，请确认它是可编辑的 UTF-8 文本"))
+  const text = current.text
+  const existing = text.replace(/^\uFEFF/, '')
+  const lines = existing.split(/\r?\n/)
+  const lastRule = lines.lastIndexOf(pattern)
+  if (lastRule >= 0 && !lines.slice(lastRule + 1).some((line) => line.startsWith('!'))) return current
+  const eol = text.includes('\r\n') ? '\r\n' : '\n'
+  return writeFile(target, rel, text + (existing && !existing.endsWith('\n') ? eol : '') + pattern + eol, current.version)
 }
 
 function sortNodes(nodes: TreeNode[]): TreeNode[] {

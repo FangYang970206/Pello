@@ -80,8 +80,6 @@ export function Workspace({
   onHistoryFile,
   onComposeFile,
   onPreviewHtml,
-  changeTarget,
-  untracked
 }: {
   project: Project | null
   workspaceVisible: boolean
@@ -120,8 +118,6 @@ export function Workspace({
   onHistoryFile: (id: string, redo: boolean) => void
   onComposeFile: (id: string, composing: boolean) => void
   onPreviewHtml: (id: string) => void
-  changeTarget?: string
-  untracked: Record<string, boolean>
 }) {
   const [renaming, setRenaming] = useState<string | null>(null)
   const [layouts, setLayouts] = useState(loadTerminalLayouts)
@@ -261,7 +257,7 @@ export function Workspace({
                   >
 
                     {tab.type === 'term' ? <TerminalPane id={tab.id} groupId={tile?.id} fontSize={fontSize} fontFamily={fontFamily} theme={theme} shell={tab.shell} visible={workspaceVisible && visible} focused={workspaceVisible && focus} onInterrupt={onInterrupt} onAppKey={onAppKey} />
-                      : visible && tab.type === 'diff' ? <DiffPane diff={diffs[key] || null} mode={diffModes[tab.id] || defaultDiffMode} onMode={(mode) => onDmode(tab.id, mode)} onDiscard={() => onDiscard(tab.id)} untracked={fileTarget(tab) === changeTarget ? !!untracked[tab.path] : tab.untracked}
+                      : visible && tab.type === 'diff' ? <DiffPane diff={diffs[key] || null} mode={diffModes[tab.id] || defaultDiffMode} onMode={(mode) => onDmode(tab.id, mode)} onDiscard={() => onDiscard(tab.id)}
                         document={documents[key] || null} baseline={baselines[key]?.draft} onBaseline={(text) => onBaseline(tab.id, text)} onBaselineHistory={(redo) => onBaselineHistory(tab.id, redo)}
                         onEdit={(text) => onEditFile(tab.id, text)} onSave={() => onSaveFile(tab.id)} onReload={() => onReloadFile(tab.id)} onCompose={(value) => onComposeFile(tab.id, value)} onHistory={(redo) => onHistoryFile(tab.id, redo)} />
                       : tab.type === 'file' ? <RetainedFilePane visible={visible} path={tab.path} anchor={tab.anchor} location={tab.location} onNavigate={(path, anchor) => onNavigateFile(path, anchor, fileTarget(tab))} document={documents[key] || null}

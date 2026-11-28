@@ -1,21 +1,22 @@
 import { useLayoutEffect, useRef } from 'react'
 
 /** Native top-layer positioning keeps menus out of scrolling/clipped panels. */
-export function useAnchoredMenu(open: boolean, close: () => void, config: { minWidth?: number; itemRole?: 'option' | 'menuitem'; alignTo?: string } = {}) {
+export function useAnchoredMenu(open: boolean, close: () => void, config: { minWidth?: number; itemRole?: 'option' | 'menuitem'; alignTo?: string; trigger?: HTMLElement; widthFor?: (trigger: HTMLElement) => number } = {}) {
   const minWidth = config.minWidth || 0, itemRole = config.itemRole || 'option'
-  const alignTo = config.alignTo
+  const { alignTo, trigger, widthFor } = config
   const ref = useRef<HTMLDivElement>(null)
   const dismiss = useRef(close)
   dismiss.current = close
   useLayoutEffect(() => {
     const menu = ref.current
-    const anchor = menu?.previousElementSibling as HTMLButtonElement | null
+    const anchor = trigger ?? menu?.previousElementSibling as HTMLElement | null
     if (!open || !menu || !anchor) return
     menu.showPopover()
     const position = () => {
+      if (!anchor.isConnected) { dismiss.current(); return }
       const box = anchor.getBoundingClientRect()
-      const left = alignTo ? anchor.closest(alignTo)?.getBoundingClientRect().left ?? box.left : box.left
-      const width = Math.min(Math.max(box.width, minWidth), innerWidth - 24)
+      const width = Math.min(widthFor?.(anchor) ?? Math.max(box.width, minWidth), innerWidth - 24)
+      const left = widthFor ? box.right - width : alignTo ? anchor.closest(alignTo)?.getBoundingClientRect().left ?? box.left : box.left
       menu.style.width = `${width}px`
       const below = innerHeight - box.bottom - 12, above = box.top - 12
       const height = Math.min(Math.ceil(menu.scrollHeight + menu.offsetHeight - menu.clientHeight), 240, Math.max(below, above))
@@ -27,7 +28,7 @@ export function useAnchoredMenu(open: boolean, close: () => void, config: { minW
     }
     const options = () => [...menu.querySelectorAll<HTMLButtonElement>(itemRole === 'menuitem' ? '[role=menuitem], [role=menuitemcheckbox]' : '[role=option]')].filter((item) => !item.disabled && item.getAttribute('aria-disabled') !== 'true')
     const key = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
+      if (event.key === 'Escape' || (event.key === 'Tab' && trigger)) {
         event.preventDefault(); event.stopPropagation()
         dismiss.current(); anchor.focus()
       } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
@@ -61,6 +62,6 @@ export function useAnchoredMenu(open: boolean, close: () => void, config: { minW
       document.removeEventListener('keydown', key, true)
       document.removeEventListener('pointerdown', outside, true)
     }
-  }, [open, minWidth, itemRole, alignTo])
+  }, [open, minWidth, itemRole, alignTo, trigger, widthFor])
   return ref
 }

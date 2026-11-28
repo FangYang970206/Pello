@@ -74,6 +74,7 @@ export interface WorkbenchApi {
   gitStatus(projectId: string, rescan?: boolean): Promise<GitPanel & { untracked: Record<string, boolean> }>
   gitDiff(projectId: string, rel: string, untracked: boolean): Promise<FileDiff>
   gitDiscard(projectId: string, rel: string, untracked: boolean): Promise<boolean>
+  gitIgnore(projectId: string, path: string, directory: boolean, repository: string): Promise<void>
   gitTree(projectId: string, rel?: string): Promise<TreeNode[]>
   treeIgnoreGet(projectId: string): Promise<string[]>
   treeIgnoreSet(projectId: string, rules: string[]): Promise<void>

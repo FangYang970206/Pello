@@ -35,6 +35,8 @@ export function VirtualFileRows<T extends { path: string }>({ items, render }: {
       if (!virtual || event.altKey || event.ctrlKey || event.metaKey || event.nativeEvent.isComposing) return
       const row = (event.target as Element).closest<HTMLElement>('[data-virtual-index]')
       if (!row) return
+      const action = row.querySelector('[data-row-action]')
+      if (event.key === 'Tab' && action && event.shiftKey === (event.target === action)) return
       const current = Number(row.dataset.virtualIndex)
       const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
         : event.key === 'ArrowDown' || (event.key === 'Tab' && !event.shiftKey) ? current + 1
@@ -43,7 +45,9 @@ export function VirtualFileRows<T extends { path: string }>({ items, render }: {
       event.preventDefault()
       setFocused(items[next].path)
       requestAnimationFrame(() => {
-        const button = root.current?.querySelector<HTMLButtonElement>(`[data-virtual-index="${next}"] button`)
+        const nextRow = root.current?.querySelector(`[data-virtual-index="${next}"]`)
+        const button = (event.key === 'Tab' && event.shiftKey ? nextRow?.querySelector<HTMLButtonElement>('[data-row-action]') : null)
+          ?? nextRow?.querySelector<HTMLButtonElement>('button')
         button?.focus({ preventScroll: true }); button?.scrollIntoView({ block: 'nearest' })
       })
     }}>

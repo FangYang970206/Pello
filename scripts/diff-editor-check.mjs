@@ -31,8 +31,13 @@ const app = await electron.launch({ args: [root, `--force-device-scale-factor=${
 try {
   const page = await app.firstWindow()
   page.setDefaultTimeout(15000)
+  await page.locator('[data-a=diff][data-id="untracked.txt"]').click()
+  await page.locator('.diff-actions [data-a=discard]').waitFor()
+  assert.equal(await page.locator('.diff-actions [data-a=discard]').getAttribute('aria-label'), '还原更改', 'An untracked diff uses the same Revert action as a tracked diff')
+  const revertIcon = await page.locator('.diff-actions [data-a=discard] svg path').getAttribute('d')
   await page.locator('[data-a=diff][data-id="fixture.txt"]').click()
   await page.locator('[data-a=dmode][data-id=split]').click()
+  assert.equal(await page.locator('.diff-actions [data-a=discard] svg path').getAttribute('d'), revertIcon)
   assert.equal(await page.locator('.diff-actions button').count(), 4)
   assert.ok((await page.locator('.diff-actions button').evaluateAll((nodes) => nodes.map((node) => ({
     icon: !!node.querySelector('svg'), text: node.textContent.trim(), label: node.getAttribute('aria-label'), title: node.getAttribute('title')
@@ -148,10 +153,11 @@ try {
   await page.waitForFunction(() => !document.querySelector('.dot.unsaved'))
   assert.equal(fs.readFileSync(path.join(project, 'deleted.txt'), 'utf8'), 'deleted original\n', 'hunk revert must recreate a deleted file')
   await page.locator('[data-a=diff][data-id="untracked.txt"]').click()
-  await page.getByRole('button', { name: '删除文件', exact: true }).click()
+  await page.getByRole('button', { name: '还原更改', exact: true }).click()
   await page.locator('[data-a=confirm]').waitFor()
+  assert.match(await page.locator('#modal').textContent(), /新文件将被移除/)
   await page.keyboard.press('Escape')
-  assert.equal(fs.readFileSync(path.join(project, 'untracked.txt'), 'utf8'), 'untracked contents\n', 'Untracked delete icon must also require confirmation')
+  assert.equal(fs.readFileSync(path.join(project, 'untracked.txt'), 'utf8'), 'untracked contents\n', 'Reverting an untracked file requires confirmation')
   await page.locator('[data-a=diff][data-id="fixture.txt"]').click()
   for (const theme of ['dark', 'light']) for (const [width, height] of [[1024, 680], [1440, 900]]) for (const size of [12, 16]) {
     await page.locator('[data-a=settings]').click()

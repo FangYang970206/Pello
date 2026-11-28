@@ -31,6 +31,7 @@ const PATHS = {
   unified: 'M4 5h16v14H4zM8 9h8M8 12h8M8 15h8',
   save: 'M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h12l4 4v12a2 2 0 0 1-2 2zM7 3v6h10V3M7 21v-8h10v8',
   undo: 'M9 5 3 11l6 6M3 11h11a6 6 0 0 1 6 6v2',
+  revert: 'M3 4v6h6M3 10l3.5-3.5A8 8 0 1 1 5 16',
   panel: 'M4 5h16v14H4zM15 5v14',
   stop: 'M7 7h10v10H7z',
   refresh: 'M20 11a8 8 0 0 0-14.9-3.9L4 9M4 4v5h5M4 13a8 8 0 0 0 14.9 3.9L20 15M20 20v-5h-5',

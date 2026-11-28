@@ -7,7 +7,7 @@ import { Icon } from './icons'
 import appIcon from '../../assets/pello-rounded-small.svg'
 import { dropTerm, holdTermHistory, paint, prependTermHistory, queueSnapshot, releaseTermHistory, retainTermHistory, setTerminalHistoryEnabled, snapshotTerms, syncTermSize, writeNotice, writeTerm } from './terms'
 import { SettingsView } from './SettingsView'
-import { ConfirmDialog, ExecDialog, HostDialog, NewProjectDialog, NewTermDialog, dialogOpener, focusableIn } from './Dialogs'
+import { ConfirmDialog, ExecDialog, Frame, HostDialog, NewProjectDialog, NewTermDialog, dialogOpener, focusableIn } from './Dialogs'
 import { RightPanel } from './RightPanel'
 import { ProjectSidebar } from './ProjectSidebar'
 import { SidebarResize } from './SidebarResize'
@@ -30,6 +30,7 @@ type Modal =
   | { type: 'term'; newSession?: boolean }
   | { type: 'exec'; id?: string; hostId?: string }
   | { type: 'host'; id?: string }
+  | { type: 'git-result'; title: string; body: ReactNode }
   | { type: 'confirm'; title: string; body: ReactNode; ok: string; run: () => void | Promise<void>; save?: () => void; className?: string }
 
 type GitState = GitPanel & { untracked: Record<string, boolean> }
@@ -986,59 +987,129 @@ export function App() {
     setTabs((list) => list.map((item) => item.id === id ? { ...item, name } : item))
   }
 
-  function askDiscard(id: string) {
-    const tab = tabs.find((item) => item.id === id)
-    if (!project || tab?.type !== 'diff') return
-    const rel = tab.path
-    const targetId = fileTarget(tab)
-    const untracked = targetId === panelProject?.id ? !!git?.untracked[rel] : !!tab.untracked
-    setModal({
-      type: 'confirm',
-      title: untracked ? t("删除新文件？") : t("放弃更改？"),
-      ok: untracked ? t("删除文件") : t("放弃更改"),
-      body: untracked ? (
-        <>
-          <span className="mono">{rel}</span> {t(" 尚未被 Git 跟踪，将从磁盘删除（")}<code className="mono">git clean -f</code>{t("），无法撤销。")}</>
-      ) : (
-        <>
-          <span className="mono">{rel}</span> {t(" 的工作区修改将被还原（git restore），无法撤销。")}</>
-      ),
-      run: () => {
-        setModal(null)
-        const key = documentKey(fileTarget(tab), rel)
-        const previous = documentsRef.current[key]
-        void window.awb
-          .gitDiscard(fileTarget(tab), rel, untracked)
-          .then(async () => {
-            const file = await window.awb.gitRead(fileTarget(tab), rel)
-            const latest = documentsRef.current[key]
-            const refreshed = latest ? latest === previous
-              ? recordChange({ ...latest, ...file, editAt: 0 }, editableText(file.text))
-              : { ...latest, ...file } : null
-            if (refreshed) putDocument(key, refreshed)
-            setDiffBaselines((map) => { const next = { ...map }; delete next[key]; return next })
-            setDiffs((map) => { const next = { ...map }; delete next[key]; return next })
-            setTabs((list) => {
-              const next = list.filter((tab) => !(tab.type === 'diff' && fileTarget(tab) === targetId && tab.path === rel))
-                .map((tab) => tab.type === 'file' && fileTarget(tab) === targetId && tab.path === rel ? { ...tab, dirty: !!refreshed && isDirty(refreshed) } : tab)
-              if (!next.some((item) => item.id === activeMapRef.current[project.id])) {
-                const rest = next.filter((tab) => tab.projectId === project.id)
-                const layout = loadTerminalLayouts()[`${project.id}:${selectedSessionsRef.current[project.id]}`]
-                const keep = preferredGroupTab(layout, rest.map((item) => item.id), tab.id) || rest[0]?.id
-                const activeIds = { ...activeMapRef.current, [project.id]: keep }
-                activeMapRef.current = activeIds
-                setActiveMap(activeIds)
-                persist(next, activeIds)
-              }
-              return next
-            })
-            setGitTick((n) => n + 1)
-            toast(untracked ? t("已删除文件") : t("已放弃更改"))
-          })
-          .catch((err) => toast(err instanceof Error ? err.message : t("放弃失败"), true))
-      }
-    })
+  function askRevert(id: string) {
+    const tab = tabs.find((item): item is DiffTab => item.id === id && item.type === 'diff')
+    if (!tab) return
+    const target = fileTarget(tab)
+    const untracked = target === panelProject?.id && git ? !!git.untracked[tab.path] : !!tab.untracked
+    askRevertChanges(target, [tab.path], { [tab.path]: untracked })
   }
+
+  function askRevertChanges(target: string, paths: string[], flags = git?.untracked) {
+    if (!project || !paths.length || modalRef.current) return
+    const ownerId = project.id
+    const entries = paths.map((path) => ({ path, key: documentKey(target, path), untracked: !!flags?.[path] }))
+    const locked = () => entries.some(({ path, key }) => savingDocuments.current.has(key) || documentsRef.current[key]?.composing ||
+      [...pathMutations.current.values()].some((item) => item.projectId === target && (item.path === path || (item.directory && path.startsWith(`${item.path}/`)))))
+    if (locked()) { toast(t("文件操作正在进行"), true); return }
+    const dirty = entries.filter(({ key }) => { const doc = documentsRef.current[key]; return doc && isDirty(doc) }).length
+    const impact = <>
+      {t("已跟踪文件将恢复到 HEAD，无 HEAD 版本的新文件将被移除，暂存区也会更新。")}
+      {entries.map(({ path }) => <span className="mono git-confirm-path" key={path}>{path}</span>)}
+      {dirty ? t("其中有 {{0}} 个未保存的文件，确认后将放弃操作成功的文件草稿。", dirty) : null}
+    </>
+    const run = async () => {
+      if (locked()) { toast(t("文件操作正在进行"), true); return }
+      const succeeded = new Set<string>(), removed = new Set<string>(), failures: string[] = []
+      for (const { path, key, untracked } of entries) {
+        try {
+          await window.awb.gitDiscard(target, path, untracked)
+        } catch (error) {
+          failures.push(t("{{0}}：{{1}}", path, error instanceof Error ? error.message : t("还原失败")))
+          continue
+        }
+        succeeded.add(path)
+        const previous = documentsRef.current[key]
+        if (previous) {
+          try {
+            const file = await window.awb.gitRead(target, path)
+            if (file.missing) removed.add(path)
+            else {
+              const draft = editableText(file.text)
+              putDocument(key, { ...recordChange({ ...previous, editAt: 0 }, draft), ...file, draft,
+                tooBig: file.tooBig, assetToken: file.assetToken, fileStamp: file.fileStamp, error: undefined, replacementId: crypto.randomUUID() })
+            }
+          } catch (error) { failures.push(t("{{0}}：{{1}}", path, error instanceof Error ? error.message : t("无法读取文件"))) }
+        }
+      }
+      if (removed.size) {
+        const next = { ...documentsRef.current }
+        for (const path of removed) delete next[documentKey(target, path)]
+        documentsRef.current = next
+        setDocuments(next)
+        setTreeSelections((current) => current[target] && removed.has(current[target].path) ? Object.fromEntries(Object.entries(current).filter(([id]) => id !== target)) : current)
+      }
+      if (succeeded.size) {
+        const clear = <T,>(current: Record<string, T>) => {
+          const next = { ...current }
+          for (const path of succeeded) delete next[documentKey(target, path)]
+          return next
+        }
+        setDiffBaselines(clear)
+        setDiffs(clear)
+        setTabs((list) => {
+          const next = list.filter((tab) => tab.type === 'term' || fileTarget(tab) !== target || !(tab.type === 'diff' ? succeeded : removed).has(tab.path))
+            .map((tab) => {
+              if (tab.type !== 'file' || fileTarget(tab) !== target || !succeeded.has(tab.path)) return tab
+              const doc = documentsRef.current[documentKey(target, tab.path)]
+              return { ...tab, dirty: !!doc && isDirty(doc) }
+            })
+          const wanted = activeMapRef.current[ownerId]
+          if (wanted && !next.some((tab) => tab.id === wanted)) {
+            const rest = next.filter((tab) => tab.projectId === ownerId)
+            const layout = loadTerminalLayouts()[`${ownerId}:${selectedSessionsRef.current[ownerId]}`]
+            const keep = preferredGroupTab(layout, rest.map((item) => item.id), wanted) || rest[0]?.id
+            const activeIds = { ...activeMapRef.current, [ownerId]: keep }
+            activeMapRef.current = activeIds
+            setActiveMap(activeIds)
+            persist(next, activeIds)
+          }
+          return next
+        })
+      }
+      setGitTick((tick) => tick + 1)
+      if (failures.length) {
+        setModal({ type: 'git-result', title: succeeded.size ? t("部分文件操作失败") : t("文件操作失败"),
+          body: <>{t("已处理 {{0}} 项。", succeeded.size)}{failures.map((message, index) => <span className="git-confirm-path" key={index}>{message}</span>)}</> })
+      } else {
+        setModal(null)
+        toast(t("已还原 {{0}} 项更改", succeeded.size))
+      }
+    }
+    setModal({ type: 'confirm', title: t("还原更改？"), ok: t("还原更改"), body: impact, run })
+  }
+
+  function askIgnoreChange(target: string, path: string, directory: boolean, repository: string) {
+    setModal({ type: 'confirm', title: t("从 Git 追踪中排除？"), ok: t("忽略"), body: <>
+      <span className="mono git-confirm-path">{path}</span>
+      <span className="git-confirm-path">{directory ? t("已跟踪的目录内容将从 Git 索引移除。") : t("如果文件已被 Git 跟踪，确认后将从索引移除。")}</span>
+      <span className="git-confirm-path">{t("规则将写入 {{0}}，磁盘文件会保留。", repository ? `${repository}/.gitignore` : '.gitignore')}</span>
+    </>, run: () => ignoreChange(target, path, directory, repository) })
+  }
+
+  async function ignoreChange(target: string, path: string, directory: boolean, repository: string) {
+    const rel = repository ? `${repository}/.gitignore` : '.gitignore'
+    const key = documentKey(target, rel)
+    const doc = documentsRef.current[key]
+    if (doc && isDirty(doc)) { toast(t("请先保存 .gitignore 中的更改"), true); return }
+    if (savingDocuments.current.has(key) || pathMutations.current.has(key) || replacementAt(target, rel)) {
+      toast(t("文件操作正在进行"), true)
+      return
+    }
+    pathMutations.current.set(key, { projectId: target, path: rel, directory: false })
+    try {
+      await window.awb.gitIgnore(target, path, directory, repository)
+      setModal(null)
+      toast(t("已加入 {{0}}", rel))
+    } catch (error) {
+      setModal({ type: 'git-result', title: t("文件操作失败"), body: error instanceof Error ? error.message : t("无法将此路径加入 .gitignore") })
+    } finally {
+      pathMutations.current.delete(key)
+      setGitTick((tick) => tick + 1)
+      void refreshDocument(target, rel, false)
+    }
+  }
+
 
   function openedDocument(type: 'file' | 'diff', rel: string, targetId = panelProject?.id): FileTab | DiffTab | undefined {
     if (!project) return
@@ -1139,11 +1210,12 @@ export function App() {
   }
 
   function askTrash(projectId: string, rel: string, directory: boolean) {
-    if (!rel) return
-    const owner = db?.projects.find((item) => item.id === projectId)
+    if (!rel || modalRef.current) return
+    const context = terminalContext?.id === projectId
+    const owner = context ? project : db?.projects.find((item) => item.id === projectId)
     const projectHost = db?.hosts.find((item) => item.id === owner?.host)
     if (!owner || !projectHost) { toast(t("项目或环境不存在"), true); return }
-    const remote = projectHost.id !== 'local'
+    const remote = context || projectHost.id !== 'local'
     const affected = (path: string) => path === rel || (directory && path.startsWith(`${rel}/`))
     const relevant = Object.values(documentsRef.current).filter((doc) => doc.projectId === projectId && affected(doc.path))
     if (relevant.some((doc) => doc.saving || savingDocuments.current.has(documentKey(projectId, doc.path)))) { toast(t("文件正在保存，请稍候"), true); return }
@@ -1160,10 +1232,10 @@ export function App() {
         documentsRef.current = nextDocs; setDocuments(nextDocs)
         setTabs((list) => {
           const next = list.filter((tab) => !(tab.type !== 'term' && fileTarget(tab) === projectId && affected(tab.path)))
-          const wanted = activeMapRef.current[projectId]
+          const wanted = activeMapRef.current[owner.id]
           if (wanted && !next.some((tab) => tab.id === wanted)) {
-            const fallback = next.find((tab) => tab.projectId === projectId && (tab.type !== 'term' || sessionOf(tab) === selectedSessionsRef.current[projectId]))?.id
-            const activeIds = { ...activeMapRef.current, [projectId]: fallback }
+            const fallback = next.find((tab) => tab.projectId === owner.id && (tab.type !== 'term' || sessionOf(tab) === selectedSessionsRef.current[owner.id]))?.id
+            const activeIds = { ...activeMapRef.current, [owner.id]: fallback }
             activeMapRef.current = activeIds; setActiveMap(activeIds)
           }
           return next
@@ -1392,7 +1464,6 @@ export function App() {
             <img className="logo" src={appIcon} width="18" height="18" alt="" aria-hidden="true" />
             Pello
           </div>
-          {route === 'settings' ? <span className="crumb">{t("设置")}</span> : null}
           <span className="grow" />
           <div className="wc">
             {route === 'settings' && db ? <>
@@ -1503,7 +1574,7 @@ export function App() {
                     setDiffModes((current) => ({ ...Object.fromEntries(tabs.filter((tab) => tab.type === 'diff').map((tab) => [tab.id, current[tab.id] || defaultDiffMode])), [id]: mode }))
                     setDefaultDiffMode(mode)
                   }}
-                  onDiscard={askDiscard}
+                  onDiscard={askRevert}
                   onAppKey={onAppKey}
                   onEditFile={editFile}
                   onSaveFile={(id) => { const tab = tabs.find((item) => item.id === id && item.type !== 'term'); if (tab && tab.type !== 'term') void saveFile(tab) }}
@@ -1511,8 +1582,6 @@ export function App() {
                   onHistoryFile={historyFile}
                   onComposeFile={composeFile}
                   onPreviewHtml={(id) => void previewHtml(id)}
-                  changeTarget={panelProject?.id}
-                  untracked={git?.untracked || {}}
                 />
                 {withRight && project && host ? (
                   <RightPanel
@@ -1547,6 +1616,8 @@ export function App() {
                     onMode={setRmode}
                     onToggleDir={(dir) => void toggleDirectory(dir)}
                     onOpenDiff={openDiff}
+                    onRevertChanges={askRevertChanges}
+                    onIgnoreChange={askIgnoreChange}
                     onOpenFile={openFile}
                     onReloadFile={reloadPath}
                     onRevealFile={revealFile}
@@ -1594,6 +1665,7 @@ export function App() {
       </div>
       <div id="modal">
         {modal?.type === 'confirm' ? <ConfirmDialog title={modal.title} body={modal.body} ok={modal.ok} onOk={modal.run} onSave={modal.save} className={modal.className} onClose={() => setModal(null)} /> : null}
+        {modal?.type === 'git-result' ? <Frame title={modal.title} small onClose={() => setModal(null)} footer={<><span className="grow" /><button className="btn ghost" data-autofocus onClick={() => setModal(null)}>{t("关闭")}</button></>}>{modal.body}</Frame> : null}
         {modal?.type === 'temporary' && db ? <TemporarySessionDialog hosts={db.hosts} onCreate={async (root, hostId) => { const directory = await window.awb.configureTemporaryDirectory(root, hostId); setModal({ type: 'temporary-term', root: directory, hostId }) }} onClose={() => setModal(null)} /> : null}
         {modal?.type === 'temporary-term' && db && temporaryHost ? <NewTermDialog newSession host={temporaryHost} cwd={modal.root} initialKind={db.settings.defAgent} initialShell={shellFor(temporaryHost, db.settings.defShell)} agents={modal.hostId === 'local' ? agents : agents.map((agent) => ({ ...agent, installed: true }))} onClose={() => setModal(null)} onManage={() => { setModal(null); openSettings('agents') }} onOpen={createTemporary} /> : null}
         {modal?.type === 'project' && db ? (

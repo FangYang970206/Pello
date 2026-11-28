@@ -17,7 +17,7 @@ import { browseRemoteResources } from './remote-resources'
 import { db, mutate, saveSettings, validTreeIgnores, writeSessions } from './store'
 import { bashQuote, commandExists, osLabel, psQuote } from './platform'
 import { workbenchTheme } from '../shared/themes'
-import { checkPath, createTreeEntry, fileTree, gitDiff, gitDiscard, gitStatus, listDir, localFileNameCandidates, moveTreeEntry, readFile, removeRemoteEntry, renameTreeEntry, targetFor, treePath, TREE_DEFAULT_IGNORE, validateEntryName, writeFile } from './git'
+import { applyGitIgnore, checkPath, createTreeEntry, fileTree, gitDiff, gitDiscard, gitStatus, listDir, localFileNameCandidates, moveTreeEntry, prepareGitIgnore, readFile, removeRemoteEntry, renameTreeEntry, targetFor, treePath, TREE_DEFAULT_IGNORE, validateEntryName, writeFile } from './git'
 import {
   closeAllSessions,
   closeSession,
@@ -614,7 +614,17 @@ function registerIpc(): void {
   ipcMain.handle('git:discard', async (_e, projectId: string, rel: string, untracked: boolean) => {
     const { target } = projectTarget(projectId)
     await gitDiscard(target, rel, !!untracked)
+    invalidatePreview(projectId, rel)
     return true
+  })
+  ipcMain.handle('git:ignore', async (_e, projectId: string, entry: string, directory: boolean, repository: string) => {
+    if (typeof entry !== 'string' || typeof directory !== 'boolean' || typeof repository !== 'string') throw new Error(t("无法将此路径加入 .gitignore"))
+    const { target } = projectTarget(projectId)
+    const rule = await prepareGitIgnore(target, entry, directory, repository)
+    const key = fileWriteKey(target, rule.path, true)
+    if (replacementBlocked(key) || activeFileWrites.has(key)) throw new Error(t("文件正在进行其他写入操作"))
+    activeFileWrites.add(key)
+    try { await applyGitIgnore(target, rule) } finally { activeFileWrites.delete(key) }
   })
   ipcMain.handle('git:tree', async (_e, projectId: string, rel = '') => {
     const { target } = projectTarget(projectId)

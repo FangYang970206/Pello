@@ -10,8 +10,15 @@ import { ContentSearchResults } from './ContentSearchResults'
 import { VirtualFileRows } from './VirtualFileRows'
 import { GitChangeRows } from './GitChangeRows'
 import { FileIcon } from './FileIcon'
+import { useAnchoredMenu } from './useAnchoredMenu'
+import type { ChangeRow } from './git-change-tree'
 
 const NO_COLLAPSED_CHANGES: ReadonlySet<string> = new Set()
+
+function gitMenuWidth(trigger: HTMLElement): number {
+  const width = trigger.closest('.rlist')?.clientWidth ?? 240
+  return Math.max(80, Math.min(140, Math.round(width / 3)))
+}
 
 function MoveEntryDialog({ projectId, path, directory, onCancel, onMove }: { projectId: string; path: string; directory: boolean; onCancel: () => void; onMove: (parent: string) => Promise<void> }) {
   const [parent, setParent] = useState('')
@@ -118,6 +125,8 @@ export function RightPanel({
   onMode,
   onToggleDir,
   onOpenDiff,
+  onRevertChanges,
+  onIgnoreChange,
   onOpenFile,
   onReloadFile,
   onRevealFile,
@@ -163,6 +172,8 @@ export function RightPanel({
   onMode: (mode: 'files' | 'changes' | 'search') => void
   onToggleDir: (path: string) => void
   onOpenDiff: (path: string) => void
+  onRevertChanges: (target: string, paths: string[]) => void
+  onIgnoreChange: (target: string, path: string, directory: boolean, repository: string) => void
   onOpenFile: (path: string, anchor?: string, location?: SearchLocation) => void
   onReloadFile: (projectId: string, path: string) => void
   onRevealFile: (projectId: string, path: string) => Promise<boolean>
@@ -183,6 +194,12 @@ export function RightPanel({
   const [changeViews, setChangeViews] = useState<Record<string, boolean>>({})
   const [collapsedChanges, setCollapsedChanges] = useState<Record<string, ReadonlySet<string>>>({})
   const changeTree = !!changeViews[project.id]
+  const changeScope = JSON.stringify([project.id, repositoryFilter, changeTree])
+  const [changeMenu, setChangeMenu] = useState<{ scope: string; row: ChangeRow; repository: string; trigger: HTMLButtonElement }>()
+  const menu = mode === 'changes' && changeMenu?.scope === changeScope ? changeMenu : undefined
+  const menuRef = useAnchoredMenu(!!menu, () => setChangeMenu(undefined), { trigger: menu?.trigger, itemRole: 'menuitem', widthFor: gitMenuWidth })
+  const menuPaths = menu ? files.filter((file) => (file.repository || '') === menu.repository &&
+    (menu.row.file ? file.path === menu.row.path : file.path.startsWith(menu.row.path))).map((file) => file.path) : []
   const collapsed = collapsedChanges[project.id] || NO_COLLAPSED_CHANGES
   function toggleChangeDirectory(path: string) {
     setCollapsedChanges((state) => {
@@ -392,7 +409,8 @@ export function RightPanel({
     try { await onRescan() } finally { setRescanning(false) }
   }
   const filter = repositories.some((repo) => repo.path === repositoryFilter) ? repositoryFilter : ''
-  const renderChanges = (items: GitFile[], repository = '') => <GitChangeRows files={items} repository={repository} tree={changeTree} collapsed={collapsed} onToggle={toggleChangeDirectory} activePath={activePath} onOpen={onOpenDiff} />
+  const renderChanges = (items: GitFile[], repository = '') => <GitChangeRows files={items} repository={repository} tree={changeTree} collapsed={collapsed} onToggle={toggleChangeDirectory} activePath={activePath} onOpen={onOpenDiff}
+    menuPath={menu?.row.path} onMenu={(row, repository, trigger) => setChangeMenu(menu?.trigger === trigger ? undefined : { scope: changeScope, row, repository, trigger })} />
   const changed = new Map(files.map((file) => [file.path, file]))
   const renderTree = (nodes: TreeNode[], depth: number) =>
     nodes.map((node) => {
@@ -583,6 +601,20 @@ export function RightPanel({
         </button>
       </div>
       {context ? <div className="terminal-file-context" role="status" title={`${context.user}@${context.hostname} · ${context.cwd}`}><Icon name="server" className="s" /><span>{context.user}@{context.hostname}<small>{context.cwd}</small></span></div> : null}
+      {menu ? <div ref={menuRef} popover="manual" className="pop tabs-popover git-change-menu" role="menu" aria-label={t("Git 变更操作")}>
+        <button type="button" className="row" role="menuitem" disabled={!menuPaths.length} onClick={() => {
+          setChangeMenu(undefined)
+          onRevertChanges(project.id, menuPaths)
+        }}>{t("还原")}</button>
+        <button type="button" className="row" role="menuitem" disabled={!menuPaths.length} onClick={() => {
+          setChangeMenu(undefined)
+          onTrash(project.id, menu.row.path.replace(/\/$/, ''), !menu.row.file)
+        }}>{t("删除")}</button>
+        <button type="button" className="row" role="menuitem" disabled={!menuPaths.length} onClick={() => {
+          setChangeMenu(undefined)
+          onIgnoreChange(project.id, menu.row.path.replace(/\/$/, ''), !menu.row.file, menu.repository)
+        }}>{t("忽略")}</button>
+      </div> : null}
       {body}
       {moving ? <MoveEntryDialog projectId={moving.projectId} path={moving.path} directory={moving.dir} onCancel={() => setMoving(null)} onMove={async (parent) => { await onMove(moving.projectId, moving.path, parent, moving.dir); setMoving(null) }} /> : null}
       {transfers.length ? <section className="transfer-list" aria-label={t("传输任务")}>

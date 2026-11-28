@@ -47,6 +47,7 @@ const api: WorkbenchApi = {
   gitStatus: (projectId, rescan) => ipcRenderer.invoke('git:status', projectId, rescan),
   gitDiff: (projectId, rel, untracked) => ipcRenderer.invoke('git:diff', projectId, rel, untracked),
   gitDiscard: (projectId, rel, untracked) => ipcRenderer.invoke('git:discard', projectId, rel, untracked),
+  gitIgnore: (projectId, path, directory, repository) => ipcRenderer.invoke('git:ignore', projectId, path, directory, repository),
   gitTree: (projectId, rel) => ipcRenderer.invoke('git:tree', projectId, rel),
   treeIgnoreGet: (projectId) => ipcRenderer.invoke('tree:ignore-get', projectId),
   treeIgnoreSet: (projectId, rules) => ipcRenderer.invoke('tree:ignore-set', projectId, rules),

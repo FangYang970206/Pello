@@ -77,7 +77,6 @@ export function DiffPane({
   onCompose,
   onHistory,
   onReload,
-  untracked
 }: {
   diff: FileDiff | null
   mode: 'unified' | 'split'
@@ -92,7 +91,6 @@ export function DiffPane({
   onCompose: (value: boolean) => void
   onHistory: (redo: boolean) => void
   onReload: () => void
-  untracked?: boolean
 }) {
   const { ref, zoom } = useContentZoom()
   const [side, setSide] = useState<'before' | 'after'>('after')
@@ -222,8 +220,8 @@ export function DiffPane({
               </button>
             ))}
           </div>
-          <button className="ib danger" data-a="discard" aria-label={untracked ? t("删除文件") : t("放弃更改")} title={untracked ? t("删除文件") : t("放弃更改")} onClick={onDiscard}>
-            <Icon name={untracked ? 'trash' : 'undo'} />
+          <button className="ib" data-a="discard" aria-label={t("还原更改")} title={t("还原更改")} onClick={onDiscard}>
+            <Icon name="revert" />
           </button>
         </div>
       </div>

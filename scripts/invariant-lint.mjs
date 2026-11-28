@@ -372,6 +372,12 @@ export function checkInvariants(files) {
   require(rightPanel.includes('data-a="git-view"') && rightPanel.includes('data-a="git-refresh"') &&
     !rightPanel.includes('<span>git status</span>') && !rightPanel.includes('repository-discovery') && files.get('src/renderer/GitChangeRows.tsx')?.includes('<VirtualFileRows') && scripts.check?.includes('scripts/git-about-check.mjs'),
     'AWB086', 'src/renderer/RightPanel.tsx', 'Git 变更共用图标切换平铺与树状，最右刷新，不恢复旧说明行，保留虚拟列表与回归')
+  require(files.get('src/renderer/DiffPane.tsx')?.includes('<Icon name="revert" />') &&
+    files.get('src/renderer/GitChangeRows.tsx')?.includes('data-a="git-row-more"') &&
+    rightPanel.includes('widthFor: gitMenuWidth') && rightPanel.includes('onRevertChanges(project.id, menuPaths)') &&
+    rightPanel.includes('onIgnoreChange(project.id,') && called(named(git, 'appendGitIgnore'), 'writeFile').length &&
+    named(git, 'applyGitIgnore')?.getText().includes("'--cached', '--ignore-unmatch'") && scripts.check?.includes('scripts/multi-repo-check.mjs'),
+    'AWB111', 'src/renderer/RightPanel.tsx', 'Diff 统一还原图标，Git 变更使用紧凑的行尾菜单，忽略规则经版本校验保存并移除索引条目')
   require(files.get('src/renderer/SettingsView.tsx')?.includes("id: 'about'") && files.get('src/renderer/SettingsView.tsx')?.includes("section !== 'about' ? <header className=\"settings-page-heading\">") && files.get('src/renderer/AboutView.tsx')?.includes('window.awb.meta()') &&
     files.get('src/shared/app-info.ts')?.includes("'zh-CN': '方阳', en: 'FangYang'") && !files.get('src/renderer/styles/extra.css')?.includes('about-nav') &&
     files.get(mainFile)?.includes('version: app.getVersion()') && files.get(mainFile)?.includes('shell.openExternal(APP_HOMEPAGE)') && files.get('src/renderer/styles/extra.css')?.includes('.about-eye, .git-scanning { animation: none; }'),

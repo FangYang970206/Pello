@@ -145,7 +145,7 @@ export function ConfirmDialog({ title, body, ok, onOk, onClose, onSave, classNam
       footer={
         <>
           <span className="grow" />
-          <button className="btn ghost" data-a="mclose" data-autofocus onClick={onClose}>
+          <button className="btn ghost" data-a="mclose" data-autofocus disabled={busy} onClick={onClose}>
             {t("取消")}</button>
           <button className="btn dangerf" data-a="confirm" disabled={busy} onClick={async () => { if (submitting.current) return; submitting.current = true; setBusy(true); try { await onOk() } finally { submitting.current = false; setBusy(false) } }}>
             {ok}

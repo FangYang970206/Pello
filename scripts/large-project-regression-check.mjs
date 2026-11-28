@@ -237,7 +237,7 @@ try {
     treeSamples.push(timing.ms); treeGaps.push(timing.gap)
     const treeRows = page.locator('.git-change-rows.tree [data-virtual-count]')
     assert.equal(Number(await treeRows.getAttribute('data-virtual-count')), expectedTree.length, 'Tree exposes every change and directory')
-    treeMounted.push(await treeRows.locator('button').count())
+    treeMounted.push(await treeRows.locator('.git-change-item').count())
     await treeRows.locator('button').first().focus(); await page.keyboard.press('End')
     await page.waitForFunction((last) => document.activeElement?.getAttribute('data-id') === last, expectedTree.at(-1).path)
     await page.keyboard.press('Home')

@@ -250,7 +250,7 @@ for (const dpi of process.argv.includes('--visual') ? [1, 1.25, 1.5, 2] : [1]) {
     const discardView = await activeId()
     await tab(file).click()
     await pane(discardView).locator('[data-a=discard]').click()
-    await page.locator('#modal').getByRole('button', { name: '放弃更改', exact: true }).click()
+    await page.locator('#modal').getByRole('button', { name: '还原更改', exact: true }).click()
     await count(1)
     assert.ok((await text(file).inputValue()).startsWith('alpha original\n'), 'Git discard refreshes the shared file draft')
     assert.ok(fs.readFileSync(path.join(repo, 'alpha.txt'), 'utf8').replaceAll('\r\n', '\n').startsWith('alpha original\n'))

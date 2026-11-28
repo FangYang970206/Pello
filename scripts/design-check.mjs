@@ -75,6 +75,10 @@ try {
       const size = String(width)
       await app.evaluate(({ BrowserWindow }, dimensions) => BrowserWindow.getAllWindows()[0].setContentSize(...dimensions), [width, height])
       await page.click('[data-a=settings]')
+      if (!baseline) {
+        assert.equal(await page.locator('.settings-title').getByText('设置', { exact: true }).count(), 0, 'The title bar omits the duplicate Settings label')
+        assert.equal((await page.locator('.snav [data-a=back]').textContent()).trim(), '设置', 'The settings navigation retains its return label')
+      }
       await page.click('[data-a=sec][data-id=look]')
       await page.click(`[data-a=theme][data-id=${theme}]`)
       if (!baseline) {
