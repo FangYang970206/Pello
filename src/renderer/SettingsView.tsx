@@ -1,17 +1,17 @@
 import { t } from '../shared/i18n'
 import { useState, type ReactNode } from 'react'
 import { useAnchoredMenu } from './useAnchoredMenu'
-import type { Executor, Host, Project, Settings, SettingsSection, ShellKind } from '../shared/types'
+import type { Database, Executor, Host, Project, Settings, SettingsSection, ShellKind } from '../shared/types'
 import { FileSearchSettings } from './FileSearchSettings'
-import { hostColor } from '../shared/host-colors'
-import { PRESETS, cmdline, hostDisplayName, hostLine, preferredAgent, shellLabel } from '../shared/types'
+import { PRESETS, hostDisplayName, preferredAgent, shellLabel } from '../shared/types'
 import { useLocalShells } from './useLocalShells'
 import { ResourceSettings } from './ResourceSettings'
+import { ExecutorSettings } from './ExecutorSettings'
 import { AppUpdate } from './AppUpdate'
 import { AboutView } from './AboutView'
 import { CODE_FONTS, UI_FONTS } from '../shared/fonts'
 import { THEMES } from '../shared/themes'
-import { Icon, type IconName, Mark } from './icons'
+import { Icon, type IconName } from './icons'
 
 const SECTIONS: { id: SettingsSection; label: string; icon: IconName }[] = [
   { id: 'general', get label() { return t("通用") }, icon: 'sliders' },
@@ -29,8 +29,8 @@ const LEADS: Record<SettingsSection, string> = {
   get look() { return t("主题与终端字体") },
   get agents() { return t("在终端里启动的 Code Agent CLI") },
   get hosts() { return t("项目可以运行在本机或通过 SSH 连接的远程机器上") },
-  get mcp() { return t("管理各个 Code Agent 的 MCP 服务器") },
-  get skills() { return t("查看与分发 Code Agent 的 Skill") },
+  get mcp() { return t("按机器和执行器管理 MCP 服务器") },
+  get skills() { return t("按机器和执行器查看与分发 Skill") },
   get keys() { return t("键盘快捷键") },
   about: ''
 }
@@ -55,13 +55,17 @@ export function SettingsView({
   hosts,
   projects,
   installed,
+  templates,
+  templateBindings,
   onSection,
   onBack,
   onSettings,
+  onDatabase,
   onEditExec,
   onNewExec,
   onEditHost,
   onNewHost,
+  onRemoveHost,
   onInstall,
   onLocalHost
 }: {
@@ -71,17 +75,27 @@ export function SettingsView({
   hosts: Host[]
   projects: Project[]
   installed: Record<string, boolean>
+  templates: Database['templates']
+  templateBindings: Database['templateBindings']
   onSection: (id: SettingsSection) => void
   onBack: () => void
   onSettings: (next: Settings, options?: { inlineError: boolean }) => Promise<boolean>
-  onEditExec: (id: string) => void
-  onNewExec: () => void
+  onDatabase: (next: Database) => void
+  onEditExec: (id: string, hostId: string) => void
+  onNewExec: (hostId: string) => void
   onEditHost: (id: string) => void
   onNewHost: () => void
+  onRemoveHost: (id: string) => void
   onInstall: (name: string, cmd: string) => void
   onLocalHost: () => void
 }) {
   const title = SECTIONS.find((item) => item.id === section)?.label || ''
+  const resourcePage = ['agents', 'hosts', 'mcp', 'skills'].includes(section)
+  const [selectedHost, setSelectedHost] = useState('local')
+  const [templateId, setTemplateId] = useState<string>()
+  const [bindingFocus, setBindingFocus] = useState<string>()
+  const hostId = hosts.some((host) => host.id === selectedHost) ? selectedHost : 'local'
+  const resourceState = { hosts, custom, templates, templateBindings }
   const { shells, loading: shellsLoading, error: shellsError, refresh: refreshShells } = useLocalShells()
   const shellValue: ShellKind = settings.defShell
   const agentChoices = [
@@ -248,106 +262,30 @@ export function SettingsView({
       </>
     )
   }
-  if (section === 'agents') {
-    body = (
-      <>
-        <div className="group">
-          <h2>{t("内置预设")}</h2>
-          <div className="card">
-            {PRESETS.map((preset) => {
-              const ok = !!installed[preset.cmd]
-              return (
-                <Row
-                  key={preset.id}
-                  lead={<Mark letter={preset.letter} color={preset.color} size="md" />}
-                  title={preset.name}
-                  desc={<span className="mono">{preset.cmd}</span>}
-                  control={
-                    ok ? (
-                      <span className="okt">
-                        <Icon name="check" className="s" />
-                        {t("已安装")}</span>
-                    ) : (
-                      <>
-                        <span className="tag warn">{t("未找到命令")}</span>
-                        <button className="btn sm" data-a="install" onClick={() => onInstall(preset.name, preset.cmd)}>
-                          {t("安装说明")}</button>
-                      </>
-                    )
-                  }
-                />
-              )
-            })}
-          </div>
-        </div>
-        <div className="group">
-          <h2>
-            <span className="grow">{t("自定义")}</span>
-            <button className="btn sm" data-a="custom" onClick={onNewExec}>
-              <Icon name="plus" className="s" />
-              {t("添加")}</button>
-          </h2>
-          <div className="card">
-            {custom.length ? (
-              custom.map((item) => (
-                <button key={item.id} className="srow click" data-a="custom" data-id={item.id} onClick={() => onEditExec(item.id)}>
-                  <Mark letter={item.letter} color={item.color} size="md" />
-                  <div className="lt">
-                    <b>{item.name}</b>
-                    <small className="mono">{cmdline(item)}</small>
-                  </div>
-                  <span className="tag">{shellLabel(item.shell)}</span>
-                  <Icon name="chev" className="s" />
-                </button>
-              ))
-            ) : (
-              <Row title={t("还没有自定义执行器")} desc={t("任何能在 PowerShell / CMD 里启动的 CLI 都可以添加")} />
-            )}
-          </div>
-        </div>
-      </>
-    )
-  }
+  if (section === 'agents') body = <ExecutorSettings state={resourceState} hostId={hostId} onHost={setSelectedHost}
+    onDatabase={onDatabase} installed={installed} onInstall={onInstall} onEditExec={onEditExec} onNewExec={onNewExec} templateId={templateId} bindingFocus={bindingFocus} />
   if (section === 'hosts') {
     body = (
-      <>
-        <div className="group">
-          <h2>
-            <span className="grow">{t("机器")}</span>
-            <button className="btn sm" data-a="host" onClick={onNewHost}>
-              <Icon name="plus" className="s" />
-              {t("添加机器")}</button>
-          </h2>
-          <div className="card">
-            {hosts.map((host) => (
-              <button
-                key={host.id}
-                className="srow click"
-                data-a={host.id === 'local' ? 'local-host' : 'host'}
-                data-id={host.id}
-                onClick={() => (host.id === 'local' ? onLocalHost() : onEditHost(host.id))}
-              >
-                <span className="hic project-folder" data-color={hostColor(host.color)}>
-                  <Icon name={host.id === 'local' ? 'laptop' : 'server'} />
-                </span>
-                <div className="lt">
-                  <b>{hostDisplayName(host)}</b>
-                  <small>{hostLine(host)}</small>
-                </div>
-                <span className="tag">
-                  <span className={`dot ${host.on ? 'running' : 'exited'}`} />
-                  {host.on ? t("已连接") : t("未连接")}
-                </span>
-                <Icon name="chev" className="s" />
-              </button>
-            ))}
+      <div className="card">
+        {hosts.map((host) => {
+          const local = host.id === 'local'
+          return <div className="srow" key={host.id}>
+            <button className="settings-host-entry lt" data-a={local ? 'local-host' : 'host'} data-id={host.id}
+              onClick={() => (local ? onLocalHost() : onEditHost(host.id))}>
+              <span className="settings-item-icon host"><Icon name={local ? 'laptop' : 'server'} /></span>
+              <span><b>{hostDisplayName(host)}</b><small>{host.os}{local ? '' : ' · SSH'}</small></span>
+            </button>
+            <span className={`settings-host-status${host.on ? ' connected' : ''}`}>
+              {host.on ? <Icon name="check" className="s" /> : null}{host.on ? t("已连接") : t("未连接")}
+            </span>
+            {!local ? <button className="btn" onClick={() => onRemoveHost(host.id)}>{t("移除")}</button> : null}
           </div>
-        </div>
-        <p style={{ fontSize: 12, color: 'var(--faint)' }}>{t("远程终端通过 SSH 连接，使用目标机器的默认 Shell（Windows：PowerShell，Linux / macOS：bash 或 zsh）。")}</p>
-      </>
+        })}
+      </div>
     )
   }
-  if (section === 'mcp' || section === 'skills') body = <ResourceSettings key={section} kind={section} />
+  if (section === 'mcp' || section === 'skills') body = <ResourceSettings key={section} kind={section} state={resourceState} hostId={hostId}
+    onHost={setSelectedHost} onManageTemplate={(agent, id) => { setTemplateId(id); setBindingFocus(id ? undefined : agent); onSection('agents') }} />
   if (section === 'about') body = <AboutView />
   if (section === 'keys') {
     const rows: [string, string][] = [
@@ -417,23 +355,25 @@ export function SettingsView({
   return (
     <section className="settings">
       <nav className="snav" aria-label={t("设置分区")}>
-        <button className="back" data-a="back" onClick={onBack}>
-          <Icon name="back" className="s" />
-          {t("返回")}<kbd style={{ marginLeft: 'auto' }}>Esc</kbd>
+        <button className="back" data-a="back" aria-label={t("返回")} onClick={onBack}>
+          <Icon name="back" />
+          {t("设置")}
         </button>
-        <div className="sec" style={{ paddingTop: 0 }}>
-          {t("设置")}</div>
         {SECTIONS.map((item) => (
-          <button key={item.id} className={`navb ${section === item.id ? 'on' : ''}`} data-a="sec" data-id={item.id} aria-current={section === item.id ? 'page' : undefined} onClick={() => onSection(item.id)}>
+          <button key={item.id} className={`navb ${section === item.id ? 'on' : ''}`} data-a="sec" data-id={item.id} aria-current={section === item.id ? 'page' : undefined} onClick={() => {
+            setTemplateId(undefined); setBindingFocus(undefined); onSection(item.id)
+          }}>
             <Icon name={item.icon} />
             {item.label}
           </button>
         ))}
       </nav>
-      <div className="scontent">
+      <div className={`scontent${resourcePage ? ' settings-resource-page' : ''}`}>
         <div className="scol">
-          {section !== 'about' ? <h1>{title}</h1> : null}
-          {LEADS[section] ? <p className="lead">{LEADS[section]}</p> : null}
+          {section !== 'about' ? <header className="settings-page-heading">
+            <div><h1>{title}</h1>{LEADS[section] ? <p className="lead">{LEADS[section]}</p> : null}</div>
+            {section === 'hosts' ? <button className="btn" data-a="host" onClick={onNewHost}><Icon name="plus" />{t("添加机器")}</button> : null}
+          </header> : null}
           {body}
         </div>
       </div>

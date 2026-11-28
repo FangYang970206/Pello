@@ -40,6 +40,8 @@ export function defaultDatabase(): Database {
       autoCheckUpdates: true
     },
     custom: [],
+    templates: [],
+    templateBindings: [],
     hosts: [local],
     projects: [],
     sessions: {},

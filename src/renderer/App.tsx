@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
 import { getLanguage, hasMessageFragment, setLanguage, subscribeLanguage, t } from '../shared/i18n'
-import type { AgentInfo, Database, FileDiff, GitPanel, Host, SettingsSection, ShellKind, ThemeName, TreeNode, WorkSession } from '../shared/types'
+import type { AgentInfo, Database, FileDiff, GitPanel, Host, Settings, SettingsSection, ShellKind, ThemeName, TreeNode, WorkSession } from '../shared/types'
 import { legacySessionId, sessionOf } from '../shared/work-sessions'
 import { PRESETS, SHELL_AGENT, cmdline, hostDisplayName, resolveAgent, shellLabel, uid } from '../shared/types'
 import { Icon } from './icons'
@@ -26,9 +26,9 @@ type Modal =
   | { type: 'temporary' }
   | { type: 'temporary-term'; root: string }
   | { type: 'term'; newSession?: boolean }
-  | { type: 'exec'; id?: string }
+  | { type: 'exec'; id?: string; hostId?: string }
   | { type: 'host'; id?: string }
-  | { type: 'confirm'; title: string; body: ReactNode; ok: string; run: () => void | Promise<void>; save?: () => void }
+  | { type: 'confirm'; title: string; body: ReactNode; ok: string; run: () => void | Promise<void>; save?: () => void; className?: string }
 
 type GitState = GitPanel & { untracked: Record<string, boolean> }
 
@@ -1284,6 +1284,8 @@ export function App() {
       const root = document.querySelector('.settings')
       if (!root) return
       const items = focusableIn(root)
+      const themeControl = document.querySelector<HTMLButtonElement>('.settings-theme')
+      if (themeControl) items.unshift(themeControl)
       if (!items.length) return
       const current = document.activeElement instanceof HTMLElement ? document.activeElement : null
       const index = current ? items.indexOf(current) : -1
@@ -1299,17 +1301,67 @@ export function App() {
   const withRight = route === 'work' && !!project && right
   const editing = modal?.type === 'exec' ? db?.custom.find((item) => item.id === modal.id) || null : null
   const editingHost = modal?.type === 'host' && modal.id ? db?.hosts.find((item) => item.id === modal.id) || null : null
+  const savePreferences = (settings: Settings, options?: { inlineError: boolean }) => {
+    if (!db) return Promise.resolve(false)
+    const latest = settingsLatest.current ?? db.settings
+    const next = settingsWithChange(db.settings, settings, latest)
+    settingsLatest.current = next
+    // An earlier save can be answered after a later one was sent: its
+    // answer has neither the later change nor any made since, so it
+    // must not be laid over what was sent after it.
+    const superseded = () => settingsLatest.current !== next
+    return window.awb.saveSettings(next).then((saved) => {
+      if (superseded()) return true
+      settingsLatest.current = saved.settings; setLanguage(saved.settings.language); setDb(saved); return true
+    }).catch((error) => {
+      if (!superseded()) settingsLatest.current = latest
+      if (!options?.inlineError) toast(String(error), true); return false
+    })
+  }
+  const removeHost = (id: string) => {
+    if (!db) return
+    const machine = db.hosts.find((host) => host.id === id)
+    if (!machine || machine.id === 'local') return
+    const templateCount = db.templates.filter((item) => item.hostId === id).length
+    const bindingCount = db.templateBindings.filter((item) => item.hostId === id).length
+    setModal({
+      type: 'confirm',
+      className: 'settings-dialog settings-dialog-narrow',
+      title: t("移除机器？"),
+      ok: t("移除机器"),
+      body: <>
+        <p>{t("确定移除「{{0}}」？", hostDisplayName(machine))}</p>
+        <div className="settings-warning">
+          <p>{t("同时删除该机器的 {{0}} 个模板、{{1}} 个模板绑定以及执行器在这台机器上的专属配置。", templateCount, bindingCount)}</p>
+          <p className="resource-help">{t("使用这台机器的项目将无法打开终端。")} {t("机器上的 Skill 和 MCP 文件会保留。")}</p>
+        </div>
+      </>,
+      run: async () => {
+        try {
+          const saved = await window.awb.saveHosts(db.hosts.filter((item) => item.id !== id))
+          setDb((current) => current ? { ...current, hosts: saved.hosts, custom: saved.custom, templates: saved.templates, templateBindings: saved.templateBindings } : current)
+          setModal(null)
+        } catch (error) { toast(String(error), true) }
+      }
+    })
+  }
 
   return (
     <>
       <div id="app" className={withRight ? 'with-right' : ''} data-panel-side={db?.settings.panelSide || 'right'} style={{ '--right-width': `${rightWidth}px`, '--sidebar-width': `${sidebarWidth}px` } as CSSProperties}>
-        <header className="title">
+        <header className={route === 'settings' ? 'title settings-title' : 'title'}>
           <div className="brand" data-tauri-drag-region>
             <img className="logo" src={appIcon} width="18" height="18" alt="" aria-hidden="true" />
             Pello
           </div>
+          {route === 'settings' ? <span className="crumb" data-tauri-drag-region>{t("设置")}</span> : null}
           <span className="grow" data-tauri-drag-region />
           <div className="wc">
+            {route === 'settings' && db ? <>
+              <button className="settings-theme" aria-label={t("切换深浅主题")} onClick={() => void savePreferences({ ...db.settings, theme: workbenchTheme(theme).mode === 'light' ? 'dark' : 'light' })}>
+                <Icon name="palette" />
+              </button><span className="window-rule" aria-hidden="true" />
+            </> : null}
             <button aria-label={t("最小化")} onClick={() => void window.awb.winMin()}>
               <Icon name="minus" className="s" />
             </button>
@@ -1476,6 +1528,9 @@ export function App() {
               settings={db.settings}
               custom={db.custom}
               hosts={db.hosts}
+              templates={db.templates}
+              templateBindings={db.templateBindings}
+              onDatabase={(saved) => setDb((current) => current ? { ...current, templates: saved.templates, templateBindings: saved.templateBindings } : current)}
               projects={db.projects}
               installed={installed}
               onSection={(id) => {
@@ -1483,25 +1538,11 @@ export function App() {
                 document.querySelector('.scontent')?.scrollTo(0, 0)
               }}
               onBack={() => closeSettings()}
-              onSettings={(settings, options) => {
-                const latest = settingsLatest.current ?? db.settings
-                const next = settingsWithChange(db.settings, settings, latest)
-                settingsLatest.current = next
-                // An earlier save can be answered after a later one was sent: its
-                // answer has neither the later change nor any made since, so it
-                // must not be laid over what was sent after it.
-                const superseded = () => settingsLatest.current !== next
-                return window.awb.saveSettings(next).then((saved) => {
-                  if (superseded()) return true
-                  settingsLatest.current = saved.settings; setLanguage(saved.settings.language); setDb(saved); return true
-                }).catch((error) => {
-                  if (!superseded()) settingsLatest.current = latest
-                  if (!options?.inlineError) toast(String(error), true); return false
-                })
-              }}
-              onEditExec={(id) => setModal({ type: 'exec', id })}
-              onNewExec={() => setModal({ type: 'exec' })}
+              onSettings={savePreferences}
+              onEditExec={(id, hostId) => setModal({ type: 'exec', id, hostId })}
+              onNewExec={(hostId) => setModal({ type: 'exec', hostId })}
               onEditHost={(id) => setModal({ type: 'host', id })}
+              onRemoveHost={removeHost}
               onNewHost={() => setModal({ type: 'host' })}
               onInstall={(name, cmd) => toast(cmd ? t("请先安装 {{0}}，并确保命令 {{1}} 在 PATH 中", name, cmd) : name)}
               onLocalHost={() => setModal({ type: 'host', id: 'local' })}
@@ -1510,7 +1551,7 @@ export function App() {
         </div>
       </div>
       <div id="modal">
-        {modal?.type === 'confirm' ? <ConfirmDialog title={modal.title} body={modal.body} ok={modal.ok} onOk={modal.run} onSave={modal.save} onClose={() => setModal(null)} /> : null}
+        {modal?.type === 'confirm' ? <ConfirmDialog title={modal.title} body={modal.body} ok={modal.ok} onOk={modal.run} onSave={modal.save} className={modal.className} onClose={() => setModal(null)} /> : null}
         {modal?.type === 'temporary' ? <TemporarySessionDialog onCreate={async (root) => { const directory = await window.awb.configureTemporaryDirectory(root); setModal({ type: 'temporary-term', root: directory }) }} onClose={() => setModal(null)} /> : null}
         {modal?.type === 'temporary-term' && db ? <NewTermDialog newSession host={db.hosts.find((item) => item.id === 'local')!} cwd={modal.root} initialKind={db.settings.defAgent} initialShell={db.settings.defShell} agents={agents} onClose={() => setModal(null)} onManage={() => { setModal(null); openSettings('agents') }} onOpen={createTemporary} /> : null}
         {modal?.type === 'project' && db ? (
@@ -1523,7 +1564,7 @@ export function App() {
             onToast={toast}
             onHosts={async (hosts) => {
               const saved = await window.awb.saveHosts(hosts)
-              setDb((current) => current ? { ...current, hosts: saved.hosts } : current)
+              setDb((current) => current ? { ...current, hosts: saved.hosts, custom: saved.custom, templates: saved.templates, templateBindings: saved.templateBindings } : current)
             }}
             onCreate={(draft) => {
               const created = { id: uid('p'), name: draft.name, host: draft.host, path: draft.path, branch: draft.branch, agent: draft.agent }
@@ -1556,19 +1597,24 @@ export function App() {
         {modal?.type === 'exec' && db ? (
           <ExecDialog
             initial={editing && modal.id ? editing : null}
+            hostId={modal.hostId}
             cwd={project?.path || ''}
+            hosts={db.hosts}
+            templates={db.templates}
+            templateBindings={db.templateBindings}
             onClose={() => setModal(null)}
             onToast={toast}
-            onDelete={(id) => {
+            onDelete={async (id) => {
               const custom = db.custom.filter((item) => item.id !== id)
-              setDb({ ...db, custom })
-              setModal(null)
-              void window.awb.saveCustom(custom)
-            }}
-            onSave={async (exec) => {
-              const custom = exec.id ? db.custom.map((item) => (item.id === exec.id ? exec : item)) : [...db.custom, { ...exec, id: uid('c') }]
               const saved = await window.awb.saveCustom(custom)
-              setDb((current) => current ? { ...current, custom: saved.custom } : current)
+              setDb((current) => current ? { ...current, custom: saved.custom, templateBindings: saved.templateBindings } : current)
+              setModal(null)
+            }}
+            onSave={async (exec, changes) => {
+              const id = exec.id || uid('c')
+              const custom = exec.id ? db.custom.map((item) => (item.id === id ? exec : item)) : [...db.custom, { ...exec, id }]
+              const saved = await window.awb.saveCustom(custom, [...changes].map(([hostId, templateId]) => ({ hostId, executorId: id, templateId })))
+              setDb((current) => current ? { ...current, custom: saved.custom, templateBindings: saved.templateBindings } : current)
               setModal(null)
               const state = await window.awb.getState(); setInstalled(state.installed)
               toast(t("已保存执行器"))
@@ -1579,24 +1625,10 @@ export function App() {
           <HostDialog
             hosts={db.hosts}
             initial={editingHost}
+            alignToSettings={route === 'settings'}
             onClose={() => setModal(null)}
             onToast={toast}
-            onDelete={(id) => {
-              setModal({
-                type: 'confirm',
-                title: t("移除机器？"),
-                ok: t("移除"),
-                body: t("使用这台机器的项目将无法打开终端。"),
-                run: async () => {
-                  const hosts = db.hosts.filter((item) => item.id !== id)
-                  try {
-                    const saved = await window.awb.saveHosts(hosts)
-                    setDb((current) => current ? { ...current, hosts: saved.hosts } : current)
-                    setModal(null)
-                  } catch (error) { toast(String(error), true) }
-                }
-              })
-            }}
+            onDelete={removeHost}
             onSave={async (item) => {
               const hosts = item.id ? db.hosts.map((hostItem) => (hostItem.id === item.id ? item : hostItem)) : [...db.hosts, { ...item, id: uid('h') }]
               const saved = await window.awb.saveHosts(hosts)

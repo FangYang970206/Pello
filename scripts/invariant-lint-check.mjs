@@ -101,7 +101,8 @@ const cases = [
   ['AWB066', 'src/main/store.ts', "theme: 'light'", "theme: 'dark'"],
   ['AWB066', 'src/renderer/index.html', 'data-theme="light"', 'data-theme="dark"'],
   ['AWB066', 'src/renderer/styles/workbench.css', 'font:calc(var(--fs,13px) * var(--content-zoom,1))/1.7 var(--mono)', 'font:12px/1.7 var(--mono)'],
-  ['AWB066', 'src/renderer/icons.tsx', "fill={name === 'more' ? 'currentColor' : undefined}", 'fill="none"'],
+  ['AWB066', 'src/renderer/icons.tsx', "const filled = ['more', 'github'].includes(name)", "const filled = name === 'more'"],
+  ['AWB066', 'src/renderer/icons.tsx', "fill={filled ? 'currentColor' : undefined}", 'fill="none"'],
   ['AWB067', 'src/renderer/ProjectSidebar.tsx', 't("最近")', '"Agents"'],
   ['AWB067', 'src/renderer/ProjectSidebar.tsx', "collapsed[project.id] ? 'folder' : 'folder-open'", "'folder'"],
   ['AWB067', 'src/renderer/styles/extra.css', '.sidebar-section-heading > [aria-expanded=true] .sidebar-disclosure { opacity:0; }', '.sidebar-section-heading .sidebar-disclosure { opacity:1; }'],
@@ -368,8 +369,8 @@ const cases = [
   // homepage link navigating itself instead of the kernel opening it; a made
   // up version on it; its logo not blinking any more.
   ['AWB093', 'src/renderer/SettingsView.tsx', "if (section === 'about') body = <AboutView />", "if (section === 'none') body = <AboutView />"],
-  ['AWB093', 'src/renderer/SettingsView.tsx', "{section !== 'about' ? <h1>{title}</h1> : null}", '<h1>{title}</h1>'],
-  ['AWB093', 'src/renderer/SettingsView.tsx', '{LEADS[section] ? <p className="lead">{LEADS[section]}</p> : null}', '<p className="lead">{LEADS[section]}</p>'],
+  ['AWB093', 'src/renderer/SettingsView.tsx', "{section !== 'about' ? <header className=\"settings-page-heading\">", '<header className="settings-page-heading">'],
+  ['AWB093', 'src/renderer/SettingsView.tsx', '<div><h1>{title}</h1>{LEADS[section] ? <p className="lead">{LEADS[section]}</p> : null}</div>', '<div><h1>{title}</h1><p className="lead">{LEADS[section]}</p></div>'],
   ['AWB093', 'src/renderer/AboutView.tsx', 'event.preventDefault(); void window.awb.openHomepage()', 'void window.open(meta.homepage)'],
   ['AWB093', 'src/renderer/AboutView.tsx', "<dd data-about=\"version\">{meta ? `v${meta.version}` : '—'}</dd>", '<dd data-about="version">v1.0.0</dd>'],
   ['AWB093', 'src/renderer/styles/extra.css', 'animation: pello-blink 1.6s ease-in-out; }', '}'],
@@ -389,6 +390,22 @@ const cases = [
   ['AWB094', 'src/renderer/TerminalPane.tsx', 'search.menu(event.clientX, event.clientY)', 'search.menu()'],
   ['AWB094', 'src-tauri/src/window.rs', '.enable_clipboard_access()', ''],
   ['AWB094', 'package.json', '"check:terminal-search": "node scripts/terminal-search-check.mjs",', ''],
+  ['AWB095', 'src/main/store.ts', 'templateBindings: [],', 'templateBindings: undefined,'],
+  ['AWB095', 'src/shared/api.ts', "pickResource(kind: 'folder' | 'zip' | 'config' | 'file')", "pickResource(kind: 'folder' | 'zip' | 'config')"],
+  ['AWB095', 'src/renderer/ExecutorSettings.tsx', "window.awb.pickResource(field === 'skillPath' ? 'folder' : 'file')", "window.awb.pickResource('config')"],
+  ['AWB095', 'src/renderer/ExecutorSettings.tsx', 'window.awb.deleteTemplate(deleting.id)', 'window.awb.saveTemplate({ ...deleting, env: [] })'],
+  ['AWB095', 'src/renderer/SettingsView.tsx', "if (section === 'agents') body = <ExecutorSettings", "if (section === 'none') body = <ExecutorSettings"],
+  ['AWB095', 'src/renderer/SettingsView.tsx', "onSection('agents') }}", "onSection('mcp') }}"],
+  ['AWB095', 'src/renderer/App.tsx', 'templates: saved.templates, templateBindings: saved.templateBindings', 'templates: current.templates'],
+  ['AWB095', 'src/renderer/App.tsx', 'onDelete={removeHost}', 'onDelete={() => setModal(null)}'],
+  ['AWB095', 'src/renderer/Dialogs.tsx', 'const [shell, setShell] = useState(() => agentShell(kind))', 'const [shell, setShell] = useState(initialShell)'],
+  ['AWB095', 'src/renderer/Dialogs.tsx', "alignToSettings ? 'settings-positioned-dialog' : ''", "''"],
+  ['AWB095', 'src/renderer/Dialogs.tsx', 'className="settings-dialog custom-executor-dialog"', 'className=""'],
+  ['AWB095', 'src/renderer/Dialogs.tsx', '<div className="custom-executor-form">', '<div className="executor-resources">'],
+  ['AWB095', 'src/renderer/ResourceDistribution.tsx', 'importMcpConfig(source, targets, items, sourceHost)', 'importMcpConfig(source, targets, items)'],
+  ['AWB095', 'src/renderer/ResourceDistribution.tsx', "scanResources(kind, file, kind === 'skills' ? 'local' : hostId)", 'scanResources(kind, file)'],
+  ['AWB095', 'src-tauri/core/src/menu.rs', '"file" => ("file", Vec::new(), String::new())', '"file" => ("config", Vec::new(), String::new())'],
+  ['AWB095', 'package.json', '"check:executor-templates": "node scripts/executor-templates-check.mjs",', ''],
 ]
 cases.forEach(([id, file, before, after], index) => {
   const mutated = new Map(files)

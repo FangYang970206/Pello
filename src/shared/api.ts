@@ -59,7 +59,7 @@ export interface WorkbenchApi {
   scanResources(kind: 'mcp' | 'skills', source: string, hostId?: string): Promise<import('./types').ResourceSourceItem[]>
   importMcpConfig(source: string, agents: (ResourceScope | string)[], ids: string[], hostId?: string): Promise<ResourceResult[]>
   importSkills(source: string, agents: (ResourceScope | string)[], names?: string[]): Promise<ResourceResult[]>
-  pickResource(kind: 'folder' | 'zip' | 'config'): Promise<string | null>
+  pickResource(kind: 'folder' | 'zip' | 'config' | 'file'): Promise<string | null>
   saveSessions(projectId: string, terms: SavedTerm[], activeId?: string | null, groups?: WorkSession[], selected?: string): Promise<Database>
   saveBranch(projectId: string, branch: string): Promise<Database>
   setUnsavedChanges(dirty: boolean): void

@@ -2,13 +2,19 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { _electron as electron } from 'playwright'
+import { launchWorkbench } from './fixtures/launch-workbench.mjs'
+import { assertSettingsDialogPosition } from './fixtures/settings-dialog-position.mjs'
 
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'awb-host-management-'))
-fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ hosts: [{ id: 'offline', name: 'Offline host', addr: '127.0.0.1', port: 1, user: 'tester', auth: 'password', on: false, os: 'Linux', platform: 'linux' }] }))
+fs.writeFileSync(path.join(data, 'workbench.json'), JSON.stringify({ settings: { autoCheckUpdates: false }, hosts: [{ id: 'offline', name: 'Offline host', addr: '127.0.0.1', port: 1, user: 'tester', auth: 'password', on: false, os: 'Linux', platform: 'linux' }] }))
 const env = { ...process.env, AWB_USER_DATA: data }
 delete env.ELECTRON_RUN_AS_NODE
-const app = await electron.launch({ args: ['.'], env })
+// Without an explicit DPI the page takes the desktop's own scale: a forced
+// factor below the desktop's leaves the window too few physical pixels for
+// the page sizes below, as `app.resize` refuses with the reason.
+const dpiArg = process.argv.find((arg) => arg.startsWith('--dpi='))?.slice(6)
+const dpi = Number(dpiArg || 1)
+const app = await launchWorkbench({ args: ['.'], env, scale: dpiArg ? dpi : null })
 try {
   const page = await app.firstWindow()
   await page.locator('[data-a=newproj]').locator('..').hover()
@@ -39,10 +45,14 @@ try {
   await page.getByRole('dialog', { name: '移除机器？', exact: true }).waitFor()
   await page.getByRole('button', { name: '取消', exact: true }).click()
   assert.equal((await page.evaluate(() => window.awb.getState())).db.hosts.length, 2)
-  await page.getByRole('button', { name: '编辑 Fixed display name', exact: true }).click()
-  await page.click('[data-a=hdel]')
+  await page.keyboard.press('Escape')
+  await page.locator('[data-a=settings]').click()
+  await page.locator('[data-a=sec][data-id=hosts]').click()
+  const offline = page.locator('.srow').filter({ hasText: 'Fixed display name' })
+  await offline.getByRole('button', { name: '移除', exact: true }).click()
+  await page.getByRole('dialog', { name: '移除机器？', exact: true }).waitFor()
   await page.click('[data-a=confirm]')
-  await page.getByRole('button', { name: '编辑 Fixed display name', exact: true }).waitFor({ state: 'detached' })
+  await offline.waitFor({ state: 'detached' })
   assert.equal((await page.evaluate(() => window.awb.getState())).db.hosts.length, 1)
   const rejected = await page.evaluate(async () => {
     const { db } = await window.awb.getState()
@@ -51,4 +61,29 @@ try {
   })
   assert.equal(rejected, true, 'Main process must reject unreachable hosts even when renderer claims connected')
   console.log('PASS offline hosts remain editable, failed edits preserve input, deletion confirms/cancels, and main-process validation cannot be bypassed')
+  for (const [theme, language, width, height, size, narrow] of [['light', 'zh-CN', 1440, 900, 12, false], ['dark', 'en', 1024, 680, 16, true]]) {
+    await page.evaluate(async ({ theme, language, size }) => {
+      const { db } = await window.awb.getState()
+      await window.awb.saveSettings({ ...db.settings, theme, language, uiFontSize: size })
+    }, { theme, language, size })
+    await page.reload()
+    await page.click('[data-a=settings]')
+    await page.click('[data-a=sec][data-id=hosts]')
+    const title = language === 'en' ? 'Add machine' : '添加机器'
+    const addMachine = page.getByRole('button', { name: title, exact: true })
+    const addDialog = page.getByRole('dialog', { name: title, exact: true })
+    const name = addDialog.getByLabel(language === 'en' ? 'Name' : '名称', { exact: true })
+    await app.resize(1440, 900)
+    await addMachine.click()
+    await name.fill('Fixture machine')
+    await app.resize(width, height)
+    if (narrow) await page.locator('.scol').evaluate((column) => { column.style.maxWidth = '420px' })
+    await assertSettingsDialogPosition(addDialog)
+    assert.equal(await name.inputValue(), 'Fixture machine')
+    await page.screenshot({ path: path.resolve('output/playwright/host-management', `add-${dpi}-${theme}-${width}.png`) })
+    await page.keyboard.press('Escape')
+    await addDialog.waitFor({ state: 'detached' })
+    assert.equal(await addMachine.evaluate((element) => element === document.activeElement), true)
+  }
+  console.log(`PASS add-machine dialog follows settings content while resizing and restores focus at ${dpi * 100}% DPI`)
 } finally { await app.close() }

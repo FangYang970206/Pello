@@ -41,15 +41,17 @@ const PATHS = {
   replace: 'M3 6h10M10 3l3 3-3 3M4 14h5v6H4zM15 14h5v6h-5z',
   'replace-all': 'M3 5h10M10 2l3 3-3 3M3 10h10M10 7l3 3-3 3M4 16h5v5H4zM15 16h5v5h-5z',
   changes: 'M15 18a3 3 0 1 0 6 0 3 3 0 0 0-6 0zM3 6a3 3 0 1 0 6 0 3 3 0 0 0-6 0zM13 6h3a2 2 0 0 1 2 2v7M11 18H8a2 2 0 0 1-2-2V9',
-  pin: 'M9 4h6l-1 6 3 3v2h-4v5l-1 1-1-1v-5H6v-2l3-3z'
+  pin: 'M9 4h6l-1 6 3 3v2h-4v5l-1 1-1-1v-5H6v-2l3-3z',
+  github: 'M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.86c-2.78.6-3.37-1.18-3.37-1.18-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.53 2.35 1.09 2.93.83.09-.65.35-1.09.64-1.34-2.22-.25-4.56-1.11-4.56-4.95 0-1.1.39-1.99 1.03-2.69-.1-.26-.45-1.28.1-2.66 0 0 .84-.27 2.75 1.03A9.6 9.6 0 0 1 12 6.78c.85 0 1.71.12 2.51.34 1.91-1.3 2.75-1.03 2.75-1.03.55 1.38.2 2.4.1 2.66.64.7 1.03 1.59 1.03 2.69 0 3.85-2.34 4.7-4.57 4.95.36.31.68.92.68 1.85v2.77c0 .27.18.58.69.48A10 10 0 0 0 12 2z'
 } as const
 
 export type IconName = keyof typeof PATHS
 
 export function Icon({ name, className = '' }: { name: IconName; className?: string }) {
+  const filled = ['more', 'github'].includes(name)
   return (
     <svg className={`i ${className}`} viewBox="0 0 24 24" aria-hidden="true">
-      <path d={PATHS[name]} fill={name === 'more' ? 'currentColor' : undefined} stroke={name === 'more' ? 'none' : undefined} />
+      <path d={PATHS[name]} fill={filled ? 'currentColor' : undefined} stroke={filled ? 'none' : undefined} />
     </svg>
   )
 }

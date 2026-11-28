@@ -38,9 +38,9 @@ export interface Executor {
   args: string
   letter: string
   color: string
-  shell: 'pwsh' | 'cmd'
+  shell: ShellKind
   env: EnvVar[]
-  hosts?: Record<string, { cmd: string; args: string; shell: 'pwsh' | 'cmd' }>
+  hosts?: Record<string, { cmd: string; args: string; shell: ShellKind }>
   /** Explicit native CLI protocol; never guess --continue or a project's latest session. */
   session?: { startArgs: string; resumeArgs: string }
   resources?: ResourcePaths
@@ -108,6 +108,8 @@ export type TransferSnapshot = { id: string; projectId: string; state: 'running'
 export interface Database {
   settings: Settings
   custom: Executor[]
+  templates: ExecutorTemplate[]
+  templateBindings: TemplateBinding[]
   hosts: Host[]
   projects: Project[]
   treeIgnores?: Record<string, string[]>
@@ -134,9 +136,10 @@ export interface AgentInfo {
   letter: string
   color: string
   installed: boolean
-  shell?: 'pwsh' | 'cmd'
+  shell?: ShellKind
   env?: EnvVar[]
   custom?: boolean
+  hosts?: Executor['hosts']
 }
 
 export const PRESETS: Preset[] = [
@@ -157,7 +160,7 @@ export const SHELL_AGENT: AgentInfo = {
   installed: true
 }
 
-export const EXEC_COLORS = ['#c4aedb', '#a9c3df', '#95cfaa', '#dcc07f', '#e39e9c', '#cdd0d6']
+export const EXEC_COLORS = ['#c4aedb', '#a9c3df', '#95cfaa', '#dcc07f', '#e39e9c', '#cdd0d6', '#72c8c3', '#82baff', '#a1ce76', '#efad78', '#eda8c8', '#b2a9f0', '#e8d18a', '#91cde4', '#d6ab90', '#e6a2a9']
 
 export interface GitFile {
   path: string
@@ -211,6 +214,7 @@ export interface DirListing {
   path: string
   parent: string | null
   dirs: { name: string; path: string }[]
+  files?: { name: string; path: string }[]
   error?: string
 }
 
@@ -273,11 +277,13 @@ export interface PtyCreateRequest {
 export interface TestExecRequest {
   cmd: string
   args: string
-  shell: 'pwsh' | 'cmd' | 'bash'
+  shell: ShellKind
   env: EnvVar[]
   cwd?: string
   /** The machine the command is tested on; this one when left out. */
   hostId?: string
+  /** The executor being tested; its template's environment on that machine is used. */
+  executorId?: string
 }
 
 export interface TestExecResult {

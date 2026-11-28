@@ -1,12 +1,14 @@
 import { t } from '../shared/i18n'
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
-import type { AgentInfo, Executor, Host, OsKind, PathCheck, Settings, ShellKind } from '../shared/types'
+import type { AgentInfo, Database, Executor, Host, OsKind, PathCheck, Settings, ShellKind } from '../shared/types'
 import { EXEC_COLORS, PRESETS, SHELL_AGENT, cmdline, hostDisplayName, hostLine, preferredAgent, shellLabel, uid } from '../shared/types'
 import { useAnchoredMenu } from './useAnchoredMenu'
 import { DirectoryBrowser } from './DirectoryBrowser'
 import { HostColorPicker } from './HostColorPicker'
 import { useLocalShells } from './useLocalShells'
 import { hostColor, nextHostColor } from '../shared/host-colors'
+import { executorForHost, executorTemplate } from '../shared/executor'
+import { positionSettingsDialog } from './settings-dialog-position'
 
 export const dialogOpener: { current: HTMLElement | null } = { current: null }
 
@@ -44,6 +46,8 @@ export function Frame({
   subClass,
   wide,
   small,
+  alignToSettings = false,
+  className = '',
   children,
   footer,
   busy = false,
@@ -54,6 +58,8 @@ export function Frame({
   subClass?: string
   wide?: boolean
   small?: boolean
+  alignToSettings?: boolean
+  className?: string
   children: ReactNode
   footer: ReactNode
   busy?: boolean
@@ -61,11 +67,15 @@ export function Frame({
 }) {
   const headingId = useId()
   const descriptionId = useId()
+  const dialogRef = useRef<HTMLDivElement>(null)
   const busyRef = useRef(busy)
   busyRef.current = busy
   const dismiss = () => { if (!busyRef.current) onClose() }
   useLayoutEffect(() => {
-    const root = document.querySelector('#modal .dlg') as HTMLElement | null
+    if (alignToSettings && dialogRef.current) return positionSettingsDialog(dialogRef.current)
+  }, [alignToSettings])
+  useLayoutEffect(() => {
+    const root = dialogRef.current
     if (!root) return
     const opener = document.activeElement instanceof HTMLElement && !root.contains(document.activeElement) ? document.activeElement : null
     const first = root.querySelector<HTMLElement>('[data-autofocus], input:not([disabled]), .btn.pri')
@@ -107,7 +117,7 @@ export function Frame({
         if (event.target === event.currentTarget) dismiss()
       }}
     >
-      <div className={`dlg ${wide ? 'lg' : ''} ${small ? 'sm' : ''}`} role="dialog" tabIndex={-1} aria-busy={busy || undefined} aria-modal="true" aria-labelledby={headingId} aria-describedby={sub ? descriptionId : undefined}>
+      <div ref={dialogRef} className={`dlg ${wide ? 'lg' : ''} ${small ? 'sm' : ''} ${alignToSettings ? 'settings-positioned-dialog' : ''} ${className}`} role="dialog" tabIndex={-1} aria-busy={busy || undefined} aria-modal="true" aria-labelledby={headingId} aria-describedby={sub ? descriptionId : undefined}>
         <header>
           <h2 id={headingId}>{title}</h2>
           <button className="ib" data-a="mclose" aria-label={t("关闭")} disabled={busy} onClick={dismiss}>
@@ -122,19 +132,20 @@ export function Frame({
   )
 }
 
-export function ConfirmDialog({ title, body, ok, onOk, onClose, onSave }: { title: string; body: ReactNode; ok: string; onOk: () => void | Promise<void>; onClose: () => void; onSave?: () => void }) {
+export function ConfirmDialog({ title, body, ok, onOk, onClose, onSave, className }: { title: string; body: ReactNode; ok: string; onOk: () => void | Promise<void>; onClose: () => void; onSave?: () => void; className?: string }) {
   const [busy, setBusy] = useState(false)
   const submitting = useRef(false)
   return (
     <Frame
       title={title}
+      className={className}
       small
       busy={busy}
       onClose={onClose}
       footer={
         <>
           <span className="grow" />
-          <button className="btn ghost" data-a="mclose" onClick={onClose}>
+          <button className="btn ghost" data-a="mclose" data-autofocus onClick={onClose}>
             {t("取消")}</button>
           <button className="btn dangerf" data-a="confirm" disabled={busy} onClick={async () => { if (submitting.current) return; submitting.current = true; setBusy(true); try { await onOk() } finally { submitting.current = false; setBusy(false) } }}>
             {ok}
@@ -496,12 +507,22 @@ export function NewTermDialog({
   const options = host.id === 'local' ? local.shells : shellOptions(host.platform)
   const detecting = host.id === 'local' && local.loading
   const [kind, setKind] = useState(() => preferredAgent(initialKind, agents))
-  const [shell, setShell] = useState(initialShell)
+  const agentShell = (id: string) => {
+    const agent = agents.find((item) => item.id === id)
+    const pref = agent?.hosts?.[host.id]?.shell || agent?.shell
+    if (!pref) return initialShell
+    if (host.platform === 'linux') return pref === 'zsh' ? 'zsh' : 'bash'
+    return pref === 'cmd' ? 'cmd' : host.id === 'local' && pref === 'bash' ? 'bash' : 'pwsh'
+  }
+  const [shell, setShell] = useState(() => agentShell(kind))
   const kindRef = useRef(kind)
   const shellRef = useRef(shell)
   const pickKind = (id: string) => {
     kindRef.current = id
     setKind(id)
+    const nextShell = agentShell(id)
+    shellRef.current = nextShell
+    setShell(nextShell)
   }
   const pickShell = (id: ShellKind) => {
     shellRef.current = id
@@ -619,17 +640,25 @@ export function NewTermDialog({
 
 export function ExecDialog({
   initial,
+  hostId,
   cwd,
+  hosts,
+  templates,
+  templateBindings,
   onClose,
   onSave,
   onDelete,
   onToast
 }: {
   initial: Executor | null
+  hostId?: string
   cwd: string
+  hosts: Host[]
+  templates: Database['templates']
+  templateBindings: Database['templateBindings']
   onClose: () => void
-  onSave: (exec: Executor) => Promise<void>
-  onDelete: (id: string) => void
+  onSave: (exec: Executor, bindings: ReadonlyMap<string, string>) => Promise<void>
+  onDelete: (id: string) => Promise<void>
   onToast: (text: string, bad?: boolean) => void
 }) {
   const [draft, setDraft] = useState<Executor>(
@@ -637,42 +666,47 @@ export function ExecDialog({
       ? { ...initial, env: initial.env.map((item) => ({ ...item })) }
       : { id: '', name: '', cmd: '', args: '', shell: 'pwsh', env: [], letter: '', color: EXEC_COLORS[1] }
   )
-  const [more, setMore] = useState(!!initial?.env.length)
+  const [more, setMore] = useState(false)
   const [output, setOutput] = useState('')
   const [running, setRunning] = useState(false)
+  const [bindings, setBindings] = useState(() => new Map<string, string>())
+  const [scope, setScope] = useState(hostId === 'local' ? '' : hostId || '')
+  const local = useLocalShells()
+  const target = hosts.find((host) => host.id === (scope || 'local')) || hosts[0]
+  const launch = executorForHost(draft, scope)
+  const options = target?.id === 'local' ? local.shells : shellOptions(target?.platform || 'linux')
+  const selectedShell = options.some((item) => item.id === launch.shell) ? launch.shell : options[0]?.id || launch.shell
+  const targetId = target?.id || 'local'
+  const currentTemplate = executorTemplate({ templates, templateBindings }, targetId, draft.id)?.id || ''
+  const selectedTemplate = bindings.get(targetId) ?? currentTemplate
   const patch = (partial: Partial<Executor>) => setDraft((prev) => ({ ...prev, ...partial }))
-  const resourcePaths = draft.resources || { mcpPath: '', skillPath: '', format: 'standard' as const, skillAdapter: 'portable' as const, skillConfigPath: '' }
-  const resourcePatch = (partial: Partial<typeof resourcePaths>) => patch({ resources: { ...resourcePaths, ...partial } })
-  useEffect(() => {
-    if (!initial?.id || initial.resources) return
-    let stopped = false
-    void window.awb.resourceTargets().then((targets) => {
-      const target = targets.find((item) => item.id === initial.id)
-      if (!stopped && target) setDraft((value) => ({ ...value, resources: value.resources || target }))
-    }).catch(() => {})
-    return () => { stopped = true }
-  }, [initial])
+  const patchLaunch = (partial: Partial<Pick<Executor, 'cmd' | 'args' | 'shell'>>) => {
+    if (!scope) { patch(partial); return }
+    patch({ hosts: { ...draft.hosts, [scope]: { cmd: launch.cmd, args: launch.args, shell: selectedShell, ...partial } } })
+  }
   return (
     <Frame
       title={draft.id ? t("编辑执行器") : t("添加执行器")}
+      alignToSettings
+      className="settings-dialog custom-executor-dialog"
+      busy={running}
       onClose={onClose}
       footer={
         <>
           <button
             className="btn"
             data-a="ce-test"
-            disabled={running}
+            disabled={running || (target?.id === 'local' && local.loading) || !options.length}
             onClick={async () => {
-              if (!draft.cmd.trim()) {
+              if (!launch.cmd.trim()) {
                 setOutput(t("请先填写命令。"))
                 return
               }
               setRunning(true)
               setOutput(t("正在启动…"))
               try {
-                const result = await window.awb.testExec({ cmd: draft.cmd, args: draft.args, shell: draft.shell, env: draft.env, cwd })
-                const envLine = draft.env.filter((item) => item.k).map((item) => `${item.k}=${item.secret ? '********' : item.v}`).join('  ')
-                const text = [envLine ? `env: ${envLine}` : '', result.text, result.running ? t("[启动观察结束 · 进程仍在运行，已停止测试；未验证服务连接]") : result.code === null ? t("[测试结束 · 已中断]") : t("[测试结束 · 退出码 {{0}}]", result.code)].filter(Boolean).join('\n')
+                const result = await window.awb.testExec({ executorId: draft.id, cmd: launch.cmd, args: launch.args, shell: selectedShell, env: draft.env, cwd: target?.id === 'local' ? cwd : '', hostId: target?.id })
+                const text = [result.text, result.running ? t("[启动观察结束 · 进程仍在运行，已停止测试；未验证服务连接]") : result.code === null ? t("[测试结束 · 已中断]") : t("[测试结束 · 退出码 {{0}}]", result.code)].filter(Boolean).join('\n')
                 setOutput(text)
               } catch (err) {
                 setOutput(err instanceof Error ? err.message : t("测试失败"))
@@ -684,7 +718,11 @@ export function ExecDialog({
             <Icon name="play" className="s" />
             {t("测试启动")}</button>
           {draft.id ? (
-            <button className="btn ghost" data-a="ce-del" style={{ color: 'var(--red)' }} onClick={() => onDelete(draft.id)}>
+            <button className="btn ghost" data-a="ce-del" disabled={running} style={{ color: 'var(--red)' }} onClick={async () => {
+              setRunning(true)
+              try { await onDelete(draft.id) } catch (error) { setOutput(String(error)) }
+              finally { setRunning(false) }
+            }}>
               {t("删除")}</button>
           ) : null}
           <span className="grow" />
@@ -695,97 +733,70 @@ export function ExecDialog({
             data-a="ce-save"
             disabled={running}
             onClick={async () => {
-              if (!draft.name.trim() || !draft.cmd.trim()) {
+              if (!draft.name.trim() || !(draft.cmd.trim() || launch.cmd.trim())) {
                 onToast(t("请填写名称和命令"))
                 return
               }
               const letter = draft.letter.trim() || draft.name.trim()[0].toUpperCase()
               setRunning(true)
-              try { await onSave({ ...draft, name: draft.name.trim(), cmd: draft.cmd.trim(), letter, env: draft.env.filter((item) => item.k) }) }
+              try { await onSave({ ...draft, name: draft.name.trim(), cmd: draft.cmd.trim() || launch.cmd.trim(), letter }, bindings) }
               catch (error) { setOutput(String(error)); onToast(String(error), true) }
               finally { setRunning(false) }
             }}
           >
-            {draft.id ? t("保存") : t("添加")}
+            {t("保存")}
           </button>
         </>
       }
     >
-      <div className="two" style={{ gridTemplateColumns: '1fr auto' }}>
+      <div className="custom-executor-form">
+      <div className="two">
         <label className="fld">
           <span>{t("名称")}</span>
           <input className="tx" data-ce="name" value={draft.name} placeholder={t("例如 内部 Agent")} onChange={(e) => patch({ name: e.target.value })} />
         </label>
-        <div className="fld">
-          <span>Shell</span>
-          <div className="seg" role="radiogroup" aria-label="Shell">
-            {(['pwsh', 'cmd'] as const).map((id) => (
-              <button key={id} className={draft.shell === id ? 'on' : ''} role="radio" aria-checked={draft.shell === id} data-a="ces" data-id={id} onClick={() => patch({ shell: id })}>
-                {shellLabel(id)}
-              </button>
-            ))}
-          </div>
-        </div>
+        <label className="fld"><span>{t("配置机器")}</span><select className="sel" data-ce="host" value={scope} onChange={(event) => { setScope(event.target.value); setOutput('') }}><option value="">{t("默认配置（本机测试）")}</option>{hosts.map((host) => <option key={host.id} value={host.id}>{hostDisplayName(host)}</option>)}</select></label>
       </div>
       <div className="two">
         <label className="fld">
           <span>{t("命令")}</span>
-          <input className="tx mono" data-ce="cmd" value={draft.cmd} placeholder="my-agent" onChange={(e) => patch({ cmd: e.target.value })} />
+          <input className="tx mono" data-ce="cmd" value={launch.cmd} placeholder="my-agent" onChange={(e) => patchLaunch({ cmd: e.target.value })} />
         </label>
         <label className="fld">
           <span>{t("参数")}</span>
-          <input className="tx mono" data-ce="args" value={draft.args} placeholder="--interactive" onChange={(e) => patch({ args: e.target.value })} />
+          <input className="tx mono" data-ce="args" value={launch.args} placeholder="--interactive" onChange={(e) => patchLaunch({ args: e.target.value })} />
         </label>
       </div>
+      <label className="fld">
+        <span>Shell</span>
+        <select className="sel" data-ce="shell" aria-label="Shell" value={selectedShell} onChange={(event) => patchLaunch({ shell: event.target.value as ShellKind })}>
+          {options.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
+        </select>
+      </label>
+      <label className="fld">
+        <span>{t("高级属性模板")}</span>
+        <select className="sel" aria-label={t("高级属性模板")} value={selectedTemplate} onChange={(event) => {
+          const value = event.target.value
+          setBindings((old) => {
+            const next = new Map(old)
+            if (value === currentTemplate) next.delete(targetId)
+            else next.set(targetId, value)
+            return next
+          })
+        }}>
+          <option value="">{t("未选择模板")}</option>
+          {templates.filter((item) => item.hostId === targetId).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+        </select>
+      </label>
+      {target ? <p className="resource-help">{t("模板在 {{0}} 生效。新终端和下次重连使用保存后的配置。", hostDisplayName(target))}</p> : null}
+      {scope && draft.hosts?.[scope] ? <button className="btn ghost" onClick={() => { const next = { ...draft.hosts }; delete next[scope]; patch({ hosts: next }) }}>{t("使用默认配置")}</button> : null}
       <button className="disc" data-a="ce-more" aria-expanded={more} onClick={() => setMore((value) => !value)}>
         <Icon name="chev" className={`s chev${more ? ' open' : ''}`} />
-        {t("高级属性")}{draft.env.length ? <span className="tag">{draft.env.length}</span> : null}
+        {t("标识与颜色")}
       </button>
       {more ? (
         <div style={{ margin: '-4px 0 16px 22px' }}>
-          <div className="executor-resources">
-            <label className="fld"><span>{t("Skill 存放目录")}</span><input className="tx mono" aria-label={t("Skill 存放目录")} value={resourcePaths.skillPath} placeholder={t("Skill 目录的绝对路径")} onChange={(event) => resourcePatch({ skillPath: event.target.value })} /></label>
-            <label className="fld"><span>{t("MCP 配置文件")}</span><input className="tx mono" aria-label={t("MCP 配置文件")} value={resourcePaths.mcpPath} placeholder={t("JSON、JSONC 或 TOML 文件的绝对路径")} onChange={(event) => resourcePatch({ mcpPath: event.target.value })} /></label>
-            <div className="two"><label className="fld"><span>{t("MCP 格式")}</span><select className="sel" aria-label={t("MCP 格式")} value={resourcePaths.format} onChange={(event) => resourcePatch({ format: event.target.value as typeof resourcePaths.format })}><option value="standard">JSON · mcpServers</option><option value="codex">TOML · mcp_servers</option><option value="opencode">JSONC · mcp</option></select></label>
-            <label className="fld"><span>{t("Skill 管理方式")}</span><select className="sel" aria-label={t("Skill 管理方式")} value={resourcePaths.skillAdapter || 'portable'} onChange={(event) => resourcePatch({ skillAdapter: event.target.value as typeof resourcePaths.skillAdapter })}>{['portable', 'claude', 'codex', 'opencode', 'pi', 'omp'].map((adapter) => <option key={adapter} value={adapter}>{adapter === 'portable' ? t("通用 · 文件开关") : adapter}</option>)}</select></label></div>
-            <label className="fld"><span>{t("Skill 配置文件（可选）")}</span><input className="tx mono" aria-label={t("Skill 配置文件")} value={resourcePaths.skillConfigPath || ''} onChange={(event) => resourcePatch({ skillConfigPath: event.target.value })} /></label>
-            <p className="resource-help">{t("选择执行器支持的原生格式。通用开关会保留文件，并切换 SKILL.md 的文件名；独立目录可避免影响其他执行器。")}</p>
-          </div>
-          {draft.env.map((item, index) => (
-            <div className="env" key={index}>
-              <input
-                className="tx mono"
-                value={item.k}
-                placeholder="KEY"
-                aria-label={t("变量名")}
-                onChange={(e) => patch({ env: draft.env.map((env, i) => (i === index ? { ...env, k: e.target.value } : env)) })}
-              />
-              <input
-                className="tx mono"
-                type={item.secret ? 'password' : 'text'}
-                value={item.v}
-                placeholder="value"
-                aria-label={t("变量值")}
-                onChange={(e) => patch({ env: draft.env.map((env, i) => (i === index ? { ...env, v: e.target.value } : env)) })}
-              />
-              <button
-                className={`ib ${item.secret ? 'on' : ''}`}
-                aria-pressed={item.secret}
-                title={item.secret ? t("密钥（已隐藏）") : t("设为密钥")}
-                aria-label={t("设为密钥")}
-                onClick={() => patch({ env: draft.env.map((env, i) => (i === index ? { ...env, secret: !env.secret } : env)) })}
-              >
-                <Icon name="eye" className="s" />
-              </button>
-              <button className="ib" aria-label={t("删除变量")} onClick={() => patch({ env: draft.env.filter((_, i) => i !== index) })}>
-                <Icon name="x" className="s" />
-              </button>
-            </div>
-          ))}
-          <button className="btn sm ghost" data-a="env-add" style={{ marginLeft: -10 }} onClick={() => patch({ env: [...draft.env, { k: '', v: '', secret: false }] })}>
-            <Icon name="plus" className="s" />
-            {t("添加变量")}</button>
-          <div style={{ display: 'flex', gap: 16, alignItems: 'flex-end', marginTop: 12 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-end', marginTop: 12 }}>
             <label className="fld" style={{ margin: 0, width: 88 }}>
               <span>{t("标识")}</span>
               <input className="tx" maxLength={2} value={draft.letter} placeholder={t("自动")} onChange={(e) => patch({ letter: e.target.value })} />
@@ -801,11 +812,10 @@ export function ExecDialog({
           </div>
         </div>
       ) : null}
-      <div className="fld" style={{ margin: 0 }}>
+      {output ? <div className="fld" style={{ margin: 0 }}>
         <span>{t("测试输出")}</span>
-        <div className="out" id="ceout">
-          {output || <span className="c-d">{t("“测试启动”会在当前项目目录中运行一次，并显示原始输出。")}</span>}
-        </div>
+        <div className="out" id="ceout">{output}</div>
+      </div> : null}
       </div>
     </Frame>
   )
@@ -836,6 +846,7 @@ function HostAuthentication({ host, onChange }: {
 export function HostDialog({
   initial,
   hosts = [],
+  alignToSettings,
   onClose,
   onSave,
   onDelete,
@@ -843,6 +854,7 @@ export function HostDialog({
 }: {
   initial: Host | null
   hosts?: Host[]
+  alignToSettings?: boolean
   onClose: () => void
   onSave: (host: Host) => Promise<void>
   onDelete: (id: string) => void
@@ -859,6 +871,7 @@ export function HostDialog({
   return (
     <Frame
       title={initial ? initial.name : t("添加机器")}
+      alignToSettings={alignToSettings}
       busy={busy}
       sub={
         initial ? (

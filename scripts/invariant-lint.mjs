@@ -228,8 +228,8 @@ export function checkInvariants(files) {
   const controlsCss = files.get('src/renderer/styles/workbench.css') || ''
   require(!files.get('src/renderer/App.tsx')?.includes('className="newp"') && !files.get('src/renderer/Workspace.tsx')?.includes('data-a="newproj"') && sidebar.includes('data-a="newproj"') && sidebar.includes('props.onNewProject()') && controlsCss.includes('.proj:has(:focus-visible) .project-add') && controlsCss.includes('.sidebar-section-heading:hover .sidebar-add') && controlsCss.includes('.tabbar:hover .tabtools [data-a=newterm]') && scripts.check?.includes('scripts/ui-affordance-check.mjs'),
     'AWB065', 'src/renderer/ProjectSidebar.tsx', '项目标题统一添加项目；加号按行悬停与键盘焦点显示，保留行为回归')
-  require(files.get('src/main/store.ts')?.includes("theme: 'light'") && files.get('src/renderer/index.html')?.includes('data-theme="light"') && controlsCss.includes('font:calc(var(--fs,13px) * var(--content-zoom,1))/1.7 var(--mono)') && files.get('src/renderer/icons.tsx')?.includes("fill={name === 'more' ? 'currentColor' : undefined}"),
-    'AWB066', 'src/main/store.ts', '默认浅色，Diff 双栏实时沿用终端字号，更多菜单使用实心图标')
+  require(files.get('src/main/store.ts')?.includes("theme: 'light'") && files.get('src/renderer/index.html')?.includes('data-theme="light"') && controlsCss.includes('font:calc(var(--fs,13px) * var(--content-zoom,1))/1.7 var(--mono)') && files.get('src/renderer/icons.tsx')?.includes("const filled = ['more', 'github'].includes(name)") && files.get('src/renderer/icons.tsx')?.includes("fill={filled ? 'currentColor' : undefined}"),
+    'AWB066', 'src/main/store.ts', '默认浅色，Diff 双栏实时沿用终端字号，更多菜单与推荐仓库图标使用实心图标')
   const sidebarCss = files.get('src/renderer/styles/extra.css') || ''
   require(sidebar.includes('sidebar-heading-label') && sidebar.includes('sidebar-disclosure') && hasString(source('src/renderer/ProjectSidebar.tsx'), '最近') && sidebar.includes("collapsed[project.id] ? 'folder' : 'folder-open'") && sidebarCss.includes('.sidebar-section-heading > [aria-expanded=true] .sidebar-disclosure { opacity:0; }') && sidebarCss.includes('.sidebar-disclosure { flex:none; pointer-events:none; }') && !sidebarCss.includes('white-space:nowrap; padding-right:34px;'),
     'AWB067', 'src/renderer/ProjectSidebar.tsx', '折叠箭头紧邻分组文字，展开时按悬停与焦点显示、折叠常驻；加号不受折叠影响')
@@ -556,7 +556,7 @@ export function checkInvariants(files) {
   const settingsView = files.get('src/renderer/SettingsView.tsx') || ''
   const extraCss = files.get('src/renderer/styles/extra.css') || ''
   const aboutSection = /\{ id: 'about', get label\(\) \{ return t\("关于"\) \}, icon: 'info' \}/.exec(files.get('src/renderer/SettingsView.tsx') || '')?.[0] || ''
-  require(aboutSection === `{ id: 'about', get label() { return t("关于") }, icon: 'info' }` && settingsView.includes('if (section === \'about\') body = <AboutView />') && settingsView.includes("{section !== 'about' ? <h1>{title}</h1> : null}") && settingsView.includes("{LEADS[section] ? <p className=\"lead\">{LEADS[section]}</p> : null}"),
+  require(aboutSection === `{ id: 'about', get label() { return t("关于") }, icon: 'info' }` && settingsView.includes('if (section === \'about\') body = <AboutView />') && settingsView.includes("{section !== 'about' ? <header className=\"settings-page-heading\">") && settingsView.includes("<div><h1>{title}</h1>{LEADS[section] ? <p className=\"lead\">{LEADS[section]}</p> : null}</div>"),
     'AWB093', 'src/renderer/SettingsView.tsx', '关于页是设置的独立一栏：自己绘制标题，不再叠加页标题和引导语')
   require(aboutView.includes('void window.awb.meta().then((value) => { if (current) { setMeta(value); setError(\'\') } })') && aboutView.includes('<dd data-about="version">{meta ? `v${meta.version}` : \'—\'}</dd>') && aboutView.includes("event.preventDefault(); void window.awb.openHomepage()") && !aboutView.includes('<a href={meta.homepage} target=') && !aboutView.includes("window.open("),
     'AWB093', 'src/renderer/AboutView.tsx', '关于页：版本、作者与主页来自内核；主页链接由内核打开，页面不自己导航')
@@ -580,6 +580,26 @@ export function checkInvariants(files) {
     'AWB094', 'src/renderer/TerminalPane.tsx', '终端窗格接入搜索与右键菜单，菜单在鼠标位置打开')
   require((files.get('src-tauri/src/window.rs') || '').includes('.enable_clipboard_access()') && scripts['check:terminal-search']?.includes('scripts/terminal-search-check.mjs'),
     'AWB094', 'src-tauri/src/window.rs', '工作台窗口允许页面读剪贴板（粘贴不再卡在权限提示）；保留行为回归')
+  // Executor templates and distributing resources to several machines. The
+  // database keeps templates and bindings, and every save of an executor, a
+  // machine or a template takes them back from the kernel's answer: a save
+  // that dropped them would unbind every executor on the next render. An
+  // executor's command on a machine is its own (the default is this machine's),
+  // the dialog that edits it sits over the settings and lists the templates of
+  // the machine it is configured for, a template's file is any file, and
+  // removing a machine says how much it takes with it before it does.
+  const executorSettings = files.get('src/renderer/ExecutorSettings.tsx') || ''
+  const distribution = files.get('src/renderer/ResourceDistribution.tsx') || ''
+  const dialogs = files.get('src/renderer/Dialogs.tsx') || ''
+  const store = files.get('src/main/store.ts') || ''
+  require(store.includes('templates: [],') && store.includes('templateBindings: [],') && (files.get('src/shared/api.ts') || '').includes("pickResource(kind: 'folder' | 'zip' | 'config' | 'file')") && typeof files.get('src/shared/executor.ts') === 'string' && executorSettings.includes("window.awb.pickResource(field === 'skillPath' ? 'folder' : 'file')") && executorSettings.includes('window.awb.deleteTemplate(deleting.id)'),
+    'AWB095', 'src/renderer/ExecutorSettings.tsx', '执行器模板：默认库带模板与绑定，模板文件不限扩展名，删除模板同时解绑')
+  require(settingsView.includes("if (section === 'agents') body = <ExecutorSettings") && settingsView.includes('onManageTemplate={(agent, id) => { setTemplateId(id); setBindingFocus(id ? undefined : agent); onSection(\'agents\') }}') && (files.get('src/renderer/App.tsx') || '').includes('templates: saved.templates, templateBindings: saved.templateBindings') && (files.get('src/renderer/App.tsx') || '').includes('onDelete={removeHost}'),
+    'AWB095', 'src/renderer/SettingsView.tsx', '设置按机器和执行器管理资源，模板从资源页直达；保存执行器、机器、模板后从内核答案回填绑定')
+  require(dialogs.includes('const [shell, setShell] = useState(() => agentShell(kind))') && dialogs.includes('alignToSettings ? \'settings-positioned-dialog\' : \'\'') && dialogs.includes('className="settings-dialog custom-executor-dialog"') && !dialogs.includes('executor-resources'),
+    'AWB095', 'src/renderer/Dialogs.tsx', '执行器的 Shell 按机器取默认值，编辑器对齐设置内容区并随机器选模板；资源位置改由模板提供')
+  require(distribution.includes("importMode ? await window.awb.importMcpConfig(source, targets, items, sourceHost)") && distribution.includes("scanResources(kind, file, kind === 'skills' ? 'local' : hostId)") && (files.get('src-tauri/core/src/menu.rs') || '').includes('"file" => ("file", Vec::new(), String::new())') && scripts['check:executor-templates']?.includes('scripts/executor-templates-check.mjs'),
+    'AWB095', 'src/renderer/ResourceDistribution.tsx', '分发可选择来源机器与目标执行器并逐项显示结果；模板文件对话框不限类型；保留行为回归')
   return errors
 }
 
