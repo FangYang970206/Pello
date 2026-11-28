@@ -7,9 +7,10 @@ import { installDocumentHarness, documentCommand } from './fixtures/document-har
 
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'pello-reading-'))
 const original = '# 阅读测试\n\n- Java 21\n- Spring Boot\n\n[跳到第二节](#第二节)\n\n' + '长文导航回归段落。\n\n'.repeat(30) + '## 第二节\n\n```json\n{"answer": 42, "enabled": true}\n```\n\n```mermaid\ngraph LR\n  A[输入] --> B[输出]\n```\n\n```plantuml\n@startuml\nAlice -> Bob: Hello\n@enduml\n```\n\n' + '后续内容。\n\n'.repeat(30)
+const originalJson = '{"answer": 42, "enabled": true}'
 fs.writeFileSync(path.join(data, 'guide.md'), original)
 fs.writeFileSync(path.join(data, 'chapter.md'), '# 下一页\n\n' + '下一页内容。\n\n'.repeat(25) + '## 目标\n\n导航目标正文。\n')
-fs.writeFileSync(path.join(data, 'config.json'), '{"answer": 42, "enabled": true}\n')
+fs.writeFileSync(path.join(data, 'config.json'), originalJson)
 fs.writeFileSync(path.join(data, 'config.yaml'), 'enabled: true\nname: sample\n')
 fs.writeFileSync(path.join(data, 'config.xml'), '<root enabled="true"><name>sample</name></root>\n')
 fs.writeFileSync(path.join(data, 'code.py'), 'def greet(name):\n    return "Hello " + name\n')
@@ -27,6 +28,8 @@ try {
   await installDocumentHarness(app, page, false)
   page.on('pageerror', (error) => console.error('Renderer:', error.message))
   page.setDefaultTimeout(10000)
+  const structuredSource = page.locator('.pane.focus .structured-source').getByRole('textbox', { name: '文件内容', exact: true })
+  const sourceText = () => structuredSource.locator('.cm-line').allTextContents().then((lines) => lines.join('\n'))
   await page.click('[data-a=rmode][data-id=files]')
   await page.click('[data-a=preview][data-id="guide.md"]')
   await page.getByRole('textbox', { name: 'Markdown 内容', exact: true }).waitFor()
@@ -44,15 +47,18 @@ try {
     try {
       for (const name of ['guide.md', 'config.json', 'code.py']) assert.equal(await page.locator('.tab [data-a=tab]').filter({ hasText: name }).count(), 1, `${name} must remain open`)
       await page.locator('.tab [data-a=tab]').filter({ hasText: 'config.json' }).click()
-      const source = page.getByRole('textbox', { name: '文件内容', exact: true })
-      assert.equal(await source.inputValue(), '{"answer": 42, "enabled": true}\n')
-      await source.fill('{"draft": true}\n')
+      await structuredSource.waitFor()
+      assert.equal(await sourceText(), originalJson)
+      const draft = '{"draft": true}'
+      await structuredSource.fill(draft)
+      await page.locator('.tab').filter({ hasText: 'config.json' }).getByRole('img', { name: '有未保存的更改' }).waitFor()
       await page.locator('.tab [data-a=tab]').filter({ hasText: 'code.py' }).click()
       await page.locator('.tab [data-a=tab]').filter({ hasText: 'config.json' }).click()
-      assert.equal(await source.inputValue(), '{"draft": true}\n')
-      await source.press('Control+z')
-      assert.equal(await source.inputValue(), '{"answer": 42, "enabled": true}\n')
-      assert.equal(fs.readFileSync(path.join(data, 'config.json'), 'utf8'), '{"answer": 42, "enabled": true}\n')
+      await structuredSource.waitFor()
+      assert.equal(await sourceText(), draft)
+      await structuredSource.press('Control+z')
+      assert.equal(await sourceText(), originalJson)
+      assert.equal(fs.readFileSync(path.join(data, 'config.json'), 'utf8'), originalJson)
     } finally { await page.click('[data-a=preview][data-id="guide.md"]'); await page.getByRole('textbox', { name: 'Markdown 内容', exact: true }).waitFor() }
   })
   await check('local project menu offers Explorer and path copy instead of file creation', async () => {
@@ -138,13 +144,17 @@ try {
     await page.getByRole('textbox', { name: 'Markdown 内容', exact: true }).waitFor()
     assert.equal(fs.readFileSync(path.join(data, 'guide.md'), 'utf8'), original)
   })
-  await page.click('[data-a=preview][data-id="config.json"]')
-  await check('JSON source contains actual syntax tokens', async () => {
-    await page.locator('.source-highlight .hljs-attr').first().waitFor()
-    assert.ok(await page.locator('.source-highlight .hljs-attr').count(), 'no highlighted JSON property')
-    assert.equal(await page.getByRole('textbox', { name: '文件内容', exact: true }).inputValue(), '{"answer": 42, "enabled": true}\n')
-  })
-  for (const [file, token] of [['config.yaml', 'attr'], ['config.xml', 'tag'], ['code.py', 'keyword']]) {
+  for (const [file, property] of [['config.json', /^"answer"$/], ['config.yaml', /^enabled$/]]) {
+    await page.click(`[data-a=preview][data-id="${file}"]`)
+    await check(`${file} has highlighted properties and preserves source text`, async () => {
+      const token = structuredSource.locator('.cm-line span').filter({ hasText: property })
+      await token.waitFor()
+      assert.equal(await sourceText(), fs.readFileSync(path.join(data, file), 'utf8'))
+      const colors = await token.evaluate((node) => ({ token: getComputedStyle(node).color, source: getComputedStyle(node.closest('.cm-line')).color }))
+      assert.notEqual(colors.token, colors.source, 'The property must have its own syntax color')
+    })
+  }
+  for (const [file, token] of [['config.xml', 'tag'], ['code.py', 'keyword']]) {
     await page.click(`[data-a=preview][data-id="${file}"]`)
     await check(`${file} has language tokens`, async () => {
       const expected = fs.readFileSync(path.join(data, file), 'utf8')
